@@ -1,5 +1,5 @@
 {
-    "changelog":  "Spectate/stats fix, dialog flood fix, checker HUD",
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v3.49.12/admin_report_desk_core.lua",
-    "version":  "3.49.12"
+    "changelog":  "Report Desk v1 Beta — первый публичный релиз для админов",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.0-beta/admin_report_desk_core.lua",
+    "version":  "1.0.0-beta"
 }
