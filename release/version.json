@@ -1,0 +1,5 @@
+{
+    "changelog":  "Spectate/stats fix, dialog flood fix, checker HUD",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v3.49.12/admin_report_desk_core.lua",
+    "version":  "3.49.12"
+}

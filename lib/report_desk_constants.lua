@@ -1,0 +1,66 @@
+--[[ Report Desk constants ]]
+local REPORT_COLOR = 1724645631
+local REPORT_COLORS = {
+    [1724645631] = true,
+}
+local CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk.lua'
+local USER_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lua'
+local USER_CONFIG_BACKUP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.bak.lua'
+local SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
+local SKIN_TEX_CACHE_MAX = 72
+local VEH_TEX_CACHE_MAX = 48
+local TEX_STAGING_MAX = 16
+local CATALOG_GPU_BUDGET = 5
+local CATALOG_IO_IDLE_MS = 12
+local SKIN_MAX_FILE_BYTES = 512000
+local TEX_NS_SKIN = 'skin'
+local SKIN_NEARBY_CACHE_SEC = 0.6
+local SKIN_SIDEBAR_W = 210
+local SKIN_THUMB_W, SKIN_THUMB_H = 68, 85
+local SKIN_THUMB_ASPECT = SKIN_THUMB_H / SKIN_THUMB_W
+local SKIN_PREVIEW_W, SKIN_PREVIEW_H = 168, 210
+local AUTOSAVE_SETTINGS_INTERVAL = 150
+local AUTOSAVE_THREADS_INTERVAL = 600
+local PRUNE_MAP_INTERVAL = 90
+local INGEST_DEDUP_SEC = 3.0
+local POLL_INTERVAL = 0.06
+local POLL_INTERVAL_CLOSED = 0.12
+local CHAT_POLL_LINES_OPEN = 100
+local CHAT_POLL_LINES_CLOSED = 40
+local WIN_W, WIN_H = 980, 640
+local SESSION_WARMUP = 0
+local MAX_SEEN_LINES = 400
+local MAX_CONSUMED_REPORT_LINES = 1500
+local MAX_TIMED_MAP_ENTRIES = 512
+local TIMED_MAP_MAX_AGE = 120
+local DEFAULT_MAX_THREADS = 300
+local PF = {
+    SOUND = 1083,
+    SOUND_FE = 14,
+    ALERT_COLOR = 0xB8B0C8,
+    DEDUP_SEC = 300,
+    MIN_WORD_LEN = 2,
+    TOAST_TTL = 5.0,
+    TOAST_MAX = 8,
+    BODY_PREVIEW = 40,
+    TOAST_CARD_W = 400,
+    TOAST_PAD_X = 10,
+    TOAST_PAD_Y = 8,
+    TOAST_HEADER_GAP = 5,
+    TOAST_BODY_MAX_LINES = 5,
+    TOAST_TOP_PAD = 52,
+    TOAST_GAP = 6,
+    TOAST_MAX_SHOW = 5,
+    HOTKEY_CAPTURE_GRACE = 0.2,
+    HOTKEY_TOGGLE_GRACE = 0.18,
+}
+
+local PROFANITY_DICT_MODULE = 'report_desk_profanity_words'
+
+local L_SKIP_ADMINS = '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xFB \xEE\xED\xEB\xE0\xE9\xED:'
+local L_ADMINS_ONLINE = '\xC0\xE4\xEC\xE8\xED\xFB \xEE\xED\xEB\xE0\xE9\xED:'
+local L_ADMIN_FOR = '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0'
+local MSG_PREFIX = '{9E7BEF}[Report Desk] {FFFFFF}'
+local MSG_PREFIX_PLAIN = '[Report Desk]'
+local PROFANITY_MSG_PREFIX = '{9E7BEF}[' .. '\xCC\xE0\xF2' .. ']{B0B0B8} '
+local MAX_PLAYER_ID = 1000

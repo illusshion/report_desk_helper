@@ -1,0 +1,3 @@
+Place high-quality PNG here: veh-400.png, veh-411.png, ...
+These override files in the parent folder.
+See moonloader\tools\VEHICLE_ASSETS.md

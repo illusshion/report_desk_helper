@@ -1,0 +1,45 @@
+# MoonLoader runtime
+moonloader.log
+*.log
+
+# Личные настройки и история репортов (не публиковать)
+config/admin_report_desk.lua
+config/admin_report_desk_user.lua
+config/admin_report_desk_user.bak.lua
+config/admin_report_desk_stats.lua
+config/*.ini
+config/mimgui/
+
+# Сборка релиза (артефакты — в GitHub Releases, не в git)
+dist/
+
+# Dev-заглушки
+admin_report_desk_stub.lua.off
+admin_report_desk.lua.bak
+
+# Тяжёлые ассеты (опционально; превью качаются отдельно или с диска)
+res/report_desk_skins/*.png
+res/report_desk_skins/*.jpg
+res/report_desk_vehicles/*.png
+res/report_desk_vehicles/*.jpg
+
+# Чужие скрипты в общей папке moonloader
+arp_helper.lua
+sp_plus.lua
+fast_connect.lua
+ExtraMessages.lua
+arp_exact_time.lua
+AdminTools/
+
+# Luac локально
+luac.exe
+luac51.exe
+
+# Временные / аналитика
+tools/_*.json
+tools/_*.ps1
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
