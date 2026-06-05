@@ -7,14 +7,15 @@ Admin Report Desk для GTA SA / MTA (MoonLoader): репорты, автоот
 ## Быстрая установка (другому админу)
 
 1. Скачать **последний** [Release](https://github.com/illusshion/report_desk_helper/releases) → `AdminReportDesk-X.Y.Z.zip`
-2. Распаковать **в папку moonloader** (рядом с `lib`, не в подпапку):
-   - `admin_report_desk.lua` — тонкий launcher
-   - `report_desk_autoupdate.lua`
-3. Опционально: скопировать `config/admin_report_desk.default.lua` → `config/admin_report_desk.lua`
-4. Зайти в игру — launcher сам скачает ядро с GitHub (папка `report_desk\`)
-5. Дальнейшие обновления — автоматически при входе в игру
+2. Распаковать **в папку moonloader** (рядом с `lib`, не в подпапку)
+3. Зайти в игру — launcher сам подтянет ядро при необходимости
 
-**Не перезаписываются:** `config/admin_report_desk_user.lua` (сценарии), личный `config/admin_report_desk.lua`.
+**В zip уже есть:**
+- launcher + autoupdate + ядро
+- `config/` — базовые настройки + **все сценарии и автоответы** (редактируются локально)
+- `res/report_desk_skins/`, `res/report_desk_vehicles/` — превью для каталогов
+
+**При автообновлении не трогается:** `config/`, `res/` — только ядро в `report_desk\`.
 
 ## Как работает автообновление
 

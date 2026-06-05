@@ -1,7 +1,10 @@
---[[ Шаблон настроек Report Desk — скопируйте в config/admin_report_desk.lua ]]
+--[[ Базовые настройки Report Desk (пустая история репортов) ]]
 return {
     settings = {
         hotkey = 118, -- F7
+        gg_reply = 'Хорошей игры на ARP Blue)',
+        tech_reply = 'Лучше обратитесь в технический раздел на форуме ARP',
+        time_reply = 'Точное время: {datetime}',
         history_limit = 80,
         sound = false,
         auto_only_unread = false,
@@ -52,7 +55,4 @@ return {
         checker_auto_admin = true,
     },
     threads = {},
-    scenarios = {},
-    checker_admins = {},
-    checker_leaders = {},
 }
