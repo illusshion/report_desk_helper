@@ -35,7 +35,7 @@ cd "C:\Program Files (x86)\Advance Games\moonloader\tools"
 
 4. На GitHub → **Releases** → тег `v3.35.2`:
    - прикрепите `dist\report_desk\admin_report_desk_core.luac`
-   - прикрепите `dist\AdminReportDesk-3.35.2.zip` (удобная установка)
+   - прикрепите `dist\report_desk_helper_main.zip` (установочный архив)
 5. Закоммитьте в репозиторий `release/version.json` (обновится скриптом сборки).
 
 Пользователь при каждом запуске качает `release/version.json` с raw.githubusercontent.com, сравнивает версию с `script_version` launcher'а и при необходимости качает новый `.luac`.
@@ -92,7 +92,7 @@ dist/
   report_desk/
     admin_report_desk_core.lua   ← для отладки / без luac
     admin_report_desk_core.luac  ← для пользователей
-  AdminReportDesk-3.35.2.zip
+  report_desk_helper_main.zip
 ```
 
 ## Разработка vs прод

@@ -64,7 +64,7 @@ $stub = $stub -replace "script_version\('[^']*'\)", "script_version('$Version')"
 
 # Zip (launcher + configs + preview assets)
 $distDir = Join-Path $MoonloaderRoot 'dist'
-$zipName = "AdminReportDesk-$Version.zip"
+$zipName = 'report_desk_helper_main.zip'
 $zipPath = Join-Path $distDir $zipName
 $stage = Join-Path $distDir '_zip_stage'
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
@@ -123,7 +123,7 @@ Write-Host "Release zip: $zipPath ($zipMb MB)"
 Write-Host ""
 Write-Host "GitHub Release $tag upload:"
 Write-Host "  - $coreAsset  (from dist\report_desk\)"
-Write-Host "  - AdminReportDesk-$Version.zip"
+Write-Host "  - report_desk_helper_main.zip"
 Write-Host "  - commit release\version.json to main"
 Write-Host ""
 Write-Host "Quick publish: .\publish_release.ps1 -Version $Version"

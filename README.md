@@ -6,7 +6,7 @@ Admin Report Desk для GTA SA / MTA (MoonLoader): репорты, автоот
 
 ## Быстрая установка (другому админу)
 
-1. Скачать **последний** [Release](https://github.com/illusshion/report_desk_helper/releases) → `AdminReportDesk-X.Y.Z.zip`
+1. Скачать **последний** [Release](https://github.com/illusshion/report_desk_helper/releases) → `report_desk_helper_main.zip`
 2. Распаковать **в папку moonloader** (рядом с `lib`, не в подпапку)
 3. Зайти в игру — launcher сам подтянет ядро при необходимости
 

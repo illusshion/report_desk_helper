@@ -26,7 +26,7 @@ $distDir = Join-Path $MoonloaderRoot 'dist'
 $coreLuac = Join-Path $distDir 'report_desk\admin_report_desk_core.luac'
 $coreLua = Join-Path $distDir 'report_desk\admin_report_desk_core.lua'
 $coreAsset = if ((Test-Path $coreLuac) -and -not $SkipLuac) { 'admin_report_desk_core.luac' } else { 'admin_report_desk_core.lua' }
-$zipName = "AdminReportDesk-$Version.zip"
+$zipName = 'report_desk_helper_main.zip'
 $zipPath = Join-Path $distDir $zipName
 $corePath = Join-Path $distDir "report_desk\$coreAsset"
 

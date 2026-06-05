@@ -9,12 +9,17 @@ $ErrorActionPreference = 'Stop'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 if ($ZipPath -eq '') {
-    $candidates = Get-ChildItem (Join-Path $MoonloaderRoot 'dist') -Filter 'AdminReportDesk-*.zip' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending
-    if ($candidates) {
-        $ZipPath = $candidates[0].FullName
+    $fixed = Join-Path $MoonloaderRoot 'dist\report_desk_helper_main.zip'
+    if (Test-Path $fixed) {
+        $ZipPath = $fixed
     } else {
-        Write-Error 'Укажите -ZipPath или соберите релиз: .\publish_release.ps1 -Version X -SkipLuac'
+        $candidates = Get-ChildItem (Join-Path $MoonloaderRoot 'dist') -Filter 'AdminReportDesk-*.zip' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+        if ($candidates) {
+            $ZipPath = $candidates[0].FullName
+        } else {
+            Write-Error 'Укажите -ZipPath или соберите релиз: .\publish_release.ps1 -Version X -SkipLuac'
+        }
     }
 }
 if (-not (Test-Path $ZipPath)) { Write-Error "Zip not found: $ZipPath" }
