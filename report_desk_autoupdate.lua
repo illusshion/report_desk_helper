@@ -4,11 +4,26 @@
 ]]
 local M = {}
 
--- Fallback, если version.json недоступен (перезаписывается при сборке release/)
 M.VERSION_JSON_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
+M.CHAT_PREFIX = '{9E7BEF}[Report Desk] {FFFFFF}'
+M.CHAT_COLOR = 0xE8E8E8
 
 local function log(msg)
     print('[Report Desk] update: ' .. tostring(msg))
+end
+
+function M.chatSay(text)
+    text = tostring(text or '')
+    if text == '' then return end
+    if not isSampAvailable or not isSampAvailable() or not sampAddChatMessage then return end
+    pcall(sampAddChatMessage, M.CHAT_PREFIX .. text, M.CHAT_COLOR)
+end
+
+local function notify(msg, opts)
+    opts = opts or {}
+    log(msg)
+    if opts.quietChat then return end
+    M.chatSay(msg)
 end
 
 function M.parseVersion(v)
@@ -136,10 +151,7 @@ function M.downloadCore(url, corePath)
     return true
 end
 
---[[
-    check(corePath): сравнить версию, при необходимости скачать core.luac и reload().
-    Возвращает true, если скрипт будет перезагружен (вызывающий код должен выйти).
-]]
+--[[ returns: needsReload, status ('uptodate'|'offline'|'fail'|'reload') ]]
 function M.check(corePath)
     corePath = corePath or (getWorkingDirectory() .. '\\report_desk\\admin_report_desk_core.luac')
     local localVer = M.readLocalVersion()
@@ -147,33 +159,33 @@ function M.check(corePath)
     if not manifest then
         log('manifest skip: ' .. tostring(err))
         if not doesFileExist(corePath) then
-            log('core missing and no manifest — cannot update')
+            notify('\xDF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE, \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
         end
-        return false
+        return false, 'offline'
     end
     local remoteVer = tostring(manifest.version or '')
     local coreUrl = tostring(manifest.core_url or '')
     if coreUrl == '' then
         log('manifest has no core_url')
-        return false
+        return false, 'fail'
     end
     corePath = M.corePathFromUrl(coreUrl, corePath)
     if M.parseVersion(remoteVer) <= M.parseVersion(localVer) and doesFileExist(corePath) then
         log('up to date (' .. localVer .. ')')
-        return false
+        return false, 'uptodate'
     end
-    log('loading ' .. remoteVer .. ' …')
+    notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. remoteVer .. '...')
     local ok, derr = M.downloadCore(coreUrl, corePath)
     if not ok then
-        log('download failed: ' .. tostring(derr))
-        return false
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8: ' .. tostring(derr))
+        return false, 'fail'
     end
-    log('installed ' .. remoteVer)
+    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer)
     if thisScript and thisScript().reload then
         thisScript():reload()
-        return true
+        return true, 'reload'
     end
-    return false
+    return false, 'fail'
 end
 
 function M.forceDownload(corePath)

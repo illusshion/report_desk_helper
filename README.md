@@ -63,8 +63,10 @@ cd "C:\Program Files (x86)\Advance Games\moonloader\tools"
 
 ## Требования
 
-- MoonLoader 0.26+
-- SAMP + SAMPFUNCS + mimgui (как в moonloader)
+- **MoonLoader 0.26+** + **SAMP** + **SAMPFUNCS** (как у любого ML-скрипта)
+- **mimgui** — уже в zip (`lib/mimgui/`); если нет, launcher скачает с GitHub при первом запуске
+
+Скрипт **не** ставит MoonLoader / SAMP / SAMPFUNCS — только ядро Report Desk и при необходимости mimgui.
 
 ## Структура
 

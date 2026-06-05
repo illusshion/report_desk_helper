@@ -293,9 +293,19 @@ if ($SkipLuac) {
 
 
 
-Copy-Item (Join-Path $MoonloaderRoot 'admin_report_desk_stub.lua') (Join-Path $distDir 'admin_report_desk.lua') -Force
+$launcherSrc = Join-Path $PSScriptRoot 'admin_report_desk_stub.lua'
+if (-not (Test-Path $launcherSrc)) {
+    Write-Error "Missing tools\admin_report_desk_stub.lua (prod launcher source)"
+}
+Copy-Item $launcherSrc (Join-Path $distDir 'admin_report_desk.lua') -Force
 
 Copy-Item (Join-Path $MoonloaderRoot 'report_desk_autoupdate.lua') $distDir -Force
+
+$depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+if (Test-Path $depsSrc) {
+    Copy-Item $depsSrc $distDir -Force
+    Write-Host "Wrote dist\report_desk_deps.lua"
+}
 
 Write-Host "Wrote dist\admin_report_desk.lua (launcher)"
 

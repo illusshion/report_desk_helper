@@ -1,5 +1,11 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.0-beta.2
+
+- Автоустановка mimgui (`report_desk_deps.lua`), mimgui в zip.
+- Одно сообщение в чат: загрузка + статус обновлений (CP1251).
+- Исправлен двойной запуск (stub только в `tools/`, не в moonloader).
+
 ## 1.0.0-beta.1
 
 - Установочный zip: общие сценарии/автоответы (`config/`) и превью скинов/ТС (`res/`).

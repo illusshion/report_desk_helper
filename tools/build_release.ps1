@@ -74,6 +74,10 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item (Join-Path $distDir 'admin_report_desk.lua') $stage
 Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') $stage
 Copy-Item (Join-Path $distDir 'report_desk') (Join-Path $stage 'report_desk') -Recurse
+$depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+if (Test-Path $depsSrc) {
+    Copy-Item $depsSrc (Join-Path $stage 'report_desk_deps.lua') -Force
+}
 
 $configDir = Join-Path $stage 'config'
 New-Item -ItemType Directory -Path $configDir | Out-Null
@@ -94,7 +98,7 @@ function Copy-PreviewAssets($srcSub, $dstSub) {
     New-Item -ItemType Directory -Path $dst -Force | Out-Null
     $n = 0
     Get-ChildItem $src -Recurse -File | Where-Object {
-        $_.Extension -in '.png', '.jpg', '.jpeg', '.lua', '.csv', '.txt'
+        $_.Extension -in '.png', '.jpg', '.jpeg', '.lua', '.csv', '.txt', '.dll'
     } | ForEach-Object {
         $rel = $_.FullName.Substring($src.Length).TrimStart('\')
         $target = Join-Path $dst $rel
@@ -108,7 +112,8 @@ function Copy-PreviewAssets($srcSub, $dstSub) {
 
 $skinN = Copy-PreviewAssets 'res\report_desk_skins' 'res\report_desk_skins'
 $vehN = Copy-PreviewAssets 'res\report_desk_vehicles' 'res\report_desk_vehicles'
-Write-Host "Zip assets: skins=$skinN veh=$vehN"
+$mimguiN = Copy-PreviewAssets 'lib\mimgui' 'lib\mimgui'
+Write-Host "Zip assets: skins=$skinN veh=$vehN mimgui=$mimguiN"
 
 $items = Get-ChildItem $stage | ForEach-Object { $_.FullName }
 Compress-Archive -Path $items -DestinationPath $zipPath -Force
