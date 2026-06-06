@@ -30,4 +30,8 @@ do
     e.findPlayerIdByNick = findPlayerIdByNick
     e.refreshPlayerNickCache = refreshPlayerNickCache
     e.nickKey = nickKey
+    if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
+    if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
+    if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+    if deskCache then _G.deskCache = deskCache end
 end

@@ -29,6 +29,9 @@ function installDeskSpectateDialogHook()
     if prev == deskCache.specDialogHandler then prev = nil end
     if deskCache.hookPrevShowDialog == nil then deskCache.hookPrevShowDialog = prev end
     deskCache.specDialogHandler = function(dialogId, style, title, button1, button2, text)
+        if deskSpectateStats.onShowDialog(dialogId, style, title, button1, button2, text) then
+            return false
+        end
         local checkerHandled = false
         local okChk, chkRes = pcall(checkerOnShowDialog, dialogId, style, title, button1, button2, text)
         if not okChk then
@@ -37,11 +40,8 @@ function installDeskSpectateDialogHook()
             checkerHandled = true
         end
         if checkerHandled then return false end
-        if deskSpectateStats.onShowDialog(dialogId, style, title, button1, button2, text) then
-            return false
-        end
-        if type(prev) == 'function' then
-            return prev(dialogId, style, title, button1, button2, text)
+        if type(deskCache.hookPrevShowDialog) == 'function' then
+            return deskCache.hookPrevShowDialog(dialogId, style, title, button1, button2, text)
         end
     end
     sampev.onShowDialog = deskCache.specDialogHandler
@@ -68,11 +68,6 @@ function deskOnPlayerQuit(playerId, reason)
     pcall(function()
         if deskSpectateStats.notifyTargetQuit then
             deskSpectateStats.notifyTargetQuit(playerId)
-        end
-        if deskSpectatingNow()
-                and deskSpectateStats.getTargetId
-                and tonumber(deskSpectateStats.getTargetId()) == playerId then
-            deskSyncSpectateState(false)
         end
     end)
     local quitNk = ''
@@ -172,6 +167,9 @@ end
 
 function tryHandleSpSpectateCommand(command)
     command = trim(command or '')
+    if tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0 then
+        return false
+    end
     local spId = command:match('^%/?sp%s+(%d+)%s*$')
     if spId then
         spId = tonumber(spId)
@@ -182,14 +180,13 @@ function tryHandleSpSpectateCommand(command)
                     nick = sampGetPlayerNickname(spId) or ''
                 end
             end)
-            deskSetPlayerSpectating(true)
-            deskSpectateStats.setSpectateTarget(spId, nick, settings)
+            deskSpectateStats.markPendingSpCommand(spId, nick)
         end
         return false
     end
     if command:match('^%/?sp%s*$') then
         deskSpectateStats.onSpCommandOff()
-        deskSpectateStats.clearSpectateTarget(false)
+        deskSpectateStats.clearSpectateTarget(true)
         deskLeaveSpectateMode()
         deskApplyInputPolicy()
     end
@@ -234,12 +231,167 @@ function installDeskSpectateToggleHook()
     if prev == deskCache.specToggleHandler then prev = nil end
     if deskCache.hookPrevSpecToggle == nil then deskCache.hookPrevSpecToggle = prev end
     deskCache.specToggleHandler = function(toggle)
-        deskSpectateStats.onTogglePlayerSpectating(toggle)
+        local r
         if type(prev) == 'function' then
-            prev(toggle)
+            r = prev(toggle)
         end
+        pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+        return r
     end
     sampev.onTogglePlayerSpectating = deskCache.specToggleHandler
+end
+
+local spSessionMod
+local function spSession()
+    if not spSessionMod then
+        spSessionMod = require 'report_desk_spectate_session'
+    end
+    return spSessionMod
+end
+
+local function spUiEnabled()
+    local s = spSession()
+    if s and s.getSettingsSnapshot then
+        local cfg = s.getSettingsSnapshot()
+        if cfg and cfg.spectate_sp_ui == false then return false end
+    end
+    return true
+end
+
+function shouldBlockServerSamMenu()
+    if not spUiEnabled() then return false end
+    if type(deskSpectatingNow) == 'function' and deskSpectatingNow() then return true end
+    local s = spSession()
+    if s and s.shouldSuppressServerSpMenu then
+        local ok, v = pcall(s.shouldSuppressServerSpMenu)
+        if ok and v then return true end
+    end
+    return false
+end
+
+local function captureServerMenuLayout(x, y, columns, title)
+    local s = spSession()
+    if s and s.captureServerMenuLayout then
+        pcall(s.captureServerMenuLayout, x, y, columns, title)
+    end
+end
+
+function installDeskSpMenuHooks()
+    if not sampev then return end
+    if deskCache.spMenuShowHandler and sampev.onShowMenu == deskCache.spMenuShowHandler then
+        return
+    end
+
+    local prevInit = sampev.onInitMenu
+    if prevInit == deskCache.spMenuInitHandler then prevInit = deskCache.hookPrevSpMenuInit end
+    deskCache.hookPrevSpMenuInit = prevInit
+
+    local prevShow = sampev.onShowMenu
+    if prevShow == deskCache.spMenuShowHandler then prevShow = deskCache.hookPrevSpMenuShow end
+    deskCache.hookPrevSpMenuShow = prevShow
+
+    local prevHide = sampev.onHideMenu
+    if prevHide == deskCache.spMenuHideHandler then prevHide = deskCache.hookPrevSpMenuHide end
+    deskCache.hookPrevSpMenuHide = prevHide
+
+    deskCache.spMenuInitHandler = function(menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
+        if shouldBlockServerSamMenu() then
+            captureServerMenuLayout(x, y, columns, menuTitle)
+            return false
+        end
+        if type(deskCache.hookPrevSpMenuInit) == 'function' then
+            return deskCache.hookPrevSpMenuInit(menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
+        end
+    end
+    sampev.onInitMenu = deskCache.spMenuInitHandler
+
+    deskCache.spMenuShowHandler = function(menuId)
+        if shouldBlockServerSamMenu() then
+            return false
+        end
+        if type(deskCache.hookPrevSpMenuShow) == 'function' then
+            return deskCache.hookPrevSpMenuShow(menuId)
+        end
+    end
+    sampev.onShowMenu = deskCache.spMenuShowHandler
+
+    deskCache.spMenuHideHandler = function(menuId)
+        if shouldBlockServerSamMenu() then
+            return false
+        end
+        if type(deskCache.hookPrevSpMenuHide) == 'function' then
+            return deskCache.hookPrevSpMenuHide(menuId)
+        end
+    end
+    sampev.onHideMenu = deskCache.spMenuHideHandler
+end
+
+function deskReinstallSpMenuHooks()
+    installDeskSpMenuHooks()
+end
+
+function deskAreSpMenuHooksActive()
+    return deskCache.spMenuShowHandler ~= nil
+        and sampev.onShowMenu == deskCache.spMenuShowHandler
+        and deskCache.spMenuInitHandler ~= nil
+        and sampev.onInitMenu == deskCache.spMenuInitHandler
+        and deskCache.spMenuHideHandler ~= nil
+        and sampev.onHideMenu == deskCache.spMenuHideHandler
+end
+
+local function resetRpcBitstream(bs)
+    if raknetBitStreamResetReadPointer then
+        raknetBitStreamResetReadPointer(bs)
+    end
+end
+
+function installDeskSpMenuRpcBlock()
+    if deskCache.spMenuRpcRegistered then return end
+    local ok, raknet = pcall(require, 'samp.raknet')
+    if not ok or not raknet or not raknet.RPC then return end
+    local okH, menuHandler = pcall(require, 'samp.events.handlers')
+    if not okH or not menuHandler then return end
+
+    local RPC_INIT_MENU = raknet.RPC.INITMENU
+    local RPC_SHOW_MENU = raknet.RPC.SHOWMENU
+    local RPC_HIDE_MENU = raknet.RPC.HIDEMENU
+
+    addEventHandler('onReceiveRpc', function(rpcId, bs)
+        if rpcId ~= RPC_INIT_MENU and rpcId ~= RPC_SHOW_MENU and rpcId ~= RPC_HIDE_MENU then
+            return
+        end
+        if not shouldBlockServerSamMenu() then return end
+        if rpcId == RPC_INIT_MENU then
+            local readOk, packed = pcall(menuHandler.on_init_menu_reader, bs)
+            resetRpcBitstream(bs)
+            if readOk and packed then
+                captureServerMenuLayout(packed[3], packed[4], packed[6], packed[2])
+            end
+        else
+            resetRpcBitstream(bs)
+        end
+        return false
+    end, 2147483647)
+    deskCache.spMenuRpcRegistered = true
+end
+
+function uninstallDeskSpMenuHooks()
+    if not sampev then return end
+    if deskCache.spMenuInitHandler and sampev.onInitMenu == deskCache.spMenuInitHandler then
+        sampev.onInitMenu = deskCache.hookPrevSpMenuInit
+    end
+    if deskCache.spMenuShowHandler and sampev.onShowMenu == deskCache.spMenuShowHandler then
+        sampev.onShowMenu = deskCache.hookPrevSpMenuShow
+    end
+    if deskCache.spMenuHideHandler and sampev.onHideMenu == deskCache.spMenuHideHandler then
+        sampev.onHideMenu = deskCache.hookPrevSpMenuHide
+    end
+    deskCache.spMenuInitHandler = nil
+    deskCache.spMenuShowHandler = nil
+    deskCache.spMenuHideHandler = nil
+    deskCache.hookPrevSpMenuInit = nil
+    deskCache.hookPrevSpMenuShow = nil
+    deskCache.hookPrevSpMenuHide = nil
 end
 
 function deskUninstall()
@@ -285,7 +437,11 @@ function deskUninstall()
     deskCache.profHooksInstalled = false
     deskCache.profLineSeen = {}
     deskCache.profToasts = {}
+    uninstallDeskSpMenuHooks()
     pcall(deskSpectateStats.uninstallSpectatePlayerHook)
+    if deskSpectateStats.uninstallSpSpectateOverlayFrame then
+        pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+    end
     if type(uninstallCheckerHudFrame) == 'function' then
         pcall(uninstallCheckerHudFrame)
     end

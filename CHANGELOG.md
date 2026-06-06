@@ -1,5 +1,9 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.3
+
+- Fix: у zip-пользователей не скрывалось серверное GTA-меню /sp — хуки блокировки перенесены в bundle (sampev + RPC).
+
 ## 1.0.2
 
 - Fix: бесконечный reload autoupdate (manifest новее launcher beta.*) — `_core_version.txt`, загрузка ядра `.lua` вместо старого `.luac`.

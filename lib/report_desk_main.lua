@@ -24,15 +24,25 @@ function main()
         settings.spectate_hud_layout_v2 = true
         markDirtySettings()
     end
+    if not settings.spectate_sp_ui_layout_v2 then
+        if settings.spectate_sp_ui_custom ~= true then
+            settings.spectate_sp_ui_x = -28
+            settings.spectate_sp_ui_y = 0
+        end
+        settings.spectate_sp_ui_layout_v2 = true
+        markDirtySettings()
+    end
     pcall(initDeskIngest)
     updateMimguiGameInputPassthrough()
     deskSpectateStats.install({
         trim = trim,
         stripTags = stripTags,
         sendChat = sendChat,
+        sendMenuOutbound = sendMenuOutbound,
         uiText = uiText,
         toU32 = toU32,
         col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
         col_muted = col_muted,
         col_muted2 = col_muted2,
         col_label = col_label,
@@ -62,6 +72,10 @@ function main()
         setPlayerSpectating = deskSetPlayerSpectating,
         sampIsChatInputActive = sampIsChatInputActive,
         sampIsDialogActive = sampIsDialogActive,
+        sendSlapPlayer = sendSlapPlayer,
+        sendTrPlayer = sendTrPlayer,
+        utf8ToCp1251 = utf8ToCp1251,
+        readInputBuf = readInputBuf,
         onSpectatingOn = function()
             deskInputState.spectateUiModeActive = false
             deskRememberSpectateCursorMode()
@@ -76,8 +90,24 @@ function main()
             deskApplyInputPolicy()
             if showWindow[0] then updateDeskInputCapture() end
         end,
+        enableSpectateCursor = deskEnableUiCursorForSamp,
+        rememberSpectateCursor = deskRememberSpectateCursorMode,
+        setSpectateUiMode = function(on)
+            deskInputState.spectateUiModeActive = on and true or false
+        end,
+        updateInputPassthrough = updateMimguiGameInputPassthrough,
+        onAnsBarClosed = function()
+            if deskSpectatingNow() and not showWindow[0] then
+                deskRestoreSpectateCamera()
+            end
+        end,
+        markAnsTypingActive = function()
+            deskInputState.ansBarTyping = true
+            deskInputState.keyboardStickyUntil = os.clock() + 1.5
+        end,
     })
-    pcall(deskSpectateStats.ensureSpectatePlayerHook)
+    pcall(deskReinstallSpMenuHooks)
+    pcall(installDeskSpMenuRpcBlock)
     uiSound[0] = settings.sound
     uiAutoOnlyUnread[0] = settings.auto_only_unread
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
@@ -188,6 +218,7 @@ function main()
         pollInterval = showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
         if os.clock() - lastPoll >= pollInterval then
             pcall(pollReportIngest)
+            pcall(deskSpectateStats.flushOutbound)
             lastPoll = os.clock()
         end
 
@@ -226,7 +257,8 @@ function main()
                 pcall(installDeskPlayerStreamInHook)
             end
             pcall(deskSpectateStats.ensureInputHooks)
-            pcall(deskSpectateStats.ensureSpectatePlayerHook)
+            pcall(deskReinstallSpMenuHooks)
+            pcall(installDeskSpMenuRpcBlock)
             lastHookCheck = os.clock()
         end
 
@@ -238,7 +270,8 @@ function main()
         pcall(cheatsProcessKeybinds)
         pcall(cheatsMaintain)
         pcall(checkerTick)
-        pcall(deskSpectateStats.pollSpectateArrowKeys)
+        pcall(deskSpectateStats.tickPendingSp)
+        pcall(deskSpectateStats.pollSpAns)
         pcall(cheatsTickMarker)
 
         local nowSave = os.clock()
