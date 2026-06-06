@@ -80,6 +80,38 @@ end
 
 
 
+function Wrap-AppChunk($name, $content) {
+
+    $open, $close = Get-LuaLongBracket $content
+
+    $chunkTag = '@' + $name
+
+    return @"
+
+do
+
+    local chunkFn, chunkErr = loadstring($open
+
+$content
+
+$close, '$chunkTag')
+
+    if not chunkFn then error('[Report Desk] bundle chunk ${name}: ' .. tostring(chunkErr)) end
+
+    setfenv(chunkFn, __desk_bundle_env)
+
+    chunkFn()
+
+end
+
+
+
+"@
+
+}
+
+
+
 $libDir = Join-Path $MoonloaderRoot 'lib'
 
 
@@ -97,6 +129,11 @@ $libModules = @(
     @{ Name = 'report_desk_ingest'; File = 'report_desk_ingest.lua' },
 
     @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
+    @{ Name = 'report_desk_spectate_session'; File = 'report_desk_spectate_session.lua' },
+    @{ Name = 'report_desk_sp_ui'; File = 'report_desk_sp_ui.lua' },
+    @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },
+    @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
+    @{ Name = 'report_desk_sp_theme'; File = 'report_desk_sp_theme.lua' },
 
     @{ Name = 'report_desk_vehicles'; File = 'report_desk_vehicles.lua' },
 
@@ -166,6 +203,38 @@ $header = @'
 
 _G.__REPORT_DESK_BUNDLE_ACTIVE = true
 
+local __desk_bundle_env = setmetatable({}, { __index = _G })
+
+
+
+'@
+
+
+
+$footer = @'
+
+function main()
+
+    if type(__desk_bundle_env.main) == 'function' then
+
+        return __desk_bundle_env.main()
+
+    end
+
+end
+
+
+
+function onScriptTerminate(scr)
+
+    if scr == thisScript() and type(__desk_bundle_env.onScriptTerminate) == 'function' then
+
+        return __desk_bundle_env.onScriptTerminate(scr)
+
+    end
+
+end
+
 
 
 '@
@@ -198,28 +267,15 @@ foreach ($chunk in $appChunks) {
 
     $text = Read-ModuleText $path
 
-    [void]$sb.Append($text)
-
-    [void]$sb.Append("`n")
+    [void]$sb.Append((Wrap-AppChunk $chunk $text))
 
 }
 
 $checkerPath = Join-Path $libDir 'report_desk_checker.lua'
 $checkerText = Read-ModuleText $checkerPath
-$open, $close = Get-LuaLongBracket $checkerText
-[void]$sb.Append(@"
+[void]$sb.Append((Wrap-AppChunk 'report_desk_checker.lua' $checkerText))
 
-do
-    local checkerFn, checkerErr = loadstring($open
-$checkerText
-$close, '@report_desk_checker')
-    if not checkerFn then error('[Report Desk] checker load: ' .. tostring(checkerErr)) end
-    local checkerEnv = getfenv(1)
-    if checkerEnv then setfenv(checkerFn, checkerEnv) end
-    checkerFn()
-end
-
-"@)
+[void]$sb.Append($footer)
 
 
 
