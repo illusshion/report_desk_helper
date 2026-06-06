@@ -1,5 +1,9 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.5
+
+- Fix: core error после 1.0.4 — app-модули снова в одном chunk (общий scope), checker отдельно (лимит 200 locals).
+
 ## 1.0.4
 
 - Fix: «локальных переменных больше 200» при загрузке zip-ядра — каждый модуль bundle в отдельном chunk с общим env.

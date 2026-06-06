@@ -112,6 +112,40 @@ end
 
 
 
+function Wrap-AppChunkGroup($label, $parts) {
+
+    $combined = ($parts -join "`n") + "`n"
+
+    $open, $close = Get-LuaLongBracket $combined
+
+    $chunkTag = '@' + $label
+
+    return @"
+
+do
+
+    local chunkFn, chunkErr = loadstring($open
+
+$combined
+
+$close, '$chunkTag')
+
+    if not chunkFn then error('[Report Desk] bundle group ${label}: ' .. tostring(chunkErr)) end
+
+    setfenv(chunkFn, __desk_bundle_env)
+
+    chunkFn()
+
+end
+
+
+
+"@
+
+}
+
+
+
 $libDir = Join-Path $MoonloaderRoot 'lib'
 
 
@@ -261,15 +295,12 @@ foreach ($m in $libModules) {
 
 [void]$sb.Append("`n")
 
+$appParts = New-Object System.Collections.Generic.List[string]
 foreach ($chunk in $appChunks) {
-
     $path = Join-Path $libDir $chunk
-
-    $text = Read-ModuleText $path
-
-    [void]$sb.Append((Wrap-AppChunk $chunk $text))
-
+    [void]$appParts.Add((Read-ModuleText $path))
 }
+[void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_core' $appParts.ToArray()))
 
 $checkerPath = Join-Path $libDir 'report_desk_checker.lua'
 $checkerText = Read-ModuleText $checkerPath
