@@ -28,11 +28,22 @@ end
 
 function M.parseVersion(v)
     v = tostring(v or ''):gsub('^v', '')
-    local major, minor, patch = v:match('^(%d+)%.(%d+)%.(%d+)')
+    local major, minor, patch, pre = v:match('^(%d+)%.(%d+)%.(%d+)(%-(.+))?$')
     if not major then
         return 0
     end
-    return tonumber(major) * 1000000 + tonumber(minor) * 1000 + tonumber(patch)
+    local base = tonumber(major) * 1000000 + tonumber(minor) * 1000 + tonumber(patch)
+    if not pre or pre == '' then
+        return base
+    end
+    pre = pre:gsub('^%-', '')
+    local beta = pre:match('^beta%.(%d+)$')
+    if beta then
+        -- 1.0.0-beta.N < 1.0.0; beta.1 < beta.2 < …
+        return base - 10000 + tonumber(beta)
+    end
+    -- Прочие pre-release ниже финального релиза той же версии.
+    return base - 5000
 end
 
 function M.readLocalVersion()
