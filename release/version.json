@@ -1,5 +1,5 @@
 {
-    "changelog":  "Hotfix: stop autoupdate reload loop for beta.2 launchers",
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.1/admin_report_desk_core.lua",
-    "version":  "1.0.0-beta.2"
+    "changelog":  "Fix autoupdate reload loop; prefer downloaded core .lua",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.2/admin_report_desk_core.lua",
+    "version":  "1.0.2"
 }

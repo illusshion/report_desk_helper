@@ -1,5 +1,9 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.2
+
+- Fix: бесконечный reload autoupdate (manifest новее launcher beta.*) — `_core_version.txt`, загрузка ядра `.lua` вместо старого `.luac`.
+
 ## 1.0.1
 
 - Fix: autoupdate для `1.0.0-beta.*` — корректное сравнение версий; manifest `1.0.1` подтягивает ядро у клиентов beta.1/beta.2.

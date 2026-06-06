@@ -6,7 +6,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.0-beta.2')
+script_version('1.0.0-beta.3')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 -- mimgui ставится через report_desk_deps (не в script_dependencies — иначе ML не запустит main)
 script_dependencies('SAMP', 'SAMPFUNCS')
@@ -38,9 +38,15 @@ local CORE_PATH = CORE_DIR .. '\\admin_report_desk_core.luac'
 local CORE_PATH_LUA = CORE_DIR .. '\\admin_report_desk_core.lua'
 
 local function loadCore()
-    local path = doesFileExist(CORE_PATH) and CORE_PATH or CORE_PATH_LUA
-    if not doesFileExist(path) then
-        return nil, 'core not found: ' .. path
+    -- autoupdate кладёт .lua; старый .luac из zip не должен перекрывать свежее ядро
+    local path = nil
+    if doesFileExist(CORE_PATH_LUA) then
+        path = CORE_PATH_LUA
+    elseif doesFileExist(CORE_PATH) then
+        path = CORE_PATH
+    end
+    if not path then
+        return nil, 'core not found: ' .. CORE_PATH
     end
     local fn, err = loadfile(path)
     if not fn then

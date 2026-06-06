@@ -112,6 +112,36 @@ function M.coreDir()
     return getWorkingDirectory() .. '\\report_desk'
 end
 
+function M.installedCoreVersionPath()
+    return M.coreDir() .. '\\_core_version.txt'
+end
+
+function M.readInstalledCoreVersion()
+    local f = io.open(M.installedCoreVersionPath(), 'r')
+    if not f then return '' end
+    local v = (f:read('*l') or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    f:close()
+    return v
+end
+
+function M.writeInstalledCoreVersion(version)
+    version = tostring(version or '')
+    if version == '' then return end
+    M.ensureCoreDir(M.installedCoreVersionPath())
+    local f = io.open(M.installedCoreVersionPath(), 'w')
+    if not f then return end
+    f:write(version)
+    f:close()
+end
+
+function M.coreIsCurrent(remoteVer, corePath)
+    remoteVer = tostring(remoteVer or '')
+    corePath = tostring(corePath or '')
+    if remoteVer == '' or corePath == '' then return false end
+    if M.readInstalledCoreVersion() ~= remoteVer then return false end
+    return doesFileExist(corePath)
+end
+
 function M.corePathFromUrl(url, fallback)
     url = tostring(url or '')
     local name = url:match('/([^/%?]+)$')
@@ -181,10 +211,15 @@ function M.check(corePath)
         return false, 'fail'
     end
     corePath = M.corePathFromUrl(coreUrl, corePath)
+    if M.coreIsCurrent(remoteVer, corePath) then
+        log('core up to date (' .. remoteVer .. ')')
+        return false, 'uptodate'
+    end
     local localNum = M.parseVersion(localVer)
     local remoteNum = M.parseVersion(remoteVer)
     if remoteNum < localNum or (remoteNum == localNum and remoteVer == localVer) then
         if doesFileExist(corePath) then
+            M.writeInstalledCoreVersion(remoteVer)
             log('up to date (' .. localVer .. ')')
             return false, 'uptodate'
         end
@@ -195,6 +230,7 @@ function M.check(corePath)
         notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8: ' .. tostring(derr))
         return false, 'fail'
     end
+    M.writeInstalledCoreVersion(remoteVer)
     notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer)
     if thisScript and thisScript().reload then
         thisScript():reload()
