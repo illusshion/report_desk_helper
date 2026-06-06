@@ -181,9 +181,13 @@ function M.check(corePath)
         return false, 'fail'
     end
     corePath = M.corePathFromUrl(coreUrl, corePath)
-    if M.parseVersion(remoteVer) <= M.parseVersion(localVer) and doesFileExist(corePath) then
-        log('up to date (' .. localVer .. ')')
-        return false, 'uptodate'
+    local localNum = M.parseVersion(localVer)
+    local remoteNum = M.parseVersion(remoteVer)
+    if remoteNum < localNum or (remoteNum == localNum and remoteVer == localVer) then
+        if doesFileExist(corePath) then
+            log('up to date (' .. localVer .. ')')
+            return false, 'uptodate'
+        end
     end
     notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. remoteVer .. '...')
     local ok, derr = M.downloadCore(coreUrl, corePath)
