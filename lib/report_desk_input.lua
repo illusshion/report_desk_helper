@@ -204,6 +204,7 @@ function deskImguiNeedsInput()
         if spWants(deskSpectateStats.wantsHudInput) then return true end
         if spWants(deskSpectateStats.wantsSpMenuInput) then return true end
         if spWants(deskSpectateStats.wantsVehicleHudInput) then return true end
+        if spWants(deskSpectateStats.wantsKeysHudInput) then return true end
         if spWants(deskSpectateStats.isAnsBarOpen) then
             if spWants(deskSpectateStats.isAnsLayoutSwitch) then return false end
             return true

@@ -1172,14 +1172,55 @@ local function finalizeNickIdBody(nick, id, body)
     return nick, id, body
 end
 
+-- Нормализация текста статуса (UTF-8 bubble / CP1251 чат → CP1251).
+local function normalizeStatusText(text)
+    text = trim(stripTags(text or ''))
+    if text == '' then return '' end
+    if isUtf8Text and isUtf8Text(text) then
+        text = utf8ToCp1251(text) or text
+    end
+    return text
+end
+
 -- Публичный API модуля.
 function M.looksLikePlayerStatusBody(body)
-    body = trim(body or '')
+    body = normalizeStatusText(body)
     if body == '' then return true end
+    if body:find('\xCD\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
+    local low = body:lower()
+    if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
     if body:match('^%([^)]*lvl') then return true end
     if body:match('^%d+%s*lvl') then return true end
     if body:match('^Voice') then return true end
     if body:match('^%<%s*%(') then return true end
+    if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
+    if body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('pause', 1, true) then return true end
+    if body:find('paused', 1, true) then return true end
+    if body:find('AFK', 1, true) then return true end
+    if body:find('\xF1\xED\xFF', 1, true) and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('\xF1\xED\xFF', 1, true) and body:find('AFK', 1, true) then return true end
+    if body:find('\xE8\xE3\xF0\xEE\xEA', 1, true) and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('\xE2 \xEE\xED\xEB\xE0\xE9\xED', 1, true) then return true end
+    if body:find('\xE2\xFB\xF8\xE5\xEB', 1, true) and #body < 48 then return true end
+    if body:find('\xE7\xE0\xF8\xE5\xEB', 1, true) and #body < 48 then return true end
+    if body:match('^%d+%s*[%xsec%:%.]') and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    return false
+end
+
+-- Строка чата целиком — статус / AFK / пауза (до парсинга nick[id]).
+function M.looksLikePlayerStatusLine(plain)
+    plain = normalizeStatusText(plain)
+    if plain == '' then return true end
+    if M.looksLikePlayerStatusBody(plain) then return true end
+    local body = plain:match('^[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%[%w+%]%s*[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%-%s*(.+)%s+%([%w][%w_]*%)%[%d+%]%s*$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%*%s*(.+)%s+%([%w][%w_]*%)%[%d+%]%s*$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
     return false
 end
 
@@ -1815,7 +1856,7 @@ package.preload['report_desk_sp_vehicle_hud'] = function()
 
     local fn, err = loadstring([=[
 
---[[ Модуль: кастомный спидометр из server TextDraw. ]]
+--[[ Модуль: кастомный спидометр из server TextDraw (/sp и свой транспорт). ]]
 local M = {}
 
 local imgui = require 'mimgui'
@@ -1879,6 +1920,7 @@ local inputDeps
 
 local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
 local hovered = false
+local hudRect = nil
 local anim = { speedVis = 0, fuelPct = 0, hpPct = 0 }
 
 local touchActive
@@ -1975,6 +2017,22 @@ local function vehicleHudYMin()
     return tonumber(settings and settings.spectate_vehicle_td_y_min) or VEHICLE_HUD_Y_MIN_DEFAULT
 end
 
+-- Строгая зона ingest: колонка server TD спидометра (не вся нижняя полоса экрана).
+local function isStrictVehicleHudArea(x, y)
+    x = normalizeTdCoord(x, 'x')
+    y = normalizeTdCoord(y, 'y')
+    if not y then return false end
+    local settings = getSettingsFn and getSettingsFn() or nil
+    local xMin = tonumber(settings and settings.spectate_vehicle_td_x_min) or VEHICLE_HUD_X_MIN_DEFAULT
+    local xMax = tonumber(settings and settings.spectate_vehicle_td_x_max) or VEHICLE_HUD_X_MAX_DEFAULT
+    local yMin = vehicleHudYMin()
+    if y < (yMin - 16) then return false end
+    if x and x >= xMin and x <= xMax then return true end
+    if x and x > 0 and x <= 1.0 and x >= 0.62 and x <= 0.75 then return true end
+    if x and y and x >= 300 and x <= (xMax + 40) and y >= yMin then return true end
+    return false
+end
+
 -- Публичный API модуля.
 function M.isVehicleHudArea(x, y)
     x = normalizeTdCoord(x, 'x')
@@ -1983,10 +2041,8 @@ function M.isVehicleHudArea(x, y)
     local xMin = tonumber(settings and settings.spectate_vehicle_td_x_min) or VEHICLE_HUD_X_MIN_DEFAULT
     local xMax = tonumber(settings and settings.spectate_vehicle_td_x_max) or VEHICLE_HUD_X_MAX_DEFAULT
     local yMin = vehicleHudYMin()
-    if x and x >= xMin and x <= xMax then return true end
-    if x and x > 0 and x <= 1.0 and x >= 0.62 and x <= 0.75 then return true end
-    if x and y and x >= 300 and y >= yMin then return true end
-    -- Advance CEF: отдельные цифры спидометра/HP часто в нижней полосе слева (не только 400–480px).
+    if isStrictVehicleHudArea(x, y) then return true end
+    -- Широкая зона только для скрытия server TD, не для ingest чисел.
     if y and y >= (yMin - 24) then
         if not x or x <= 560 then return true end
     end
@@ -2111,8 +2167,8 @@ function M.matchesServerHudText(text)
     if plain:match('^[esmlb ]+$') then return true end
     if plain:match('^(%d+)$') then
         local n = tonumber(plain:match('^(%d+)$'))
+        -- Только HP-диапазон; голые 0–350 (ping, fps) не считаем спидометром.
         if n and n >= 100 and n <= HEALTH_MAX then return true end
-        if n and n <= 350 then return true end
     end
     if text:match('~[a-z]~%d') and not text:find('__', 1, true) then return true end
     return false
@@ -2228,6 +2284,15 @@ touchActive = function()
     hud.inVehicle = true
 end
 
+-- Локальный ped в транспорте (только свой игрок; для /sp — server TD).
+function M.isLocalInVehicle()
+    if not PLAYER_PED or type(doesCharExist) ~= 'function' or type(isCharInAnyCar) ~= 'function' then
+        return false
+    end
+    if not doesCharExist(PLAYER_PED) then return false end
+    return isCharInAnyCar(PLAYER_PED) == true
+end
+
 -- Store Field
 local function storeField(role, value, textValue)
     if role == 'speed' and value ~= nil then
@@ -2267,24 +2332,43 @@ end
 function M.isEnabled(settings)
     settings = settings or (getSettingsFn and getSettingsFn())
     if not settings then return true end
-    if settings.spectate_vehicle_hud == false then return false end
-    if settings.spectate_sp_ui == false then return false end
-    return true
+    return settings.spectate_vehicle_hud ~= false
+end
+
+-- Публичный API модуля.
+function M.isEnabledForSpectate(settings)
+    settings = settings or (getSettingsFn and getSettingsFn())
+    if not M.isEnabled(settings) then return false end
+    return not settings or settings.spectate_sp_ui ~= false
 end
 
 -- Публичный API модуля.
 function M.isActive()
-    if not hud.active then return false end
+    if not hud.active or not hud.inVehicle then return false end
     if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then
         M.reset()
         return false
     end
-    if hud.inVehicle then return true end
     if hud.speed ~= nil or hud.fuel ~= nil or hud.health ~= nil then return true end
     if hud.door or hud.driveMode then return true end
     for _, key in ipairs(INDICATOR_ORDER) do
         if hud.indicators[key] ~= nil then return true end
     end
+    return false
+end
+
+-- Публичный API модуля.
+function M.isDragActive()
+    return drag.active == true
+end
+
+-- Публичный API модуля.
+function M.wantsInput()
+    if drag.active then return true end
+    if hovered then return true end
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin then return pin(hudRect) end
     return false
 end
 
@@ -2377,13 +2461,33 @@ local function inferServerTdRole(text, x, y)
     return slotRole
 end
 
+-- Числовые поля спидометра — strict-слот, pin, или широкая зона при активной телеметрии.
+local function vehicleTelemetryActive()
+    if M.isLocalInVehicle() then return true end
+    if getSpectateTargetId then
+        local ok, tid = pcall(getSpectateTargetId)
+        if ok and tid and tid >= 0 then return true end
+    end
+    return false
+end
+
+local function mayIngestNumericRole(role, inStrict, inArea, key, tdId)
+    if role ~= 'speed' and role ~= 'fuel' and role ~= 'health' then return true end
+    if inStrict then return true end
+    if tdId and tdRolePin[tdId] then return true end
+    if key and posSlots[key] then return true end
+    if inArea and vehicleTelemetryActive() then return true end
+    return false
+end
+
 -- Apply Server Td Field — speed/fuel/door/mode/indicators с server TD (ADV km/h).
 local function applyServerTdField(text, data, tdId)
     data = data or {}
     tdId = tonumber(tdId)
     local x, y = tdPosX(data), tdPosY(data)
     local inArea = x and y and isVehicleHudArea(x, y)
-    local key = inArea and slotBucketKey(x, y) or nil
+    local inStrict = x and y and isStrictVehicleHudArea(x, y)
+    local key = inStrict and slotBucketKey(x, y) or nil
     local raw = tostring(text or '')
     local plain = normalizePlain(raw):gsub('_', ' ')
     if parseCombinedHudPlain(raw, plain) then
@@ -2409,9 +2513,10 @@ local function applyServerTdField(text, data, tdId)
     end
     if not role then return end
     if role == 'speed_unit' or role == 'fuel_label' then
-        touchActive()
+        if inStrict or inArea then touchActive() end
         return
     end
+    if not mayIngestNumericRole(role, inStrict, inArea, key, tdId) then return end
     if not inArea and role ~= 'speed' and role ~= 'fuel' and role ~= 'health'
             and role ~= 'door' and role ~= 'mode' and role ~= 'indicators' then
         return
@@ -2452,8 +2557,13 @@ local function applyServerTdField(text, data, tdId)
 end
 
 -- Публичный API модуля.
--- Без GTA-native на ped spectated-игрока (краш при переключении /sp стрелками).
-function M.tickGame(_targetId)
+-- /sp: состояние «в машине» только из server TD. Свой ped: сброс при выходе из ТС.
+function M.tickGame(spectating)
+    if spectating then return end
+    if M.isLocalInVehicle() then return end
+    if hud.active or hud.inVehicle then
+        M.reset()
+    end
 end
 
 -- Публичный API модуля.
@@ -2532,6 +2642,7 @@ function M.reset()
     tdRolePin = {}
     drag.active = false
     hovered = false
+    hudRect = nil
     anim.speedVis = 0
     anim.fuelPct = 0
     anim.hpPct = 0
@@ -2973,12 +3084,6 @@ local function drawVehicleHudInner(settings)
     if imgui.WindowFlags.NoBackground then
         flags = flags + imgui.WindowFlags.NoBackground
     end
-    local deskWinOpen = inputDeps and inputDeps.getShowWindow and inputDeps.getShowWindow()
-    if not deskWinOpen and not drag.active then
-        if imgui.WindowFlags.NoInputs then
-            flags = flags + imgui.WindowFlags.NoInputs
-        end
-    end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
@@ -3013,14 +3118,16 @@ local function drawVehicleHudInner(settings)
         local wpX, wpY = vec2xy(imgui.GetWindowPos())
         local ww = imgui.GetWindowWidth() or panelSz
         local wh = imgui.GetWindowHeight() or panelSz
+        hudRect = { x0 = wpX, y0 = wpY, x1 = wpX + ww, y1 = wpY + wh }
 
-        pcall(function()
-            local io = imgui.GetIO()
-            if io and io.MousePos then
-                local mx, my = vec2xy(io.MousePos)
+        do
+            local posFn = type(_G.deskWin32MousePos) == 'function' and _G.deskWin32MousePos
+                or type(deskWin32MousePos) == 'function' and deskWin32MousePos
+            local mx, my = posFn and posFn()
+            if mx and my then
                 hovered = mx >= wpX and mx < wpX + ww and my >= wpY and my < wpY + wh
             end
-        end)
+        end
 
         drawCefStyleHud(ww, wh, hud.speed)
 
@@ -3085,6 +3192,731 @@ return M
 ]=], '@report_desk_sp_vehicle_hud')
 
     if not fn then error(err or 'bundle load failed: report_desk_sp_vehicle_hud') end
+
+    return fn()
+
+end
+
+
+
+package.preload['report_desk_sp_keys_hud'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Модуль: HUD нажатых клавиш цели /sp (логика sp_plus, стиль Report Desk). ]]
+local M = {}
+
+local imgui = require 'mimgui'
+local spTheme = require 'report_desk_sp_theme'
+local specSession = require 'report_desk_spectate_session'
+
+local HUD_MARGIN = 10
+local CAP_ROUND = 6
+local COLOR_LERP_SEC = 0.10
+
+local keys = { onfoot = {}, vehicle = {} }
+local capAnim = {}
+local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
+local hovered = false
+local hudRect = nil
+
+local sampevRef
+local hookPrevPlayerSync
+local hookPrevVehicleSync
+
+local uiText, toU32, col_accent, col_accent_dim, col_muted, col_muted2
+local markDirtySettings, flushDirtyConfigNow, getSettingsFn, getSpectateTargetId, isSpectatingFn
+
+-- Get Target Id
+local function getTargetId()
+    if getSpectateTargetId then
+        local ok, id = pcall(getSpectateTargetId)
+        if ok then return tonumber(id) or -1 end
+    end
+    return -1
+end
+
+-- Is Spectating
+local function isSpectating()
+    if isSpectatingFn then
+        local ok, v = pcall(isSpectatingFn)
+        if ok then return v == true end
+    end
+    if specSession and specSession.isSpectatingMode then
+        return specSession.isSpectatingMode()
+    end
+    return false
+end
+
+-- Get Settings
+local function getSettings()
+    return getSettingsFn and getSettingsFn() or nil
+end
+
+-- Color U32
+local function colorU32(col)
+    if toU32 then return toU32(col) end
+    if imgui.ColorConvertFloat4ToU32 then
+        return imgui.ColorConvertFloat4ToU32(col)
+    end
+    return 0xFFFFFFFF
+end
+
+-- Bring Vec4
+local function bringVec4(from, dest, startTime, duration)
+    local timer = os.clock() - startTime
+    if timer >= 0 and timer <= duration then
+        local count = timer / (duration / 100)
+        return imgui.ImVec4(
+            from.x + (count * (dest.x - from.x) / 100),
+            from.y + (count * (dest.y - from.y) / 100),
+            from.z + (count * (dest.z - from.z) / 100),
+            from.w + (count * (dest.w - from.w) / 100)
+        ), true
+    end
+    return (timer > duration) and dest or from, false
+end
+
+-- Target Char
+local function targetChar()
+    local id = getTargetId()
+    if id < 0 or not sampGetCharHandleBySampPlayerId then return nil end
+    local ok, ped = sampGetCharHandleBySampPlayerId(id)
+    if ok and ped and doesCharExist and doesCharExist(ped) then
+        return ped
+    end
+    return nil
+end
+
+-- Player State Key
+local function playerStateKey()
+    local ped = targetChar()
+    if not ped then return nil end
+    if isCharOnFoot and isCharOnFoot(ped) then return 'onfoot' end
+    if isCharInAnyCar and isCharInAnyCar(ped) then return 'vehicle' end
+    return 'onfoot'
+end
+
+-- Update Onfoot Keys
+local function updateOnfootKeys(playerId, data)
+    if not data then return end
+    if playerId ~= getTargetId() then return end
+    local k = keys.onfoot
+    k.W = (data.upDownKeys == 65408) or nil
+    k.A = (data.leftRightKeys == 65408) or nil
+    k.S = (data.upDownKeys == 128) or nil
+    k.D = (data.leftRightKeys == 128) or nil
+    k.Alt = (bit.band(data.keysData or 0, 1024) == 1024) or nil
+    k.Shift = (bit.band(data.keysData or 0, 8) == 8) or nil
+    k.Space = (bit.band(data.keysData or 0, 32) == 32) or nil
+    k.F = (bit.band(data.keysData or 0, 16) == 16) or nil
+    k.C = (bit.band(data.keysData or 0, 2) == 2) or nil
+    k.RKM = (bit.band(data.keysData or 0, 4) == 4) or nil
+    k.LKM = (bit.band(data.keysData or 0, 128) == 128) or nil
+end
+
+-- Update Vehicle Keys
+local function updateVehicleKeys(playerId, data)
+    if not data then return end
+    if playerId ~= getTargetId() then return end
+    local kd = data.keysData or 0
+    local k = keys.vehicle
+    k.W = (bit.band(kd, 8) == 8) or nil
+    k.A = (data.leftRightKeys == 65408) or nil
+    k.S = (bit.band(kd, 32) == 32) or nil
+    k.D = (data.leftRightKeys == 128) or nil
+    k.H = (bit.band(kd, 2) == 2) or nil
+    k.Space = (bit.band(kd, 128) == 128) or nil
+    k.Ctrl = (bit.band(kd, 1) == 1) or nil
+    k.Alt = (bit.band(kd, 4) == 4) or nil
+    k.Q = (bit.band(kd, 256) == 256) or nil
+    k.E = (bit.band(kd, 64) == 64) or nil
+    k.F = (bit.band(kd, 16) == 16) or nil
+    k.Up = (data.upDownKeys == 65408) or nil
+    k.Down = (data.upDownKeys == 128) or nil
+end
+
+-- Idle Cap Color
+local function capIdleCol()
+    return imgui.ImVec4(0.13, 0.11, 0.19, 0.72)
+end
+
+-- Pressed Cap Color
+local function capPressedCol()
+    if col_accent then
+        return imgui.ImVec4(col_accent.x, col_accent.y, col_accent.z, 0.88)
+    end
+    return imgui.ImVec4(0.55, 0.38, 0.82, 0.92)
+end
+
+-- Border Cap Color
+local function capBorderCol(pressed)
+    if pressed then
+        if col_accent then
+            return imgui.ImVec4(col_accent.x, col_accent.y, col_accent.z, 0.95)
+        end
+        return imgui.ImVec4(0.72, 0.55, 1.0, 0.95)
+    end
+    if col_accent_dim then
+        return imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.42)
+    end
+    return imgui.ImVec4(0.45, 0.32, 0.68, 0.38)
+end
+
+-- Draw Key Cap
+local function drawKeyCap(label, pressed, size)
+    label = tostring(label or '')
+    size = size or imgui.ImVec2(30, 30)
+    local dl = imgui.GetWindowDrawList()
+    local p = imgui.GetCursorScreenPos()
+    local idle = capIdleCol()
+    local active = capPressedCol()
+
+    local anim = capAnim[label]
+    if not anim then
+        anim = { status = pressed, color = pressed and active or idle, timer = nil }
+        capAnim[label] = anim
+    end
+    if pressed ~= anim.status then
+        anim.status = pressed
+        anim.timer = os.clock()
+    end
+    if anim.timer then
+        local from = pressed and idle or active
+        local dest = pressed and active or idle
+        anim.color = select(1, bringVec4(from, dest, anim.timer, COLOR_LERP_SEC))
+    else
+        anim.color = pressed and active or idle
+    end
+
+    local a = imgui.ImVec2(p.x, p.y)
+    local b = imgui.ImVec2(p.x + size.x, p.y + size.y)
+    imgui.Dummy(size)
+    dl:AddRectFilled(a, b, colorU32(anim.color), CAP_ROUND)
+    if pressed then
+        dl:AddRect(a, b, colorU32(capBorderCol(true)), CAP_ROUND, 0, 1.6)
+    else
+        dl:AddRect(a, b, colorU32(capBorderCol(false)), CAP_ROUND, 0, 1.0)
+    end
+    local ts = imgui.CalcTextSize(label)
+    local tx = p.x + (size.x - ts.x) * 0.5
+    local ty = p.y + (size.y - ts.y) * 0.5
+    local textCol = pressed and imgui.ImVec4(0.98, 0.97, 1.0, 1.0)
+        or (col_muted2 or imgui.ImVec4(0.62, 0.60, 0.72, 0.92))
+    dl:AddText(imgui.ImVec2(tx, ty), colorU32(textCol), label)
+end
+
+-- Draw Onfoot Layout
+local function drawOnfootLayout(stateKeys)
+    imgui.BeginGroup()
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + 35)
+    drawKeyCap('W', stateKeys.W ~= nil, imgui.ImVec2(30, 30))
+    drawKeyCap('A', stateKeys.A ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('S', stateKeys.S ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('D', stateKeys.D ~= nil, imgui.ImVec2(30, 30))
+    imgui.EndGroup()
+    imgui.SameLine(0, 14)
+    imgui.BeginGroup()
+    drawKeyCap('Shift', stateKeys.Shift ~= nil, imgui.ImVec2(72, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('Alt', stateKeys.Alt ~= nil, imgui.ImVec2(52, 30))
+    drawKeyCap('Space', stateKeys.Space ~= nil, imgui.ImVec2(128, 30))
+    imgui.EndGroup()
+    imgui.SameLine(0, 10)
+    imgui.BeginGroup()
+    drawKeyCap('C', stateKeys.C ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('F', stateKeys.F ~= nil, imgui.ImVec2(30, 30))
+    drawKeyCap('RM', stateKeys.RKM ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('LM', stateKeys.LKM ~= nil, imgui.ImVec2(30, 30))
+    imgui.EndGroup()
+end
+
+-- Draw Vehicle Layout
+local function drawVehicleLayout(stateKeys)
+    imgui.BeginGroup()
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + 35)
+    drawKeyCap('W', stateKeys.W ~= nil, imgui.ImVec2(30, 30))
+    drawKeyCap('A', stateKeys.A ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('S', stateKeys.S ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('D', stateKeys.D ~= nil, imgui.ImVec2(30, 30))
+    imgui.EndGroup()
+    imgui.SameLine(0, 14)
+    imgui.BeginGroup()
+    drawKeyCap('Ctrl', stateKeys.Ctrl ~= nil, imgui.ImVec2(62, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('Alt', stateKeys.Alt ~= nil, imgui.ImVec2(62, 30))
+    drawKeyCap('Space', stateKeys.Space ~= nil, imgui.ImVec2(128, 30))
+    imgui.EndGroup()
+    imgui.SameLine(0, 10)
+    imgui.BeginGroup()
+    drawKeyCap('Up', stateKeys.Up ~= nil, imgui.ImVec2(40, 30))
+    drawKeyCap('Down', stateKeys.Down ~= nil, imgui.ImVec2(40, 30))
+    imgui.EndGroup()
+    imgui.SameLine(0, 10)
+    imgui.BeginGroup()
+    drawKeyCap('H', stateKeys.H ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('F', stateKeys.F ~= nil, imgui.ImVec2(30, 30))
+    drawKeyCap('Q', stateKeys.Q ~= nil, imgui.ImVec2(30, 30)); imgui.SameLine(0, 4)
+    drawKeyCap('E', stateKeys.E ~= nil, imgui.ImVec2(30, 30))
+    imgui.EndGroup()
+end
+
+-- Resolve Pos
+local function resolvePos(settings, sw, sh)
+    local custom = settings and settings.spectate_keys_hud_custom == true
+    local rawX = settings and tonumber(settings.spectate_keys_hud_x)
+    local rawY = settings and tonumber(settings.spectate_keys_hud_y)
+    local pivotX, pivotY = 0.5, 0.5
+    local hx, hy
+    if custom and rawX ~= nil then
+        hx = rawX
+        pivotX = 0
+        if hx < 0 then
+            hx = sw + hx
+            pivotX = 1
+        end
+    else
+        hx = sw * 0.5
+        pivotX = 0.5
+    end
+    if custom and rawY ~= nil then
+        hy = rawY
+        pivotY = 0
+        if hy < 0 then
+            hy = sh + hy
+            pivotY = 1
+        end
+    else
+        hy = sh - 100
+        pivotY = 0.5
+    end
+    hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
+    hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
+    return hx, hy, pivotX, pivotY
+end
+
+-- Save Drag Pos
+local function saveDragPos(settings, wp, ww, wh, sw, sh)
+    if not settings or not wp then return end
+    local nx = wp.x or wp[1] or 0
+    local ny = wp.y or wp[2] or 0
+    settings.spectate_keys_hud_custom = true
+    if nx + (ww or 0) > sw * 0.55 then
+        settings.spectate_keys_hud_x = math.floor(nx + (ww or 0) - sw + 0.5)
+    else
+        settings.spectate_keys_hud_x = math.floor(nx + 0.5)
+    end
+    if ny + (wh or 0) > sh * 0.55 then
+        settings.spectate_keys_hud_y = math.floor(ny + (wh or 0) - sh + 0.5)
+    else
+        settings.spectate_keys_hud_y = math.floor(ny + 0.5)
+    end
+    if markDirtySettings then markDirtySettings() end
+    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+end
+
+-- Draw Inner
+local function drawKeysHudInner(settings)
+    local sw, sh = 1280, 720
+    if getScreenResolution then
+        local rw, rh = getScreenResolution()
+        if rw and rw > 0 then sw = rw end
+        if rh and rh > 0 then sh = rh end
+    end
+
+    local hx, hy, pivotX, pivotY = resolvePos(settings, sw, sh)
+    if drag.active then
+        hx = drag.offX
+        hy = drag.offY
+        pivotX, pivotY = 0, 0
+        hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
+        hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
+    end
+
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
+        + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoScrollbar
+    if imgui.WindowFlags.NoBringToFrontOnFocus then
+        flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
+    end
+
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, pivotY))
+    spTheme.pushHudChrome()
+    if not imgui.Begin('###desk_sp_keys_hud', nil, flags) then
+        spTheme.popHudChrome()
+        return
+    end
+
+    spTheme.drawPanelFrame()
+
+    hovered = false
+    local labelFn = uiText or function(s) return s end
+    local title = labelFn('\xCA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xE0 \xE8\xE3\xF0\xEE\xEA\xE0')
+    local titleCol = col_muted or spTheme.labelCol()
+    local headerY = imgui.GetCursorPosY()
+    local availW = imgui.GetContentRegionAvail().x
+    local titleW = imgui.CalcTextSize(title).x
+    if availW > titleW + 4 then
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + (availW - titleW) * 0.5)
+    end
+    imgui.TextColored(titleCol, title)
+    local headerH = imgui.GetCursorPosY() - headerY
+    if headerH < 18 then headerH = 18 end
+
+    imgui.SetCursorPos(imgui.ImVec2(0, headerY))
+    imgui.InvisibleButton('##keys_hud_drag', imgui.ImVec2(-1, headerH))
+    if imgui.IsItemHovered() or imgui.IsItemActive() then hovered = true end
+    if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
+        local delta = imgui.GetMouseDragDelta(0)
+        local wp = imgui.GetWindowPos()
+        if not drag.active then
+            drag.active = true
+            drag.startX = wp.x
+            drag.startY = wp.y
+            imgui.ResetMouseDragDelta(0)
+            delta = imgui.GetMouseDragDelta(0)
+        end
+        drag.offX = drag.startX + delta.x
+        drag.offY = drag.startY + delta.y
+    elseif drag.active and not imgui.IsMouseDown(0) then
+        drag.active = false
+        local wp = imgui.GetWindowPos()
+        saveDragPos(settings, wp, imgui.GetWindowWidth() or 320, imgui.GetWindowHeight() or 80, sw, sh)
+    end
+
+    imgui.SetCursorPosY(headerY + headerH)
+    spTheme.drawHeaderRule(col_accent)
+
+    local ped = targetChar()
+    if ped then
+        local plState = playerStateKey() or 'onfoot'
+        local stateKeys = keys[plState] or {}
+        if plState == 'vehicle' then
+            drawVehicleLayout(stateKeys)
+        else
+            drawOnfootLayout(stateKeys)
+        end
+    else
+        imgui.TextColored(col_muted2 or spTheme.idCol(),
+            labelFn('\xC8\xE3\xF0\xEE\xEA \xED\xE5 \xE2 \xE7\xEE\xED\xE5 \xF1\xF2\xF0\xE8\xEC\xE0'))
+    end
+
+    local wp = imgui.GetWindowPos()
+    local ww = imgui.GetWindowWidth() or 320
+    local wh = imgui.GetWindowHeight() or 80
+    hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
+
+    imgui.End()
+    spTheme.popHudChrome()
+end
+
+-- Публичный API модуля.
+function M.isEnabled(settings)
+    settings = settings or getSettings()
+    if not settings then return true end
+    return settings.spectate_keys_hud ~= false
+end
+
+-- Публичный API модуля.
+function M.shouldShow(settings)
+    if not M.isEnabled(settings) then return false end
+    if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then
+        drag.active = false
+        hovered = false
+        return false
+    end
+    if not isSpectating() then return false end
+    return getTargetId() >= 0
+end
+
+-- Публичный API модуля.
+function M.isDragActive()
+    return drag.active == true
+end
+
+-- Публичный API модуля.
+function M.wantsInput()
+    if drag.active then return true end
+    if hovered then return true end
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin then return pin(hudRect) end
+    return false
+end
+
+-- Публичный API модуля.
+function M.reset()
+    keys.onfoot = {}
+    keys.vehicle = {}
+    capAnim = {}
+    drag.active = false
+    hovered = false
+    hudRect = nil
+end
+
+-- Публичный API модуля.
+function M.draw(settings)
+    settings = settings or getSettings()
+    if not M.shouldShow(settings) then return end
+    local ok, err = pcall(drawKeysHudInner, settings)
+    if not ok and print then
+        print('[report_desk_sp_keys_hud] draw: ' .. tostring(err))
+    end
+end
+
+-- Публичный API модуля.
+function M.installSampev(sampev)
+    if not sampev or sampevRef then return end
+    sampevRef = sampev
+
+    hookPrevPlayerSync = sampev.onPlayerSync
+    if hookPrevPlayerSync == M._playerSyncHandler then hookPrevPlayerSync = nil end
+    M._playerSyncHandler = function(playerId, data)
+        if M.isEnabled() and isSpectating() then
+            pcall(updateOnfootKeys, playerId, data)
+        end
+        if type(hookPrevPlayerSync) == 'function' then
+            return hookPrevPlayerSync(playerId, data)
+        end
+    end
+    sampev.onPlayerSync = M._playerSyncHandler
+
+    hookPrevVehicleSync = sampev.onVehicleSync
+    if hookPrevVehicleSync == M._vehicleSyncHandler then hookPrevVehicleSync = nil end
+    M._vehicleSyncHandler = function(playerId, vehicleId, data)
+        if M.isEnabled() and isSpectating() then
+            pcall(updateVehicleKeys, playerId, data)
+        end
+        if type(hookPrevVehicleSync) == 'function' then
+            return hookPrevVehicleSync(playerId, vehicleId, data)
+        end
+    end
+    sampev.onVehicleSync = M._vehicleSyncHandler
+end
+
+-- Публичный API модуля.
+function M.configure(deps)
+    deps = deps or {}
+    uiText = deps.uiText or function(s) return s end
+    toU32 = deps.toU32
+    col_accent = deps.col_accent
+    col_accent_dim = deps.col_accent_dim
+    col_muted = deps.col_muted
+    col_muted2 = deps.col_muted2
+    markDirtySettings = deps.markDirtySettings
+    flushDirtyConfigNow = deps.flushDirtyConfigNow
+    getSettingsFn = deps.getSettings
+    getSpectateTargetId = deps.getSpectateTargetId
+    isSpectatingFn = deps.isSpectating
+end
+
+return M
+
+
+]=], '@report_desk_sp_keys_hud')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_keys_hud') end
+
+    return fn()
+
+end
+
+
+
+package.preload['report_desk_spectate_camera'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Модуль: зум камеры колёсиком в /sp.
+     Реализация как sp_plus: дистанция CCamera (0xB6F028), без RPC/setFixedCamera. ]]
+local M = {}
+
+local memory = require 'memory'
+
+local WM_MOUSEWHEEL = 0x020A
+local WM_MOUSEHWHEEL = 0x020E
+
+local CAM_BASE = 0xB6F028
+local OFF_ACTIVATE_A = 0x38
+local OFF_ACTIVATE_B = 0x39
+local OFF_DIST_FIELDS = { 0xD4, 0xD8, 0xC0, 0xC4 }
+
+local DEFAULT_DIST = 5.0
+local DEFAULT_STEP = 5.0
+local MIN_DIST = 0.0
+local MAX_DIST = 120.0
+
+local cam = {
+    distance = DEFAULT_DIST,
+    defaultDistance = DEFAULT_DIST,
+    customized = false,
+}
+
+local deps = {}
+
+-- Wheel Enabled
+local function wheelEnabled()
+    if deps.getSettings then
+        local s = deps.getSettings()
+        if s and s.spectate_wheel_zoom == false then return false end
+    end
+    return true
+end
+
+-- Is Spectating
+local function isSpectating()
+    if deps.isSpectating then
+        local ok, v = pcall(deps.isSpectating)
+        return ok and v == true
+    end
+    return false
+end
+
+-- Wheel Blocked
+local function wheelBlocked()
+    if not isSpectating() then return true end
+    if deps.isWheelBlocked then
+        local ok, v = pcall(deps.isWheelBlocked)
+        if ok and v == true then return true end
+    end
+    return false
+end
+
+-- Wheel Step
+local function wheelStep()
+    if deps.getSettings then
+        local s = deps.getSettings()
+        local step = s and tonumber(s.spectate_wheel_step)
+        if step and step > 0 then return step end
+    end
+    return DEFAULT_STEP
+end
+
+-- Wheel Max Dist
+local function wheelMaxDist()
+    if deps.getSettings then
+        local s = deps.getSettings()
+        local maxD = s and tonumber(s.spectate_wheel_max)
+        if maxD and maxD > MIN_DIST then return maxD end
+    end
+    return MAX_DIST
+end
+
+-- Set Distance Activated
+local function setDistanceActivated(on)
+    if not memory or not memory.setuint8 then return end
+    local v = on and 1 or 0
+    pcall(memory.setuint8, CAM_BASE + OFF_ACTIVATE_A, v)
+    pcall(memory.setuint8, CAM_BASE + OFF_ACTIVATE_B, v)
+end
+
+-- Set Camera Distance
+local function setCameraDistance(dist)
+    if not memory or not memory.setfloat then return end
+    local maxD = wheelMaxDist()
+    dist = math.max(MIN_DIST, math.min(maxD, tonumber(dist) or DEFAULT_DIST))
+    cam.distance = dist
+    for i = 1, #OFF_DIST_FIELDS do
+        pcall(memory.setfloat, CAM_BASE + OFF_DIST_FIELDS[i], dist, true)
+    end
+end
+
+-- Apply Camera Distance
+local function applyCameraDistance()
+    if not cam.customized then return end
+    setDistanceActivated(true)
+    setCameraDistance(cam.distance)
+end
+
+-- Restore Default Camera Distance
+local function restoreDefaultCameraDistance()
+    cam.customized = false
+    setDistanceActivated(false)
+    if not memory or not memory.setfloat then return end
+    for i = 1, #OFF_DIST_FIELDS do
+        pcall(memory.setfloat, CAM_BASE + OFF_DIST_FIELDS[i], cam.defaultDistance, true)
+    end
+    cam.distance = cam.defaultDistance
+end
+
+-- Update Camera Distance
+local function updateCameraDistance(delta)
+    cam.customized = true
+    setCameraDistance(cam.distance + (tonumber(delta) or 0))
+    applyCameraDistance()
+end
+
+-- Wheel Delta
+local function wheelDelta(wparam)
+    local wp = tonumber(wparam) or 0
+    if wp < 0 then wp = wp + 4294967296 end
+    local delta = bit.rshift(wp, 16)
+    if delta >= 32768 then delta = delta - 65536 end
+    return delta
+end
+
+-- Публичный API модуля.
+function M.onSpectateStart()
+    -- Не трогаем CCamera до первого wheel — иначе ломается поворот камеры в /sp на машине.
+end
+
+-- Публичный API модуля.
+function M.onSpectateEnd()
+    restoreDefaultCameraDistance()
+end
+
+-- Публичный API модуля.
+function M.onServerCameraBehind()
+    -- sp_plus не трогает zoom на behind; сброс не нужен.
+end
+
+-- Публичный API модуля.
+function M.maintain()
+    if not cam.customized or cam.distance == cam.defaultDistance then return end
+    if not wheelEnabled() or not isSpectating() then return end
+    if deps.isUiBlockingCamera then
+        local ok, v = pcall(deps.isUiBlockingCamera)
+        if ok and v then return end
+    end
+    applyCameraDistance()
+end
+
+-- Публичный API модуля.
+function M.handleWindowMessage(msg, wparam)
+    if msg ~= WM_MOUSEWHEEL and msg ~= WM_MOUSEHWHEEL then return false end
+    if not wheelEnabled() or wheelBlocked() then return false end
+
+    local delta = wheelDelta(wparam)
+    if msg == WM_MOUSEHWHEEL then
+        delta = -delta
+    end
+    if delta == 0 then return false end
+
+    local step = wheelStep()
+    if delta > 0 then
+        updateCameraDistance(step)
+    else
+        updateCameraDistance(-step)
+    end
+    return true
+end
+
+-- Публичный API модуля.
+function M.install(d)
+    deps = d or {}
+    if not isSpectating() then
+        restoreDefaultCameraDistance()
+    end
+end
+
+-- Публичный API модуля.
+function M.reset()
+    M.onSpectateEnd()
+end
+
+return M
+
+
+]=], '@report_desk_spectate_camera')
+
+    if not fn then error(err or 'bundle load failed: report_desk_spectate_camera') end
 
     return fn()
 
@@ -3245,16 +4077,15 @@ local function isVehicleHudColumnX(x)
     return false
 end
 
--- Is Vehicle Hud Bottom Area
+-- Is Vehicle Hud Bottom Area — только колонка спидометра, не вся нижняя полоса.
 local function isVehicleHudBottomArea(x, y)
-    if vehicleHud.isVehicleHudArea and vehicleHud.isVehicleHudArea(x, y) then
-        return true
-    end
     if isVehicleHudColumnX(x) then return true end
-    y = tonumber(y)
-    if y and y >= 330 then
+    if vehicleHud.isVehicleHudArea and vehicleHud.isVehicleHudArea(x, y) then
         x = tonumber(x)
-        if not x or x <= 560 then return true end
+        y = tonumber(y)
+        if x and y and x >= VEHICLE_HUD_X_MIN - 24 and x <= VEHICLE_HUD_X_MAX + 40 then
+            return true
+        end
     end
     return false
 end
@@ -3291,19 +4122,6 @@ local function isLikelyVehicleGaugeText(text)
     return false
 end
 
--- Custom Vehicle Hud Enabled
-local function customVehicleHudEnabled()
-    if not M.shouldSuppressServerSpMenu() then return false end
-    return vehicleHud.isEnabled(getSettingsFn and getSettingsFn())
-end
-
--- Block Vehicle Td
-local function blockVehicleTd(id, data, text)
-    if not customVehicleHudEnabled() then return false end
-    pcall(vehicleHud.ingest, id, data, text)
-    return vehicleHud.shouldBlockServerTd(id, data, text)
-end
-
 -- Remember Menu Column
 local function rememberMenuColumn(data)
     local x = tdPosX(data)
@@ -3326,20 +4144,43 @@ function M.markAwaitingSpectate(on)
     session.awaitingSpectate = on and true or false
 end
 
--- Публичный API модуля.
-function M.isServerSpMenuTextDraw(id, data, text)
+-- Custom Vehicle Hud Enabled — ingest/block server TD спидометра.
+local function vehicleHudPipelineActive()
+    local settings = getSettingsFn and getSettingsFn()
+    if not vehicleHud.isEnabled(settings) then return false end
+    if vehicleHud.isLocalInVehicle and vehicleHud.isLocalInVehicle() then return true end
+    if not vehicleHud.isEnabledForSpectate(settings) then return false end
+    return M.shouldSuppressServerSpMenu()
+end
+
+-- Block Vehicle Td
+local function blockVehicleTd(id, data, text)
+    if not vehicleHudPipelineActive() then return false end
+    pcall(vehicleHud.ingest, id, data, text)
+    return vehicleHud.shouldBlockServerTd(id, data, text)
+end
+
+-- Handle Vehicle Text Draw — парсинг + скрытие server спидометра (отдельно от /sp меню).
+local function handleVehicleTextDraw(id, data, text)
+    if not vehicleHudPipelineActive() then return false end
     text = text or (data and data.text) or ''
-    if customVehicleHudEnabled() and data then
+    if data then
         local vx, vy = tdPosX(data), tdPosY(data)
-        if isVehicleHudBottomArea(vx, vy) and not isServerSpMenuText(text) then
+        if isVehicleHudBottomArea(vx, vy) and not isServerSpMenuText(text)
+                and isVehicleHudText(text) then
             pcall(vehicleHud.ingest, id, data, text)
             return true
         end
     end
     if isLikelyVehicleGaugeText(text) then
-        if blockVehicleTd(id, data, text) then return true end
-        return false
+        return blockVehicleTd(id, data, text)
     end
+    return false
+end
+
+-- Is Server Sp Menu Text Draw — скрытие server /sp UI (не vehicle HUD).
+local function isServerSpMenuTextDrawOnly(id, data, text)
+    text = text or (data and data.text) or ''
     if isServerSpMenuText(text) then
         rememberMenuColumn(data)
         return true
@@ -3383,22 +4224,26 @@ function M.isServerSpMenuTextDraw(id, data, text)
 end
 
 -- Публичный API модуля.
+function M.isServerSpMenuTextDraw(id, data, text)
+    if handleVehicleTextDraw(id, data, text) then return true end
+    return isServerSpMenuTextDrawOnly(id, data, text)
+end
+
+-- Публичный API модуля.
 function M.onShowTextDraw(id, data)
+    if handleVehicleTextDraw(id, data) then return false end
     if not M.shouldSuppressServerSpMenu() then return end
-    if M.isServerSpMenuTextDraw(id, data) then
-        return false
-    end
+    if isServerSpMenuTextDrawOnly(id, data, data and data.text) then return false end
 end
 
 -- Публичный API модуля.
 function M.onTextDrawSetString(id, text)
+    if vehicleHudPipelineActive() and vehicleHud.ingestString(id, text) then
+        return false
+    end
+    if handleVehicleTextDraw(id, nil, text) then return false end
     if not M.shouldSuppressServerSpMenu() then return end
-    if customVehicleHudEnabled() and vehicleHud.ingestString(id, text) then
-        return false
-    end
-    if M.isServerSpMenuTextDraw(id, nil, text) then
-        return false
-    end
+    if isServerSpMenuTextDrawOnly(id, nil, text) then return false end
 end
 
 -- Публичный API модуля.
@@ -3541,7 +4386,9 @@ function M.beginSession(id, nick, opts)
     end
     if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
     if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
-    if cbOnBegin then pcall(cbOnBegin, id, nick, opts) end
+    if changed or opts.forceSync == true then
+        if cbOnBegin then pcall(cbOnBegin, id, nick, opts) end
+    end
     return true
 end
 
@@ -3594,6 +4441,14 @@ end
 -- Публичный API модуля.
 function M.hasOutboundPending()
     return #session.outbound > 0
+end
+
+-- Публичный API модуля.
+function M.wasRecentOutboundCommand(cmd)
+    cmd = trim(cmd or '')
+    if cmd == '' then return false end
+    return session.lastOutboundCmd == cmd
+        and (os.clock() - (session.lastOutboundAt or 0)) < 0.65
 end
 
 -- Публичный API модуля.
@@ -3744,6 +4599,47 @@ function M.install(cfg)
     end
 end
 
+-- Sam Menu Item Plain
+local function samMenuItemPlain(item)
+    return normalizeMenuText(tostring(item or ''))
+end
+
+-- Sam Menu Columns Match Sp
+local function samMenuColumnsMatchSp(columns)
+    if type(columns) ~= 'table' then return false end
+    for _, col in ipairs(columns) do
+        if type(col) == 'table' then
+            local colTitle = samMenuItemPlain(col.title)
+            for _, m in ipairs(SP_MENU_MARKERS) do
+                if colTitle:find(m:lower(), 1, true) then return true end
+            end
+            if type(col.text) == 'table' then
+                for _, item in ipairs(col.text) do
+                    local plain = samMenuItemPlain(item)
+                    if plain ~= '' then
+                        for _, m in ipairs(SP_MENU_MARKERS) do
+                            if plain:find(m:lower(), 1, true) then return true end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- Публичный API модуля.
+-- SA-Menu spectate admin (Exit/Stats/…), не /gps и прочие игровые меню.
+function M.isServerSpSamMenu(menuTitle, x, y, columns)
+    if not M.shouldSuppressServerSpMenu() then return false end
+    local title = normalizeMenuText(menuTitle or '')
+    for _, m in ipairs(SP_MENU_MARKERS) do
+        if title:find(m:lower(), 1, true) then return true end
+    end
+    if samMenuColumnsMatchSp(columns) then return true end
+    return false
+end
+
 -- Публичный API модуля.
 function M.captureServerMenuLayout(x, y, columns, title)
     local menu = package.loaded['report_desk_spectate_menu']
@@ -3806,6 +4702,30 @@ local OPEN_INPUT_GRACE_SEC = 0.28
 local lastChatKeyAt = 0
 local WM_KEYDOWN = 0x0100
 local WM_SYSKEYDOWN = 0x0104
+local WM_KEYUP = 0x0101
+local WM_SYSKEYUP = 0x0105
+local WM_CHAR = 0x0102
+
+local SAMP_CHAT_KEYS = {
+    [0x54] = true, [0x49] = true, [0x59] = true, [0x42] = true,
+    [0x4F] = true, [0x50] = true, [0x4E] = true, [0xC0] = true,
+    [0x75] = true, [0x7A] = true,
+}
+
+-- Block Samp Chat Key
+local function blockSampChatKey(msg, wparam)
+    if not state.open then return false end
+    msg = tonumber(msg) or 0
+    if msg == WM_CHAR or msg == 0x0106 or msg == 0x0109 or msg == 0x0286 then
+        return true
+    end
+    if msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN or msg == WM_KEYUP or msg == WM_SYSKEYUP then
+        if SAMP_CHAT_KEYS[tonumber(wparam) or 0] then
+            return true
+        end
+    end
+    return false
+end
 
 -- Is Key Repeat
 local function isKeyRepeat(lparam)
@@ -3854,8 +4774,11 @@ local function openChatDebounced()
     local now = os.clock()
     if state.open then return false end
     if now - lastChatKeyAt < CHAT_KEY_DEBOUNCE_SEC then return false end
-    lastChatKeyAt = now
-    return M.open() == true
+    if M.open() then
+        lastChatKeyAt = now
+        return true
+    end
+    return false
 end
 
 local function trim(s)
@@ -3916,23 +4839,26 @@ local function notifyInputChanged()
     if deps.onInputChanged then pcall(deps.onInputChanged) end
 end
 
+-- Release Input Capture
+local function releaseInputCapture()
+    if type(deskReleaseImguiCapture) == 'function' then
+        pcall(deskReleaseImguiCapture)
+    else
+        if imgui.CaptureKeyboardFromApp then pcall(imgui.CaptureKeyboardFromApp, false) end
+        if imgui.CaptureMouseFromApp then pcall(imgui.CaptureMouseFromApp, false) end
+    end
+    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
+end
+
 -- Sync Input Capture
 local function syncInputCapture()
     if not state.open then return end
-    if deps.markTypingActive then
-        pcall(deps.markTypingActive)
-    end
     local io = imgui.GetIO and imgui.GetIO()
     if not io then return end
     local wantKb = io.WantCaptureKeyboard or io.WantTextInput
     if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then wantKb = true end
     if imgui.CaptureKeyboardFromApp then imgui.CaptureKeyboardFromApp(wantKb) end
     if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(true) end
-end
-
--- Публичный API модуля.
-function M.layoutSwitchActive()
-    return false
 end
 
 -- Публичный API модуля.
@@ -3951,6 +4877,10 @@ function M.close()
     state.open = false
     state.focusPending = false
     state.hovered = false
+    if type(deskInputState) == 'table' then
+        deskInputState.keyboardStickyUntil = 0
+    end
+    releaseInputCapture()
     notifyInputChanged()
 end
 
@@ -3966,6 +4896,10 @@ function M.open()
     state.open = true
     state.openedAt = os.clock()
     state.focusPending = true
+    if type(deskHoldSampChatInput) == 'function' then
+        pcall(deskHoldSampChatInput)
+    end
+    if deps.markTypingActive then pcall(deps.markTypingActive) end
     notifyInputChanged()
     if deps.enableSpectateCursor then pcall(deps.enableSpectateCursor) end
     return true
@@ -4022,7 +4956,8 @@ end
 -- Публичный API модуля.
 function M.handleWindowMessage(msg, wparam, lparam)
     if not spectatingWithTarget() or inputBlocked() then return false end
-    if msg ~= WM_KEYDOWN then return false end
+    if blockSampChatKey(msg, wparam) then return true end
+    if msg ~= WM_KEYDOWN and msg ~= WM_SYSKEYDOWN then return false end
     if isKeyRepeat(lparam) then return false end
 
     local vkeys = deps.vkeys
@@ -4233,6 +5168,7 @@ local SP_ACTIONS = {
     { key = 'slap',     label = '\xD1\xEB\xE0\xEF\xED\xF3\xF2\xFC', cmd = 'slap' },
     { key = 'tow',      label = '\xC4\xEE\xF1\xF2\xE0\xF2\xFC \xE8\xE7 \xE2\xEE\xE4\xFB', cmd = 'tr' },
     { key = 'stats',    label = '\xD1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE0', cmd = 'st' },
+    { key = 'dgun',     label = 'DGUN', cmd = 'weap' },
     { key = 'update',   label = '\xCE\xE1\xED\xEE\xE2\xE8\xF2\xFC', cmd = 'sp', refresh = true },
     { key = 'exit_bot', label = '\xC2\xFB\xF5\xEE\xE4', cmd = 'sp', off = true },
 }
@@ -4368,9 +5304,22 @@ local function uiEnabled(settings)
 end
 
 -- Get Target Id
+local sessionMod
+local function getSessionMod()
+    if not sessionMod then
+        pcall(function() sessionMod = require 'report_desk_spectate_session' end)
+    end
+    return sessionMod
+end
+
 local function getTargetId()
     if deps.getTargetId then
-        return tonumber(deps.getTargetId()) or -1
+        local id = tonumber(deps.getTargetId()) or -1
+        if id >= 0 then return id end
+    end
+    local session = getSessionMod()
+    if session and session.getTargetId then
+        return tonumber(session.getTargetId()) or -1
     end
     return -1
 end
@@ -4500,7 +5449,12 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    return M.isHovered()
+    if menuState.drag.active then return true end
+    if menuState.hovered then return true end
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin then return pin(menuState.menuRect) end
+    return false
 end
 
 -- Публичный API модуля.
@@ -4561,7 +5515,7 @@ local function sendServerCmd(cmd)
     if cmd == '' then return end
     local now = os.clock()
     local base = cmd:match('^(%S+)') or cmd
-    local noDedupe = (base == 'st' or base == 'tr' or base == 'slap' or base == 'stats')
+    local noDedupe = (base == 'st' or base == 'tr' or base == 'slap' or base == 'stats' or base == 'weap')
     if not noDedupe and cmd == lastServerCmd and now - lastServerCmdAt < SERVER_CMD_DEDUPE_SEC then
         return
     end
@@ -4606,6 +5560,11 @@ local function runAction(action, targetId, source)
         else
             sendServerCmd('slap ' .. tostring(targetId))
         end
+        return
+    end
+    if action.cmd == 'weap' then
+        if not targetId or targetId < 0 then return end
+        sendServerCmd('weap ' .. tostring(targetId))
         return
     end
     pcall(function()
@@ -4688,6 +5647,21 @@ function M.flushPendingAction()
     end)
 end
 
+-- Menu Rect On Screen
+local function menuRectOnScreen(hx, hy, winW, winH, sw, sh, pivotX)
+    winW = math.max(SP_MENU_W, tonumber(winW) or SP_MENU_W)
+    winH = math.max(80, tonumber(winH) or 200)
+    local left, right
+    if pivotX == 1 then
+        left = hx - winW
+        right = hx
+    else
+        left = hx
+        right = hx + winW
+    end
+    return left >= 8 and hy >= 8 and right <= sw - 8 and hy + winH <= sh - 8
+end
+
 -- Clamp Menu Pos
 local function clampMenuPos(hx, hy, winW, winH, sw, sh, pivotX)
     winW = math.max(SP_MENU_W, tonumber(winW) or SP_MENU_W)
@@ -4739,6 +5713,12 @@ local function resolveMenuPos(settings, estH)
         posX, hy = clampMenuPos(posX, hy, SP_MENU_W, estH, sw, sh, 1)
     else
         posX, hy = clampMenuPos(posX, hy, SP_MENU_W, estH, sw, sh, 0)
+    end
+    if not menuRectOnScreen(posX, hy, SP_MENU_W, estH, sw, sh, pivotX) then
+        posX = sw - rightInset
+        pivotX = 1
+        hy = defaultY
+        posX, hy = clampMenuPos(posX, hy, SP_MENU_W, estH, sw, sh, 1)
     end
     return posX, hy, pivotX, sw, sh
 end
@@ -4893,6 +5873,7 @@ function M.drawMenu(settings, force)
     settings = settings or getSettings() or {}
     if not displayActions then displayActions = SP_ACTIONS end
     if not force and not M.shouldShowMenu(settings) then
+        menuState.menuRect = nil
         keyDownPrev = {}
         keyLatchAt = {}
         if deps.setMenuHovered then pcall(deps.setMenuHovered, false) end
@@ -4948,16 +5929,18 @@ function M.drawMenu(settings, force)
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
+        menuState.menuRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
         menuState.hovered = false
 
-        pcall(function()
-            local io = imgui.GetIO()
-            if io and io.MousePos and wp and ww and wh then
-                local mp = io.MousePos
-                menuState.hovered = mp.x >= wp.x and mp.x < wp.x + ww
-                    and mp.y >= wp.y and mp.y < wp.y + wh
+        do
+            local posFn = type(_G.deskWin32MousePos) == 'function' and _G.deskWin32MousePos
+                or type(deskWin32MousePos) == 'function' and deskWin32MousePos
+            local mx, my = posFn and posFn()
+            if mx and wp and ww and wh then
+                menuState.hovered = mx >= wp.x and mx < wp.x + ww
+                    and my >= wp.y and my < wp.y + wh
             end
-        end)
+        end
         if deps.setMenuHovered then pcall(deps.setMenuHovered, menuState.hovered or menuState.drag.active) end
 
         local headerY = imgui.GetCursorPosY()
@@ -5020,6 +6003,13 @@ function M.drawMenu(settings, force)
             print(string.format('[Report Desk] sp menu Begin failed pos=%.0f,%.0f pivot=%d screen=%.0fx%.0f',
                 posX, hy, pivotX, sw, sh))
         end
+        menuState.placed = false
+        if settings.spectate_sp_ui_custom == true then
+            settings.spectate_sp_ui_custom = false
+            settings.spectate_sp_ui_x = -28
+            settings.spectate_sp_ui_y = 0
+            if deps.markDirtySettings then pcall(deps.markDirtySettings) end
+        end
         if deps.setMenuHovered then pcall(deps.setMenuHovered, false) end
     end
     if menuState._beginFailLogged and began then
@@ -5033,13 +6023,6 @@ end
 -- Публичный API модуля.
 function M.shouldShowMenu(settings)
     if not uiEnabled(settings) then return false end
-    if deps.getPlayerSpectating then
-        local ok, v = pcall(deps.getPlayerSpectating)
-        if not ok or not v then return false end
-    elseif deps.isSpectating then
-        local ok, v = pcall(deps.isSpectating)
-        if not ok or not v then return false end
-    end
     return getTargetId() >= 0
 end
 
@@ -5077,8 +6060,10 @@ local menu = require 'report_desk_spectate_menu'
 local specAns = require 'report_desk_spectate_ans'
 
 local deps = {}
-local wmHandlerInstalled = false
+local ansDepsWired, menuDepsWired = false, false
 local clickHandler, toggleHandler
+local hookPrevClick, hookPrevToggle
+local WM_HANDLER_KEY = '__rd_sp_ui_wm__'
 
 local WM = {
     KEYDOWN = 0x0100,
@@ -5126,17 +6111,15 @@ end
 
 -- Публичный API модуля.
 function M.getTargetId()
-    local sid = session.getTargetId and session.getTargetId() or -1
-    if sid >= 0 then return sid end
-    if deps.getLocalTargetId then return tonumber(deps.getLocalTargetId()) or -1 end
-    return -1
+    if deps.getTargetId then return tonumber(deps.getTargetId()) or -1 end
+    return session.getTargetId and session.getTargetId() or -1
 end
 
 -- Публичный API модуля.
 function M.drawMenu(settings)
     if not M.shouldShowMenu() then return end
-    pcall(menu.drawMenu, settings or getSettings())
-    pcall(menu.flushPendingAction)
+    local ok = pcall(menu.drawMenu, settings or getSettings())
+    if ok then pcall(menu.flushPendingAction) end
 end
 
 -- Ensure Td Hooks
@@ -5150,27 +6133,48 @@ end
 local function reinstallSampevInputHooks()
     local sampev = deps.sampev
     if not sampev then return end
+    if clickHandler and sampev.onSendClickTextDraw == clickHandler
+            and toggleHandler and sampev.onToggleSelectTextDraw == toggleHandler then
+        return
+    end
 
-    local prevClick = sampev.onSendClickTextDraw
-    if prevClick == clickHandler then prevClick = nil end
+    local prev = sampev.onSendClickTextDraw
+    if prev == clickHandler then prev = hookPrevClick end
+    hookPrevClick = prev
     clickHandler = function(textdrawId)
         if M.shouldSuppressServerMenu() then return false end
         if deps.isMenuShieldActive and deps.isMenuShieldActive() then return false end
-        if type(prevClick) == 'function' then return prevClick(textdrawId) end
+        if type(hookPrevClick) == 'function' then return hookPrevClick(textdrawId) end
     end
     sampev.onSendClickTextDraw = clickHandler
 
-    local prevToggle = sampev.onToggleSelectTextDraw
-    if prevToggle == toggleHandler then prevToggle = nil end
+    prev = sampev.onToggleSelectTextDraw
+    if prev == toggleHandler then prev = hookPrevToggle end
+    hookPrevToggle = prev
     toggleHandler = function(state, hovercolor)
         -- SelectTextDraw не блокируем — серверу нужен для /sp; TD скрыты, клики режем отдельно.
-        if type(prevToggle) == 'function' then return prevToggle(state, hovercolor) end
+        if type(hookPrevToggle) == 'function' then return hookPrevToggle(state, hovercolor) end
     end
     sampev.onToggleSelectTextDraw = toggleHandler
 end
 
+-- On Ans Input Changed
+local function onAnsInputChanged()
+    if specAns.isOpen() then
+        if deps.rememberSpectateCursor then pcall(deps.rememberSpectateCursor) end
+        if deps.enableSpectateCursor then pcall(deps.enableSpectateCursor) end
+        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, true) end
+    else
+        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, false) end
+        if deps.onAnsBarClosed then pcall(deps.onAnsBarClosed) end
+    end
+    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
+end
+
 -- Wire Ans Deps
 local function wireAnsDeps()
+    if ansDepsWired then return end
+    ansDepsWired = true
     specAns.install({
         trim = deps.trim,
         uiText = deps.uiText,
@@ -5201,22 +6205,14 @@ local function wireAnsDeps()
         updateInputPassthrough = deps.updateInputPassthrough,
         onAnsBarClosed = deps.onAnsBarClosed,
         markTypingActive = deps.markTypingActive,
-        onInputChanged = function()
-            if specAns.isOpen() then
-                if deps.rememberSpectateCursor then pcall(deps.rememberSpectateCursor) end
-                if deps.enableSpectateCursor then pcall(deps.enableSpectateCursor) end
-                if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, true) end
-            else
-                if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, false) end
-                if deps.onAnsBarClosed then pcall(deps.onAnsBarClosed) end
-            end
-            if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
-        end,
+        onInputChanged = onAnsInputChanged,
     })
 end
 
 -- Wire Menu Deps
 local function wireMenuDeps()
+    if menuDepsWired then return end
+    menuDepsWired = true
     menu.install({
         uiText = deps.uiText,
         getSettings = getSettings,
@@ -5263,7 +6259,7 @@ end
 
 -- Публичный API модуля.
 function M.isAnsLayoutSwitch()
-    return specAns.layoutSwitchActive and specAns.layoutSwitchActive() or false
+    return false
 end
 
 -- Публичный API модуля.
@@ -5289,6 +6285,8 @@ end
 -- Публичный API модуля.
 function M.install(cfg)
     deps = cfg or deps or {}
+    ansDepsWired = false
+    menuDepsWired = false
     wireAnsDeps()
     wireMenuDeps()
     session.install({
@@ -5307,7 +6305,10 @@ function M.install(cfg)
             pcall(menu.resetMenuSelection)
         end,
         ensureSampevHooks = function()
-            if deps.sampev then pcall(session.installSampevHooks, deps.sampev) end
+            if deps.sampev then
+                pcall(session.installSampevHooks, deps.sampev)
+                reinstallSampevInputHooks()
+            end
             ensureTdHooks()
         end,
         ensureTdHooks = ensureTdHooks,
@@ -5332,8 +6333,6 @@ function M.onToggleSpectating(toggle)
         pcall(menu.resetMenuState)
         if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
         session.setSpectating(true)
-        ensureTdHooks()
-        if deps.sampev then pcall(session.installSampevHooks, deps.sampev) end
         local id = M.getTargetId()
         if id >= 0 then
             local nick = ''
@@ -5385,18 +6384,19 @@ function M.handleMenuKey(vk)
     return menu.handleMenuKey(vk)
 end
 
--- Публичный API модуля.
-function M.installInputHooks(cfg)
-    deps = cfg or deps
-    wireAnsDeps()
-    wireMenuDeps()
-    ensureTdHooks()
-    reinstallSampevInputHooks()
+-- Uninstall Wm Handler
+local function uninstallWmHandler()
+    local prev = _G[WM_HANDLER_KEY]
+    if prev and removeEventHandler then
+        pcall(removeEventHandler, 'onWindowMessage', prev)
+    end
+    _G[WM_HANDLER_KEY] = nil
+end
 
-    if wmHandlerInstalled then return end
-    wmHandlerInstalled = true
-
-    addEventHandler('onWindowMessage', function(msg, wparam, lparam)
+-- Install Wm Handler
+local function installWmHandler()
+    uninstallWmHandler()
+    local handler = function(msg, wparam, lparam)
         if deps.captureActive and deps.captureActive() then return end
         if specAns.handleWindowMessage(msg, wparam, lparam) then
             consumeWindowMessage(true, true, true)
@@ -5422,21 +6422,48 @@ function M.installInputHooks(cfg)
         if deps.consumeMenuShieldKey and deps.consumeMenuShieldKey(msg, wparam) then
             consumeWindowMessage(true, true, true)
         end
-    end, true)
+    end
+    _G[WM_HANDLER_KEY] = handler
+    addEventHandler('onWindowMessage', handler, true)
+end
+
+-- Публичный API модуля.
+function M.installInputHooks(cfg)
+    if cfg then
+        deps = cfg
+        ansDepsWired = false
+        menuDepsWired = false
+    end
+    wireAnsDeps()
+    wireMenuDeps()
+    ensureTdHooks()
+    reinstallSampevInputHooks()
+    installWmHandler()
 end
 
 -- Публичный API модуля.
 function M.ensureInputHooks()
     if not deps.sampev then return end
-    wireAnsDeps()
-    wireMenuDeps()
     ensureTdHooks()
     reinstallSampevInputHooks()
 end
 
 -- Публичный API модуля.
 function M.uninstallSampevHooks()
-    if deps.sampev then pcall(session.uninstallSampevHooks, deps.sampev) end
+    uninstallWmHandler()
+    local sampev = deps.sampev
+    if not sampev then return end
+    if clickHandler and sampev.onSendClickTextDraw == clickHandler then
+        sampev.onSendClickTextDraw = hookPrevClick
+    end
+    if toggleHandler and sampev.onToggleSelectTextDraw == toggleHandler then
+        sampev.onToggleSelectTextDraw = hookPrevToggle
+    end
+    clickHandler = nil
+    toggleHandler = nil
+    hookPrevClick = nil
+    hookPrevToggle = nil
+    pcall(session.uninstallSampevHooks, sampev)
 end
 
 return M
@@ -5465,11 +6492,13 @@ local spUi = require 'report_desk_sp_ui'
 local specMenuMod = require 'report_desk_spectate_menu'
 local spTheme = require 'report_desk_sp_theme'
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
+local keysHud = require 'report_desk_sp_keys_hud'
+local specCamera = require 'report_desk_spectate_camera'
 
 local SP_MSG_COLOR = 1728027135
 local PENDING_ST_SEC = 12.0
 local AUTO_ST_COOLDOWN = 4.0
-local SPEC_STEP_COOLDOWN = 1.15
+local SPEC_STEP_COOLDOWN = 0.45
 local SPEC_STEP_AUTO_ST_DELAY = 2.5
 local PENDING_SP_SEC = 6.0
 local SPECTATE_FORCE_EXIT_COOLDOWN = 0.8
@@ -5567,6 +6596,14 @@ local STAT_STACK_FIELDS = {
 }
 
 local STAT_STACK_MIN_W = 150
+
+local function statLabelWidth(label)
+    label = uiText(label or '')
+    local w = imgui.CalcTextSize(label).x + 8
+    local minVal = 80
+    local maxLbl = HUD_PANEL_W - HUD_PAD_X * 2 - minVal
+    return math.max(HUD_LABEL_W, math.min(w, maxLbl))
+end
 
 local HUD_FIELD_ORDER = {
     'ping', 'level', 'family', 'org', 'rank', 'job', 'warns', 'wanted', 'money', 'score', 'status',
@@ -6188,20 +7225,27 @@ function M.findAdjacentSpectateId(curId, delta)
     curId = tonumber(curId)
     if curId == nil then return nil end
     local maxId = M.getMaxPlayerId()
+    local me = M.getMyPlayerId()
     delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    local function candidate(id)
+        id = tonumber(id)
+        if not id or id < 0 then return false end
+        if me >= 0 and id == me then return false end
+        return sampIsPlayerConnected and sampIsPlayerConnected(id)
+    end
     if delta > 0 then
         for i = curId + 1, maxId do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
         for i = 0, curId - 1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
     else
         for i = curId - 1, 0, -1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
         for i = maxId, curId + 1, -1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
     end
     return nil
@@ -6221,9 +7265,6 @@ function M.stepSpectate(delta)
     end
     local nextId = M.findAdjacentSpectateId(cur, delta)
     if not nextId then return false end
-    if nextId ~= cur then
-        pcall(vehicleHud.reset)
-    end
     M.markPendingSpCommand(nextId, '')
     local cmd = 'sp ' .. tostring(nextId)
     if sendMenuOutbound then
@@ -6318,6 +7359,7 @@ function M.markPendingSpCommand(id, nick)
     if cur ~= id then
         if cur >= 0 then clearPendingSt() end
         pcall(vehicleHud.reset)
+        pcall(keysHud.reset)
     end
     pcall(specSession.markAwaitingSpectate, true)
 end
@@ -6559,6 +7601,8 @@ function M.clearSpectateTarget(force)
     state.persistHudId = -1
     M.cancelPendingSp()
     pcall(specMenuMod.resetMenuSelection)
+    pcall(specCamera.onSpectateEnd)
+    pcall(keysHud.reset)
 end
 
 -- Публичный API модуля.
@@ -7015,6 +8059,8 @@ function M.drawStatRow(label, value, valueCol, opts)
     local lines = wrapWordsToLines(value, maxW)
     if #lines == 0 then return end
     local lblCol = spTheme.labelCol and spTheme.labelCol() or col_muted2
+    local labelW = statLabelWidth(label)
+    imgui.AlignTextToFramePadding()
     imgui.TextColored(lblCol, uiText(label))
     if stack then
         for _, line in ipairs(lines) do
@@ -7022,10 +8068,10 @@ function M.drawStatRow(label, value, valueCol, opts)
         end
         return
     end
-    imgui.SameLine(HUD_LABEL_W)
+    imgui.SameLine(labelW)
     imgui.TextColored(col, lines[1])
     for i = 2, #lines do
-        imgui.SetCursorPosX(HUD_LABEL_W)
+        imgui.SetCursorPosX(labelW)
         imgui.TextColored(col, lines[i])
     end
 end
@@ -7043,9 +8089,11 @@ function M.wantedColor(lvl, active)
 end
 
 local WANTED_LEVEL_MAX = 6
+local WARN_LEVEL_MAX = 3
 local WANTED_STAR_OUTER = 5.5
 local WANTED_STAR_INNER = 2.3
 local WANTED_STAR_STEP = 13
+local STAR_ROW_PAD = 3
 local HUD_ID_COLOR = imgui.ImVec4(0.95, 0.95, 0.97, 1.0)
 
 -- Draw Wanted Star
@@ -7079,28 +8127,70 @@ local function normalizeWantedLevel(val)
     return math.max(0, math.min(WANTED_LEVEL_MAX, math.floor(n + 0.5)))
 end
 
--- Публичный API модуля.
-function M.drawWantedRow(label, value)
-    local lvl = normalizeWantedLevel(value)
-    if lvl == nil then return end
+local function parseWarnsFraction(value)
+    value = trim(value or '')
+    if value == '' then return nil end
+    local a, b = value:match('(%d+)%s*/%s*(%d+)')
+    if a and b then return tonumber(a), tonumber(b) end
+    a, b = value:match('(%d+)%s*èç%s*(%d+)')
+    if a and b then return tonumber(a), tonumber(b) end
+    a = value:match('^(%d+)$')
+    if a then return tonumber(a), WARN_LEVEL_MAX end
+    return nil
+end
 
-    imgui.TextColored(col_muted2, uiText(label))
-    imgui.SameLine(HUD_LABEL_W)
+local function warnStarColor(active)
+    if not active then
+        return imgui.ImVec4(0.38, 0.36, 0.42, 0.55)
+    end
+    return col_warn or imgui.ImVec4(1.0, 0.86, 0.18, 1.0)
+end
+
+local function drawStarRatingRow(label, current, maxSlots, colorFn)
+    maxSlots = math.max(1, math.min(WANTED_LEVEL_MAX, tonumber(maxSlots) or 1))
+    current = math.max(0, math.min(maxSlots, tonumber(current) or 0))
+    local lblCol = spTheme.labelCol and spTheme.labelCol() or col_muted2
+    local labelW = statLabelWidth(label)
+    imgui.AlignTextToFramePadding()
+    imgui.TextColored(lblCol, uiText(label))
+    imgui.SameLine(labelW)
 
     local dl = imgui.GetWindowDrawList()
-    local lineH = imgui.GetTextLineHeight()
+    local starH = WANTED_STAR_OUTER * 2 + STAR_ROW_PAD
+    local lineH = math.max(imgui.GetTextLineHeight(), starH)
     local base = imgui.GetCursorScreenPos()
     local centerY = base.y + lineH * 0.5
     local startX = base.x + WANTED_STAR_OUTER
 
-    for i = 1, WANTED_LEVEL_MAX do
+    for i = 1, maxSlots do
         local cx = startX + (i - 1) * WANTED_STAR_STEP
-        local active = i <= lvl
-        local col = M.wantedColor(lvl, active)
-        drawWantedStar(dl, cx, centerY, active, col)
+        local active = i <= current
+        drawWantedStar(dl, cx, centerY, active, colorFn(i, active, current))
     end
 
-    imgui.Dummy(imgui.ImVec2(WANTED_LEVEL_MAX * WANTED_STAR_STEP + WANTED_STAR_OUTER, lineH))
+    imgui.Dummy(imgui.ImVec2(maxSlots * WANTED_STAR_STEP + WANTED_STAR_OUTER, lineH))
+end
+
+-- Публичный API модуля.
+function M.drawWantedRow(label, value)
+    local lvl = normalizeWantedLevel(value)
+    if lvl == nil then return end
+    drawStarRatingRow(label, lvl, WANTED_LEVEL_MAX, function(_, active, l)
+        return M.wantedColor(l, active)
+    end)
+end
+
+-- Публичный API модуля.
+function M.drawWarnsRow(label, value)
+    local cur, max = parseWarnsFraction(value)
+    if cur == nil then
+        M.drawStatRow(label, value, col_warn)
+        return
+    end
+    max = math.max(cur, math.min(WANTED_LEVEL_MAX, tonumber(max) or WARN_LEVEL_MAX))
+    drawStarRatingRow(label, cur, max, function(_, active)
+        return warnStarColor(active)
+    end)
 end
 
 -- Should Stack Field Value
@@ -7143,6 +8233,8 @@ local function drawStatsBody(e)
             local vcol = fieldValueColor(key, val)
             if key == 'wanted' then
                 M.drawWantedRow(lbl, val)
+            elseif key == 'warns' then
+                M.drawWarnsRow(lbl, val)
             elseif STAT_STACK_FIELDS[key] and shouldStackFieldValue(val) then
                 M.drawStatRow(lbl, val, vcol, { stack = true })
             else
@@ -7329,7 +8421,7 @@ function M.drawOverlayImpl(settings)
                 if ll:find('warn', 1, true) or lbl:find('\xCF\xF0\xE5\xE4', 1, true)
                     or lbl:find('\xEF\xF0\xE5\xE4', 1, true) or lbl:find('\xE2\xE0\xF0\xED', 1, true) then
                     hasAny = true
-                    M.drawStatRow(FIELD_LABELS.warns, val, col_warn)
+                    M.drawWarnsRow(FIELD_LABELS.warns, val)
                     break
                 end
             end
@@ -7543,6 +8635,67 @@ local function specCaptureActive()
     return false
 end
 
+local specWheelIoCacheAt = 0
+local specWheelIoCapture = false
+
+local function specDeskCapturesMouse()
+    if not inputDeps or not inputDeps.getShowWindow or not inputDeps.getShowWindow() then
+        return false
+    end
+    local now = os.clock()
+    if now - specWheelIoCacheAt < 0.05 then
+        return specWheelIoCapture
+    end
+    specWheelIoCacheAt = now
+    specWheelIoCapture = false
+    local imguiMod = inputDeps.imgui
+    if imguiMod and imguiMod.GetIO then
+        local okIo, io = pcall(imguiMod.GetIO)
+        if okIo and io and io.WantCaptureMouse then
+            specWheelIoCapture = true
+        end
+    end
+    return specWheelIoCapture
+end
+
+local function specWheelBlocked()
+    if not specIsSpectating() then return true end
+    if specCaptureActive() then return true end
+    if inputDeps and inputDeps.sampIsChatInputActive and inputDeps.sampIsChatInputActive() then
+        return true
+    end
+    if inputDeps and inputDeps.sampIsDialogActive and inputDeps.sampIsDialogActive() then
+        return true
+    end
+    if type(_G.cheatState) == 'table' and _G.cheatState.marker and _G.cheatState.marker.active then
+        return true
+    end
+    if type(_G.deskSpectateCameraBlocked) == 'function' and _G.deskSpectateCameraBlocked() then
+        return true
+    end
+    if M.isHudDragActive and M.isHudDragActive() then return true end
+    if specDeskCapturesMouse() then return true end
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
+    return false
+end
+
+local function specUiBlocksCameraMaintain()
+    if not specIsSpectating() then return true end
+    if specDeskCapturesMouse() then return true end
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
+    return false
+end
+
+local function specCameraDeps(sampevOverride)
+    return {
+        sampev = sampevOverride or (inputDeps and inputDeps.sampev),
+        getSettings = getSettings,
+        isSpectating = specIsSpectating,
+        isWheelBlocked = specWheelBlocked,
+        isUiBlockingCamera = specUiBlocksCameraMaintain,
+    }
+end
+
 -- Spec Arrow Hit
 local function specArrowHit(vk)
     vk = tonumber(vk) or 0
@@ -7568,6 +8721,7 @@ end
 -- Публичный API модуля.
 function M.handleSpectateWindowMessage(msg, wparam)
     if specCaptureActive() then return false end
+    if specCamera.handleWindowMessage(msg, wparam) then return true end
     if msg ~= WM.KEYDOWN and msg ~= WM.SYSKEYDOWN then return false end
     if not specIsSpectating() or specCaptureActive() then return false end
     -- Чат и серверный диалог — стрелки для игры, не для /sp и не для spectate step.
@@ -7578,6 +8732,10 @@ function M.handleSpectateWindowMessage(msg, wparam)
     local vkR = (vkeysMod and vkeysMod.VK_RIGHT) or 0x27
     if wparam ~= vkL and wparam ~= vkR then return false end
     return specStepByArrow(wparam == vkR and 1 or -1)
+end
+
+function M.maintainCamera()
+    pcall(specCamera.maintain)
 end
 
 -- Публичный API модуля.
@@ -7624,6 +8782,7 @@ function M.onTogglePlayerSpectating(toggle)
             end
         end
         M.cancelPendingSp()
+        pcall(specCamera.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
@@ -7631,6 +8790,7 @@ function M.onTogglePlayerSpectating(toggle)
     if specPlayerActive() then return end
     if state.pendingSpId then return end
     if M.getTargetId() >= 0 then return end
+    pcall(specCamera.onSpectateEnd)
     spUi.onToggleSpectating(false)
 end
 
@@ -7682,6 +8842,8 @@ function M.installInputHooks(deps)
     spUi.install(uiDeps)
     spUi.installInputHooks(uiDeps)
     ensureSpSpectateFrame()
+    specCamera.install(specCameraDeps(deps.sampev))
+    pcall(keysHud.installSampev, deps.sampev)
     if wmHandlerInstalled then
         return
     end
@@ -7739,6 +8901,27 @@ end
 -- Публичный API модуля.
 function M.shouldShowVehicleHud(settings)
     return vehicleHud.shouldShow(settings or (getSettings and getSettings()))
+end
+
+-- Публичный API модуля.
+function M.drawKeysHud(settings)
+    settings = settings or (getSettings and getSettings())
+    pcall(keysHud.draw, settings)
+end
+
+-- Публичный API модуля.
+function M.shouldShowKeysHud(settings)
+    return keysHud.shouldShow(settings or (getSettings and getSettings()))
+end
+
+-- Публичный API модуля.
+function M.wantsKeysHudInput()
+    return keysHud.wantsInput and keysHud.wantsInput() or false
+end
+
+-- Публичный API модуля.
+function M.wantsVehicleHudInput()
+    return vehicleHud.wantsInput and vehicleHud.wantsInput() or false
 end
 
 -- Публичный API модуля.
@@ -7832,6 +9015,24 @@ function M.install(deps)
         getSpectateTargetId = function() return M.getTargetId() end,
         inputDeps = deps,
     })
+    keysHud.configure({
+        uiText = uiText,
+        toU32 = toU32,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_muted = col_muted,
+        col_muted2 = col_muted2,
+        markDirtySettings = markDirtySettings,
+        flushDirtyConfigNow = flushDirtyConfigNow,
+        getSettings = getSettings,
+        getSpectateTargetId = function() return M.getTargetId() end,
+        isSpectating = function()
+            if inputDeps and inputDeps.getPlayerSpectating then
+                return inputDeps.getPlayerSpectating() == true
+            end
+            return specSession.isSpectatingMode()
+        end,
+    })
 end
 
 return M
@@ -7859,6 +9060,15 @@ local CHECKER_LVL_SPECIAL_BASE = 100
 -- SA-MP nick: буквы, цифры, _, точка, дефис.
 local NICK_CLASS = '[%w][%w_%.%-]*'
 
+local BLOB_PATTERNS = {
+    { '(' .. NICK_CLASS .. ')%[(%d+)%]%s*%(([Ss]?%d+)%s*lvl%)', true },
+    { '(' .. NICK_CLASS .. ')%[(%d+)%]%s*%(([Ss]?%d*)%s*lvl%)', true },
+    { '(' .. NICK_CLASS .. ')%s*%(([Ss]?%d+)%s*lvl%)', false },
+    { '(' .. NICK_CLASS .. ')%s*%(([Ss]?%d*)%s*lvl%)', false },
+}
+
+local CHIEF_LINE_PATTERN = '^(' .. NICK_CLASS .. ')%[(%d+)%]%s*$'
+
 local trimFn
 local stripTagsFn
 
@@ -7868,8 +9078,10 @@ local L_ADMIN_WORD = '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0'
 -- Публичный API модуля.
 function M.configure(deps)
     deps = type(deps) == 'table' and deps or {}
-    trimFn = deps.trim or _G.trim
-    stripTagsFn = deps.stripTags or _G.stripTags
+    if deps.trim then trimFn = deps.trim end
+    if deps.stripTags then stripTagsFn = deps.stripTags end
+    if not trimFn then trimFn = _G.trim end
+    if not stripTagsFn then stripTagsFn = _G.stripTags end
     if deps.lAdminsOnline then L_ADMINS_ONLINE = deps.lAdminsOnline end
     if deps.lAdminWord then L_ADMIN_WORD = deps.lAdminWord end
 end
@@ -7920,8 +9132,12 @@ function M.normalizeAdminListLine(plain)
 end
 
 -- Публичный API модуля.
-function M.isAdminsListNoise(plain)
-    plain = M.normalizeAdminListLine(plain)
+function M.isAdminsListNoise(plain, alreadyNormalized)
+    if alreadyNormalized then
+        plain = trim(plain or '')
+    else
+        plain = M.normalizeAdminListLine(plain)
+    end
     if plain == '' then return true end
     if plain:find(L_ADMINS_ONLINE, 1, true) then return true end
     if plain:find('admins online', 1, true) then return true end
@@ -7961,9 +9177,7 @@ local function nickPidLevelPatterns(plain)
     return nil
 end
 
--- Публичный API модуля: nick, level, id | nil.
-function M.parseAdminLine(plain)
-    plain = M.normalizeAdminListLine(plain)
+local function parseAdminLineCore(plain)
     if plain == '' then return nil end
     plain = stripAdminLineSuffix(plain)
     local nick, pid, lvlStr = nickPidLevelPatterns(plain)
@@ -7971,20 +9185,24 @@ function M.parseAdminLine(plain)
         local level = M.parseAdminLevel(lvlStr)
         if level then return nick, level, tonumber(pid) end
     end
-    local chiefNick, chiefPid = plain:match('^(' .. NICK_CLASS .. ')%[(%d+)%]%s*$')
+    local chiefNick, chiefPid = plain:match(CHIEF_LINE_PATTERN)
     if chiefNick and chiefPid then
         return chiefNick, nil, tonumber(chiefPid)
     end
     return nil
 end
 
--- Публичный API модуля: { nick, level, id } | nil.
-function M.parseAdminEntry(line, opts)
+-- Публичный API модуля: nick, level, id | nil.
+function M.parseAdminLine(plain)
+    plain = M.normalizeAdminListLine(plain)
+    if plain == '' then return nil end
+    return parseAdminLineCore(plain)
+end
+
+local function parseAdminEntryFromNormalized(line, opts)
     opts = type(opts) == 'table' and opts or {}
-    line = M.normalizeAdminListLine(line or '')
     if line == '' then return nil end
-    line = line:gsub('%s+%([^)]*%)$', '')
-    local nick, level, pid = M.parseAdminLine(line)
+    local nick, level, pid = parseAdminLineCore(line)
     if nick and level then
         return { nick = nick, level = level, id = pid }
     end
@@ -8022,14 +9240,10 @@ function M.parseAdminEntry(line, opts)
     return nil
 end
 
-local function blobPatterns()
-    local n = NICK_CLASS
-    return {
-        { '(' .. n .. ')%[(%d+)%]%s*%(([Ss]?%d+)%s*lvl%)', true },
-        { '(' .. n .. ')%[(%d+)%]%s*%(([Ss]?%d*)%s*lvl%)', true },
-        { '(' .. n .. ')%s*%(([Ss]?%d+)%s*lvl%)', false },
-        { '(' .. n .. ')%s*%(([Ss]?%d*)%s*lvl%)', false },
-    }
+-- Публичный API модуля: { nick, level, id } | nil.
+function M.parseAdminEntry(line, opts)
+    line = M.normalizeAdminListLine(line or '')
+    return parseAdminEntryFromNormalized(line, opts)
 end
 
 -- Публичный API модуля.
@@ -8051,7 +9265,7 @@ function M.scanAdminsBlob(plain, opts)
         seen[key] = true
         list[#list + 1] = { nick = nick, level = level, id = tonumber(id) }
     end
-    for _, spec in ipairs(blobPatterns()) do
+    for _, spec in ipairs(BLOB_PATTERNS) do
         local pat, hasPid = spec[1], spec[2]
         if hasPid then
             for nick, pid, lvlStr in plain:gmatch(pat) do
@@ -8064,13 +9278,12 @@ function M.scanAdminsBlob(plain, opts)
         end
     end
     if type(opts.resolveChief) == 'function' then
-        for nick, pid in plain:gmatch('(' .. NICK_CLASS .. ')%[(%d+)%]%s*[\r\n]') do
-            local chief = opts.resolveChief(nick)
-            if chief then add(nick, chief.level, pid) end
-        end
-        for nick, pid in plain:gmatch('(' .. NICK_CLASS .. ')%[(%d+)%]%s*$') do
-            local chief = opts.resolveChief(nick)
-            if chief then add(nick, chief.level, pid) end
+        for line in plain:gmatch('[^\n]+') do
+            local nick, pid = trim(line):match(CHIEF_LINE_PATTERN)
+            if nick and pid then
+                local chief = opts.resolveChief(nick)
+                if chief then add(nick, chief.level, pid) end
+            end
         end
     end
     return list
@@ -8145,14 +9358,24 @@ function M.parseAdminsDialog(text, style, opts)
     for i = startRow, #lines do
         local cols = type(opts.splitCols) == 'function' and opts.splitCols(lines[i]) or {}
         if not (type(opts.isAdminsHeaderRow) == 'function' and opts.isAdminsHeaderRow(cols)) then
-            addEntry(M.parseAdminEntry(lines[i], opts))
+            local norm = M.normalizeAdminListLine(lines[i])
+            if norm ~= '' then
+                addEntry(parseAdminEntryFromNormalized(norm, opts))
+            end
         end
     end
-    for _, entry in ipairs(scanAdminsTabBlob(plain, opts)) do
-        addEntry(entry)
+    if #list > 0 and #lines > 1 then
+        return list
     end
-    for _, entry in ipairs(M.scanAdminsBlob(plain, opts)) do
-        addEntry(entry)
+    if #list == 0 and plain:find('\t', 1, true) then
+        for _, entry in ipairs(scanAdminsTabBlob(plain, opts)) do
+            addEntry(entry)
+        end
+    end
+    if #list == 0 then
+        for _, entry in ipairs(M.scanAdminsBlob(plain, opts)) do
+            addEntry(entry)
+        end
     end
     return list
 end
@@ -8179,8 +9402,6 @@ function M.parseLeaderLine(plain)
     if nick and org then return nick, math.floor(tonumber(org) or 0) end
     return nil
 end
-
-M.configure({})
 
 return M
 
@@ -8258,6 +9479,9 @@ function M.load()
         print('[Report Desk] checker catalog load: ' .. tostring(err))
         return nil
     end
+    if setfenv then
+        setfenv(chunk, {})
+    end
     local ok, data = pcall(chunk)
     if not ok or type(data) ~= 'table' then
         print('[Report Desk] checker catalog load: bad table')
@@ -8269,50 +9493,50 @@ end
 -- Write Snapshot Body
 local function writeSnapshotBody(f, snapshot)
     snapshot = type(snapshot) == 'table' and snapshot or {}
-    f:write(string.format('  version = %d,\n', CATALOG_VERSION))
-    f:write(string.format('  updated_at = %d,\n', os.time()))
-    f:write('  admins = {\n')
+    local parts = {
+        string.format('  version = %d,\n', CATALOG_VERSION),
+        string.format('  updated_at = %d,\n', os.time()),
+        '  admins = {\n',
+    }
     for _, e in ipairs(snapshot.admins or {}) do
         if type(e) == 'table' and (e.nick or '') ~= '' then
-            f:write(string.format(
+            parts[#parts + 1] = string.format(
                 '    { nick = %s, level = %d },\n',
                 luaQuoteUtf8(e.nick),
-                math.floor(tonumber(e.level) or 0)))
+                math.floor(tonumber(e.level) or 0))
         end
     end
-    f:write('  },\n')
-    f:write('  leaders = {\n')
+    parts[#parts + 1] = '  },\n  leaders = {\n'
     for _, e in ipairs(snapshot.leaders or {}) do
         if type(e) == 'table' and (e.nick or '') ~= '' then
-            f:write(string.format('    { nick = %s, org = %d',
-                luaQuoteUtf8(e.nick), math.floor(tonumber(e.org) or 0)))
+            local row = string.format('    { nick = %s, org = %d',
+                luaQuoteUtf8(e.nick), math.floor(tonumber(e.org) or 0))
             if (e.org_name or '') ~= '' then
-                f:write(', org_name = ' .. luaQuoteUtf8(e.org_name))
+                row = row .. ', org_name = ' .. luaQuoteUtf8(e.org_name)
             end
             if (e.role or '') ~= '' then
-                f:write(', role = ' .. luaQuoteUtf8(e.role))
+                row = row .. ', role = ' .. luaQuoteUtf8(e.role)
             end
             if e.hidden == true then
-                f:write(', hidden = true')
+                row = row .. ', hidden = true'
             end
-            f:write(' },\n')
+            parts[#parts + 1] = row .. ' },\n'
         end
     end
-    f:write('  },\n')
-    f:write('  hidden_nicks = {\n')
+    parts[#parts + 1] = '  },\n  hidden_nicks = {\n'
     for _, nick in ipairs(snapshot.hidden_nicks or {}) do
         if type(nick) == 'string' and nick ~= '' then
-            f:write('    ' .. luaQuoteUtf8(nick) .. ',\n')
+            parts[#parts + 1] = '    ' .. luaQuoteUtf8(nick) .. ',\n'
         end
     end
-    f:write('  },\n')
-    f:write('  friends = {\n')
+    parts[#parts + 1] = '  },\n  friends = {\n'
     for _, e in ipairs(snapshot.friends or {}) do
         if type(e) == 'table' and (e.nick or '') ~= '' then
-            f:write('    { nick = ' .. luaQuoteUtf8(e.nick) .. ' },\n')
+            parts[#parts + 1] = '    { nick = ' .. luaQuoteUtf8(e.nick) .. ' },\n'
         end
     end
-    f:write('  },\n')
+    parts[#parts + 1] = '  },\n'
+    f:write(table.concat(parts))
 end
 
 -- Публичный API модуля.
@@ -8320,17 +9544,10 @@ function M.save(snapshot)
     ensureConfigDir()
     if doesFileExist(M.PATH) then
         pcall(function()
-            local src = io.open(M.PATH, 'rb')
-            if not src then return end
-            local body = src:read('*a')
-            src:close()
-            if body and body ~= '' then
-                local bak = io.open(M.BACKUP_PATH, 'wb')
-                if bak then
-                    bak:write(body)
-                    bak:close()
-                end
+            if doesFileExist(M.BACKUP_PATH) then
+                os.remove(M.BACKUP_PATH)
             end
+            os.rename(M.PATH, M.BACKUP_PATH)
         end)
     end
     local f, err = io.open(M.PATH, 'w')
@@ -9045,6 +10262,7 @@ REPORT_COLORS = {
 CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk.lua'
 USER_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lua'
 USER_CONFIG_BACKUP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.bak.lua'
+SCENARIO_LEARN_PATH = getWorkingDirectory() .. '\\config\\scenario_learn.lua'
 CHECKER_CATALOG_PATH = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.lua'
 CHECKER_CATALOG_BACKUP = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.bak.lua'
 SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
@@ -9076,6 +10294,8 @@ CHAT_POLL_LINES_OPEN = 100        -- строк sampGetChatString при отк�
 CHAT_POLL_LINES_CLOSED = 40
 CHAT_POLL_LINES_HOOK = 24         -- меньше строк при активном hook
 CHAT_POLL_LINES_CLOSED_HOOK = 16
+DESK_OPEN_WARMUP_SEC = 0.25       -- после открытия окна — лёгкий poll, без тяжёлого burst
+DESK_OPEN_POLL_LINES = 16         -- строк poll в warmup (вместо CHAT_POLL_LINES_OPEN)
 HOOK_HEALTH_CHECK_INTERVAL = 30.0 -- переустановка SAMP hooks, сек
 
 WIN_W, WIN_H = 980, 640           -- размер главного окна Report Desk, px
@@ -9085,6 +10305,7 @@ MAX_CONSUMED_REPORT_LINES = 1500
 MAX_TIMED_MAP_ENTRIES = 512
 TIMED_MAP_MAX_AGE = 120           -- возраст записи timed map, сек
 DEFAULT_MAX_THREADS = 300           -- лимит тредов репортов в памяти
+DEFAULT_HISTORY_LIMIT = 100         -- сообщений на тред; старые обрезаются автоматически
 
 -- Profanity filter / dedup (PF = profanity).
 PF = {
@@ -9098,17 +10319,11 @@ PF = {
     HOTKEY_TOGGLE_GRACE = 0.18,
 }
 
--- HUD «Дальний чат» (RC = remote chat).
+-- Дальний чат (RC): dedup / rate limits.
 RC = {
-    DEFAULT_X = -1,            -- -1 = прижать к правому краю
-    DEFAULT_Y = 52,
-    DEFAULT_H = 340,
-    MIN_W = 260,
-    MAX_W = 420,
-    MIN_H = 120,
-    MAX_H = 720,
-    MAX_MESSAGES = 200,
-    MSG_PREVIEW = 96,
+    DEDUP_SEC = 12.0,
+    STATUS_DEDUP_SEC = 180.0,
+    INGEST_MAX_PER_SEC = 4,
 }
 
 PROFANITY_DICT_MODULE = 'report_desk_profanity_words'
@@ -9204,6 +10419,7 @@ local ANS_SPLIT_DELAY_MS = 200
 -- ImGui тёмная тема Report Desk.
 function applyModernDarkStyle()
     imgui.StyleColorsDark()
+    invalidateEllipsizeCache()
     local s = imgui.GetStyle()
     local Col = imgui.Col
     s.WindowPadding = imgui.ImVec2(14, 12)
@@ -9285,12 +10501,8 @@ BUILTIN_AUTO_RULE_GG = {
 
 settings = {
     hotkey = vkeys.VK_F7,
-    history_limit = 80,
     sound = false,
     auto_only_unread = false,
-    poll_chat_log = true,
-    poll_events_only = false,
-    debug = false,
     watch_notify = 'see',
     watch_auto_notify = true,
     gg_reply = DEFAULT_GG_REPLY,
@@ -9301,17 +10513,11 @@ settings = {
     auto_time_enabled = true,
     auto_gg_enabled = true,
     ingest_srv_any_color = false,
-    ingest_pc = true,
-    ingest_s = true,
-    ingest_m = true,
-    max_threads = DEFAULT_MAX_THREADS,
     profanity_filter_enabled = true,
     profanity_filter_sound = true,
     profanity_filter_chat = false,
-    remote_chat_hud_x = -1,
-    remote_chat_hud_y = 52,
-    remote_chat_hud_h = 340,
-    remote_chat_hud_w = 320,
+    remote_chat_samp_mirror = true,
+    scenario_learn_enabled = true,
     admin_level = 3,
     skin_radius = 20,
     skin_apply_delay_ms = 2500,
@@ -9325,7 +10531,6 @@ settings = {
     spectate_auto_st = true,
     spectate_hud_persist = true,
     spectate_sp_menu_sound = false,
-    ingest_admin_actions = true,
     spectate_hud_x = 14,
     spectate_hud_y = 120,
     spectate_sp_ui = true,
@@ -9337,6 +10542,10 @@ settings = {
     spectate_vehicle_hud = true,
     spectate_vehicle_hud_x = -12,
     spectate_vehicle_hud_y = -8,
+    spectate_keys_hud = true,
+    spectate_keys_hud_x = nil,
+    spectate_keys_hud_y = -100,
+    spectate_keys_hud_custom = false,
     spectate_vehicle_hud_custom = false,
     spectate_vehicle_hud_layout_v2 = true,
     spectate_vehicle_hud_layout_v3 = true,
@@ -9459,6 +10668,7 @@ local DEFAULT_QUICK_SCENARIOS = {
 local quickScenarios = {}
 local threads = {}
 local threadOrder = {}
+local threadCount = 0
 
 local showWindow = new.bool(false)
 local activeTab = new.int(0)
@@ -9482,7 +10692,13 @@ local deskInputState = {
     spectateWantCursorMode = nil,
     spectateUiModeActive = false,
     panelOpenPrev = false,
+    deskUiOpenPrev = false,
+    sampChatHeldOff = false,
     chatScrollFrames = 0,
+    chatSnapBottomKey = nil,
+    chatSnapAttempts = 0,
+    chatFollowBottom = true,
+    chatLastScrollY = nil,
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -9557,6 +10773,7 @@ local RECENT = {
 }
 local lastMapPrune = 0
 local lastSettingsSave = 0
+local lastScenarioLearnSave = 0
 local lastThreadsSave = 0
 local scenariosGen = 0
 local cachedSortedScenarioIdx = nil
@@ -9586,10 +10803,19 @@ local deskCache = {
     filterKeys = nil,
     filterSig = '',
     threadRev = 0,
+    threadStructRev = 0,
+    threadMsgRev = 0,
+    ellipsize = {},
+    ellipsizeOrder = {},
+    composerQuickItems = nil,
+    composerQuickGen = -1,
     nickKeys = {},
     profNorm = {},
     profSet = {},
-    remoteChatMessages = {},
+    remoteChatDedup = {},
+    remoteChatDedupOrd = {},
+    remoteChatQueue = {},
+    sampPlayerColors = {},
     profLineSeen = {},
     profHooksInstalled = false,
     quickBtn = {},
@@ -9609,6 +10835,7 @@ local deskCache = {
     playerQuitHandler = nil,
     playerJoinHandler = nil,
     playerStreamInHandler = nil,
+    playerColorHandler = nil,
     profBubbleHandler = nil,
     profChatHandler = nil,
     hookPrevServerMsg = nil,
@@ -9619,6 +10846,7 @@ local deskCache = {
     hookPrevPlayerQuit = nil,
     hookPrevPlayerJoin = nil,
     hookPrevPlayerStreamIn = nil,
+    hookPrevPlayerColor = nil,
     hookPrevProfBubble = nil,
     hookPrevProfChat = nil,
     mainPanelFrame = nil,
@@ -9629,8 +10857,14 @@ local deskCache = {
         SYSKEYUP = 0x0105,
         CHAR = 0x0102,
         LBUTTONDOWN = 0x0201,
+        LBUTTONUP = 0x0202,
         RBUTTONDOWN = 0x0204,
+        RBUTTONUP = 0x0205,
         MBUTTONDOWN = 0x0207,
+        MBUTTONUP = 0x0208,
+        MOUSEMOVE = 0x0200,
+        MOUSEWHEEL = 0x020A,
+        MOUSEHWHEEL = 0x020E,
         XBUTTONDOWN = 0x020B,
         KILLFOCUS = 0x0008,
         CHAT_KEYS = {
@@ -9660,10 +10894,6 @@ local deskCache = {
 
 local uiSound = new.bool(false)
 local uiAutoOnlyUnread = new.bool(false)
-local uiHistoryLimit = new.int(80)
-local uiPollChat = new.bool(true)
-local uiPollEventsOnly = new.bool(false)
-local uiDebug = new.bool(false)
 local deskReplyBuf = {
     watch = new.char[256](),
     time = new.char[512](),
@@ -9689,19 +10919,21 @@ local scKwNew = new.char[96]()
 scKwEdit = {}
 local scKwBulk = new.char[2048]()
 local scTestBuf = new.char[256]()
+settingsScenarioLearn = new.bool(true)
 local scTestResult = new.char[128]()
 local uiAutoRulesEnabled = new.bool(true)
 local uiAutoTimeEnabled = new.bool(true)
 local uiAutoGgEnabled = new.bool(true)
-local uiMaxThreads = new.int(DEFAULT_MAX_THREADS)
 local uiWatchAutoNotify = new.bool(true)
 local uiSpecHud = new.bool(true)
 local uiSpecAutoSt = new.bool(true)
 local uiSpecHudPersist = new.bool(true)
 local uiSpecSpMenuSound = new.bool(false)
 local uiSpecVehicleHud = new.bool(true)
-local uiIngestAdmin = new.bool(true)
+local uiSpecKeysHud = new.bool(true)
+local uiSpecWheelZoom = new.bool(true)
 local uiProfanityFilter = new.bool(true)
+local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
 editRuleMatch = new.int(1)
 editRulePriority = new.int(0)
@@ -9735,6 +10967,7 @@ local ruleKwNew = new.char[96]()
 ruleKwEdit = {}
 selectedRuleIdx = 1
 rulesUiSynced = false
+settingsUiSynced = false
 deskWantsKeyboard = false
 
 --[[ Модуль: общие утилиты (строки, кодировки, ingest dedup, sendChat, звуки). ]]
@@ -9757,7 +10990,13 @@ function cp1251ToUtf8(text)
     if not text or text == '' then return '' end
     if isUtf8Text(text) and not text:find('\239\191\189', 1, true) then return text end
     local ok, r = pcall(function() return u8(text) end)
-    if ok and r and r ~= '' then return r end
+    if ok and r and r ~= '' then
+        if r:find('\239\191\189', 1, true) then
+            local okDec, decoded = pcall(function() return u8:decode(text) end)
+            if okDec and decoded and decoded ~= '' then return text end
+        end
+        return r
+    end
     return text
 end
 
@@ -9867,6 +11106,69 @@ function normColor(c)
     return c
 end
 
+-- SAMP int32 0xRRGGBBAA → {RRGGBB} (GetPlayerColor >>> 8).
+function sampColorToChatHex(c)
+    c = normColor(c)
+    if c == 0 then return nil end
+    if bit then
+        return string.format('%06X', bit.band(bit.rshift(c, 8), 0xFFFFFF))
+    end
+    return string.format('%06X', math.floor(c / 256) % 0x1000000)
+end
+
+-- Кэш clist: onPlayerJoin / onSetPlayerColor / onPlayerStreamIn (как в TAB).
+function sampStorePlayerColor(playerId, color)
+    if type(deskCache) ~= 'table' then return end
+    if type(deskCache.sampPlayerColors) ~= 'table' then
+        deskCache.sampPlayerColors = {}
+    end
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return end
+    color = normColor(color)
+    if color == 0 then return end
+    deskCache.sampPlayerColors[playerId] = color
+end
+
+function sampClearPlayerColor(playerId)
+    if type(deskCache) ~= 'table' or type(deskCache.sampPlayerColors) ~= 'table' then return end
+    playerId = tonumber(playerId)
+    if playerId then deskCache.sampPlayerColors[playerId] = nil end
+end
+
+function sampPlayerColorChatHex(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return nil end
+    local colors = type(deskCache) == 'table' and deskCache.sampPlayerColors
+    local c = colors and colors[playerId]
+    if not c and type(sampGetPlayerColor) == 'function' and type(sampIsPlayerConnected) == 'function' then
+        if sampIsPlayerConnected(playerId) then
+            local ok, live = pcall(sampGetPlayerColor, playerId)
+            if ok and live then
+                sampStorePlayerColor(playerId, live)
+                c = deskCache.sampPlayerColors[playerId]
+            end
+        end
+    end
+    if c and c ~= 0 then return sampColorToChatHex(c) end
+    return nil
+end
+
+function sampSyncAllPlayerColors()
+    if type(isSampAvailable) ~= 'function' or not isSampAvailable() then return end
+    if type(sampIsPlayerConnected) ~= 'function' or type(sampGetPlayerColor) ~= 'function' then return end
+    local maxId = 1000
+    if type(sampGetMaxPlayerId) == 'function' then
+        local ok, m = pcall(sampGetMaxPlayerId)
+        if ok and m then maxId = tonumber(m) or maxId end
+    end
+    for id = 0, maxId do
+        if sampIsPlayerConnected(id) then
+            local ok, c = pcall(sampGetPlayerColor, id)
+            if ok and c then sampStorePlayerColor(id, c) end
+        end
+    end
+end
+
 function isReportColor(color)
     local c = normColor(color)
     if REPORT_COLORS[c] then return true end
@@ -9939,8 +11241,101 @@ function invalidateUiCaches()
     deskCache.quickBtnGen = -1
 end
 
+function invalidateFilterCache()
+    deskCache.filterKeys = nil
+    deskCache.filterSig = ''
+end
+
+function bumpThreadStructRev()
+    deskCache.threadStructRev = (deskCache.threadStructRev or 0) + 1
+    deskCache.threadRev = deskCache.threadStructRev
+    invalidateFilterCache()
+end
+
+function bumpThreadMsgRev()
+    deskCache.threadMsgRev = (deskCache.threadMsgRev or 0) + 1
+end
+
 function bumpThreadListRev()
-    deskCache.threadRev = deskCache.threadRev + 1
+    bumpThreadStructRev()
+end
+
+function syncThreadCount()
+    local n = 0
+    for _ in pairs(threads) do n = n + 1 end
+    threadCount = n
+end
+
+function syncThreadStorageKeys()
+    for key, t in pairs(threads) do
+        if t then
+            t._storageKey = key
+            if type(lastPreview) == 'function' and not t._previewText then
+                t._previewText = lastPreview(t)
+            end
+        end
+    end
+end
+
+function threadSortBefore(a, b)
+    local ta, tb = threads[a], threads[b]
+    if not ta or not tb then return a < b end
+    if ta.pinned ~= tb.pinned then return ta.pinned end
+    return (ta.lastAt or 0) > (tb.lastAt or 0)
+end
+
+function findFilterInsertPos(keys, key)
+    for i = 1, #keys do
+        if threadSortBefore(key, keys[i]) then return i end
+    end
+    return #keys + 1
+end
+
+function bumpThreadInFilterCache(key)
+    if not key or not deskCache.filterKeys then return end
+    if type(getFilterListSig) ~= 'function' then return end
+    if type(threadMatchesFilter) ~= 'function' or type(threadMatchesSearch) ~= 'function' then return end
+    local sig = getFilterListSig()
+    if deskCache.filterSig ~= sig then return end
+    local t = threads[key]
+    if not t then return end
+    local keys = deskCache.filterKeys
+    for i = #keys, 1, -1 do
+        if keys[i] == key then
+            table.remove(keys, i)
+            break
+        end
+    end
+    if threadMatchesFilter(t) and threadMatchesSearch(t, key) then
+        table.insert(keys, findFilterInsertPos(keys, key), key)
+    end
+end
+
+function invalidateEllipsizeCache()
+    deskCache.ellipsize = {}
+    deskCache.ellipsizeOrder = {}
+end
+
+local ELLIPSIZE_CACHE_MAX = 512
+
+function ellipsizeCacheGet(cacheKey)
+    return deskCache.ellipsize[cacheKey]
+end
+
+function ellipsizeCachePut(cacheKey, value)
+    if deskCache.ellipsize[cacheKey] then return end
+    deskCache.ellipsize[cacheKey] = value
+    local order = deskCache.ellipsizeOrder
+    order[#order + 1] = cacheKey
+    while #order > ELLIPSIZE_CACHE_MAX do
+        local old = table.remove(order, 1)
+        if old then deskCache.ellipsize[old] = nil end
+    end
+end
+
+function bumpComposerQuickGen()
+    deskCache.composerQuickGen = (deskCache.composerQuickGen or 0) + 1
+    deskCache.composerQuickItems = nil
 end
 
 function rebuildNickIndex()
@@ -10119,7 +11514,37 @@ function deskAutoReplyAllowed()
     if not isSampAvailable() then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     if isGamePaused and isGamePaused() then return false end
+    if deskAdminPlayerPaused() then return false end
     return true
+end
+
+function deskAdminPlayerPaused()
+    if not isSampAvailable() then return false end
+    if type(sampIsPlayerPaused) ~= 'function' or type(sampGetPlayerIdByCharHandle) ~= 'function' then
+        return false
+    end
+    if not PLAYER_PED or type(doesCharExist) ~= 'function' or not doesCharExist(PLAYER_PED) then
+        return false
+    end
+    local ok, myId = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
+    if not ok or not myId then return false end
+    local ok2, paused = pcall(sampIsPlayerPaused, myId)
+    return ok2 and paused == true
+end
+
+local deskAdminPauseTracked = false
+
+function deskTickAdminPauseState()
+    local paused = deskAdminPlayerPaused()
+    local was = deskAdminPauseTracked
+    if paused and not was then
+        if type(clearAllPendingAuto) == 'function' then
+            pcall(clearAllPendingAuto)
+        end
+    elseif was and not paused then
+        pcall(seedSeenChatLines)
+    end
+    deskAdminPauseTracked = paused
 end
 
 -- ESC / pause menu — скрыть игровые HUD-оверлеи Report Desk.
@@ -10223,9 +11648,41 @@ end
 
 local TEMPLATE_PAYLOAD_HINT = '{datetime} {time} {date} {id}'
 
+-- Экранные координаты курсора (не зависят от imgui.DisableInput).
+function deskWin32MousePos()
+    if type(getCursorPos) == 'function' then
+        local ok, x, y = pcall(getCursorPos)
+        if ok and x and y then return x, y end
+    end
+    return nil, nil
+end
+
+function deskPointInRect(mx, my, r)
+    if not r or mx == nil or my == nil then return false end
+    return mx >= r.x0 and mx < r.x1 and my >= r.y0 and my < r.y1
+end
+
+function deskPointerInRect(r)
+    local mx, my = deskWin32MousePos()
+    return deskPointInRect(mx, my, r)
+end
+
+-- require()-модули (/sp menu, vehicle HUD) читают из _G, не из bundle env.
+_G.deskWin32MousePos = deskWin32MousePos
+_G.deskPointInRect = deskPointInRect
+_G.deskPointerInRect = deskPointerInRect
+
 function sendChat(line)
     line = trim(line)
     if line == '' then return false end
+    local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    local spId = cmdBody:match('^sp%s+(%d+)%s*$')
+    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+        local skip = deskCache and tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0
+        if not skip then
+            pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+        end
+    end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
     if type(sampSendChat) ~= 'function' then return false end
     return pcall(sampSendChat, line)
@@ -10528,11 +11985,16 @@ function checkProfanityFromChatLine(plain, lineKey)
     if not settings.profanity_filter_enabled then return end
     lineKey = trim(tostring(lineKey or ''))
     if lineKey ~= '' and profanityIsLineSeen(lineKey) then return end
+    if deskIngest and deskIngest.looksLikePlayerStatusLine
+            and deskIngest.looksLikePlayerStatusLine(plain) then
+        if lineKey ~= '' then profanityMarkLineSeen(lineKey) end
+        return
+    end
     -- [PC]/[S]/[M] репорты — только onIncomingReport + findProfanityMatch
     if profanitySkipChannelReport(plain) then return end
     local nick, id, body, kind, channelTag = parsePlayerChatLine(plain)
     if nick and body then
-        checkProfanityFromPlayer(nick, id, body, profanitySourceFromParse(kind, channelTag), lineKey)
+        checkProfanityFromPlayer(nick, id, body, profanitySourceFromParse(kind, channelTag), lineKey, { logChat = false })
     end
 end
 
@@ -10601,10 +12063,48 @@ function markProfanityAlertSeen(nick, body)
 end
 
 -- Check Profanity From Player
-function checkProfanityFromPlayer(nick, id, body, source, lineKey)
-    if not settings.profanity_filter_enabled then return end
-    if type(remoteChatIngestPlayer) == 'function' then
-        pcall(remoteChatIngestPlayer, nick, id, body, source, lineKey)
+function checkProfanityFromPlayer(nick, id, body, source, lineKey, opts)
+    opts = type(opts) == 'table' and opts or {}
+    local mirrorChat = opts.logChat == true and settings.remote_chat_samp_mirror ~= false
+    local profEnabled = settings.profanity_filter_enabled ~= false
+    if not mirrorChat and not profEnabled then return end
+    if shouldSkipProfanityPlayer(nick) then return end
+    body = trim(stripTags(body or ''))
+    if body == '' then return end
+    if bodyLooksLikeSystemChat(body) then return end
+    if deskIngest and deskIngest.looksLikePlayerStatusBody
+            and deskIngest.looksLikePlayerStatusBody(body) then
+        return
+    end
+
+    lineKey = trim(tostring(lineKey or ''))
+    if lineKey ~= '' and profEnabled and profanityIsLineSeen(lineKey) then return end
+
+    local hasProf = false
+    if profEnabled then
+        hasProf = findProfanityMatch(body) ~= nil
+        if lineKey ~= '' then profanityMarkLineSeen(lineKey) end
+        if hasProf and not isDuplicateProfanityAlert(nick, body) then
+            markProfanityAlertSeen(nick, body)
+            playProfanityAlertSound()
+            if settings.profanity_filter_chat then
+                local preview = body
+                if #preview > 96 then preview = preview:sub(1, 93) .. '...' end
+                local line = string.format(
+                    '%s%s[%d]: %s',
+                    PROFANITY_MSG_PREFIX, nick, tonumber(id) or 0, preview
+                )
+                sampAddChatMessage(line, PF.ALERT_COLOR)
+            end
+            if settings.debug then
+                print('[Report Desk] profanity: ' .. nick .. ' msg="' .. body:sub(1, 48) .. '"')
+            end
+        end
+    end
+
+    if mirrorChat and type(remoteChatTryAppend) == 'function' then
+        pcall(remoteChatTryAppend, nick, id, body, source, lineKey, hasProf,
+            opts.bubbleColor, opts.embedHex)
     end
 end
 
@@ -10623,27 +12123,55 @@ function checkProfanityFromChatMessage(playerId, text)
         source = rpKind
         body = rpBody
     end
-    checkProfanityFromPlayer(nick, playerId, body, source)
+    checkProfanityFromPlayer(nick, playerId, body, source, nil, { logChat = false })
 end
 
 -- Check Profanity From Bubble
-function checkProfanityFromBubble(playerId, message)
+function checkProfanityFromBubble(playerId, message, bubbleColor)
+    if type(logBubbleColor) == 'function' then
+        pcall(logBubbleColor, playerId, message, bubbleColor)
+    end
     if not isSampAvailable() then return end
     playerId = tonumber(playerId)
     if playerId == nil or playerId < 0 then return end
     if not sampIsPlayerConnected(playerId) then return end
+    if type(remoteChatNormalizeBubbleColor) == 'function' then
+        bubbleColor = remoteChatNormalizeBubbleColor(bubbleColor)
+    elseif type(normColor) == 'function' then
+        bubbleColor = normColor(bubbleColor)
+    end
     local nick = trim(sampGetPlayerNickname(playerId) or '')
     if nick == '' then return end
-    local body = trim(message or '')
+    local raw = trim(message or '')
+    local embedHex
+    if type(remoteChatExtractLeadingEmbed) == 'function' then
+        embedHex, raw = remoteChatExtractLeadingEmbed(raw)
+    end
+    local body = raw
     local source = 'bubble'
     if body:match('^/do%s') then
         source = 'do'
+        body = stripRoleplayBodyPrefix(body)
+    elseif body:match('^/me%s') or bodyLooksLikeRoleplayCmd(body) then
+        source = 'me'
         body = stripRoleplayBodyPrefix(body)
     else
         body = stripRoleplayBodyPrefix(body)
     end
     if body == '' then return end
-    checkProfanityFromPlayer(nick, playerId, body, source)
+    if deskIngest and deskIngest.looksLikePlayerStatusBody
+            and deskIngest.looksLikePlayerStatusBody(body) then
+        return
+    end
+    if REMOTE_CHAT_FILTER_AUTO ~= false and type(remoteChatLooksLikeAutoAction) == 'function'
+            and remoteChatLooksLikeAutoAction(body) then
+        return
+    end
+    checkProfanityFromPlayer(nick, playerId, body, source, nil, {
+        logChat = true,
+        bubbleColor = bubbleColor,
+        embedHex = embedHex,
+    })
 end
 
 --[[ Модуль: UI чата треда, bubbles, composer. ]]
@@ -10654,7 +12182,7 @@ function installProfanityHooks()
     if prevBubble == deskCache.profBubbleHandler then prevBubble = nil end
     deskCache.hookPrevProfBubble = prevBubble
     deskCache.profBubbleHandler = function(playerId, color, distance, duration, message)
-        pcall(checkProfanityFromBubble, playerId, message)
+        pcall(checkProfanityFromBubble, playerId, message, color)
         if type(prevBubble) == 'function' then
             return prevBubble(playerId, color, distance, duration, message)
         end
@@ -10675,6 +12203,21 @@ end
 -- Say
 function say(text)
     sampAddChatMessage(MSG_PREFIX .. text, 0xE8E8E8)
+end
+
+-- Сообщение в чат при успешной загрузке скрипта.
+function announceDeskStartup()
+    if not isSampAvailable or not isSampAvailable() then return end
+    if not sampAddChatMessage then return end
+    local ver = '?.?.?'
+    if thisScript and thisScript().version then
+        ver = tostring(thisScript().version)
+    end
+    local msg = '{9E7BEF}[ReportDesk]{FFFFFF} '
+        .. '\xD1\xEA\xF0\xE8\xEF\xF2 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. '
+        .. '{B0B0B8}\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE9 \xED\xE5\xF2.{FFFFFF} '
+        .. '\xC2\xE5\xF0\xF1\xE8\xFF {9E7BEF}' .. ver
+    pcall(sampAddChatMessage, msg, 0xE8E8E8)
 end
 
 -- Format Time
@@ -10713,11 +12256,81 @@ function avatarLetter(nick)
     return nick:sub(1, 1)
 end
 
--- Measure Wrapped
-function measureWrapped(text, wrapW)
-    local display = uiText(text or '')
-    if display == '' then return imgui.ImVec2(0, 0) end
-    return imgui.CalcTextSize(display, nil, false, wrapW)
+-- Wrap Text Lines Utf8
+local wrapTextSpaceW = nil
+
+function wrapTextLinesUtf8(text, wrapW)
+    text = text or ''
+    if text == '' then return {}, imgui.GetTextLineHeight() end
+    wrapW = math.max(48, tonumber(wrapW) or 200)
+    local lineH = (imgui.GetTextLineHeightWithSpacing and imgui.GetTextLineHeightWithSpacing())
+        or imgui.GetTextLineHeight()
+    if not wrapTextSpaceW then
+        wrapTextSpaceW = imgui.CalcTextSize(' ').x
+    end
+    local spaceW = wrapTextSpaceW
+    local lines = {}
+    for paragraph in (text .. '\n'):gmatch('(.-)\n') do
+        paragraph = trim(paragraph)
+        if paragraph == '' then
+            lines[#lines + 1] = ''
+        else
+            local buf, bufW = '', 0
+            local function flush()
+                if buf ~= '' then
+                    lines[#lines + 1] = buf
+                    buf, bufW = '', 0
+                end
+            end
+            for word in paragraph:gmatch('%S+') do
+                local wW = imgui.CalcTextSize(word).x
+                local addW = (buf == '') and wW or (spaceW + wW)
+                if buf ~= '' and (bufW + addW) > wrapW then
+                    flush()
+                    buf, bufW = word, wW
+                elseif buf == '' then
+                    buf, bufW = word, wW
+                else
+                    buf = buf .. ' ' .. word
+                    bufW = bufW + spaceW + wW
+                end
+            end
+            flush()
+        end
+    end
+    if #lines == 0 then lines[1] = '' end
+    return lines, lineH
+end
+
+-- Bubble Wrap Layout
+function bubbleWrapLayout(m, rawLine, wrapW)
+    wrapW = math.max(48, tonumber(wrapW) or 200)
+    local src = rawLine or ''
+    if m then
+        if m._wrapSrc ~= src then
+            m._wrapSrc = src
+            m._wrapByW = nil
+        end
+        m._wrapByW = m._wrapByW or {}
+        local hit = m._wrapByW[wrapW]
+        if hit then return hit.lines, hit.lineH, hit.w, hit.h end
+    end
+    local display = cp1251ToUtf8(src)
+    local lines, lineH = wrapTextLinesUtf8(display, wrapW)
+    local w = 0
+    for _, ln in ipairs(lines) do
+        if ln ~= '' then
+            local tw = imgui.CalcTextSize(ln).x
+            if tw > w then w = tw end
+        end
+    end
+    local h = math.max(lineH, #lines * lineH)
+    if w < 1 then w = 40 end
+    if h < lineH then h = lineH end
+    if m then
+        m._wrapByW[wrapW] = { lines = lines, lineH = lineH, w = w, h = h }
+    end
+    return lines, lineH, w, h
 end
 
 -- Refresh My Nick
@@ -10859,10 +12472,18 @@ end
 -- Thread Storage Key
 function threadStorageKey(t)
     if not t then return nil end
+    local key = t._storageKey
+    if key and threads[key] == t then return key end
     local nk = findThreadKeyByNick(t.nick)
-    if nk and threads[nk] == t then return nk end
-    for key, th in pairs(threads) do
-        if th == t then return key end
+    if nk and threads[nk] == t then
+        t._storageKey = nk
+        return nk
+    end
+    for k, th in pairs(threads) do
+        if th == t then
+            t._storageKey = k
+            return k
+        end
     end
     return nil
 end
@@ -10921,7 +12542,6 @@ function threadApplyOutgoing(t, threadKey, body, opts)
             existing.adminNick = nil
             existing.kind = 'reply_self'
             markThreadAnswered(t)
-            requestChatScrollForThread(threadKey)
         elseif opts.self == false and opts.adminNick then
             if not existing.adminNick or existing.adminNick == '' then
                 existing.adminNick = opts.adminNick
@@ -10948,7 +12568,6 @@ function threadApplyOutgoing(t, threadKey, body, opts)
         adminNick = opts.adminNick,
     })
     markThreadAnswered(t)
-    requestChatScrollForThread(threadKey)
     return true
 end
 
@@ -10970,7 +12589,6 @@ function addAutoSystemNote(t, ruleName, result)
         note = string.format('auto: %s \xE2\x86\x92 %s', ruleName or '', result or ''),
         ts = os.time(),
     })
-    requestChatScrollForThread(key)
 end
 
 -- Estimate Ans Chat Line Len
@@ -11082,6 +12700,20 @@ function sendOutgoingAns(t, text, opts)
         threadKey = threadKey,
         markEcho = split,
     })
+    if type(scenarioLearnOnReply) == 'function' then
+        local q = trim(opts.scenarioQuestion or '')
+        if q == '' and scenarioLearnLastPlayerQuestion then
+            q = scenarioLearnLastPlayerQuestion(t) or ''
+        end
+        if trim(opts.scenarioLabel or '') ~= '' then
+            pcall(scenarioLearnOnReply, q, text, {
+                scenarioLabel = opts.scenarioLabel,
+                source = 'scenario',
+            })
+        else
+            pcall(scenarioLearnOnReply, q, text, { source = 'manual' })
+        end
+    end
     if split then
         return true, '/ans ' .. ansId .. ' (2 \xF7\xE0\xF1\xF2\xE8)'
     end
@@ -11089,66 +12721,19 @@ function sendOutgoingAns(t, text, opts)
 end
 
 -- Measure Bubble Text
-function measureBubbleText(line, wrapInnerW)
-    wrapInnerW = math.max(48, tonumber(wrapInnerW) or 200)
-    local lines, lineH = wrapTextLines(line, wrapInnerW)
-    local w = 0
-    for _, ln in ipairs(lines) do
-        if ln ~= '' then
-            local tw = imgui.CalcTextSize(ln).x
-            if tw > w then w = tw end
-        end
-    end
-    local h = math.max(lineH, #lines * lineH)
-    if w < 1 then w = 40 end
-    if h < lineH then h = lineH end
+function measureBubbleText(line, wrapInnerW, msg)
+    local _, _, w, h = bubbleWrapLayout(msg, line, wrapInnerW)
     return w, h
 end
 
 -- Wrap Text Lines
 function wrapTextLines(text, wrapW)
-    text = uiText(text or '')
-    if text == '' then return {} end
-    wrapW = math.max(48, tonumber(wrapW) or 200)
-    local lineH = (imgui.GetTextLineHeightWithSpacing and imgui.GetTextLineHeightWithSpacing())
-        or imgui.GetTextLineHeight()
-    local spaceW = imgui.CalcTextSize(' ').x
-    local lines = {}
-    for paragraph in (text .. '\n'):gmatch('(.-)\n') do
-        paragraph = trim(paragraph)
-        if paragraph == '' then
-            lines[#lines + 1] = ''
-        else
-            local buf, bufW = '', 0
-            local function flush()
-                if buf ~= '' then
-                    lines[#lines + 1] = buf
-                    buf, bufW = '', 0
-                end
-            end
-            for word in paragraph:gmatch('%S+') do
-                local wW = imgui.CalcTextSize(word).x
-                local addW = (buf == '') and wW or (spaceW + wW)
-                if buf ~= '' and (bufW + addW) > wrapW then
-                    flush()
-                    buf, bufW = word, wW
-                elseif buf == '' then
-                    buf, bufW = word, wW
-                else
-                    buf = buf .. ' ' .. word
-                    bufW = bufW + spaceW + wW
-                end
-            end
-            flush()
-        end
-    end
-    if #lines == 0 then lines[1] = '' end
-    return lines, lineH
+    return wrapTextLinesUtf8(cp1251ToUtf8(text or ''), wrapW)
 end
 
 -- Draw Bubble Body Text
-function drawBubbleBodyText(dl, x, y, wrapW, line, fg)
-    local lines, lineH = wrapTextLines(line, wrapW)
+function drawBubbleBodyText(dl, x, y, wrapW, line, fg, msg)
+    local lines, lineH = bubbleWrapLayout(msg, line, wrapW)
     local cy = y
     for _, ln in ipairs(lines) do
         if ln ~= '' then
@@ -11222,21 +12807,11 @@ function deskSyncInputFocusState()
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
-    if deskInputState.replyFocused then
-        deskInputState.keyboardStickyUntil = os.clock() + 2.5
-    end
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then
-        deskInputState.keyboardStickyUntil = os.clock() + 2.5
+    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard))
+        or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
+    if typing then
         deskInputState.replyFocused = true
-    end
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then
-        deskInputState.keyboardStickyUntil = os.clock() + 2.5
-        deskInputState.replyFocused = true
-    end
-    if deskInputState.replyFocused
-            and deskInputState.keyboardStickyUntil <= os.clock()
-            and not (io and (io.WantTextInput or io.WantCaptureKeyboard))
-            and not (imgui.IsAnyItemActive and imgui.IsAnyItemActive()) then
+    elseif deskInputState.replyFocused and deskInputState.keyboardStickyUntil <= os.clock() then
         deskInputState.replyFocused = false
     end
 end
@@ -11247,7 +12822,7 @@ function deskKeepInputOnActiveItem()
     if imgui.IsItemActive then active = imgui.IsItemActive() end
     if not active and imgui.IsItemFocused then active = imgui.IsItemFocused() end
     if active or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
-        deskInputState.keyboardStickyUntil = os.clock() + 3.0
+        deskInputState.keyboardStickyUntil = os.clock() + 0.12
         deskInputState.replyFocused = true
     end
 end
@@ -11269,6 +12844,7 @@ end
 
 -- Desk hook/helper.
 function deskImguiTypingActive()
+    if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
     if deskInputState.replyFocused then return true end
@@ -11835,19 +13411,76 @@ function markerFindSampVehicleId(carHandle)
     return nil
 end
 
---[[ Свободное место — водитель / пассажир. ]]
+--[[ Свободное место — как AdminTools getCarFreeSeat. ]]
 function deskGetCarFreeSeat(car)
-    local driver = getDriverOfCar(car)
-    if driver == -1 or driver == nil or not doesCharExist(driver) then
-        return 0
+    if doesCharExist(getDriverOfCar(car)) then
+        local maxPass = getMaximumNumberOfPassengers(car)
+        for seat = 0, maxPass do
+            if isCarPassengerSeatFree(car, seat) then
+                return seat + 1
+            end
+        end
+        return nil
     end
-    local maxPass = getMaximumNumberOfPassengers(car)
-    for seat = 0, maxPass do
-        if isCarPassengerSeatFree(car, seat) then
-            return seat + 1
+    return 0
+end
+
+--[[ /acar — 1:1 AdminTools getcar: RPC enter + warp + машина к игроку. ]]
+function deskAcarEnter(arg)
+    if not arg or not string.match(arg, '%d') then
+        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /acar [ID \xF2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xED\xEE\xE3\xEE \xF1\xF0\xE5\xE4\xF1\xF2\xE2\xE0].')
+        return
+    end
+    local vid = tonumber(string.match(arg, '%d+'))
+    if not vid then return end
+    local ok, car = sampGetCarHandleBySampVehicleId(vid)
+    if not ok or not car or not doesVehicleExist(car) then
+        say('\xD2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xED\xEE\xE3\xEE \xF1\xF0\xE5\xE4\xF1\xF2\xE2\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xE2 \xE7\xEE\xED\xE5 \xEF\xF0\xEE\xF0\xE8\xF1\xEE\xE2\xEA\xE8 \xED\xE5\xF2.')
+        return
+    end
+    if getDriverOfCar(car) ~= -1 then
+        say('\xCD\xE5\xEB\xFC\xE7\xFF \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2\xE8\xF0\xEE\xE2\xE0\xF2\xFC\xF1\xFF \xE2 \xD2\xD1 \xF1 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.')
+        return
+    end
+    local px, py, pz = getCharCoordinates(PLAYER_PED)
+    if sampSendEnterVehicle then sampSendEnterVehicle(vid, false) end
+    warpCharIntoCar(PLAYER_PED, car)
+    if restoreCameraJumpcut then pcall(restoreCameraJumpcut) end
+    setCarCoordinates(car, px, py, pz)
+end
+
+--[[ Посадка по SAMP id + handle (AdminTools getcar / jumpIntoCar). ]]
+function markerEnterVehicleById(vid, carHandle)
+    vid = tonumber(vid)
+    if not vid or vid < 0 then return false end
+    if sampGetCarHandleBySampVehicleId then
+        local ok, h = sampGetCarHandleBySampVehicleId(vid)
+        if ok and h and doesVehicleExist(h) then
+            carHandle = h
         end
     end
-    return nil
+    if not carHandle or not doesVehicleExist(carHandle) then return false end
+    if sampIsVehicleDefined and not sampIsVehicleDefined(vid) then return false end
+
+    local seat = deskGetCarFreeSeat(carHandle)
+    if seat == nil then return false end
+    local asPassenger = (seat ~= 0)
+
+    if sampSendEnterVehicle then
+        sampSendEnterVehicle(vid, asPassenger)
+    end
+    if seat == 0 then
+        if type(warpCharIntoCar) ~= 'function' then return false end
+        warpCharIntoCar(PLAYER_PED, carHandle)
+    else
+        warpCharIntoCarAsPassenger(PLAYER_PED, carHandle, seat - 1)
+    end
+    if restoreCameraJumpcut then pcall(restoreCameraJumpcut) end
+    if seat == 0 then
+        local px, py, pz = getCharCoordinates(PLAYER_PED)
+        setCarCoordinates(carHandle, px, py, pz)
+    end
+    return true
 end
 
 -- Marker Resolve Car And Vid
@@ -11899,216 +13532,40 @@ function markerTeleportAt(x, y, z)
     deskSafeRestoreCamera()
 end
 
---[[ Посадка в ТС: только свободное место через sampSendEnterVehicle. Закрытые — /getcar на сервере (админ). ]]
-local DESK_ENTER_VEH_POLL_MS = 50
-local DESK_ENTER_VEH_TIMEOUT_MS = 4500
-local DESK_ENTER_VEH_TP_DIST = 4.0
-local DESK_ENTER_VEH_BUSY_TIMEOUT = 8.0
-local deskEnterVehBusy = false
-local deskEnterVehBusySince = 0
-
--- Desk hook/helper.
-function deskEnterVehBusyClear()
-    deskEnterVehBusy = false
-    deskEnterVehBusySince = 0
-end
-
--- Desk hook/helper.
-function deskEnterVehBusyClaim()
-    if deskEnterVehBusy then
-        if deskEnterVehBusySince > 0 and os.clock() - deskEnterVehBusySince > DESK_ENTER_VEH_BUSY_TIMEOUT then
-            deskEnterVehBusyClear()
-        else
-            return false
-        end
-    end
-    deskEnterVehBusy = true
-    deskEnterVehBusySince = os.clock()
-    return true
-end
-
--- Desk hook/helper.
-function deskMyVehicleSampId()
-    if not isCharInAnyCar(PLAYER_PED) then return nil, nil end
-    local car = storeCarCharIsInNoSave(PLAYER_PED)
-    if not car or not doesVehicleExist(car) then return nil, nil end
-    local vid = markerFindSampVehicleId(car)
-    return car, vid
-end
-
--- Desk hook/helper.
-function deskWaitEnterRpc(vehId, timeoutMs)
-    vehId = tonumber(vehId)
-    if not vehId then return false end
-    local deadline = os.clock() + (tonumber(timeoutMs) or DESK_ENTER_VEH_TIMEOUT_MS) / 1000
-    while os.clock() < deadline do
-        local _, vid = deskMyVehicleSampId()
-        if vid == vehId then
-            return true
-        end
-        wait(DESK_ENTER_VEH_POLL_MS)
-    end
-    return select(2, deskMyVehicleSampId()) == vehId
-end
-
--- Desk hook/helper.
-function deskPlaceBesideCar(car)
-    if not car or not doesVehicleExist(car) then return false end
-    if isCharInAnyCar(PLAYER_PED) then return false end
-    local cx, cy, cz = getCarCoordinates(car)
-    local h = getCarHeading(car)
-    local r = math.rad(h)
-    local tx = cx + math.cos(r) * 2.0
-    local ty = cy + math.sin(r) * 2.0
-    local tz = cz + 0.45
-    if getGroundZFor3dCoord then
-        local gz = getGroundZFor3dCoord(tx, ty, cz + 10.0)
-        if gz and gz > -100 then tz = gz + 0.45 end
-    end
-    setCharCoordinates(PLAYER_PED, tx, ty, tz)
-    deskSafeRestoreCamera()
-    return true
-end
-
--- Desk hook/helper.
-function deskLeaveCurrentVehicleIfNeeded(targetVid)
-    targetVid = tonumber(targetVid)
-    local car, vid = deskMyVehicleSampId()
-    if not car then return true end
-    if targetVid and vid == targetVid then return true end
-    local px, py, pz = getCharCoordinates(PLAYER_PED)
-    if vid and sampSendExitVehicle then
-        sampSendExitVehicle(vid)
-        wait(200)
-    end
-    if isCharInAnyCar(PLAYER_PED) then
-        if warpCharFromCarToCoord then
-            warpCharFromCarToCoord(PLAYER_PED, px + 1.2, py + 0.6, pz + 0.2)
-        else
-            setCharCoordinates(PLAYER_PED, px + 1.2, py + 0.6, pz + 0.2)
-        end
-        wait(100)
-        deskSafeRestoreCamera()
-    end
-    return not isCharInAnyCar(PLAYER_PED)
-end
-
--- Desk hook/helper.
-function deskEnterVehicleSamp(vehId, carHandle)
-    vehId = tonumber(vehId)
-    if not vehId or vehId < 0 then return false end
-    if sampGetCarHandleBySampVehicleId then
-        local ok, h = sampGetCarHandleBySampVehicleId(vehId)
-        if ok and h and doesVehicleExist(h) then carHandle = h end
-    end
-    if not carHandle or not doesVehicleExist(carHandle) then return false end
-    if sampIsVehicleDefined and not sampIsVehicleDefined(vehId) then return false end
-
-    if cheatState.marker.active then
-        pcall(markerSetMode, false)
-    end
-    pcall(function()
-        if sampToggleCursor then sampToggleCursor(false) end
-        if sampSetCursorMode and CMODE_DISABLED then sampSetCursorMode(CMODE_DISABLED) end
-    end)
-
-    local _, myVid = deskMyVehicleSampId()
-    if myVid == vehId then return true end
-
-    local seat = deskGetCarFreeSeat(carHandle)
-    if seat == nil then return false end
-    local asPassenger = (seat ~= 0)
-
-    if cheatState.airbreak then cheatsSetAirbreak(false) end
-    freezeCharPosition(PLAYER_PED, false)
-    setCharCollision(PLAYER_PED, true)
-
-    if not deskLeaveCurrentVehicleIfNeeded(vehId) then return false end
-
-    local px, py, pz = getCharCoordinates(PLAYER_PED)
-    local cx, cy, cz = getCarCoordinates(carHandle)
-    if getDistanceBetweenCoords3d(px, py, pz, cx, cy, cz) > DESK_ENTER_VEH_TP_DIST then
-        if not deskPlaceBesideCar(carHandle) then return false end
-        wait(120)
-    end
-
-    if sampSendEnterVehicle then
-        sampSendEnterVehicle(vehId, asPassenger)
-    end
-    if deskWaitEnterRpc(vehId, DESK_ENTER_VEH_TIMEOUT_MS) then
-        deskSafeRestoreCamera()
-        return true
-    end
-    if sampSendEnterVehicle then
-        wait(200)
-        sampSendEnterVehicle(vehId, asPassenger)
-        if deskWaitEnterRpc(vehId, DESK_ENTER_VEH_TIMEOUT_MS) then
-            deskSafeRestoreCamera()
-            return true
-        end
-    end
-    return select(2, deskMyVehicleSampId()) == vehId
-end
-
--- Desk hook/helper.
-function deskEnterVehicleAsync(vehId, carHandle, onDone)
-    if not deskEnterVehBusyClaim() then
-        if onDone then onDone(false, '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF') end
-        return false
-    end
-    lua_thread.create(function()
-        local ok, err = false, nil
-        local function finish()
-            deskEnterVehBusyClear()
-            if onDone then onDone(ok, err) end
-        end
-        local runOk, runErr = pcall(function()
-            if deskInputState.playerSpectating then
-                err = '\xC2\xFB\xE9\xE4\xE8\xF2\xE5 \xE8\xE7 /sp'
-                return
-            end
-            ok = deskEnterVehicleSamp(vehId, carHandle)
-            if not ok then
-                err = '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1 (\xED\xE5\xF2 \xEC\xE5\xF1\xF2\xE0 \xE8\xEB\xE8 \xEC\xE0\xF8\xE8\xED\xE0 \xE7\xE0\xED\xFF\xF2\xE0)'
-            end
-        end)
-        if not runOk then
-            ok = false
-            err = tostring(runErr)
-        end
-        finish()
-    end)
-    return true
-end
-
 -- Marker Enter Vehicle
 function markerEnterVehicle(car, pick)
     if not car or not doesVehicleExist(car) then
         return false, '\xCD\xE5\xF2 \xEC\xE0\xF8\xE8\xED\xFB'
     end
+    if deskInputState.playerSpectating then
+        return false, '\xC2\xFB\xE9\xE4\xE8\xF2\xE5 \xE8\xE7 /sp'
+    end
+    if cheatState.airbreak then cheatsSetAirbreak(false) end
+    freezeCharPosition(PLAYER_PED, false)
+    setCharCollision(PLAYER_PED, true)
+
     local carHandle, vid = markerResolveCarAndVid(car)
+    local m = cheatState.marker
+    if m and m.vehSampId then
+        local cachedVid = tonumber(m.vehSampId)
+        if cachedVid and cachedVid >= 0 then
+            vid = cachedVid
+            if sampGetCarHandleBySampVehicleId then
+                local ok, h = sampGetCarHandleBySampVehicleId(vid)
+                if ok and h and doesVehicleExist(h) then carHandle = h end
+            end
+        end
+    end
     if not vid then
         return false, '\xCD\xE5 \xED\xE0\xE9\xE4\xE5\xED SAMP ID \xEC\xE0\xF8\xE8\xED\xFB'
     end
-    if not carHandle then
-        carHandle = car
+    if not carHandle or not doesVehicleExist(carHandle) then
+        return false, '\xCD\xE5\xF2 \xEC\xE0\xF8\xE8\xED\xFB'
     end
-    local seat = deskGetCarFreeSeat(carHandle)
-    if seat == nil then
-        return false, '\xCD\xE5\xF2 \xF1\xE2\xEE\xE1\xEE\xE4\xED\xFB\xF5 \xEC\xE5\xF1\xF2'
+    if markerEnterVehicleById(vid, carHandle) then
+        return true
     end
-    if not deskEnterVehicleAsync(vid, carHandle, function(ok, err)
-        if ok then
-            say('\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xD2\xD1 (id ' .. tostring(vid or '?') .. ')')
-        elseif err then
-            say(tostring(err))
-        else
-            say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1')
-        end
-    end) then
-        return false, '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF'
-    end
-    return true
+    return false, '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1 (id ' .. tostring(vid) .. ')'
 end
 
 -- Marker Teleport To
@@ -12145,6 +13602,33 @@ function markerResolveVehicleId(car)
     return markerFindSampVehicleId(car)
 end
 
+-- Marker Nearest Car At
+function markerNearestCarAt(x, y, z, maxDist)
+    maxDist = tonumber(maxDist) or 3.2
+    if not sampGetCarHandleBySampVehicleId then return nil end
+    local best, bestD = nil, maxDist
+    local maxId = 2000
+    if sampGetMaxVehicleId then
+        maxId = tonumber(sampGetMaxVehicleId(false)) or maxId
+    end
+    for i = 0, maxId do
+        local defined = true
+        if sampIsVehicleDefined then defined = sampIsVehicleDefined(i) end
+        if defined then
+            local ok, h = sampGetCarHandleBySampVehicleId(i)
+            if ok and h and doesVehicleExist(h) then
+                local vx, vy, vz = getCarCoordinates(h)
+                local d = getDistanceBetweenCoords3d(x, y, z, vx, vy, vz)
+                if d < bestD then
+                    best = h
+                    bestD = d
+                end
+            end
+        end
+    end
+    return best
+end
+
 -- Marker Pick Target
 function markerPickTarget(screenX, screenY)
     if not convertScreenCoordsToWorld3D or not processLineOfSight then return nil end
@@ -12176,6 +13660,9 @@ function markerPickTarget(screenX, screenY)
     end
     car = carFromCol(col)
     if not car then car = carFromCol(col2) end
+    if not car then
+        car = markerNearestCarAt(gx, gy, gz, 3.2)
+    end
     local px0, py0, pz0 = getCharCoordinates(PLAYER_PED)
     local dist = getDistanceBetweenCoords3d(px0, py0, pz0, gx, gy, gz)
     return {
@@ -12277,21 +13764,65 @@ function syncCheatsUiFromSettings()
     cheatsUiSynced = true
 end
 
+local CHEATS_HUD_W = 54
+local CHEATS_HUD_H = 68
+local CHEATS_HUD_PAD_X = 10
+local CHEATS_HUD_PAD_Y = 8
+local CHEATS_HUD_LINE_H = 16
+local CHEATS_HUD_LABEL_W = 96
+local CHEATS_OVERLAY_PANEL_W = 188
+local CHEATS_AB_HUD_W = 108
+local CHEATS_AB_HUD_H = 28
+local CHEATS_AB_HUD_SIDE_PAD = 12
+
+local CHEATS_HUD_LINES = {
+    { 'WH', function() return cheatState.wallhack end },
+    { 'GM', function() return cheatState.godmode end },
+    { 'AB', function() return cheatState.airbreak end },
+}
+
 -- Cheats Hud Wants Input
 function cheatsHudWantsInput()
-    if cheatState.hudDrag.active then return true end
+    if cheatState.hudDrag and cheatState.hudDrag.active then return true end
     if cheatState.hudHovered then return true end
-    local r = cheatState.hudRect
-    if not r then return false end
-    if not imgui or type(imgui.GetIO) ~= 'function' then return false end
-    local io = imgui.GetIO()
-    if not io or not io.MousePos then return false end
-    local mp = io.MousePos
-    return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+    if deskPointerInRect(cheatState.hudRect) then return true end
+    if settings and settings.cheats and settings.cheats.show_hud ~= false then
+        local hx = tonumber(settings.cheats.hud_x) or 12
+        local hy = tonumber(settings.cheats.hud_y) or 80
+        local est = { x0 = hx, y0 = hy, x1 = hx + CHEATS_HUD_W, y1 = hy + CHEATS_HUD_H }
+        if deskPointerInRect(est) then return true end
+    end
+    return false
 end
 
-local CHEATS_HUD_W = 218
-local CHEATS_HUD_LABEL_W = 96
+-- Cheats Hud Drag Active
+function cheatsIsHudDragActive()
+    return cheatState.hudDrag and cheatState.hudDrag.active == true
+end
+
+-- Cheats Clamp Hud Pos
+local function cheatsClampHudPos(hx, hy, winW, winH)
+    local sw, sh = 1280, 720
+    if getScreenResolution then
+        local rw, rh = getScreenResolution()
+        if rw and rw > 0 then sw = rw end
+        if rh and rh > 0 then sh = rh end
+    end
+    winW = math.max(CHEATS_HUD_W, tonumber(winW) or CHEATS_HUD_W)
+    winH = math.max(CHEATS_HUD_H, tonumber(winH) or CHEATS_HUD_H)
+    hx = math.max(8, math.min(hx, sw - winW - 8))
+    hy = math.max(8, math.min(hy, sh - winH - 8))
+    return hx, hy
+end
+
+-- Cheats Persist Hud Pos
+local function cheatsPersistHudPos(hx, hy, winW, winH)
+    hx, hy = cheatsClampHudPos(hx, hy, winW, winH)
+    settings.cheats.hud_x = math.floor(hx + 0.5)
+    settings.cheats.hud_y = math.floor(hy + 0.5)
+    if markDirtySettings then markDirtySettings() end
+    return hx, hy
+end
 
 -- Cheats Overlay Theme
 local function cheatsOverlayTheme()
@@ -12306,20 +13837,21 @@ local function cheatsOverlayTheme()
     return t
 end
 
--- Draw Cheats Hud Status Row
-local function drawCheatsHudStatusRow(spTheme, index, label, on, valueCol)
-    if spTheme and spTheme.drawStatRow then
-        spTheme.drawStatRow(index, label, on and 'ON' or 'off', on and (valueCol or col_accent) or col_muted,
-            CHEATS_HUD_LABEL_W, uiText)
-    else
-        imgui.TextColored(col_muted2, uiText(label))
-        imgui.SameLine(CHEATS_HUD_LABEL_W)
-        if on then
-            imgui.TextColored(valueCol or col_accent, uiText('ON'))
-        else
-            imgui.TextColored(col_muted, uiText('off'))
-        end
+-- Draw Cheats Hud Labels
+local function drawCheatsHudLabels(wp)
+    if not wp or not toU32 then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+    local scale = 1.12
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    for i, row in ipairs(CHEATS_HUD_LINES) do
+        local on = row[2]()
+        local col = on and col_accent or col_muted2
+        local label = row[1]
+        local y = wp.y + CHEATS_HUD_PAD_Y + (i - 1) * CHEATS_HUD_LINE_H
+        dl:AddText(imgui.ImVec2(wp.x + CHEATS_HUD_PAD_X, y), toU32(col), label)
     end
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
 end
 
 -- Draw Cheats Hud Overlay
@@ -12334,106 +13866,85 @@ function drawCheatsHudOverlay()
     end
 
     local spTheme = cheatsOverlayTheme()
+    local drag = cheatState.hudDrag
     local hx = tonumber(settings.cheats.hud_x) or 12
     local hy = tonumber(settings.cheats.hud_y) or 80
-    local drag = cheatState.hudDrag
-    if drag.active then
-        hx = drag.offX
-        hy = drag.offY
+
+    if not cheatState.hudPosValidated then
+        cheatState.hudPosValidated = true
+        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H)
+        cheatState.hudPlaced = false
     end
 
-    local sw, sh = 1280, 720
-    if getScreenResolution then
-        local rw, rh = getScreenResolution()
-        if rw and rw > 0 then sw = rw end
-        if rh and rh > 0 then sh = rh end
-    end
-    hx = math.max(8, math.min(hx, sw - CHEATS_HUD_W - 8))
-    hy = math.max(8, math.min(hy, sh - 48))
-
-    local wantInput = cheatsHudWantsInput() or drag.active
-    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
-        + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar
-    if not wantInput and not showWindow[0] and imgui.WindowFlags.NoInputs then
+    local wantInput = cheatsHudWantsInput()
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
+        + imgui.WindowFlags.NoScrollbar
+    if not wantInput and imgui.WindowFlags.NoInputs then
         flags = flags + imgui.WindowFlags.NoInputs
     end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
 
-    imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_HUD_W, 0), imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
-    cheatState.hudPlaced = true
+    imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_HUD_W, CHEATS_HUD_H), imgui.Cond.Always)
+    if imgui.SetNextWindowBgAlpha then
+        imgui.SetNextWindowBgAlpha(spTheme and spTheme.HUD_OVERLAY_ALPHA or 0.80)
+    end
+    if not cheatState.hudPlaced then
+        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
+        cheatState.hudPlaced = true
+    elseif drag.active then
+        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
+    end
 
     if spTheme then spTheme.pushHudChrome() end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
     if imgui.Begin('###desk_cheats_hud', nil, flags) then
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
         cheatState.hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
 
-        local activeCount = 0
-        if cheatState.godmode then activeCount = activeCount + 1 end
-        if cheatState.wallhack then activeCount = activeCount + 1 end
-        if cheatState.airbreak then activeCount = activeCount + 1 end
-        if cheatState.marker.active then activeCount = activeCount + 1 end
-        local subtitle = activeCount > 0
-            and (tostring(activeCount) .. ' \xE0\xEA\xF2\xE8\xE2')
-            or nil
-
-        local headerY = imgui.GetCursorPosY()
-        if spTheme then
-            spTheme.drawPanelTitle(
-                '\xD7\xE8\xF2\xFB',
-                subtitle,
-                col_accent,
-                col_muted,
-                uiText)
-        else
-            imgui.TextColored(col_accent, uiText('\xD7\xE8\xF2\xFB'))
+        imgui.SetCursorPos(imgui.ImVec2(0, 0))
+        imgui.InvisibleButton('##cheats_hud_drag', imgui.ImVec2(-1, -1))
+        if imgui.IsItemHovered() or imgui.IsItemActive() or drag.active then
+            cheatState.hudHovered = true
         end
-        local headerH = imgui.GetCursorPosY() - headerY
-        imgui.SetCursorPos(imgui.ImVec2(0, headerY))
-        imgui.InvisibleButton('##cheats_hud_drag', imgui.ImVec2(-1, math.max(18, headerH)))
-        cheatState.hudHovered = imgui.IsItemHovered() or imgui.IsItemActive() or drag.active
+        if not cheatState.hudHovered and deskPointerInRect then
+            cheatState.hudHovered = deskPointerInRect(cheatState.hudRect) == true
+        end
+
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
+        drawCheatsHudLabels(wp)
+
         if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
             local delta = imgui.GetMouseDragDelta(0)
             if not drag.active then
                 drag.active = true
-                drag.startX = wp.x
-                drag.startY = wp.y
+                drag.offX = wp.x
+                drag.offY = wp.y
                 imgui.ResetMouseDragDelta(0)
                 delta = imgui.GetMouseDragDelta(0)
             end
-            drag.offX = drag.startX + delta.x
-            drag.offY = drag.startY + delta.y
+            local nx = drag.offX + delta.x
+            local ny = drag.offY + delta.y
+            nx, ny = cheatsClampHudPos(nx, ny, ww, wh)
+            settings.cheats.hud_x = nx
+            settings.cheats.hud_y = ny
+            if markDirtySettings then markDirtySettings() end
+            if imgui.SetWindowPos then
+                imgui.SetWindowPos(imgui.ImVec2(nx, ny))
+            end
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
-            settings.cheats.hud_x = math.floor(drag.offX + 0.5)
-            settings.cheats.hud_y = math.floor(drag.offY + 0.5)
-            markDirtySettings()
-            flushDirtyConfigNow()
-        end
-
-        local rowIdx = 0
-        rowIdx = rowIdx + 1
-        drawCheatsHudStatusRow(spTheme, rowIdx, 'God Mode', cheatState.godmode)
-        rowIdx = rowIdx + 1
-        drawCheatsHudStatusRow(spTheme, rowIdx, 'WallHack', cheatState.wallhack)
-        rowIdx = rowIdx + 1
-        drawCheatsHudStatusRow(spTheme, rowIdx, 'AirBreak', cheatState.airbreak, col_warn)
-        if cheatState.marker.active then
-            rowIdx = rowIdx + 1
-            drawCheatsHudStatusRow(spTheme, rowIdx, 'Marker', true, col_warn)
-        end
-
-        if activeCount == 0 then
-            imgui.Dummy(imgui.ImVec2(0, 2))
-            imgui.TextColored(col_muted2, uiText('\xE2\xF1\xE5 \xE2\xFB\xEA\xEB\xFE\xF7\xE5\xED\xEE'))
+            cheatsPersistHudPos(wp.x, wp.y, ww, wh)
+            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
         end
 
         imgui.End()
     end
+    imgui.PopStyleVar(2)
     if spTheme then spTheme.popHudChrome() end
 end
 
@@ -12458,7 +13969,7 @@ function drawMarkerHudOverlay()
     end
 
     local padX, padY = 14, 10
-    local panelW = 188
+    local panelW = CHEATS_OVERLAY_PANEL_W
     local wx, wy = sx + padX, sy + padY
     if wx + panelW > sw - 8 then wx = sw - panelW - 8 end
     if wy + 120 > sh - 8 then wy = sh - 120 - 8 end
@@ -12492,6 +14003,51 @@ function drawMarkerHudOverlay()
     if spTheme then spTheme.popHudChrome() end
 end
 
+-- Draw Airbreak Hud Labels
+local function drawAirbreakHudLabels(wp, spd)
+    if not wp or not toU32 or not imgui.CalcTextSize then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+
+    local scale = 1.08
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+
+    local spdStr = string.format('%.2f', spd)
+    local qW = imgui.CalcTextSize('Q').x
+    local eW = imgui.CalcTextSize('E').x
+    local spdW = imgui.CalcTextSize(spdStr).x
+    local lh = imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 14
+    local y = wp.y + (CHEATS_AB_HUD_H - lh) * 0.5
+
+    local qCol = col_muted2
+    local eCol = col_muted2
+    local spdCol = col_accent
+    local flash = cheatState.abSpeedFlash
+    if flash and flash.expires and os.clock() < flash.expires then
+        if flash.dir and flash.dir < 0 then
+            qCol = col_warn
+            spdCol = col_muted
+        else
+            eCol = col_warn
+            spdCol = col_accent
+        end
+    else
+        cheatState.abSpeedFlash = nil
+    end
+    if cheatsAbKeyDown(vkeys.VK_Q) then qCol = col_label end
+    if cheatsAbKeyDown(vkeys.VK_E) then eCol = col_label end
+
+    local qX = wp.x + CHEATS_AB_HUD_SIDE_PAD
+    local eX = wp.x + CHEATS_AB_HUD_W - CHEATS_AB_HUD_SIDE_PAD - eW
+    local spdX = wp.x + (CHEATS_AB_HUD_W - spdW) * 0.5
+
+    dl:AddText(imgui.ImVec2(qX, y), toU32(qCol), 'Q')
+    dl:AddText(imgui.ImVec2(spdX, y), toU32(spdCol), spdStr)
+    dl:AddText(imgui.ImVec2(eX, y), toU32(eCol), 'E')
+
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
 -- Draw Airbreak Hud Overlay
 function drawAirbreakHudOverlay()
     if not cheatState.airbreak then return end
@@ -12501,8 +14057,8 @@ function drawAirbreakHudOverlay()
     if sw < 100 then sw = 1920 end
     if sh < 100 then sh = 1080 end
 
-    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
-        + imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
+        + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoInputs
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
@@ -12511,41 +14067,17 @@ function drawAirbreakHudOverlay()
     end
 
     local spTheme = cheatsOverlayTheme()
-    local panelW = CHEATS_HUD_W
-    imgui.SetNextWindowSize(imgui.ImVec2(panelW, 0), imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh - 84), imgui.Cond.Always, imgui.ImVec2(0.5, 1.0))
+    imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_AB_HUD_W, CHEATS_AB_HUD_H), imgui.Cond.Always)
+    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh - 52), imgui.Cond.Always, imgui.ImVec2(0.5, 1.0))
     if spTheme then spTheme.pushHudChrome() end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
     if imgui.Begin('###desk_ab_hud', nil, flags) then
-        if spTheme then
-            spTheme.drawPanelTitle('AirBreak', nil, col_accent, col_muted, uiText)
-        else
-            imgui.TextColored(col_accent, uiText('AirBreak'))
-        end
-        if spTheme and spTheme.drawStatRow then
-            spTheme.drawStatRow(1, '\xD1\xEA\xEE\xF0\xEE\xF1\xF2\xFC', string.format('%.2f', spd), col_accent,
-                CHEATS_HUD_LABEL_W, uiText)
-            local flash = cheatState.abSpeedFlash
-            if flash and flash.expires and os.clock() < flash.expires then
-                local msg
-                if flash.dir and flash.dir < 0 then
-                    msg = string.format('\xCC\xE5\xE4\xEB\xE5\xED\xED\xE5\xE5 \x97 %.2f', flash.spd or spd)
-                else
-                    msg = string.format('\xC1\xFB\xF1\xF2\xF0\xE5\xE5 \x97 %.2f', flash.spd or spd)
-                end
-                spTheme.drawStatRow(2, '', msg, flash.dir and flash.dir < 0 and col_muted or col_warn,
-                    CHEATS_HUD_LABEL_W, uiText)
-            else
-                cheatState.abSpeedFlash = nil
-                spTheme.drawStatRow(2, '', 'Q \xEC\xE8\xED\xF3\xF1   E \xEF\xEB\xFE\xF1', col_muted2,
-                    CHEATS_HUD_LABEL_W, uiText)
-            end
-        else
-            imgui.TextColored(col_muted2, uiText('\xD1\xEA\xEE\xF0\xEE\xF1\xF2\xFC'))
-            imgui.SameLine(CHEATS_HUD_LABEL_W)
-            imgui.TextColored(col_accent, uiText(string.format('%.2f', spd)))
-        end
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
+        drawAirbreakHudLabels(imgui.GetWindowPos(), spd)
         imgui.End()
     end
+    imgui.PopStyleVar(2)
     if spTheme then spTheme.popHudChrome() end
 end
 
@@ -12693,6 +14225,7 @@ end
 
 -- Try Handle Desk Hotkey Message
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
+    if not sessionLive then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     local hk = settings.hotkey or vkeys.VK_F7
@@ -13781,43 +15314,49 @@ function deskImguiNeedsInput()
     if showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then
         return true
     end
-    if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if sampIsDialogActive and sampIsDialogActive() then return true end
     if cheatState.marker.active then return true end
     if not sessionLive then return false end
     if type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput() then
         return true
     end
+    if type(cheatsIsHudDragActive) == 'function' and cheatsIsHudDragActive() then
+        return true
+    end
     if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then
         return true
     end
-    if type(remoteChatHudWantsInput) == 'function' and remoteChatHudWantsInput() then
+    if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then
         return true
     end
-    if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then
-        return true
-    end
-    if deskSpectateStats.wantsHudInput and deskSpectateStats.wantsHudInput() then
-        return true
-    end
-    if deskSpectateStats.isAnsBarOpen and deskSpectateStats.isAnsBarOpen() then
-        if deskSpectateStats.isAnsLayoutSwitch and deskSpectateStats.isAnsLayoutSwitch() then
-            return false
+    if type(deskSpectateStats) == 'table' then
+        local function spWants(fn)
+            if type(fn) ~= 'function' then return false end
+            local ok, v = pcall(fn)
+            return ok and v == true
         end
-        return true
+        if spWants(deskSpectateStats.isHudDragActive) then return true end
+        if spWants(deskSpectateStats.wantsHudInput) then return true end
+        if spWants(deskSpectateStats.wantsSpMenuInput) then return true end
+        if spWants(deskSpectateStats.wantsVehicleHudInput) then return true end
+        if spWants(deskSpectateStats.wantsKeysHudInput) then return true end
+        if spWants(deskSpectateStats.isAnsBarOpen) then
+            if spWants(deskSpectateStats.isAnsLayoutSwitch) then return false end
+            return true
+        end
     end
     return false
 end
 
 -- Desk hook/helper.
 function deskSpectateCameraMode()
-    if deskInputState.spectateWantCursorMode ~= nil then
-        return deskInputState.spectateWantCursorMode
+    local saved = deskInputState.spectateWantCursorMode
+    if saved ~= nil and deskIsSpectateCameraMode(saved) then
+        return saved
     end
     if CMODE_LOCKCAM ~= nil then return CMODE_LOCKCAM end
     if CMODE_LOCKCAMANDCONTROL ~= nil then return CMODE_LOCKCAMANDCONTROL end
     if CMODE_LOCKCAM_NOCURSOR ~= nil then return CMODE_LOCKCAM_NOCURSOR end
-    return nil
+    return saved
 end
 
 -- Desk hook/helper.
@@ -13834,9 +15373,12 @@ end
 function deskRememberSpectateCursorMode()
     if not sampGetCursorMode then return end
     local cm = sampGetCursorMode()
-    if deskIsSpectateCameraMode(cm) then
-        deskInputState.spectateWantCursorMode = cm
+    if CMODE_DISABLED ~= nil and cm == CMODE_DISABLED then
+        if deskIsSpectateCameraMode(deskInputState.spectateWantCursorMode) then return end
+        if CMODE_LOCKCAM ~= nil then deskInputState.spectateWantCursorMode = CMODE_LOCKCAM end
+        return
     end
+    deskInputState.spectateWantCursorMode = cm
 end
 
 -- Desk hook/helper.
@@ -13865,12 +15407,17 @@ end
 
 -- Desk hook/helper.
 function deskRestoreSpectateCamera()
-    if deskInputState.spectateWantCursorMode == nil then
-        deskRememberSpectateCursorMode()
-    end
-    local want = deskSpectateCameraMode()
-    if want and sampSetCursorMode then
-        pcall(sampSetCursorMode, want)
+    deskInputState.spectateUiModeActive = false
+    setDeskPlayerLock(false)
+    if not deskSpectatingNow() then return end
+    -- В /sp SAMP сам держит LOCKCAM для камеры наблюдателя. Не трогаем режим на open;
+    -- на close — только если мы (или чат) его сбили с spectate-режима.
+    if sampGetCursorMode and sampSetCursorMode then
+        local cm = sampGetCursorMode()
+        if not deskIsSpectateCameraMode(cm) then
+            local want = deskSpectateCameraMode()
+            if want then pcall(sampSetCursorMode, want) end
+        end
     end
     if sampToggleCursor then pcall(sampToggleCursor, false) end
 end
@@ -13905,13 +15452,12 @@ function deskEnsureCameraAfterPanelClose()
         deskCache.mainPanelFrame.HideCursor = true
         deskCache.mainPanelFrame.LockPlayer = false
     end
-    if deskSpectateCameraBlocked() then
-        updateMimguiGameInputPassthrough()
-        return
-    end
     if deskSpectatingNow() then
         deskRestoreSpectateCamera()
-    else
+        if type(deskSpectateStats) == 'table' and deskSpectateStats.maintainCamera then
+            pcall(deskSpectateStats.maintainCamera)
+        end
+    elseif not deskSpectateCameraBlocked() then
         deskRestoreNormalGameCamera()
     end
     updateMimguiGameInputPassthrough()
@@ -13919,6 +15465,8 @@ end
 
 -- Desk hook/helper.
 function deskEnableUiCursorForSamp()
+    -- В /sp камера наблюдателя = SAMP LOCKCAM; mimgui рисует курсор через HideCursor.
+    if deskSpectatingNow() then return end
     if CMODE_DISABLED == nil or not sampSetCursorMode then return end
     if sampGetCursorMode and sampGetCursorMode() == CMODE_DISABLED then return end
     pcall(sampSetCursorMode, CMODE_DISABLED)
@@ -13926,7 +15474,8 @@ end
 
 -- Desk hook/helper.
 function deskEnsureUiCursorForOpenPanel()
-    if not showWindow[0] or not deskSpectatingNow() then return end
+    if deskSpectatingNow() then return end
+    if not showWindow[0] then return end
     if deskImguiTypingActive() or deskInputState.replyFocused then return end
     if deskSpectateCameraBlocked() then return end
     if not sampGetCursorMode or CMODE_DISABLED == nil then return end
@@ -13951,8 +15500,6 @@ function deskOnPanelOpened()
         deskCache.mainPanelFrame.LockPlayer = false
     end
     if deskSpectatingNow() then
-        deskRememberSpectateCursorMode()
-        deskEnableUiCursorForSamp()
         deskInputState.spectateUiModeActive = true
     end
     updateMimguiGameInputPassthrough()
@@ -13978,6 +15525,8 @@ function deskGameCursorActive()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
     if deskSpectateStats.isHudHovered and deskSpectateStats.isHudHovered() then return true end
     if deskSpectateStats.wantsHudInput and deskSpectateStats.wantsHudInput() then return true end
+    if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then return true end
+    if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then return true end
     if deskSpectateStats.wantsAnsInput and deskSpectateStats.wantsAnsInput() then return true end
     return false
 end
@@ -13998,6 +15547,10 @@ function resetDeskMouseState()
     cheatState.hudHovered = false
     if deskSpectateStats and deskSpectateStats.resetHudDrag then
         pcall(deskSpectateStats.resetHudDrag)
+    end
+    if type(checkerState) == 'table' then
+        if checkerState.hudDrag then checkerState.hudDrag.active = false end
+        checkerState.hudHovered = false
     end
 end
 
@@ -14027,14 +15580,253 @@ function deskApplyInputPolicy()
     end
 
     deskInputState.panelOpenPrev = panelOpen
+
+    local uiOpen = deskDeskOrAnsUiOpen()
+    if uiOpen and not deskInputState.deskUiOpenPrev then
+        deskHoldSampChatInput()
+    elseif not uiOpen and deskInputState.deskUiOpenPrev then
+        deskReleaseSampChatInput()
+    end
+    deskInputState.deskUiOpenPrev = uiOpen
 end
 
 -- Desk hook/helper.
-function deskEnforceNoSampChat()
-    if not showWindow[0] then return end
+function deskAnsBarBlocksSampChat()
+    return type(deskSpectateStats) == 'table'
+        and type(deskSpectateStats.isAnsBarOpen) == 'function'
+        and deskSpectateStats.isAnsBarOpen()
+end
+
+-- Desk hook/helper.
+function deskDeskOrAnsUiOpen()
+    return showWindow[0] or deskAnsBarBlocksSampChat()
+end
+
+-- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
+local deskSampInputFfiReady = false
+local deskSampInputEnableHook = nil
+local deskSampCInputThis = nil
+
+local deskSampTextMsgs = {
+    [0x0102] = true, -- WM_CHAR
+    [0x0106] = true, -- WM_SYSCHAR
+    [0x0109] = true, -- WM_UNICHAR
+    [0x0286] = true, -- WM_IME_CHAR
+}
+
+local function deskSpectateDeskMouseMsg(msg)
+    if not showWindow[0] or not deskSpectatingNow() then return false end
+    if not deskCache or not deskCache.wm then return false end
+    local wm = deskCache.wm
+    return msg == wm.MOUSEMOVE or msg == wm.LBUTTONDOWN or msg == wm.LBUTTONUP
+        or msg == wm.RBUTTONDOWN or msg == wm.RBUTTONUP
+        or msg == wm.MBUTTONDOWN or msg == wm.MBUTTONUP
+        or msg == wm.MOUSEWHEEL or msg == wm.MOUSEHWHEEL
+        or msg == wm.XBUTTONDOWN
+end
+
+local function deskEnsureSampInputFfi()
+    if deskSampInputFfiReady then return true end
+    if type(sampGetInputInfoPtr) ~= 'function' then return false end
+    local ok = pcall(function()
+        ffi.cdef[[
+            typedef void (*stSampCmdProc)(char*);
+            typedef struct {
+                void* pD3DDevice;
+                void* pDXUTDialog;
+                void* pDXUTEditBox;
+                stSampCmdProc pCMDs[144];
+                char szCMDNames[144][33];
+                int iCMDCount;
+                int iInputEnabled;
+            } stSampInputInfo;
+        ]]
+    end)
+    if not ok then return false end
+    deskSampInputFfiReady = true
+    return true
+end
+
+local function deskVerifySampSig(addr, sig)
+    if not memory or not memory.getuint8 then return false end
+    for i, b in ipairs(sig) do
+        if memory.getuint8(addr + i - 1, true) ~= b then return false end
+    end
+    return true
+end
+
+local function deskClampSampChatInputOff()
+    if not deskEnsureSampInputFfi() then return end
+    pcall(function()
+        local base = sampGetInputInfoPtr()
+        if not base or base == 0 then return end
+        local inp = ffi.cast('stSampInputInfo*', base)
+        inp.iInputEnabled = 0
+    end)
+end
+
+local function deskFindInputEnableAddr()
+    if not getModuleHandle then return nil end
+    local ok, base = pcall(getModuleHandle, 'samp.dll')
+    if not ok or not base or base == 0 then return nil end
+    local sig = { 0x83, 0xEC, 0x10, 0x56, 0x8B }
+    local hits = {}
+    for addr = base + 0x64000, base + 0x69000 do
+        if deskVerifySampSig(addr, sig) then
+            hits[#hits + 1] = addr
+        end
+    end
+    if #hits == 1 then return hits[1] end
+    if #hits > 1 then
+        local prefer = base + 0x657E0
+        for _, addr in ipairs(hits) do
+            if addr == prefer then return addr end
+        end
+        return hits[1]
+    end
+    local fallback = base + 0x657E0
+    if deskVerifySampSig(fallback, sig) then return fallback end
+    return nil
+end
+
+local function deskInstallThiscallHook5(callback, addr)
+    local okCdef = pcall(function()
+        ffi.cdef[[
+            int VirtualProtect(void* lpAddress, unsigned long dwSize, unsigned long flNewProtect, unsigned long* lpflOldProtect);
+        ]]
+    end)
+    if not okCdef then return nil end
+    local size = 5
+    local voidAddr = ffi.cast('void*', addr)
+    local oldProt = ffi.new('unsigned long[1]')
+    local orgBytes = ffi.new('uint8_t[?]', size)
+    ffi.copy(orgBytes, voidAddr, size)
+    local detourAddr = tonumber(ffi.cast('intptr_t', ffi.cast('void*', ffi.cast('void(__thiscall*)(void*)', callback))))
+    local hookBytes = ffi.new('uint8_t[?]', size, 0x90)
+    hookBytes[0] = 0xE9
+    ffi.cast('uint32_t*', hookBytes + 1)[0] = detourAddr - addr - 5
+    local hookObj = { active = false, voidAddr = voidAddr, size = size, orgBytes = orgBytes, hookBytes = hookBytes, oldProt = oldProt, addr = addr }
+    local castOrig = ffi.cast('void(__thiscall *)(void*)', addr)
+    function hookObj.set(on)
+        hookObj.active = on and true or false
+        ffi.C.VirtualProtect(voidAddr, size, 0x40, oldProt)
+        ffi.copy(voidAddr, on and hookBytes or orgBytes, size)
+        ffi.C.VirtualProtect(voidAddr, size, oldProt[0], oldProt)
+    end
+    function hookObj.stop() hookObj.set(false) end
+    function hookObj.start() hookObj.set(true) end
+    setmetatable(hookObj, {
+        __call = function(_, this)
+            hookObj.stop()
+            castOrig(this)
+            hookObj.start()
+        end,
+    })
+    hookObj.start()
+    return hookObj
+end
+
+local function deskInstallSampInputEnableHook()
+    if deskSampInputEnableHook then return true end
+    if not isSampAvailable or not isSampAvailable() then return false end
+    local addr = deskFindInputEnableAddr()
+    if not addr then return false end
+    local hookObj
+    local function detour(this)
+        if this ~= nil then deskSampCInputThis = this end
+        if deskDeskOrAnsUiOpen() then return end
+        if type(isSampfuncsConsoleActive) == 'function' and isSampfuncsConsoleActive() then return end
+        hookObj(this)
+    end
+    hookObj = deskInstallThiscallHook5(detour, addr)
+    if not hookObj then return false end
+    deskSampInputEnableHook = hookObj
+    if deskCache then deskCache.sampInputEnableHook = hookObj end
+    return true
+end
+
+function deskUninstallSampInputEnableHook()
+    if deskSampInputEnableHook then
+        pcall(function() deskSampInputEnableHook.stop() end)
+        deskSampInputEnableHook = nil
+    end
+    if deskCache then deskCache.sampInputEnableHook = nil end
+end
+
+function deskHoldSampChatInput()
+    deskInputState.sampChatHeldOff = true
+    pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
     end
+    deskClampSampChatInputOff()
+end
+
+function deskReleaseSampChatInput()
+    if not deskInputState.sampChatHeldOff then return end
+    deskInputState.sampChatHeldOff = false
+end
+
+function deskCloseSampChatIfOpen()
+    deskHoldSampChatInput()
+end
+
+function deskRestoreSampChatIfNeeded()
+    deskReleaseSampChatInput()
+end
+
+function deskSampChatGuardFrame()
+    if not deskDeskOrAnsUiOpen() then return end
+    pcall(deskInstallSampInputEnableHook)
+    if type(sampSetChatInputEnabled) == 'function' then
+        pcall(sampSetChatInputEnabled, false)
+    end
+end
+
+-- Запасной слой: consumeWindowMessage для лаунчеров, которые обходят sampSetChatInputEnabled.
+function deskShouldBlockSampChatKey(msg, wparam)
+    if not deskDeskOrAnsUiOpen() then return false end
+    if not deskCache or not deskCache.wm then return false end
+    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    msg = tonumber(msg) or 0
+    wparam = tonumber(wparam) or 0
+    if deskSpectateDeskMouseMsg(msg) then return true end
+    if deskSampTextMsgs[msg] then
+        return true
+    end
+    local wm = deskCache.wm
+    if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN or msg == wm.KEYUP or msg == wm.SYSKEYUP then
+        if type(deskPassesGameKey) == 'function' and deskPassesGameKey(wparam) then return false end
+        if wm.CHAT_KEYS[wparam] then return true end
+        if showWindow[0] then return true end
+        if deskAnsBarBlocksSampChat() then return true end
+    end
+    return false
+end
+
+-- Desk hook/helper.
+function deskConsumeSampChatKey(msg)
+    msg = tonumber(msg) or 0
+    if deskSpectateDeskMouseMsg(msg) then
+        consumeWindowMessage(true, false)
+        return
+    end
+    if deskSampTextMsgs[msg] then
+        consumeWindowMessage(true, false)
+    else
+        consumeWindowMessage(true, true)
+    end
+    deskClampSampChatInputOff()
+end
+
+-- Desk hook/helper.
+function deskShouldBlockGameInput(msg, wparam)
+    return deskShouldBlockSampChatKey(msg, wparam)
+end
+
+-- Desk hook/helper.
+function deskOverlayTextInputActive()
+    return deskAnsBarBlocksSampChat()
 end
 
 -- Desk hook/helper.
@@ -14047,11 +15839,49 @@ function applyDeskWarmupInputPolicy()
     updateMimguiGameInputPassthrough()
 end
 
+local DESK_CHAT_WM_KEY = '__rd_wm_chat__'
+
+local function uninstallDeskChatWm()
+    local prev = _G[DESK_CHAT_WM_KEY]
+    if prev and removeEventHandler then
+        pcall(removeEventHandler, 'onWindowMessage', prev)
+    end
+    _G[DESK_CHAT_WM_KEY] = nil
+end
+
+local function installDeskChatWmHandler()
+    uninstallDeskChatWm()
+    local handler = function(msg, wparam, lparam)
+        if deskDeskOrAnsUiOpen() and deskShouldBlockSampChatKey(msg, wparam) then
+            deskConsumeSampChatKey(msg)
+        end
+    end
+    addEventHandler('onWindowMessage', handler, true)
+    _G[DESK_CHAT_WM_KEY] = handler
+end
+
+installDeskChatWmHandler()
+
 -- Update Mimgui Game Input Passthrough
 function updateMimguiGameInputPassthrough()
     if not imgui or imgui.DisableInput == nil then return end
-    local wants = deskImguiNeedsInput() == true
-    imgui.DisableInput = not wants
+    if deskDeskOrAnsUiOpen() then
+        imgui.DisableInput = not (deskImguiNeedsInput() == true)
+        return
+    end
+    if sampIsDialogActive and sampIsDialogActive() then
+        imgui.DisableInput = true
+        return
+    end
+    if sampIsChatInputActive and sampIsChatInputActive() then
+        imgui.DisableInput = true
+        return
+    end
+    if deskSpectatingNow() and not deskImguiNeedsInput() then
+        imgui.DisableInput = true
+        return
+    end
+    imgui.DisableInput = not (deskImguiNeedsInput() == true)
 end
 
 -- Desk hook/helper.
@@ -14171,8 +16001,8 @@ function sendGameCmd(cmd)
         deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
     end
     releaseDeskInputCapture(true)
-    sendChat(cmd)
     closeDeskWindow()
+    sendChat(cmd)
 end
 
 -- Get Local Admin Level
@@ -14406,11 +16236,18 @@ function cloneQuickScenarios(src, fromUtf8)
                 kw[#kw + 1] = normalizeStoredText(k, fromUtf8)
             end
         end
+        local neg = {}
+        if type(sc.negative_keywords) == 'table' then
+            for _, k in ipairs(sc.negative_keywords) do
+                neg[#neg + 1] = normalizeStoredText(k, fromUtf8)
+            end
+        end
         out[i] = {
             label = normalizeStoredText(sc.label or '', fromUtf8),
             enabled = sc.enabled ~= false,
             match = sc.match or 'contains',
             keywords = kw,
+            negative_keywords = neg,
             reply = normalizeStoredText(sc.reply or '', fromUtf8),
             action = sc.action == 'watch' and 'watch' or 'reply',
             priority = tonumber(sc.priority) or 0,
@@ -14422,9 +16259,27 @@ end
 
 -- Quick Scenario Matches
 function quickScenarioMatches(sc, body)
+    local keywords = sc.keywords or {}
+    local learned = scenarioLearnGetKeywordsForScenario and scenarioLearnGetKeywordsForScenario(sc.label or '')
+    if type(learned) == 'table' and #learned > 0 then
+        local merged = {}
+        for i = 1, #keywords do merged[i] = keywords[i] end
+        for i = 1, #learned do merged[#keywords + i] = learned[i] end
+        keywords = merged
+    end
     return keywordMatches({
         match = sc.match or 'contains',
-        keywords = sc.keywords or {},
+        keywords = keywords,
+    }, body)
+end
+
+-- Quick Scenario Negative Matches
+function quickScenarioNegativeMatches(sc, body)
+    local neg = sc.negative_keywords
+    if type(neg) ~= 'table' or #neg < 1 then return false end
+    return keywordMatches({
+        match = sc.match or 'contains',
+        keywords = neg,
     }, body)
 end
 
@@ -14734,7 +16589,9 @@ function scenarioVisibleOnMessage(sc, text)
         return false
     end
     if scenarioGuardBlocks(sc, text) then return false end
-    return quickScenarioMatches(sc, text)
+    if not quickScenarioMatches(sc, text) then return false end
+    if quickScenarioNegativeMatches(sc, text) then return false end
+    return true
 end
 
 -- Collect Quick Buttons For Message
@@ -14818,7 +16675,11 @@ function executeQuickScenario(sc, reporter, messageText)
     end
     text = expandTemplate(text, getResolvedAnsId(reporter))
     local tk = threadStorageKey(reporter)
-    local ok, res = sendOutgoingAns(reporter, text, { threadKey = tk })
+    local ok, res = sendOutgoingAns(reporter, text, {
+        threadKey = tk,
+        scenarioLabel = sc.label or '',
+        scenarioQuestion = messageText or '',
+    })
     if ok then
         clearThreadRuleCooldowns(tk)
         say('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE: ' .. (sc.label or ''))
@@ -15004,7 +16865,7 @@ end
 
 -- Trim Messages
 function trimMessages(msgs)
-    local limit = math.max(20, settings.history_limit or 100)
+    local limit = DEFAULT_HISTORY_LIMIT
     while #msgs > limit do
         table.remove(msgs, 1)
     end
@@ -15192,8 +17053,10 @@ function migrateThreadKey(oldKey, newKey)
     end
     if selectedKey == oldKey then selectedKey = newKey end
     migrateThreadAuxiliaries(oldKey, newKey)
-    registerNickIndex(newKey, threads[newKey])
-    bumpThreadListRev()
+    local moved = threads[newKey]
+    if moved then moved._storageKey = newKey end
+    registerNickIndex(newKey, moved)
+    bumpThreadStructRev()
     markDirtyThreads()
     return newKey
 end
@@ -15254,6 +17117,7 @@ function resolveThread(nick, id)
             key = migrateThreadKey(key, wantKey)
             t = threads[key]
         end
+        if t and not t._storageKey then t._storageKey = key end
     else
         key = nk ~= '' and nk or uniqueThreadKey('id' .. tostring(id or 0))
         t = {
@@ -15265,11 +17129,14 @@ function resolveThread(nick, id)
             unread = 0,
             lastAt = os.time(),
             messages = {},
+            _storageKey = key,
         }
         threads[key] = t
         threadOrder[#threadOrder + 1] = key
+        threadCount = threadCount + 1
         registerNickIndex(key, t)
         markDirtyThreads()
+        bumpThreadStructRev()
         pruneOldThreads()
     end
     registerNickIndex(key, t)
@@ -15429,15 +17296,22 @@ function touchThreadOrder(key)
         end
     end
     table.insert(threadOrder, 1, key)
-    bumpThreadListRev()
+    bumpThreadStructRev()
 end
 
 -- Request Chat Scroll Bottom
 function requestChatScrollBottom()
-    if deskInputState.replyFocused then return end
-    if deskInputState.keyboardStickyUntil > os.clock() then return end
+    if deskInputState.chatFollowBottom == false then return end
     chatScrollToBottom = true
-    deskInputState.chatScrollFrames = 2
+    deskInputState.chatScrollFrames = 3
+end
+
+-- Request Chat Snap Bottom
+function requestChatSnapBottom(threadKey)
+    if not threadKey then return end
+    deskInputState.chatSnapBottomKey = threadKey
+    deskInputState.chatSnapAttempts = 0
+    deskInputState.chatFollowBottom = true
 end
 
 -- Request Chat Scroll For Thread
@@ -15454,18 +17328,34 @@ function addMessageToKey(key, msg)
     t.messages[#t.messages + 1] = msg
     trimMessages(t.messages)
     t.lastAt = msg.ts or os.time()
+    if type(lastPreview) == 'function' then
+        t._previewText = lastPreview(t)
+    end
     markDirtyThreads()
-    bumpThreadListRev()
-    invalidateUiCaches()
+    bumpThreadMsgRev()
+    bumpThreadInFilterCache(key)
+    if key == selectedKey then
+        requestChatScrollForThread(key)
+    end
 end
 
 -- Add Message
-function addMessage(id, msg)
+function addMessage(id, msg, keyHint)
+    if keyHint and threads[keyHint] then
+        addMessageToKey(keyHint, msg)
+        return
+    end
     local t = getThread(id)
     if not t then return end
-    for key, th in pairs(threads) do
+    local key = t._storageKey
+    if key and threads[key] == t then
+        addMessageToKey(key, msg)
+        return
+    end
+    for k, th in pairs(threads) do
         if th == t then
-            addMessageToKey(key, msg)
+            t._storageKey = k
+            addMessageToKey(k, msg)
             return
         end
     end
@@ -15493,22 +17383,21 @@ function rebuildThreadOrder()
     for _, e in ipairs(list) do
         threadOrder[#threadOrder + 1] = e.key
     end
+    syncThreadStorageKeys()
     rebuildNickIndex()
-    bumpThreadListRev()
-    invalidateUiCaches()
+    syncThreadCount()
+    bumpThreadStructRev()
 end
 
 -- Count Threads
 function countThreads()
-    local n = 0
-    for _ in pairs(threads) do n = n + 1 end
-    return n
+    return threadCount
 end
 
 -- Prune Old Threads
 function pruneOldThreads()
-    local maxT = math.max(50, tonumber(settings.max_threads) or DEFAULT_MAX_THREADS)
-    local n = countThreads()
+    local maxT = DEFAULT_MAX_THREADS
+    local n = threadCount
     if n <= maxT then return end
     local list = {}
     for key, t in pairs(threads) do
@@ -15522,6 +17411,7 @@ function pruneOldThreads()
             pendingAuto[e.key] = nil
             threads[e.key] = nil
             n = n - 1
+            threadCount = n
         end
     end
     rebuildThreadOrder()
@@ -15609,9 +17499,19 @@ function loadConfig()
         settings.tech_reply = repairStoredConfigText(settings.tech_reply, DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    settings.poll_chat_log = nil
+    settings.poll_events_only = nil
+    settings.ingest_pc = nil
+    settings.ingest_s = nil
+    settings.ingest_m = nil
+    settings.ingest_admin_actions = nil
+    settings.debug = nil
+    settings.history_limit = nil
+    settings.max_threads = nil
     if settings.auto_rules_enabled == nil then settings.auto_rules_enabled = true end
     if settings.auto_time_enabled == nil then settings.auto_time_enabled = true end
     if settings.auto_gg_enabled == nil then settings.auto_gg_enabled = true end
+    if settings.scenario_learn_enabled == nil then settings.scenario_learn_enabled = true end
     local al = tonumber(settings.admin_level)
     if al == nil or al < 1 then
         settings.admin_level = 3
@@ -15630,6 +17530,7 @@ function loadConfig()
         settings.skin_radius = 20
     end
     cheatState.hudPlaced = false
+    cheatState.hudPosValidated = false
     cheatsUiSynced = false
     if type(checkerState) == 'table' then
         checkerState.hudPlaced = false
@@ -15715,9 +17616,6 @@ function loadConfig()
         pruneOldThreads()
     end
     bumpScenariosGen()
-    if settings.poll_events_only and settings.poll_chat_log == false then
-        settings.poll_chat_log = true
-    end
 
     if not doesFileExist(USER_CONFIG_PATH) then
         pcall(saveUserConfig)
@@ -15800,6 +17698,14 @@ function saveUserConfig()
             f:write(luaQuoteUtf8(kw))
         end
         f:write('},\n')
+        if type(sc.negative_keywords) == 'table' and #sc.negative_keywords > 0 then
+            f:write('      negative_keywords = {')
+            for i, kw in ipairs(sc.negative_keywords) do
+                if i > 1 then f:write(', ') end
+                f:write(luaQuoteUtf8(kw))
+            end
+            f:write('},\n')
+        end
         f:write('    },\n')
     end
     f:write('  },\n')
@@ -15890,12 +17796,8 @@ function saveConfig()
     f:write('return {\n')
     f:write('  settings = {\n')
     f:write(string.format('    hotkey = %d,\n', settings.hotkey or vkeys.VK_F7))
-    f:write(string.format('    history_limit = %d,\n', settings.history_limit or 100))
     f:write(string.format('    sound = %s,\n', settings.sound and 'true' or 'false'))
     f:write(string.format('    auto_only_unread = %s,\n', settings.auto_only_unread and 'true' or 'false'))
-    f:write(string.format('    poll_chat_log = %s,\n', settings.poll_chat_log ~= false and 'true' or 'false'))
-    f:write(string.format('    poll_events_only = %s,\n', settings.poll_events_only and 'true' or 'false'))
-    f:write(string.format('    debug = %s,\n', settings.debug and 'true' or 'false'))
     f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
     f:write(string.format('    watch_auto_notify = %s,\n', settings.watch_auto_notify ~= false and 'true' or 'false'))
     f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
@@ -15905,18 +17807,11 @@ function saveConfig()
     f:write(string.format('    auto_gg_enabled = %s,\n', settings.auto_gg_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    time_reply = %s,\n', luaQuoteUtf8(getTimeReplyText())))
     f:write(string.format('    ingest_srv_any_color = %s,\n', settings.ingest_srv_any_color and 'true' or 'false'))
-    f:write(string.format('    ingest_pc = %s,\n', settings.ingest_pc ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_s = %s,\n', settings.ingest_s ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_m = %s,\n', settings.ingest_m ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_admin_actions = %s,\n', settings.ingest_admin_actions ~= false and 'true' or 'false'))
-    f:write(string.format('    max_threads = %d,\n', tonumber(settings.max_threads) or DEFAULT_MAX_THREADS))
     f:write(string.format('    profanity_filter_enabled = %s,\n', settings.profanity_filter_enabled and 'true' or 'false'))
     f:write(string.format('    profanity_filter_sound = %s,\n', settings.profanity_filter_sound ~= false and 'true' or 'false'))
     f:write(string.format('    profanity_filter_chat = %s,\n', settings.profanity_filter_chat and 'true' or 'false'))
-    f:write(string.format('    remote_chat_hud_x = %d,\n', math.floor(tonumber(settings.remote_chat_hud_x) or -1)))
-    f:write(string.format('    remote_chat_hud_y = %d,\n', math.floor(tonumber(settings.remote_chat_hud_y) or 52)))
-    f:write(string.format('    remote_chat_hud_h = %d,\n', math.floor(tonumber(settings.remote_chat_hud_h) or 340)))
-    f:write(string.format('    remote_chat_hud_w = %d,\n', math.floor(tonumber(settings.remote_chat_hud_w) or 320)))
+    f:write(string.format('    remote_chat_samp_mirror = %s,\n', settings.remote_chat_samp_mirror ~= false and 'true' or 'false'))
+    f:write(string.format('    scenario_learn_enabled = %s,\n', settings.scenario_learn_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    admin_level = %d,\n', getLocalAdminLevel()))
     f:write(string.format('    skin_radius = %d,\n', tonumber(settings.skin_radius) or 20))
     f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 1200))
@@ -15946,6 +17841,15 @@ function saveConfig()
     f:write(string.format('    spectate_vehicle_hud_layout_v4 = %s,\n', settings.spectate_vehicle_hud_layout_v4 and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud_layout_v5 = %s,\n', settings.spectate_vehicle_hud_layout_v5 and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud_layout_v6 = %s,\n', settings.spectate_vehicle_hud_layout_v6 and 'true' or 'false'))
+    f:write(string.format('    spectate_keys_hud = %s,\n', settings.spectate_keys_hud ~= false and 'true' or 'false'))
+    if settings.spectate_keys_hud_x ~= nil then
+        f:write(string.format('    spectate_keys_hud_x = %d,\n', math.floor(tonumber(settings.spectate_keys_hud_x) or 0)))
+    end
+    if settings.spectate_keys_hud_y ~= nil then
+        f:write(string.format('    spectate_keys_hud_y = %d,\n', math.floor(tonumber(settings.spectate_keys_hud_y) or -100)))
+    end
+    f:write(string.format('    spectate_keys_hud_custom = %s,\n', settings.spectate_keys_hud_custom == true and 'true' or 'false'))
+    f:write(string.format('    spectate_wheel_zoom = %s,\n', settings.spectate_wheel_zoom ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud = %s,\n', settings.checker_hud ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud_persist = %s,\n', settings.checker_hud_persist ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud_x = %d,\n', math.floor(tonumber(settings.checker_hud_x) or 8)))
@@ -16068,6 +17972,9 @@ function isExcludedChatLine(text)
     if text:find(L_ADMINS_ONLINE, 1, true) then return true end
     if text:find(L_ADMIN_FOR, 1, true) then return true end
     if text:find(MSG_PREFIX_PLAIN, 1, true) then return true end
+    if deskIngest.looksLikePlayerStatusLine and deskIngest.looksLikePlayerStatusLine(text) then
+        return true
+    end
     if deskIngest.looksLikePlayerStatusBody then
         local body = text:match('^[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
         if body and deskIngest.looksLikePlayerStatusBody(body) then return true end
@@ -16098,10 +18005,10 @@ function initDeskIngest()
         stripChatTimestamp = stripChatTimestamp,
         isExcludedChatLine = isExcludedChatLine,
         isValidPlayerNick = isValidPlayerNick,
-        ingest_pc = settings.ingest_pc ~= false,
-        ingest_s = settings.ingest_s ~= false,
-        ingest_m = settings.ingest_m ~= false,
-        ingest_admin_bracket = settings.ingest_admin_actions ~= false,
+        ingest_pc = true,
+        ingest_s = true,
+        ingest_m = true,
+        ingest_admin_bracket = true,
     })
 end
 
@@ -16242,7 +18149,6 @@ function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick
                 existing.adminNick = nil
                 existing.kind = 'reply_self'
                 markThreadAnswered(t)
-                requestChatScrollForThread(key)
             end
             markOutboundEchoHandled(targetId, body, key, targetNick)
             return true
@@ -16952,6 +18858,13 @@ function processAutoRules(t, body)
     return false
 end
 
+-- Clear All Pending Auto
+function clearAllPendingAuto()
+    for k in pairs(pendingAuto) do
+        pendingAuto[k] = nil
+    end
+end
+
 -- Schedule Auto Rules Retry
 function scheduleAutoRulesRetry(t, body, attempt)
     attempt = tonumber(attempt) or 0
@@ -17028,10 +18941,6 @@ function addThreadEventMessage(targetNick, targetId, opts)
         punishReason = opts.punishReason,
         ts = os.time(),
     })
-    touchThreadOrder(key)
-    if opts.isLive then
-        requestChatScrollForThread(key)
-    end
     return true
 end
 
@@ -17067,10 +18976,6 @@ function addThreadEventMessageToExisting(targetNick, targetId, opts)
         punishReason = opts.punishReason,
         ts = os.time(),
     })
-    touchThreadOrder(key)
-    if opts.isLive then
-        requestChatScrollForThread(key)
-    end
     return true
 end
 
@@ -17155,9 +19060,6 @@ function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta
     end
     local ev = deskIngest.tryParseChatEvent(plain, parseOpts)
     if not ev then return false end
-    if source == 'chat' and settings.poll_events_only and ev.type ~= 'player_report' then
-        return false
-    end
 
     if ev.type == 'player_report' then
         if source == 'chat' and not ev.channel then
@@ -17197,11 +19099,10 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
         dir = 'in', kind = 'player', text = body, ts = os.time(), raw = raw,
         channel = channel,
     })
-    touchThreadOrder(key)
-    requestChatScrollForThread(key)
     markDirtyThreads()
     if isLive then
         local runAuto = not (settings.auto_only_unread and hadUnread)
+        if runAuto and not deskAutoReplyAllowed() then runAuto = false end
         local src = source or 'live'
         local nickCopy, idCopy, bodyCopy = nick, id, body
         lua_thread.create(function()
@@ -17294,6 +19195,7 @@ function ensureComposerQuickButtons()
             { id = 'gg', label = 'GG', text = gg ~= '' and gg or DEFAULT_GG_REPLY },
             { id = 'tech', label = '\xD2\xE5\xF5\xED\xE8\xF7\xEA\xE0', text = tech ~= '' and tech or DEFAULT_TECH_REPLY },
         }
+        bumpComposerQuickGen()
         return
     end
     local out = {}
@@ -17306,6 +19208,7 @@ function ensureComposerQuickButtons()
     else
         settings.composer_quick_buttons = out
     end
+    bumpComposerQuickGen()
 end
 
 -- Sync Legacy Gg Tech From Composer Buttons
@@ -17444,7 +19347,8 @@ end
 
 -- Get Filter List Sig
 function getFilterListSig()
-    return tostring(filterMode[0] or 0) .. '|' .. trim(readInputBuf(searchBuf)):lower() .. '|' .. deskCache.threadRev
+    return tostring(filterMode[0] or 0) .. '|' .. trim(readInputBuf(searchBuf)):lower()
+        .. '|' .. tostring(deskCache.threadStructRev or 0)
 end
 
 -- Get Filtered Thread Keys
@@ -17454,25 +19358,12 @@ function getFilteredThreadKeys()
         return deskCache.filterKeys
     end
     local keys = {}
-    local seen = {}
-    for _, key in ipairs(threadOrder) do
-        local t = threads[key]
-        if t and not seen[key] and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
-            keys[#keys + 1] = key
-            seen[key] = true
-        end
-    end
     for key, t in pairs(threads) do
-        if not seen[key] and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
+        if t and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
             keys[#keys + 1] = key
         end
     end
-    table.sort(keys, function(a, b)
-        local ta, tb = threads[a], threads[b]
-        if not ta or not tb then return a < b end
-        if ta.pinned ~= tb.pinned then return ta.pinned end
-        return (ta.lastAt or 0) > (tb.lastAt or 0)
-    end)
+    table.sort(keys, threadSortBefore)
     deskCache.filterKeys = keys
     deskCache.filterSig = sig
     return keys
@@ -17584,6 +19475,25 @@ end
 -- Draw Settings Card Header
 function drawSettingsCardHeader(title, desc)
     deskFormSection(title)
+    if desc and desc ~= '' then
+        drawSettingsHint(desc)
+    end
+end
+
+-- Draw Settings Hint
+function drawSettingsHint(text)
+    if not text or text == '' then return end
+    imgui.PushTextWrapPos(imgui.GetCursorPosX() + math.max(120, imgui.GetContentRegionAvail().x))
+    imgui.TextColored(col_muted2, uiText(text))
+    imgui.PopTextWrapPos()
+    imgui.Dummy(imgui.ImVec2(0, 2))
+end
+
+-- Draw Settings Subsection
+function drawSettingsSubsection(title)
+    imgui.Dummy(imgui.ImVec2(0, 6))
+    imgui.TextColored(col_muted, uiText(title))
+    imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
 -- Draw Settings Hotkey Bind
@@ -17688,20 +19598,80 @@ function drawAvatar(dl, cx, cy, radius, letter, col)
     )
 end
 
+-- Utf8 Next Codepoint
+local function utf8Next(s, i)
+    if i > #s then return nil end
+    local b = s:byte(i)
+    if not b or b < 0x80 then return i + 1 end
+    if b < 0xE0 then return i + 2 end
+    if b < 0xF0 then return i + 3 end
+    return i + 4
+end
+
+-- Utf8 Char Count
+local function utf8CharCount(s)
+    local n, i = 0, 1
+    while i <= #s do
+        n = n + 1
+        i = utf8Next(s, i) or (#s + 1)
+    end
+    return n
+end
+
+-- Utf8 Sub Chars
+local function utf8SubChars(s, maxChars)
+    local i, count = 1, 0
+    while i <= #s and count < maxChars do
+        i = utf8Next(s, i) or (#s + 1)
+        count = count + 1
+    end
+    return s:sub(1, i - 1)
+end
+
 -- Ellipsize To Width
 function ellipsizeToWidth(text, maxW)
     local display = uiText(text or '')
     if display == '' or maxW < 12 then return '' end
-    if imgui.CalcTextSize(display).x <= maxW then return display end
+    maxW = tonumber(maxW) or 0
+    local cacheKey = display .. '|' .. tostring(math.floor(maxW))
+    local cached = ellipsizeCacheGet(cacheKey)
+    if cached then return cached end
+
+    local fullW = imgui.CalcTextSize(display).x
+    if fullW <= maxW then
+        ellipsizeCachePut(cacheKey, display)
+        return display
+    end
+
     local ell = uiText('...')
     local ellW = imgui.CalcTextSize(ell).x
-    for i = #display, 1, -1 do
-        local part = display:sub(1, i)
-        if imgui.CalcTextSize(part).x + ellW <= maxW then
-            return part .. ell
+    local budget = maxW - ellW
+    if budget < 8 then
+        ellipsizeCachePut(cacheKey, ell)
+        return ell
+    end
+
+    local total = utf8CharCount(display)
+    if total < 1 then
+        ellipsizeCachePut(cacheKey, ell)
+        return ell
+    end
+
+    local lo, hi, best = 1, total, 0
+    while lo <= hi do
+        local mid = math.floor((lo + hi) * 0.5)
+        local part = utf8SubChars(display, mid)
+        if imgui.CalcTextSize(part).x <= budget then
+            best = mid
+            lo = mid + 1
+        else
+            hi = mid - 1
         end
     end
-    return ell
+
+    local result = best > 0 and (utf8SubChars(display, best) .. ell) or ell
+    ellipsizeCachePut(cacheKey, result)
+    return result
 end
 
 -- Draw Unread Badge
@@ -17827,7 +19797,7 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     local profanityHighlight = opts.profanityHighlight == true
     local scenarioBody = ''
     local quickBtns = {}
-    if reporter and messageShowsScenarioButtons(m) then
+    if not opts.noQuickButtons and reporter and messageShowsScenarioButtons(m) then
         scenarioBody = messageBodyForScenarios(m)
         if scenarioBody == '' then scenarioBody = line end
         quickBtns = collectQuickButtonsForMessage(scenarioBody)
@@ -17850,12 +19820,12 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         local gapAfter = compactSpacing and BUBBLE_GAP_GROUPED or BUBBLE_GAP
         local timeDisp = uiText(formatTimeShort(m.ts))
         local timeSz = imgui.CalcTextSize(timeDisp)
-        local _, textH = measureBubbleText(line, wrapInner)
+        local _, textH = measureBubbleText(line, wrapInner, m)
         local timeY = rowY + textH + CHAT_TIME_GAP
         local blockH = topPad + textH + CHAT_TIME_GAP + timeSz.y + CHAT_TIME_PAD + gapAfter
 
         finishChatMessageRow(localX, localY, blockH, rowW)
-        drawBubbleBodyText(dl, x0, rowY, wrapInner, line, fg)
+        drawBubbleBodyText(dl, x0, rowY, wrapInner, line, fg, m)
         dl:AddText(imgui.ImVec2(x0, timeY), toU32(col_muted2), timeDisp)
         sealChatMessageRow(localX, localY, blockH)
         return
@@ -17863,16 +19833,11 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
 
     local subDisp = sub and uiText(sub) or ''
     local subSz = subDisp ~= '' and imgui.CalcTextSize(subDisp) or imgui.ImVec2(0, 0)
-    local wrapInner = maxInner
-    local estW, estH = measureBubbleText(line, wrapInner)
-    local padY = compactSpacing and BUBBLE_PAD_Y_GROUPED or BUBBLE_PAD_Y
-    local bubbleW = math.max(64, estW + BUBBLE_PAD_X * 2)
     local maxBubbleW = math.max(64, rowW - padSide * 2 - watchInlineW)
-    if bubbleW > maxBubbleW then
-        bubbleW = maxBubbleW
-        wrapInner = math.max(48, bubbleW - BUBBLE_PAD_X * 2)
-        estW, estH = measureBubbleText(line, wrapInner)
-    end
+    local wrapInner = math.min(maxInner, math.max(48, maxBubbleW - BUBBLE_PAD_X * 2))
+    local estW, estH = measureBubbleText(line, wrapInner, m)
+    local padY = compactSpacing and BUBBLE_PAD_Y_GROUPED or BUBBLE_PAD_Y
+    local bubbleW = math.max(64, math.min(maxBubbleW, estW + BUBBLE_PAD_X * 2))
     local textH = estH
     local bubbleH = textH + padY * 2
 
@@ -17916,7 +19881,7 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         dl:AddRect(bMin, bMax, toU32(imgui.ImVec4(0.72, 0.38, 0.42, 0.55)), BUBBLE_RADIUS, 0, 1.0)
     end
 
-    drawBubbleBodyText(dl, textX, textY, wrapInner, line, fg)
+    drawBubbleBodyText(dl, textX, textY, wrapInner, line, fg, m)
     dl:AddText(imgui.ImVec2(timeX, timeY), toU32(col_muted2), timeDispPre)
 
     if #watchBtns > 0 and not alignRight then
@@ -18055,48 +20020,31 @@ end
 -- Desk hook/helper.
 function deskComposerQuickReplies()
     ensureComposerQuickButtons()
-    local out = {}
-    local t = getSelectedThread()
-    if t then
-        local body = getLastPlayerScenarioBody(t)
-        if body ~= '' then
-            local _, replyBtns = splitQuickButtons(collectQuickButtonsForMessage(body))
-            for qi, qb in ipairs(replyBtns) do
-                local sc = qb.scenario
-                if sc then
-                    out[#out + 1] = {
-                        id = 'sc_' .. tostring(qi) .. '_' .. tostring(sc.label or ''),
-                        label = sc.label,
-                        btnW = qb.btnW,
-                        isScenario = true,
-                        tip = function()
-                            return previewQuickScenarioText(sc, t, body)
-                        end,
-                        onClick = function()
-                            executeQuickScenario(sc, t, body)
-                        end,
-                    }
-                end
-            end
-        end
+    local gen = deskCache.composerQuickGen or 0
+    if deskCache.composerQuickItems and deskCache.composerQuickGenCached == gen then
+        return deskCache.composerQuickItems
     end
+    local out = {}
     for i, b in ipairs(settings.composer_quick_buttons) do
         out[#out + 1] = {
             id = b.id or ('qb' .. i),
             label = b.label,
             tip = b.text,
             btn = b,
+            btnW = b.btnW or composerQuickBtnWidth(b.label),
             onClick = function()
                 sendComposerQuickButton(b)
             end,
         }
     end
+    deskCache.composerQuickItems = out
+    deskCache.composerQuickGenCached = gen
     return out
 end
 
 -- Desk hook/helper.
-function deskComposerQuickRowCount(availW)
-    local items = deskComposerQuickReplies()
+function deskComposerQuickRowCount(availW, items)
+    items = items or deskComposerQuickReplies()
     if #items == 0 then return 0 end
     availW = tonumber(availW) or 400
     if availW < 120 then availW = 400 end
@@ -18104,7 +20052,6 @@ function deskComposerQuickRowCount(availW)
     local rows = 1
     for i, item in ipairs(items) do
         local bw = item.btnW or composerQuickBtnWidth(item.label)
-        if item.isScenario and bw > 120 then bw = 120 end
         local gap = (i > 1) and COMPOSER_QUICK_GAP or 0
         if x > 0 and x + gap + bw > availW then
             rows = rows + 1
@@ -18117,10 +20064,10 @@ function deskComposerQuickRowCount(availW)
 end
 
 -- Desk hook/helper.
-function deskComposerHeight(availW)
+function deskComposerHeight(availW, items)
     local pad = 20
     local h = pad + COMPOSER_INPUT_H + COMPOSER_ROW_GAP
-    local rows = deskComposerQuickRowCount(availW)
+    local rows = deskComposerQuickRowCount(availW, items)
     if rows > 0 then
         h = h + rows * COMPOSER_QUICK_H + math.max(0, rows - 1) * COMPOSER_QUICK_GAP
     end
@@ -18158,9 +20105,9 @@ function popComposerQuickBtnStyle()
 end
 
 -- Draw Composer Quick Row
-function drawComposerQuickRow(canSend, availW)
-    local items = deskComposerQuickReplies()
-    if #items == 0 then return 0 end
+function drawComposerQuickRow(items, canSend, availW)
+    items = items or deskComposerQuickReplies()
+    if #items == 0 then return end
 
     availW = tonumber(availW) or imgui.GetContentRegionAvail().x
     if availW < 120 then availW = 400 end
@@ -18169,7 +20116,6 @@ function drawComposerQuickRow(canSend, availW)
     local rowStartX = imgui.GetCursorPosX()
     for i, item in ipairs(items) do
         local bw = item.btnW or composerQuickBtnWidth(item.label)
-        if item.isScenario and bw > 120 then bw = 120 end
         if i > 1 then
             if imgui.GetCursorPosX() - rowStartX + COMPOSER_QUICK_GAP + bw > availW then
                 imgui.Dummy(imgui.ImVec2(0, COMPOSER_QUICK_GAP))
@@ -18192,11 +20138,10 @@ function drawComposerQuickRow(canSend, availW)
             item.onClick()
         end
     end
-    return deskComposerQuickRowCount(availW)
 end
 
 -- Draw Composer
-function drawComposer(composerH)
+function drawComposer(composerH, quickItems)
     composerH = tonumber(composerH) or COMPOSER_H
     local composerFlags = 0
     if imgui.WindowFlags then
@@ -18211,7 +20156,7 @@ function drawComposer(composerH)
 
     if focusReplyNext and imgui.SetKeyboardFocusHere then
         imgui.SetKeyboardFocusHere(0)
-        deskInputState.keyboardStickyUntil = os.clock() + 1.0
+        deskInputState.keyboardStickyUntil = os.clock() + 0.15
         focusReplyNext = false
     end
 
@@ -18245,7 +20190,6 @@ function drawComposer(composerH)
         if not replyActive and imgui.IsItemFocused then replyActive = imgui.IsItemFocused() end
         if replyActive or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
             deskInputState.replyFocused = true
-            deskInputState.keyboardStickyUntil = os.clock() + 2.5
         end
     end
     imgui.PopItemWidth()
@@ -18284,11 +20228,10 @@ function drawComposer(composerH)
             ffi.copy(replyBuf, '')
             focusReplyNext = true
             deskInputState.replyFocused = true
-            deskInputState.keyboardStickyUntil = os.clock() + 2.0
         end
     end
 
-    drawComposerQuickRow(canSend, availW)
+    drawComposerQuickRow(quickItems, canSend, availW)
 
     imgui.PopStyleVar(2)
     imgui.PopStyleVar(2)
@@ -18320,7 +20263,9 @@ function drawThreadRow(t, key, sel)
         selectedKey = key
         selectedId = t.id
         t.unread = 0
-        requestChatScrollBottom()
+        chatScrollToBottom = false
+        deskInputState.chatFollowBottom = true
+        requestChatSnapBottom(key)
         focusReplyNext = true
         markDirtyThreads()
     end
@@ -18373,7 +20318,7 @@ function drawThreadRow(t, key, sel)
     dl:AddText(
         imgui.ImVec2(textX, previewY),
         toU32(previewCol),
-        ellipsizeToWidth(lastPreview(t), previewMaxW)
+        ellipsizeToWidth(t._previewText or lastPreview(t), previewMaxW)
     )
 
     if unread > 0 then
@@ -18780,6 +20725,27 @@ end
 
 -- Draw Scenarios Tab Inner
 function drawScenariosTabInner()
+    settingsScenarioLearn[0] = settings.scenario_learn_enabled ~= false
+    if deskFormToggleRow(
+        '\xD3\xF7\xE8\xF2\xFC \xED\xE0 \xF5\xEE\xE4\xF3 (\xEA\xEB\xFE\xF7\xE8 \xE8\xE7 \xF0\xE5\xEF\xEE\xF0\xF2\xEE\xE2)',
+        settingsScenarioLearn,
+        function()
+            settings.scenario_learn_enabled = settingsScenarioLearn[0]
+            markDirtySettings()
+        end,
+        'sc_learn'
+    ) then end
+    do
+        local st = (type(scenarioLearnData) == 'table' and scenarioLearnData.stats) or {}
+        local sess = tonumber(st.session_records) or 0
+        local kwNew = tonumber(st.session_keywords) or 0
+        local kwAll = (type(scenarioLearnCountKeywords) == 'function' and scenarioLearnCountKeywords()) or 0
+        imgui.TextColored(col_muted, string.format(
+            uiText('\xD1\xE5\xF1\xF1\xE8\xFF: %d \xEE\xF2\xE2\xE5\xF2\xEE\xE2, +%d \xEA\xEB\xFE\xF7\xE5\xE9. \xC2\xF1\xE5\xE3\xEE \xEA\xEB\xFE\xF7\xE5\xE9: %d'),
+            sess, kwNew, kwAll
+        ))
+    end
+    imgui.Dummy(imgui.ImVec2(0, 6))
     pushPanelStyle()
     imgui.BeginChild('##sc_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
     if imgui.Button(uiText('+ \xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9'), imgui.ImVec2(-1, 28)) then
@@ -18867,7 +20833,9 @@ function flushComposerQuickEditor()
     local b = settings.composer_quick_buttons[composerQuickSelected]
     b.label = readInputBuf(editCqLabel)
     b.text = readInputBuf(editCqText)
+    b.btnW = composerQuickBtnWidth(b.label)
     syncLegacyGgTechFromComposerButtons()
+    bumpComposerQuickGen()
     markDirtySettings()
     composerQuickEditorDirty = false
 end
@@ -18884,9 +20852,11 @@ function drawComposerQuickTabInner()
             id = 'qb' .. tostring(n),
             label = '\xCD\xEE\xE2\xE0\xFF',
             text = '',
+            btnW = composerQuickBtnWidth('\xCD\xEE\xE2\xE0\xFF'),
         }
         composerQuickSelected = n
         fillComposerQuickEditor(n)
+        bumpComposerQuickGen()
         markDirtySettings()
     end
     imgui.Dummy(imgui.ImVec2(0, 6))
@@ -19013,6 +20983,73 @@ function drawComposerQuickTab()
     end
 end
 
+-- Apply Chat Scroll If Needed
+function applyChatScrollIfNeeded(msgCount)
+    msgCount = tonumber(msgCount) or 0
+    local snapKey = deskInputState.chatSnapBottomKey
+    local wantSnap = snapKey and snapKey == selectedKey and msgCount > 0
+    local wantFollow = not snapKey
+        and (chatScrollToBottom or (deskInputState.chatScrollFrames or 0) > 0)
+
+    if not wantSnap and not wantFollow then return end
+
+    imgui.Dummy(imgui.ImVec2(0, 1))
+    if imgui.SetScrollHereY then
+        imgui.SetScrollHereY(1.0)
+    end
+    local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
+    if maxY > 0 and imgui.SetScrollY then
+        imgui.SetScrollY(maxY)
+    end
+
+    if wantSnap then
+        if maxY <= 0 then
+            deskInputState.chatSnapAttempts = (tonumber(deskInputState.chatSnapAttempts) or 0) + 1
+            if deskInputState.chatSnapAttempts >= 6 then
+                deskInputState.chatSnapBottomKey = nil
+                deskInputState.chatSnapAttempts = 0
+            end
+            return
+        end
+        deskInputState.chatSnapBottomKey = nil
+        deskInputState.chatSnapAttempts = 0
+        return
+    end
+
+    local fr = tonumber(deskInputState.chatScrollFrames) or 0
+    if fr > 0 then
+        deskInputState.chatScrollFrames = fr - 1
+    elseif chatScrollToBottom then
+        chatScrollToBottom = false
+    end
+end
+
+-- Update Chat Follow Bottom
+function updateChatFollowBottom()
+    if not imgui.GetScrollY or not imgui.GetScrollMaxY then return end
+    local scrollY = imgui.GetScrollY()
+    local scrollMax = imgui.GetScrollMaxY()
+    if scrollMax <= 0 then
+        deskInputState.chatFollowBottom = true
+        deskInputState.chatLastScrollY = scrollY
+        return
+    end
+    local atBottom = (scrollMax - scrollY) < 48
+    if atBottom then
+        deskInputState.chatFollowBottom = true
+    elseif imgui.IsWindowHovered and imgui.IsWindowHovered() then
+        local io = imgui.GetIO()
+        if io and io.MouseWheel and io.MouseWheel < 0 then
+            deskInputState.chatFollowBottom = false
+        end
+        local lastY = deskInputState.chatLastScrollY
+        if lastY ~= nil and scrollY < lastY - 2 and not atBottom then
+            deskInputState.chatFollowBottom = false
+        end
+    end
+    deskInputState.chatLastScrollY = scrollY
+end
+
 -- Draw Chat Panel
 function drawChatPanel()
     local t = getSelectedThread()
@@ -19048,12 +21085,12 @@ function drawChatPanel()
     drawChatHeader(t)
 
     local colW = imgui.GetContentRegionAvail().x
-    local composerH = deskComposerHeight(colW)
+    local quickItems = deskComposerQuickReplies()
+    local composerH = deskComposerHeight(colW, quickItems)
     local logH = imgui.GetContentRegionAvail().y - composerH
     if logH < 100 then logH = 100 end
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(CHAT_LOG_PAD, CHAT_LOG_PAD))
-    local logChildId = '##chat_log_' .. tostring(selectedKey or '')
-    imgui.BeginChild(logChildId, imgui.ImVec2(-1, logH), true)
+    imgui.BeginChild('##chat_log', imgui.ImVec2(-1, logH), true)
     imgui.PopStyleVar()
     local msgs = t.messages or {}
     local fullW = imgui.GetContentRegionAvail().x - CHAT_LOG_PAD
@@ -19089,25 +21126,11 @@ function drawChatPanel()
         end
         imgui.PopStyleVar()
     end
-    if not deskInputState.replyFocused
-            and deskInputState.keyboardStickyUntil <= os.clock()
-            and (chatScrollToBottom or (deskInputState.chatScrollFrames or 0) > 0) then
-        imgui.Dummy(imgui.ImVec2(0, 1))
-        if imgui.SetScrollHereY then
-            imgui.SetScrollHereY(1.0)
-        elseif imgui.SetScrollY and imgui.GetScrollMaxY then
-            imgui.SetScrollY(imgui.GetScrollMaxY())
-        end
-        local fr = tonumber(deskInputState.chatScrollFrames) or 0
-        if fr > 0 then
-            deskInputState.chatScrollFrames = fr - 1
-        elseif chatScrollToBottom then
-            chatScrollToBottom = false
-        end
-    end
+    updateChatFollowBottom()
+    applyChatScrollIfNeeded(#msgs)
     imgui.EndChild()
 
-    drawComposer(composerH)
+    drawComposer(composerH, quickItems)
     imgui.EndChild()
     popPanelStyle()
 end
@@ -19118,6 +21141,10 @@ function drawFilterChips()
         uiText('\xCD\xE5\xEF\xF0.'),
         uiText('\xC2\xF1\xE5'),
     }
+    if totalUnread > 0 then
+        local n = totalUnread > 99 and '99+' or tostring(totalUnread)
+        labels[1] = labels[1] .. ' (' .. n .. ')'
+    end
     local chipW = math.floor((imgui.GetContentRegionAvail().x - 8) / 2)
     if chipW < 72 then chipW = 72 end
     for i, lbl in ipairs(labels) do
@@ -19135,26 +21162,12 @@ function drawFilterChips()
     end
 end
 
--- Draw Sidebar Title
-function drawSidebarTitle()
-    local title = uiText('\xD0\xE5\xEF\xEE\xF0\xF2\xFB')
-    imgui.TextColored(col_accent, title)
-    if totalUnread > 0 then
-        local rmin = imgui.GetItemRectMin()
-        local rmax = imgui.GetItemRectMax()
-        drawUnreadBadge(imgui.GetWindowDrawList(), rmax.x + 6, (rmin.y + rmax.y) * 0.5, totalUnread)
-    end
-end
-
 -- Draw Thread List
 function drawThreadList()
-    refreshPlayerNickCache(false)
-
     pushPanelStyle(col_sidebar)
     imgui.BeginChild('##sidebar', imgui.ImVec2(LIST_W, -1), false)
 
-    drawSidebarTitle()
-    imgui.Dummy(imgui.ImVec2(0, 8))
+    imgui.Dummy(imgui.ImVec2(0, 4))
     imgui.PushItemWidth(-1)
     imgui.InputTextWithHint('##search', uiText('\xCF\xEE\xE8\xF1\xEA...'), searchBuf, sizeof(searchBuf))
     imgui.PopItemWidth()
@@ -19165,8 +21178,17 @@ function drawThreadList()
     imgui.BeginChild('##threads', imgui.ImVec2(-1, -1), true)
     local keys = getFilteredThreadKeys()
     if #keys == 0 then
-        imgui.Dummy(imgui.ImVec2(0, 24))
-        imgui.TextColored(col_muted, uiText('\xCD\xE8\xF7\xE5\xE3\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE'))
+        local q = trim(readInputBuf(searchBuf))
+        local emptyMsg = (filterMode[0] == 0 and q == '')
+            and '\xD0\xE5\xEF\xEE\xF0\xF2 \xE7\xE0\xF2\xE0\xF9\xE8\xEB\xE8, \xED\xEE\xE2\xEE\xE3\xEE \xED\xE5\xF2'
+            or '\xCD\xE8\xF7\xE5\xE3\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE'
+        imgui.Dummy(imgui.ImVec2(0, 28))
+        local pad = 14
+        local wrapW = math.max(120, imgui.GetContentRegionAvail().x - pad * 2)
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
+        imgui.PushTextWrapPos(imgui.GetCursorPosX() + wrapW)
+        imgui.TextColored(col_muted2, uiText(emptyMsg))
+        imgui.PopTextWrapPos()
     elseif imgui.ImGuiListClipper then
         local rowH = THREAD_ROW_H
         local clipper = imgui.ImGuiListClipper()
@@ -19195,13 +21217,16 @@ function drawThreadList()
     popPanelStyle()
 end
 
--- Draw Rules Tab Inner
-function drawRulesTabInner()
+-- Sync Rules Checkboxes From Settings
+function syncRulesCheckboxesFromSettings()
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
     uiAutoOnlyUnread[0] = settings.auto_only_unread == true
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
     uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
+end
 
+-- Draw Rules Tab Inner
+function drawRulesTabInner()
     deskFormPanelBegin('##auto_general')
     drawSettingsCardHeader('\xCE\xE1\xF9\xE5\xE5')
     if deskFormCheckboxRow('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB \xE2\xEA\xEB\xFE\xF7\xE5\xED\xFB', uiAutoRulesEnabled, function(v)
@@ -19273,6 +21298,7 @@ function drawRulesTab()
     if not rulesUiSynced then
         setInputBuf(deskReplyBuf.time, getTimeReplyText())
         setInputBuf(deskReplyBuf.gg, getGgReplyText())
+        syncRulesCheckboxesFromSettings()
         rulesUiSynced = true
     end
 
@@ -19296,8 +21322,29 @@ function drawRulesTab()
     popPanelStyle()
 end
 
+-- Sync Settings Ui From Settings
+function syncSettingsUiFromSettings()
+    uiSound[0] = settings.sound
+    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
+    uiSpecHud[0] = settings.spectate_hud ~= false
+    uiSpecAutoSt[0] = settings.spectate_auto_st ~= false
+    uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
+    uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
+    uiSpecVehicleHud[0] = settings.spectate_vehicle_hud ~= false
+    uiSpecKeysHud[0] = settings.spectate_keys_hud ~= false
+    uiSpecWheelZoom[0] = settings.spectate_wheel_zoom ~= false
+    uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
+    uiRemoteChatSamp[0] = settings.remote_chat_samp_mirror ~= false
+    uiProfanitySound[0] = settings.profanity_filter_sound ~= false
+end
+
 -- Draw Settings Tab
 function drawSettingsTab()
+    if not settingsUiSynced then
+        syncSettingsUiFromSettings()
+        settingsUiSynced = true
+    end
+
     pushPanelStyle(col_chat_bg)
     local childFlags = 0
     if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
@@ -19307,91 +21354,22 @@ function drawSettingsTab()
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
     drawDeskBindCaptureBanner()
 
-    uiSound[0] = settings.sound
-    uiHistoryLimit[0] = settings.history_limit or 100
-    uiPollChat[0] = settings.poll_chat_log ~= false
-    uiPollEventsOnly[0] = settings.poll_events_only == true
-    uiDebug[0] = settings.debug == true
-    uiMaxThreads[0] = tonumber(settings.max_threads) or DEFAULT_MAX_THREADS
-    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
-    uiSpecHud[0] = settings.spectate_hud ~= false
-    uiSpecAutoSt[0] = settings.spectate_auto_st ~= false
-    uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
-    uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
-    uiSpecVehicleHud[0] = settings.spectate_vehicle_hud ~= false
-    uiIngestAdmin[0] = settings.ingest_admin_actions ~= false
-    uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
-    uiProfanitySound[0] = settings.profanity_filter_sound ~= false
-
-    deskFormPanelBegin('##set_general')
-    drawSettingsCardHeader('\xCE\xE1\xF9\xE5\xE5')
+    deskFormPanelBegin('##set_main')
+    drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5',
+        '\xC3\xEE\xF0\xFF\xF7\xE0\xFF \xEA\xEB\xE0\xE2\xE8\xF8\xE0 \xE8 \xF3\xE2\xE5\xE4\xEE\xEC\xEB\xE5\xED\xE8\xFF')
     drawSettingsHotkeyBind()
-    if deskFormCheckboxRow('\xC7\xE2\xF3\xEA \xEF\xF0\xE8 \xED\xEE\xE2\xEE\xEC \xF0\xE5\xEF\xEE\xF0\xF2\xE5', uiSound, function(v)
+
+    drawSettingsSubsection('\xC7\xE2\xF3\xEA')
+    if deskFormCheckboxRow('\xCD\xEE\xE2\xFB\xE9 \xF0\xE5\xEF\xEE\xF0\xF2', uiSound, function(v)
         settings.sound = v
         markDirtySettings()
-    end) then end
-    deskFormPanelEnd()
+    end, 'snd_report') then end
 
-    deskFormPanelBegin('##set_prof')
-    drawSettingsCardHeader('\xC4\xE0\xEB\xFC\xED\xE8\xE9 \xF7\xE0\xF2')
-    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE8\xF2\xFC \xEE\xEA\xED\xEE', uiProfanityFilter, function(v)
-        settings.profanity_filter_enabled = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xC7\xE2\xF3\xEA \xEF\xF0\xE8 \xEE\xE1\xED\xE0\xF0\xF3\xE6\xE5\xED\xE8\xE8 \xEC\xE0\xF2\xE0', uiProfanitySound, function(v)
-        settings.profanity_filter_sound = v
-        markDirtySettings()
-    end) then end
-    imgui.TextColored(col_muted2, uiText(
-        '\xCB\xE5\xED\xF2\xE0 bubble-\xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE9 \xE8\xE3\xF0\xEE\xEA\xEE\xE2 \xF1 \xE8\xF1\xF2\xEE\xF0\xE8\xE5\xE9'))
-    imgui.TextColored(col_muted2, uiText(
-        'report_desk_profanity_words.lua \x97 ' .. tostring(#profanity_words) .. ' \xF1\xEB\xEE\xE2'))
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##set_spec')
-    drawSettingsCardHeader('\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2')
-    uiAdminLevel[0] = getLocalAdminLevel()
-    drawSettingsSliderInt('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0 (1\x964: /a \xE4\xEB\xFF tr)', uiAdminLevel, 'adm_lvl', 1, 4, function(v)
-        settings.admin_level = v
-        markDirtySettings()
-    end)
-    imgui.TextColored(col_muted, uiText('1\x962 \x97 \xE7\xE0\xEF\xF0\xEE\xF1 tr \xE2 /a; 3+ \x97 \xEA\xEE\xEC\xE0\xED\xE4\xE0 /tr'))
-    if deskFormCheckboxRow('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xF2\xFC \xEF\xE0\xED\xE5\xEB\xFC', uiSpecHud, function(v)
-        settings.spectate_hud = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xC7\xE0\xEF\xF0\xE0\xF8\xE8\xE2\xE0\xF2\xFC /st \xEF\xF0\xE8 \xED\xE0\xF7\xE0\xEB\xE5', uiSpecAutoSt, function(v)
-        settings.spectate_auto_st = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xCE\xF1\xF2\xE0\xE2\xEB\xFF\xF2\xFC \xEF\xEE\xF1\xEB\xE5 \xE2\xFB\xF5\xEE\xE4\xE0 \xE8\xE7 /sp', uiSpecHudPersist, function(v)
-        settings.spectate_hud_persist = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xCA\xE0\xF1\xF2\xEE\xEC\xED\xFB\xE9 \xF1\xEF\xE8\xE4\xEE\xEC\xE5\xF2\xF0 \xE2 /sp', uiSpecVehicleHud, function(v)
-        settings.spectate_vehicle_hud = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xC7\xE2\xF3\xEA \xEC\xE5\xED\xFE /sp', uiSpecSpMenuSound, function(v)
-        settings.spectate_sp_menu_sound = v
-        markDirtySettings()
-        if v then
-            local menuMod = package.loaded['report_desk_spectate_menu']
-            if menuMod and menuMod.previewMenuSound then
-                pcall(menuMod.previewMenuSound)
-            elseif playSoundFrontEnd then
-                pcall(playSoundFrontEnd, 4)
-            end
-        end
-    end) then end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##set_watch')
-    drawSettingsCardHeader('\xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9 \xAB\xD1\xEB\xE5\xE4\xE8\xF2\xFC\xBB')
+    drawSettingsSubsection('\xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9 \xAB\xD1\xEB\xE5\xE4\xE8\xF2\xFC\xBB')
     if deskFormCheckboxRow('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xFF\xF2\xFC \xEE\xF2\xE2\xE5\xF2 \xE0\xE2\xF2\xEE\xEC\xE0\xF2\xE8\xF7\xE5\xF1\xEA\xE8', uiWatchAutoNotify, function(v)
         settings.watch_auto_notify = v
         markDirtySettings()
-    end) then end
+    end, 'watch_auto') then end
     if uiWatchAutoNotify[0] then
         deskFormRowLabel('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0')
         imgui.PushItemWidth(-1)
@@ -19412,35 +21390,88 @@ function drawSettingsTab()
     end
     deskFormPanelEnd()
 
-    deskFormPanelBegin('##set_reports')
-    drawSettingsCardHeader('\xD1\xEF\xE8\xF1\xEE\xEA \xF0\xE5\xEF\xEE\xF0\xF2\xEE\xE2')
-    drawSettingsSliderInt(
-        '\xD1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE9 \xE2 \xEE\xE4\xED\xEE\xEC \xE4\xE8\xE0\xEB\xEE\xE3\xE5',
-        uiHistoryLimit, 'hist_lim', 20, 200,
-        function(v) settings.history_limit = math.max(20, v); markDirtySettings() end)
-    drawSettingsSliderInt(
-        '\xC4\xE8\xE0\xEB\xEE\xE3\xEE\xE2 \xE2 \xEB\xE5\xE2\xEE\xEC \xF1\xEF\xE8\xF1\xEA\xE5',
-        uiMaxThreads, 'max_thr', 50, 500,
-        function(v) settings.max_threads = math.max(50, v); markDirtySettings() end)
+    deskFormPanelBegin('##set_chat')
+    drawSettingsCardHeader('\xD7\xE0\xF2',
+        'Bubble-\xF0\xE5\xF7\xFC \xE8\xE3\xF0\xEE\xEA\xEE\xE2, \xF4\xE8\xEB\xFC\xF2\xF0 \xEC\xE0\xF2\xE0')
+
+    drawSettingsSubsection('Bubble-\xF0\xE5\xF7\xFC [B]')
+    if deskFormCheckboxRow('\xC4\xF3\xE1\xEB\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xE2 SAMP-\xF7\xE0\xF2', uiRemoteChatSamp, function(v)
+        settings.remote_chat_samp_mirror = v
+        if type(remoteChatSetMirrorEnabled) == 'function' then
+            pcall(remoteChatSetMirrorEnabled, v)
+        elseif v == false and type(remoteChatClearQueue) == 'function' then
+            pcall(remoteChatClearQueue)
+        end
+        markDirtySettings()
+    end, 'remote_chat_samp') then end
+    drawSettingsHint('\xD0\xE5\xF7\xFC, /me \xE8 /do \xE8\xE3\xF0\xEE\xEA\xEE\xE2 \xF1 \xF2\xE5\xE3\xEE\xEC [B] \xE2 \xEE\xE1\xF9\xE8\xE9 \xF7\xE0\xF2')
+
+    drawSettingsSubsection('\xD4\xE8\xEB\xFC\xF2\xF0 \xEC\xE0\xF2\xE0')
+    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED', uiProfanityFilter, function(v)
+        settings.profanity_filter_enabled = v
+        markDirtySettings()
+    end, 'prof_on') then end
+    if uiProfanityFilter[0] then
+        if deskFormCheckboxRow('\xC7\xE2\xF3\xEA \xEF\xF0\xE8 \xEE\xE1\xED\xE0\xF0\xF3\xE6\xE5\xED\xE8\xE8', uiProfanitySound, function(v)
+            settings.profanity_filter_sound = v
+            markDirtySettings()
+        end, 'prof_snd') then end
+    end
+    drawSettingsHint('\xD2\xEE\xEB\xFC\xEA\xEE bubble-\xF0\xE5\xF7\xFC \xE8\xE3\xF0\xEE\xEA\xEE\xE2 \xB7 ' .. tostring(#profanity_words) .. ' \xF1\xEB\xEE\xE2 \xE2 \xF1\xEB\xEE\xE2\xE0\xF0\xE5')
     deskFormPanelEnd()
 
-    deskFormPanelBegin('##set_sync')
-    drawSettingsCardHeader('\xCE\xF2\xEA\xF3\xE4\xE0 \xE1\xE5\xF0\xF3\xF2\xF1\xFF \xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xFF')
-    if deskFormCheckboxRow('\xD7\xE8\xF2\xE0\xF2\xFC \xF7\xE0\xF2 \xE8\xE3\xF0\xFB', uiPollChat, function(v)
-        settings.poll_chat_log = v
+    deskFormPanelBegin('##set_spec')
+    drawSettingsCardHeader('\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2 /sp',
+        'HUD \xE8 \xEF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5 \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC')
+    uiAdminLevel[0] = getLocalAdminLevel()
+    drawSettingsSliderInt('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0', uiAdminLevel, 'adm_lvl', 1, 4, function(v)
+        settings.admin_level = v
         markDirtySettings()
-    end) then end
-    if uiPollChat[0] then
-        if deskFormCheckboxRow('\xD2\xEE\xEB\xFC\xEA\xEE \xF0\xE5\xEF\xEE\xF0\xF2\xFB (\xE1\xE5\xE7 \xEE\xEF\xF0\xEE\xF1\xE0 \xF7\xE0\xF2\xE0)', uiPollEventsOnly, function(v)
-            settings.poll_events_only = v
-            markDirtySettings()
-        end) then end
-    end
-    if deskFormCheckboxRow('\xC4\xE5\xE9\xF1\xF2\xE2\xE8\xFF \xE0\xE4\xEC\xE8\xED\xE0 \xE2 \xE4\xE8\xE0\xEB\xEE\xE3\xE5', uiIngestAdmin, function(v)
-        settings.ingest_admin_actions = v
+    end)
+    drawSettingsHint('1\x962 \x97 tr \xF7\xE5\xF0\xE5\xE7 /a \xB7 3+ \x97 \xEA\xEE\xEC\xE0\xED\xE4\xE0 /tr')
+
+    drawSettingsSubsection('HUD')
+    if deskFormCheckboxRow('\xCF\xE0\xED\xE5\xEB\xFC \xF1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE8', uiSpecHud, function(v)
+        settings.spectate_hud = v
         markDirtySettings()
-        pcall(initDeskIngest)
-    end) then end
+    end, 'spec_hud') then end
+    if deskFormCheckboxRow('\xD1\xEF\xE8\xE4\xEE\xEC\xE5\xF2\xF0 \xE2 \xEC\xE0\xF8\xE8\xED\xE5', uiSpecVehicleHud, function(v)
+        settings.spectate_vehicle_hud = v
+        markDirtySettings()
+    end, 'spec_vehicle_hud') then end
+    if deskFormCheckboxRow('\xCA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xE0 \xE8\xE3\xF0\xEE\xEA\xE0', uiSpecKeysHud, function(v)
+        settings.spectate_keys_hud = v
+        markDirtySettings()
+    end, 'spec_keys_hud') then end
+    if deskFormCheckboxRow('\xC7\xF3\xEC \xEA\xE0\xEC\xE5\xF0\xFB \xEA\xEE\xEB\xB8\xF1\xE8\xEA\xEE\xEC', uiSpecWheelZoom, function(v)
+        settings.spectate_wheel_zoom = v
+        markDirtySettings()
+    end, 'spec_wheel_zoom') then end
+    drawSettingsHint('\xCF\xE0\xED\xE5\xEB\xE8 \xEC\xEE\xE6\xED\xEE \xEF\xE5\xF0\xE5\xF2\xE0\xF1\xEA\xE8\xE2\xE0\xF2\xFC \xEC\xFB\xF8\xFC\xFE \xE2 /sp \xB7 \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xF3 \xE2 \xE7\xEE\xED\xE5 \xF6\xE5\xED\xF2\xF0\xE0 \xF1\xED\xE8\xE7\xF3')
+
+    drawSettingsSubsection('\xCF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5')
+    if deskFormCheckboxRow('\xC7\xE0\xEF\xF0\xE0\xF8\xE8\xE2\xE0\xF2\xFC /st \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5', uiSpecAutoSt, function(v)
+        settings.spectate_auto_st = v
+        markDirtySettings()
+    end, 'spec_st') then end
+    if deskFormCheckboxRow('\xCE\xF1\xF2\xE0\xE2\xEB\xFF\xF2\xFC HUD \xEF\xEE\xF1\xEB\xE5 /sp', uiSpecHudPersist, function(v)
+        settings.spectate_hud_persist = v
+        markDirtySettings()
+    end, 'spec_persist') then end
+
+    drawSettingsSubsection('\xC7\xE2\xF3\xEA \xEC\xE5\xED\xFE')
+    if deskFormCheckboxRow('\xCD\xE0\xE2\xE8\xE3\xE0\xF6\xE8\xFF /sp', uiSpecSpMenuSound, function(v)
+        settings.spectate_sp_menu_sound = v
+        markDirtySettings()
+        if v then
+            local menuMod = package.loaded['report_desk_spectate_menu']
+            if menuMod and menuMod.previewMenuSound then
+                pcall(menuMod.previewMenuSound)
+            elseif playSoundFrontEnd then
+                pcall(playSoundFrontEnd, 4)
+            end
+        end
+    end, 'spec_menu_snd') then end
     deskFormPanelEnd()
 
     deskFormPanelBegin('##set_service')
@@ -19451,7 +21482,10 @@ function drawSettingsTab()
     if imgui.Button(uiText('\xCE\xF7\xE8\xF1\xF2\xE8\xF2\xFC \xE2\xF1\xE5 \xE4\xE8\xE0\xEB\xEE\xE3\xE8') .. '##clr_threads', imgui.ImVec2(-1, DESK_FORM_ROW_H)) then
         threads = {}
         threadOrder = {}
+        threadCount = 0
         deskCache.nickKeys = {}
+        deskCache.threadStructRev = 0
+        deskCache.threadMsgRev = 0
         deskCache.threadRev = 0
         selectedId = -1
         selectedKey = nil
@@ -19459,21 +21493,13 @@ function drawSettingsTab()
         totalUnread = 0
         seedSeenChatLines()
         invalidateUiCaches()
+        invalidateFilterCache()
         markDirtyThreads()
         markDirtySettings()
         saveConfig()
         say('\xC4\xE8\xE0\xEB\xEE\xE3\xE8 \xEE\xF7\xE8\xF9\xE5\xED\xFB')
     end
     imgui.PopStyleColor(3)
-    if imgui.CollapsingHeader then
-        imgui.Dummy(imgui.ImVec2(0, 4))
-        if imgui.CollapsingHeader(uiText('Debug')) then
-            if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE8\xF2\xFC \xEB\xEE\xE3 \xE2 \xEA\xEE\xED\xF1\xEE\xEB\xFC', uiDebug, function(v)
-                settings.debug = v
-                markDirtySettings()
-            end) then end
-        end
-    end
     deskFormPanelEnd()
 
     imgui.PopStyleVar()
@@ -19484,6 +21510,8 @@ end
 
 -- Toggle Window
 function toggleWindow()
+    if not sessionLive then return end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return end
     if showWindow[0] then
         closeDeskWindow()
         return
@@ -19491,12 +21519,15 @@ function toggleWindow()
     releaseDeskInputCapture(true)
     clearDeskImguiInputState(true)
     showWindow[0] = true
-    pcall(seedProfanitySeenForChatBuffer)
+    deskInputState.openWarmupUntil = os.clock() + DESK_OPEN_WARMUP_SEC
+    deskInputState.openPollHoldUntil = os.clock() + 0.08
     rulesUiSynced = false
+    settingsUiSynced = false
     scenariosUiSynced = false
     focusReplyNext = false
     deskInputState.windowOpenSince = os.clock()
     deskInputState.keyboardStickyUntil = 0
+    deskInputState.chatFollowBottom = true
     refreshMyNick()
     deskInputState.wasOpen = true
     deskApplyInputPolicy()
@@ -19637,6 +21668,10 @@ imgui.OnInitialize(function()
     if imgui.ConfigFlags and imgui.ConfigFlags.NoMouseCursorChange then
         io.ConfigFlags = bit.bor(io.ConfigFlags, imgui.ConfigFlags.NoMouseCursorChange)
     end
+    if not styleApplied then
+        pcall(applyModernDarkStyle)
+        styleApplied = true
+    end
     pcall(ensureDeskCatalogWarmup)
 end)
 
@@ -19667,29 +21702,12 @@ function deskPassesGameKey(wparam)
     return false
 end
 
--- Desk hook/helper.
-function deskShouldBlockGameInput(msg, wparam)
-    if not showWindow[0] then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
-    if deskPassesGameKey(wparam) then return false end
-    if deskWindowWantsKeyboard() then return false end
-    if msg == deskCache.wm.CHAR then return false end
-    if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN
-        or msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        if deskCache.wm.CHAT_KEYS[wparam] then return true end
-    end
-    return false
-end
 
 -- Draw Desk Sp Spectate Overlay
 function drawDeskSpSpectateOverlay()
     if type(settings) ~= 'table' then return end
-    if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return end
     if deskSpectateStats.shouldShowHud and deskSpectateStats.shouldShowHud(settings) then
         pcall(deskSpectateStats.drawOverlay, settings)
-    end
-    if deskSpectateStats.drawVehicleHud then
-        pcall(deskSpectateStats.drawVehicleHud, settings)
     end
     if deskSpectateStats.drawSpMenu then
         pcall(deskSpectateStats.drawSpMenu, settings)
@@ -19697,12 +21715,22 @@ function drawDeskSpSpectateOverlay()
 end
 
 -- Desk hook/helper.
+function deskCheckerHudVisible()
+    return type(checkerHudVisible) == 'function' and checkerHudVisible() == true
+end
+
+-- Desk hook/helper.
 function deskSpSpectateOverlayVisible()
+    if not sessionLive then return false end
     if type(settings) ~= 'table' then return false end
-    if deskSpectateStats.getTargetId and deskSpectateStats.getTargetId() >= 0 then return true end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+    local tid = -1
+    if deskSpectateStats.getTargetId then
+        local ok, v = pcall(deskSpectateStats.getTargetId)
+        if ok then tid = tonumber(v) or -1 end
+    end
+    if tid >= 0 then return true end
     if deskSpectateStats.shouldShowHud and deskSpectateStats.shouldShowHud(settings) then return true end
-    if deskSpectateStats.shouldShowVehicleHud and deskSpectateStats.shouldShowVehicleHud(settings) then return true end
-    if deskInputState.playerSpectating then return true end
     return false
 end
 
@@ -19733,7 +21761,11 @@ do
     ), true, false)
 
     setupDeskFrame(imgui.OnFrame(
-        function() return showWindow[0] end,
+        function()
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return showWindow[0]
+        end,
         function(self)
             self.LockPlayer = deskOpenLocksPlayer()
             self.HideCursor = false
@@ -19747,13 +21779,23 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
-            if type(remoteChatHudVisible) ~= 'function' then return false end
-            return remoteChatHudVisible()
+            if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            ensureCheatsSettings()
+            return settings.cheats.show_hud ~= false
         end,
         function(self)
-            self.HideCursor = true
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            pcall(drawCheatsHudOverlay)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            local wantCursor = showWindow[0]
+                or (type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput())
+            self.HideCursor = not wantCursor
             self.LockPlayer = false
-            pcall(drawRemoteChatHud)
         end
     ), true, false)
 
@@ -19761,14 +21803,57 @@ do
         function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            ensureCheatsSettings()
-            if showWindow[0] then return false end
-            if settings.cheats.show_hud ~= false then return true end
+            if not sessionLive then return false end
+            if settings.spectate_vehicle_hud == false then return false end
+            return deskSpectateStats.shouldShowVehicleHud and deskSpectateStats.shouldShowVehicleHud(settings)
+        end,
+        function(self)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            if deskSpectateStats.drawVehicleHud then
+                pcall(deskSpectateStats.drawVehicleHud, settings)
+            end
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            self.HideCursor = true
+            self.LockPlayer = false
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
+            if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            if not sessionLive then return false end
+            if settings.spectate_keys_hud == false then return false end
+            return deskSpectateStats.shouldShowKeysHud and deskSpectateStats.shouldShowKeysHud(settings)
+        end,
+        function(self)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            if deskSpectateStats.drawKeysHud then
+                pcall(deskSpectateStats.drawKeysHud, settings)
+            end
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            self.HideCursor = true
+            self.LockPlayer = false
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
+            if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
             return deskSpSpectateOverlayVisible()
         end,
         function(self)
-            if settings.cheats.show_hud ~= false then
-                pcall(drawCheatsHudOverlay)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
             end
             drawDeskSpSpectateOverlay()
             if type(updateMimguiGameInputPassthrough) == 'function' then
@@ -19781,7 +21866,6 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
-            if showWindow[0] then return false end
             return deskSpectateStats.isAnsBarOpen and deskSpectateStats.isAnsBarOpen()
         end,
         function(self)
@@ -19911,83 +21995,93 @@ if vkeys and vkeys.VK_SNAPSHOT then deskCache.gamePassVks[vkeys.VK_SNAPSHOT] = t
 if vkeys and vkeys.VK_F12 then deskCache.gamePassVks[vkeys.VK_F12] = true end
 if vkeys and vkeys.VK_F8 then deskCache.gamePassVks[vkeys.VK_F8] = true end
 
-addEventHandler('onWindowMessage', function(msg, wparam, lparam)
-    if tryHandleDeskHotkeyMessage(msg, wparam, lparam) then return end
-end, true)
+local DESK_WM_KEYS = {
+    hotkey = '__rd_wm_hotkey__',
+    gamePass = '__rd_wm_gamepass__',
+    main = '__rd_wm_main__',
+}
 
-addEventHandler('onWindowMessage', function(msg, wparam, lparam)
-    if not showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then return end
-    if deskPassesGameKey(wparam) then return end
-    local tVk = (vkeys and vkeys.VK_T) or 0x54
-    if (msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN) and wparam == tVk then
-        if not deskImguiTypingActive() then
-            deskEnforceNoSampChat()
-            consumeWindowMessage(true, true, true)
-        end
-        return
+local function uninstallDeskWm(key)
+    local prev = _G[DESK_WM_KEYS[key]]
+    if prev and removeEventHandler then
+        pcall(removeEventHandler, 'onWindowMessage', prev)
     end
-end, true)
+    _G[DESK_WM_KEYS[key]] = nil
+end
 
-addEventHandler('onWindowMessage', function(msg, wparam, lparam)
-    if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
-        if deskCache.gamePassVks[wparam] then
-            updateMimguiGameInputPassthrough()
-            return
-        end
-    end
-end, true)
+local function installDeskWm(key, fn, front)
+    uninstallDeskWm(key)
+    addEventHandler('onWindowMessage', fn, front == true)
+    _G[DESK_WM_KEYS[key]] = fn
+end
 
-addEventHandler('onWindowMessage', function(msg, wparam, lparam)
-    if deskCache.cheatCapture then
-        if applyCheatKeyCapture(msg, wparam, lparam) then
-            consumeWindowMessage(true, true, true)
-            return
-        end
-    else
-        local mvk = parseMouseButtonVk(msg, wparam, lparam)
-        if mvk and MOUSE_BIND_VKS[mvk] then
-            deskCache.cheatBindPrev[mvk] = false
-        end
-        local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
-        if relMv and MOUSE_BIND_VKS[relMv] then
-            deskCache.hotkeyPrev[relMv] = false
-            deskCache.cheatBindPrev[relMv] = false
-        end
-    end
-    if deskCache.hotkeyCapture then
-        if applyHotkeyCapture(msg, wparam, lparam) then
-            consumeWindowMessage(true, true, true)
-            return
-        end
-    end
+local function installDeskWmHandlers()
+    installDeskWm('hotkey', function(msg, wparam, lparam)
+        if tryHandleDeskHotkeyMessage(msg, wparam, lparam) then return end
+    end, true)
 
-    if not showWindow[0] then return end
-
-    if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN or msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        if wparam == vkeys.VK_ESCAPE then
-            if deskImguiTypingActive() then
+    installDeskWm('gamePass', function(msg, wparam, lparam)
+        if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
+            if deskCache.gamePassVks[wparam] then
+                updateMimguiGameInputPassthrough()
                 return
             end
-            if sampIsDialogActive and sampIsDialogActive() then
+        end
+    end, true)
+
+    installDeskWm('main', function(msg, wparam, lparam)
+        if deskCache.cheatCapture then
+            if applyCheatKeyCapture(msg, wparam, lparam) then
+                consumeWindowMessage(true, true, true)
                 return
             end
-            if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
-                if deskCache.hotkeyCapture or deskCache.cheatCapture then
-                    cancelDeskBindCapture()
-                else
-                    closeDeskWindow()
+        else
+            local mvk = parseMouseButtonVk(msg, wparam, lparam)
+            if mvk and MOUSE_BIND_VKS[mvk] then
+                deskCache.cheatBindPrev[mvk] = false
+            end
+            local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
+            if relMv and MOUSE_BIND_VKS[relMv] then
+                deskCache.hotkeyPrev[relMv] = false
+                deskCache.cheatBindPrev[relMv] = false
+            end
+        end
+        if deskCache.hotkeyCapture then
+            if applyHotkeyCapture(msg, wparam, lparam) then
+                consumeWindowMessage(true, true, true)
+                return
+            end
+        end
+
+        if not showWindow[0] then return end
+
+        if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN or msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+            if wparam == vkeys.VK_ESCAPE then
+                if deskImguiTypingActive() then
+                    return
+                end
+                if sampIsDialogActive and sampIsDialogActive() then
+                    return
+                end
+                if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
+                    consumeWindowMessage(true, false, true)
+                    return
+                end
+                if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+                    if deskCache.hotkeyCapture or deskCache.cheatCapture then
+                        cancelDeskBindCapture()
+                    else
+                        closeDeskWindow()
+                    end
+                    consumeWindowMessage(true, false, true)
+                    return
                 end
             end
-            consumeWindowMessage(true, true, true)
-            return
         end
-    end
+    end, false)
+end
 
-    if deskShouldBlockGameInput(msg, wparam) then
-        consumeWindowMessage(true, true, true)
-        return
-    end
-end)
+installDeskWmHandlers()
 
 -- Try Intercept Split Ans Command
 function tryInterceptSplitAnsCommand(command)
@@ -20085,8 +22179,11 @@ end
 -- Fallback poll sampGetChatString когда hook пропустил строку.
 -- === Fallback poll ingest чата (sampGetChatString) ===
 function pollReportIngest()
-    if settings.poll_chat_log == false then return end
     if not sampGetChatString then return end
+    if showWindow[0] and deskInputState.openPollHoldUntil then
+        if os.clock() < deskInputState.openPollHoldUntil then return end
+        deskInputState.openPollHoldUntil = nil
+    end
     if not chatLogReady then
         seedSeenChatLines()
         return
@@ -20097,6 +22194,15 @@ function pollReportIngest()
         maxLines = showWindow[0] and CHAT_POLL_LINES_HOOK or CHAT_POLL_LINES_CLOSED_HOOK
     else
         maxLines = showWindow[0] and CHAT_POLL_LINES_OPEN or CHAT_POLL_LINES_CLOSED
+    end
+    if showWindow[0] and deskInputState.openWarmupUntil then
+        if os.clock() < deskInputState.openWarmupUntil then
+            if maxLines > DESK_OPEN_POLL_LINES then
+                maxLines = DESK_OPEN_POLL_LINES
+            end
+        else
+            deskInputState.openWarmupUntil = nil
+        end
     end
     local maxLine = maxLines - 1
     for i = 0, maxLine do
@@ -20142,6 +22248,14 @@ end
 
 --[[ Модуль: перехват SAMP-событий (чат, диалоги, RPC меню /sp). ]]
 
+local spSessionMod
+local function spSession()
+    if not spSessionMod then
+        spSessionMod = require 'report_desk_spectate_session'
+    end
+    return spSessionMod
+end
+
 -- Центральный обработчик onServerMessage: checker, spectate, ingest, profanity.
 function deskOnServerMessage(color, text)
     if not text or text == '' then return end
@@ -20186,11 +22300,15 @@ function installDeskSpectateDialogHook()
         return
     end
     local prev = sampev.onShowDialog
-    if prev == deskCache.specDialogHandler then prev = nil end
-    if deskCache.hookPrevShowDialog == nil then deskCache.hookPrevShowDialog = prev end
+    if prev == deskCache.specDialogHandler then prev = deskCache.hookPrevShowDialog end
+    deskCache.hookPrevShowDialog = prev
     deskCache.specDialogHandler = function(dialogId, style, title, button1, button2, text)
-        if deskSpectateStats.onShowDialog(dialogId, style, title, button1, button2, text) then
+        local okSp, handled = pcall(deskSpectateStats.onShowDialog, dialogId, style, title, button1, button2, text)
+        if okSp and handled then
             return false
+        end
+        if not okSp then
+            print('[Report Desk] sp dialog: ' .. tostring(handled))
         end
         local checkerHandled = false
         local okChk, chkRes = pcall(checkerOnShowDialog, dialogId, style, title, button1, button2, text)
@@ -20247,6 +22365,9 @@ function deskOnPlayerQuit(playerId, reason)
             clearPendingOutbound()
         end
     end
+    if type(sampClearPlayerColor) == 'function' then
+        sampClearPlayerColor(playerId)
+    end
     markDirtyThreads()
 end
 
@@ -20269,6 +22390,9 @@ end
 
 -- Desk hook/helper.
 function deskOnPlayerJoin(playerId, color, isNpc, nickname)
+    if type(sampStorePlayerColor) == 'function' then
+        sampStorePlayerColor(playerId, color)
+    end
     pcall(checkerOnPlayerJoin, playerId, nickname)
 end
 
@@ -20298,12 +22422,34 @@ function installDeskPlayerStreamInHook()
     if prev == deskCache.playerStreamInHandler then prev = nil end
     if deskCache.hookPrevPlayerStreamIn == nil then deskCache.hookPrevPlayerStreamIn = prev end
     deskCache.playerStreamInHandler = function(playerId, team, model, position, rotation, color, fightingStyle)
+        if type(sampStorePlayerColor) == 'function' then
+            sampStorePlayerColor(playerId, color)
+        end
         pcall(checkerOnPlayerStreamIn, playerId)
         if type(prev) == 'function' then
             return prev(playerId, team, model, position, rotation, color, fightingStyle)
         end
     end
     sampev.onPlayerStreamIn = deskCache.playerStreamInHandler
+end
+
+-- SetPlayerColor RPC → clist (TAB).
+function installDeskPlayerColorHook()
+    if deskCache.playerColorHandler and sampev.onSetPlayerColor == deskCache.playerColorHandler then
+        return
+    end
+    local prev = sampev.onSetPlayerColor
+    if prev == deskCache.playerColorHandler then prev = nil end
+    if deskCache.hookPrevPlayerColor == nil then deskCache.hookPrevPlayerColor = prev end
+    deskCache.playerColorHandler = function(playerId, color)
+        if type(sampStorePlayerColor) == 'function' then
+            sampStorePlayerColor(playerId, color)
+        end
+        if type(prev) == 'function' then
+            return prev(playerId, color)
+        end
+    end
+    sampev.onSetPlayerColor = deskCache.playerColorHandler
 end
 
 -- Перехват исходящего чата (profanity, auto-rules).
@@ -20325,11 +22471,29 @@ function installDeskSendChatHook()
         end
         if tryInterceptSplitAnsCommand(message) then return false end
         handleOutgoingAnsCommand(message)
+        noteManualStatsCommand(message)
         if type(prev) == 'function' then
             return prev(message)
         end
     end
     sampev.onSendChat = deskCache.sendChatHandler
+end
+
+-- Note Manual Stats Command — ручной /st из чата: показать server dialog, не HUD-парсинг.
+local function noteManualStatsCommand(command)
+    command = trim(command or '')
+    local stId = command:match('^%/?st%s+(%d+)%s*$')
+    if not stId then return end
+    if tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0 then
+        return
+    end
+    local s = spSession()
+    if s and s.wasRecentOutboundCommand and s.wasRecentOutboundCommand(command) then
+        return
+    end
+    if deskSpectateStats.markPendingSt then
+        pcall(deskSpectateStats.markPendingSt, tonumber(stId), { showDialog = true })
+    end
 end
 
 -- Try Handle Sp Spectate Command
@@ -20348,13 +22512,19 @@ function tryHandleSpSpectateCommand(command)
                     nick = sampGetPlayerNickname(spId) or ''
                 end
             end)
-            deskSpectateStats.markPendingSpCommand(spId, nick)
+            if deskSpectateStats and deskSpectateStats.markPendingSpCommand then
+                deskSpectateStats.markPendingSpCommand(spId, nick)
+            end
         end
         return false
     end
     if command:match('^%/?sp%s*$') then
-        deskSpectateStats.onSpCommandOff()
-        deskSpectateStats.clearSpectateTarget(true)
+        if deskSpectateStats and deskSpectateStats.onSpCommandOff then
+            deskSpectateStats.onSpCommandOff()
+        end
+        if deskSpectateStats and deskSpectateStats.clearSpectateTarget then
+            deskSpectateStats.clearSpectateTarget(true)
+        end
         deskLeaveSpectateMode()
         deskApplyInputPolicy()
     end
@@ -20377,6 +22547,7 @@ function installDeskSendCommandHook()
         end
         pcall(checkerOnSendCommand, command)
         tryHandleSpSpectateCommand(command)
+        noteManualStatsCommand(command)
         local id, body = command:match('^%/?ans%s+(%d+)%s+(.+)$')
         if id and body then
             if tryInterceptSplitAnsCommand(command) then return false end
@@ -20411,15 +22582,6 @@ function installDeskSpectateToggleHook()
     sampev.onTogglePlayerSpectating = deskCache.specToggleHandler
 end
 
-local spSessionMod
--- Sp Session
-local function spSession()
-    if not spSessionMod then
-        spSessionMod = require 'report_desk_spectate_session'
-    end
-    return spSessionMod
-end
-
 -- Sp Ui Enabled
 local function spUiEnabled()
     local s = spSession()
@@ -20430,24 +22592,52 @@ local function spUiEnabled()
     return true
 end
 
--- Should Block Server Sam Menu
-function shouldBlockServerSamMenu()
+local foreignSamMenuId = nil
+
+-- Should Block Server Sp Sam Menu Init
+local function shouldBlockServerSpSamMenuInit(menuTitle, x, y, columns, menuId)
     if not spUiEnabled() then return false end
-    if type(deskSpectatingNow) == 'function' and deskSpectatingNow() then return true end
     local s = spSession()
-    if s and s.shouldSuppressServerSpMenu then
-        local ok, v = pcall(s.shouldSuppressServerSpMenu)
-        if ok and v then return true end
+    if not s or not s.isServerSpSamMenu then return false end
+    local ok, isSp = pcall(s.isServerSpSamMenu, menuTitle, x, y, columns)
+    if not ok or not isSp then
+        if menuId ~= nil then foreignSamMenuId = menuId end
+        return false
     end
-    return false
+    foreignSamMenuId = nil
+    if s.captureServerMenuLayout then
+        pcall(s.captureServerMenuLayout, x, y, columns, menuTitle)
+    end
+    return true
 end
 
--- Capture Server Menu Layout
-local function captureServerMenuLayout(x, y, columns, title)
-    local s = spSession()
-    if s and s.captureServerMenuLayout then
-        pcall(s.captureServerMenuLayout, x, y, columns, title)
+-- Should Block Server Sp Sam Menu Show
+local function shouldBlockServerSpSamMenuShow(menuId)
+    if not spUiEnabled() then
+        foreignSamMenuId = nil
+        return false
     end
+    if foreignSamMenuId ~= nil and menuId == foreignSamMenuId then return false end
+    local s = spSession()
+    if not s or not s.shouldSuppressServerSpMenu then
+        foreignSamMenuId = nil
+        return false
+    end
+    local ok, suppress = pcall(s.shouldSuppressServerSpMenu)
+    if not ok or not suppress then
+        foreignSamMenuId = nil
+        return false
+    end
+    return true
+end
+
+-- Should Block Server Sp Sam Menu Hide
+local function shouldBlockServerSpSamMenuHide(menuId)
+    if foreignSamMenuId ~= nil and menuId == foreignSamMenuId then
+        foreignSamMenuId = nil
+        return false
+    end
+    return shouldBlockServerSpSamMenuShow(menuId)
 end
 
 -- Блок SA-Menu (onInitMenu/onShowMenu/onHideMenu) в /sp.
@@ -20470,8 +22660,7 @@ function installDeskSpMenuHooks()
     deskCache.hookPrevSpMenuHide = prevHide
 
     deskCache.spMenuInitHandler = function(menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
-        if shouldBlockServerSamMenu() then
-            captureServerMenuLayout(x, y, columns, menuTitle)
+        if shouldBlockServerSpSamMenuInit(menuTitle, x, y, columns, menuId) then
             return false
         end
         if type(deskCache.hookPrevSpMenuInit) == 'function' then
@@ -20481,7 +22670,7 @@ function installDeskSpMenuHooks()
     sampev.onInitMenu = deskCache.spMenuInitHandler
 
     deskCache.spMenuShowHandler = function(menuId)
-        if shouldBlockServerSamMenu() then
+        if shouldBlockServerSpSamMenuShow(menuId) then
             return false
         end
         if type(deskCache.hookPrevSpMenuShow) == 'function' then
@@ -20491,7 +22680,7 @@ function installDeskSpMenuHooks()
     sampev.onShowMenu = deskCache.spMenuShowHandler
 
     deskCache.spMenuHideHandler = function(menuId)
-        if shouldBlockServerSamMenu() then
+        if shouldBlockServerSpSamMenuHide(menuId) then
             return false
         end
         if type(deskCache.hookPrevSpMenuHide) == 'function' then
@@ -20535,21 +22724,34 @@ function installDeskSpMenuRpcBlock()
     local RPC_SHOW_MENU = raknet.RPC.SHOWMENU
     local RPC_HIDE_MENU = raknet.RPC.HIDEMENU
 
+    local okBs, bsIo = pcall(require, 'samp.events.bitstream_io')
+    if not okBs then bsIo = nil end
+
     addEventHandler('onReceiveRpc', function(rpcId, bs)
         if rpcId ~= RPC_INIT_MENU and rpcId ~= RPC_SHOW_MENU and rpcId ~= RPC_HIDE_MENU then
             return
         end
-        if not shouldBlockServerSamMenu() then return end
         if rpcId == RPC_INIT_MENU then
             local readOk, packed = pcall(menuHandler.on_init_menu_reader, bs)
             resetRpcBitstream(bs)
             if readOk and packed then
-                captureServerMenuLayout(packed[3], packed[4], packed[6], packed[2])
+                if shouldBlockServerSpSamMenuInit(packed[2], packed[3], packed[4], packed[6], packed[1]) then
+                    return false
+                end
             end
-        else
-            resetRpcBitstream(bs)
+            return
         end
-        return false
+        local menuId = nil
+        if bsIo and bsIo.int8 and bsIo.int8.read then
+            local okId, id = pcall(bsIo.int8.read, bs)
+            if okId then menuId = id end
+        end
+        resetRpcBitstream(bs)
+        if rpcId == RPC_SHOW_MENU then
+            if shouldBlockServerSpSamMenuShow(menuId) then return false end
+        elseif rpcId == RPC_HIDE_MENU then
+            if shouldBlockServerSpSamMenuHide(menuId) then return false end
+        end
     end, 2147483647)
     deskCache.spMenuRpcRegistered = true
 end
@@ -20623,6 +22825,9 @@ function deskUninstall()
     if deskCache.playerStreamInHandler and sampev.onPlayerStreamIn == deskCache.playerStreamInHandler then
         sampev.onPlayerStreamIn = deskCache.hookPrevPlayerStreamIn
     end
+    if deskCache.playerColorHandler and sampev.onSetPlayerColor == deskCache.playerColorHandler then
+        sampev.onSetPlayerColor = deskCache.hookPrevPlayerColor
+    end
     if deskCache.profBubbleHandler and sampev.onPlayerChatBubble == deskCache.profBubbleHandler then
         sampev.onPlayerChatBubble = deskCache.hookPrevProfBubble
     end
@@ -20636,11 +22841,15 @@ function deskUninstall()
     deskCache.sendCommandHandler = nil
     deskCache.playerQuitHandler = nil
     deskCache.playerJoinHandler = nil
+    deskCache.playerColorHandler = nil
     deskCache.profBubbleHandler = nil
     deskCache.profChatHandler = nil
     deskCache.profHooksInstalled = false
     deskCache.profLineSeen = {}
-    deskCache.remoteChatMessages = {}
+    deskCache.remoteChatDedup = {}
+    deskCache.remoteChatDedupOrd = {}
+    deskCache.remoteChatQueue = {}
+    deskCache.sampPlayerColors = {}
     uninstallDeskSpMenuHooks()
     pcall(deskSpectateStats.uninstallSpectatePlayerHook)
     if deskSpectateStats.uninstallSpSpectateOverlayFrame then
@@ -20653,6 +22862,9 @@ function deskUninstall()
         pcall(checkerDismissOpenSyncDialogOnUnload)
     end
     deskLeaveSpectateMode()
+    if type(deskUninstallSampInputEnableHook) == 'function' then
+        pcall(deskUninstallSampInputEnableHook)
+    end
 end
 
 --[[ Модуль: публикация locals в env для late chunk (checker). ]]
@@ -20684,6 +22896,7 @@ do
     e.showWindow = showWindow
     e.threads = threads
     e.threadOrder = threadOrder
+    e.threadCount = threadCount
     e.MAX_PLAYER_ID = MAX_PLAYER_ID
     e.findPlayerIdByNick = findPlayerIdByNick
     e.refreshPlayerNickCache = refreshPlayerNickCache
@@ -20691,6 +22904,11 @@ do
     if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
     if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
     if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+    if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
+    if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
+    if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
+    if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
+    if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
     if deskCache then _G.deskCache = deskCache end
 end
 
@@ -20708,10 +22926,7 @@ function main()
     end
     pcall(ensureComposerQuickButtons)
     pcall(syncLegacyGgTechFromComposerButtons)
-    if settings.ingest_pc == nil then settings.ingest_pc = true end
-    if settings.ingest_s == nil then settings.ingest_s = true end
-    if settings.ingest_m == nil then settings.ingest_m = true end
-    if settings.ingest_admin_actions == nil then settings.ingest_admin_actions = true end
+    pcall(initDeskIngest)
     if settings.spectate_sp_ui == nil then settings.spectate_sp_ui = true end
     if settings.spectate_vehicle_hud == nil then
         settings.spectate_vehicle_hud = true
@@ -20736,7 +22951,10 @@ function main()
         end
     end
     pcall(initDeskIngest)
-    updateMimguiGameInputPassthrough()
+    pcall(updateMimguiGameInputPassthrough)
+    if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
+        print('[Report Desk] spectate module unavailable — spectate HUD disabled')
+    else
     deskSpectateStats.install({
         trim = trim,
         stripTags = stripTags,
@@ -20781,9 +22999,7 @@ function main()
         readInputBuf = readInputBuf,
         onSpectatingOn = function()
             deskInputState.spectateUiModeActive = false
-            deskRememberSpectateCursorMode()
             if showWindow[0] then
-                deskEnableUiCursorForSamp()
                 deskInputState.spectateUiModeActive = true
             end
             updateMimguiGameInputPassthrough()
@@ -20798,17 +23014,21 @@ function main()
         setSpectateUiMode = function(on)
             deskInputState.spectateUiModeActive = on and true or false
         end,
+        getSpectateUiModeActive = function()
+            return deskInputState.spectateUiModeActive == true
+        end,
         updateInputPassthrough = updateMimguiGameInputPassthrough,
         onAnsBarClosed = function()
-            if deskSpectatingNow() and not showWindow[0] then
+            if deskSpectatingNow() and not showWindow[0] and not deskSpectateCameraBlocked() then
                 deskRestoreSpectateCamera()
             end
+            updateMimguiGameInputPassthrough()
         end,
         markAnsTypingActive = function()
-            deskInputState.ansBarTyping = true
             deskInputState.keyboardStickyUntil = os.clock() + 1.5
         end,
     })
+    end
     pcall(deskReinstallSpMenuHooks)
     pcall(installDeskSpMenuRpcBlock)
     pcall(installDeskCheckerRpcProbe)
@@ -20817,10 +23037,6 @@ function main()
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
     uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
-    uiHistoryLimit[0] = settings.history_limit or 80
-    uiPollChat[0] = settings.poll_chat_log ~= false
-    uiPollEventsOnly[0] = settings.poll_events_only == true
-    uiDebug[0] = settings.debug == true
     setInputBuf(deskReplyBuf.watch, settings.watch_notify or 'see')
     setInputBuf(deskReplyBuf.time, getTimeReplyText())
     setInputBuf(deskReplyBuf.gg, getGgReplyText())
@@ -20834,24 +23050,23 @@ function main()
     sampRegisterChatCommand('reportdesk', function()
         pcall(toggleWindow)
     end)
-    sampRegisterChatCommand('repsdebug', function()
-        settings.debug = not settings.debug
-        uiDebug[0] = settings.debug
-        say(settings.debug and 'Debug ON' or 'Debug OFF')
-    end)
     sampRegisterChatCommand('hist', function(arg)
         pcall(sendHistoryByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('acar', function(arg)
+        pcall(deskAcarEnter, arg)
     end)
 
     pcall(checkerInit)
 
     seedSeenChatLines()
+    pcall(seedProfanitySeenForChatBuffer)
+    pcall(getFilteredThreadKeys)
     refreshMyNick()
     sessionLive = true
     lastSettingsSave = os.clock()
     lastThreadsSave = os.clock()
     lastMapPrune = os.clock()
-    uiMaxThreads[0] = tonumber(settings.max_threads) or DEFAULT_MAX_THREADS
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
@@ -20864,6 +23079,8 @@ function main()
     installDeskPlayerQuitHook()
     installDeskPlayerJoinHook()
     installDeskPlayerStreamInHook()
+    installDeskPlayerColorHook()
+    pcall(sampSyncAllPlayerColors)
     deskVeh.bind({
         settings = settings,
         sendChat = sendChat,
@@ -20878,6 +23095,7 @@ function main()
         deskTex = deskTex,
     })
     pcall(ensureDeskCatalogWarmup)
+    pcall(announceDeskStartup)
     local lastPoll = 0
     local pollInterval = 0.25
     local lastNickCacheTick = 0
@@ -20886,7 +23104,6 @@ function main()
     local CHECKER_TICK_SP_INTERVAL = 0.5
 
     local function resolveIngestPollInterval()
-        if settings.poll_chat_log == false then return nil end
         if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
             return showWindow[0] and POLL_INTERVAL_HOOK or POLL_INTERVAL_CLOSED_HOOK
         end
@@ -20894,7 +23111,7 @@ function main()
     end
 
     local function mainLoopWaitMs()
-        if showWindow[0] then return 0 end
+        if showWindow[0] then return 8 end
         if deskIsSpectating() then return 16 end
         if deskTexPipeline.anyPending() then return 0 end
         if cheatState.airbreak then return 0 end
@@ -20922,10 +23139,11 @@ function main()
             sessionLive = true
         end
 
+        deskSampChatGuardFrame()
         deskApplyInputPolicy()
+        pcall(deskTickAdminPauseState)
         if showWindow[0] then
             deskInputState.wasOpen = true
-            deskEnforceNoSampChat()
         elseif deskInputState.wasOpen then
             deskInputState.wasOpen = false
         end
@@ -20937,6 +23155,9 @@ function main()
         end
         if deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
             pcall(deskSpectateStats.flushOutbound)
+        end
+        if type(remoteChatFlushSampQueue) == 'function' then
+            pcall(remoteChatFlushSampQueue)
         end
 
         if deskCache.catalogTexFlushPending then
@@ -20973,6 +23194,9 @@ function main()
             if not deskCache.playerStreamInHandler or sampev.onPlayerStreamIn ~= deskCache.playerStreamInHandler then
                 pcall(installDeskPlayerStreamInHook)
             end
+            if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
+                pcall(installDeskPlayerColorHook)
+            end
             if not deskCache.profHooksInstalled
                 or (deskCache.profChatHandler and sampev.onChatMessage ~= deskCache.profChatHandler)
                 or (deskCache.profBubbleHandler and sampev.onPlayerChatBubble ~= deskCache.profBubbleHandler) then
@@ -21002,6 +23226,9 @@ function main()
         end
         pcall(deskSpectateStats.tickPendingSp)
         pcall(cheatsTickMarker)
+        if deskIsSpectating() and deskSpectateStats.maintainCamera then
+            pcall(deskSpectateStats.maintainCamera)
+        end
 
         local nowSave = os.clock()
         if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
@@ -21020,6 +23247,10 @@ function main()
             lastThreadsSave = nowSave
             lastSettingsSave = nowSave
         end
+        if dirtyScenarioLearn and nowSave - lastScenarioLearnSave >= 60 then
+            pcall(saveScenarioLearnData)
+            lastScenarioLearnSave = nowSave
+        end
     end
 end
 
@@ -21030,11 +23261,14 @@ function onScriptTerminate(scr)
         pcall(deskTexPipeline.shutdown, deskTex, imgui)
         pcall(deskUninstall)
         deskRestoreNormalGameCamera()
-        updateMimguiGameInputPassthrough()
+        pcall(updateMimguiGameInputPassthrough)
         pcall(cheatsCleanup)
         pcall(deskTexLoad.clearAll)
         if deskConfigReady then
             saveConfig()
+            if type(saveScenarioLearnData) == 'function' then
+                pcall(saveScenarioLearnData)
+            end
         end
         local app = package.loaded['report_desk_app']
         if app and app.unload then pcall(app.unload) end
@@ -23839,7 +26073,6 @@ function checkerHudVisible()
     if type(isSampAvailable) == 'function' and not isSampAvailable() then return false end
     if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then
         if checkerState.hudDrag then checkerState.hudDrag.active = false end
-        checkerState.hudHovered = false
         return false
     end
     return true
@@ -23867,21 +26100,22 @@ end
 
 -- Install Checker Hud Frame
 function installCheckerHudFrame()
-    if type(imgui) ~= 'table' or type(imgui.OnFrame) ~= 'function' then return end
     if toU32 and checkerSpTheme.setColorConverter then
         pcall(checkerSpTheme.setColorConverter, toU32)
     end
     uninstallCheckerHudFrame()
+    if type(imgui) ~= 'table' or type(imgui.OnFrame) ~= 'function' then
+        checkerState.hudFrameInstalled = true
+        return
+    end
     local frame = imgui.OnFrame(
         function()
-            ensureCheckerSettings()
-            if settings.checker_hud == false then return false end
-            if type(showWindow) == 'table' and showWindow[0] then return false end
-            if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
-            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            return true
+            return checkerHudVisible()
         end,
         function(self)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
             local ok, err = pcall(drawCheckerHudOverlay)
             if not ok then
                 print('[Report Desk] checker HUD draw: ' .. tostring(err))
@@ -23898,8 +26132,8 @@ function installCheckerHudFrame()
         frame.LockPlayer = false
         if type(deskCache) == 'table' then deskCache.checkerHudFrame = frame end
         rawset(_G, '__desk_checkerHudFrame', frame)
-        checkerState.hudFrameInstalled = true
     end
+    checkerState.hudFrameInstalled = true
 end
 
 -- Checker (admin HUD/catalog).
@@ -23968,22 +26202,42 @@ function checkerPersistHudPos(hx, hy, winW, winH)
 end
 
 -- Checker (admin HUD/catalog).
+function checkerIsHudDragActive()
+    return checkerState.hudDrag and checkerState.hudDrag.active == true
+end
+
+-- Checker (admin HUD/catalog).
 function checkerHudWantsInput()
     if checkerState.hudDrag and checkerState.hudDrag.active then return true end
     if checkerState.hudHovered then return true end
-    if not imgui or type(imgui.GetIO) ~= 'function' then return false end
-    local io = imgui.GetIO()
-    if not io or not io.MousePos then return false end
-    local mp = io.MousePos
     local r = checkerState.hudRect
-    if r then
-        return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+    if r and imgui and type(imgui.GetIO) == 'function' then
+        local ok, io = pcall(imgui.GetIO)
+        if ok and io and io.MousePos then
+            local mp = io.MousePos
+            return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+        end
     end
     local hx = tonumber(settings.checker_hud_x) or 8
     local hy = tonumber(settings.checker_hud_y) or 8
     local hudH = checkerHudSavedHeight(160)
-    return mp.x >= hx and mp.x < hx + CHECKER_HUD_W + 80
-        and mp.y >= hy and mp.y < hy + hudH + 20
+    if imgui and type(imgui.GetIO) == 'function' then
+        local ok, io = pcall(imgui.GetIO)
+        if ok and io and io.MousePos then
+            local mp = io.MousePos
+            return mp.x >= hx and mp.x < hx + CHECKER_HUD_W + 80
+                and mp.y >= hy and mp.y < hy + hudH + 20
+        end
+    end
+    return false
+end
+
+-- HUD-строка: текст без подсветки hover, клик = действие.
+local function drawCheckerHudClickRow(label, col, onClick)
+    imgui.TextColored(col, uiText(label))
+    if type(onClick) == 'function' and imgui.IsItemHovered() and imgui.IsMouseClicked(0) then
+        onClick()
+    end
 end
 
 -- Checker (admin HUD/catalog).
@@ -24004,11 +26258,9 @@ function drawCheckerAdminRow(e, index, idSuffix, indent)
         label = label .. '  ' .. lvlText
     end
     label = label .. checkerOnlineTags(e)
-    imgui.PushStyleColor(imgui.Col.Text, col)
-    if imgui.Selectable(uiText(label) .. '##' .. idSuffix .. tostring(e.id or index), false) then
+    drawCheckerHudClickRow(label, col, function()
         if type(sendChat) == 'function' then SafeCall('sendChat', sendChat, '/sp ' .. e.id) end
-    end
-    imgui.PopStyleColor()
+    end)
 end
 
 -- Отрисовка checker UI.
@@ -24051,11 +26303,9 @@ function drawCheckerColorListBlock(list, emptyText, idPrefix)
         shown = shown + 1
         local col = checkerSafePlayerColor(e.id) or col_accent
         local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
-        imgui.PushStyleColor(imgui.Col.Text, col)
-        if imgui.Selectable(uiText(label) .. '##' .. idPrefix .. tostring(e.id or shown), false) then
+        drawCheckerHudClickRow(label, col, function()
             pcall(sendChat, '/sp ' .. e.id)
-        end
-        imgui.PopStyleColor()
+        end)
     end
 end
 
@@ -24081,11 +26331,9 @@ function drawCheckerLeadersBlock()
             if role ~= '' then
                 label = label .. '  \xB7  ' .. role
             end
-            imgui.PushStyleColor(imgui.Col.Text, col)
-            if imgui.Selectable(uiText(label) .. '##ld_' .. tostring(e.id or e.nick), false) then
+            drawCheckerHudClickRow(label, col, function()
                 if type(sendChat) == 'function' then SafeCall('sendChat', sendChat, '/sp ' .. e.id) end
-            end
-            imgui.PopStyleColor()
+            end)
         end
     end
 end
@@ -24245,21 +26493,14 @@ function drawCheckerHudOverlay()
             end
         end
     end
+
     checkerState.hudHovered = false
-    if not checkerState.hudDrag then
-        checkerState.hudDrag = { active = false, offX = 0, offY = 0 }
-    end
-    local drag = checkerState.hudDrag
     local hx = tonumber(settings.checker_hud_x) or 8
     local hy = tonumber(settings.checker_hud_y) or 8
-    if not checkerState.hudPosValidated and not drag.active then
+    if not checkerState.hudPlaced and not (checkerState.hudDrag and checkerState.hudDrag.active) then
         hx, hy = checkerGuardHudOffScreen(hx, hy, CHECKER_HUD_W, checkerHudSavedHeight(120))
-        checkerState.hudPosValidated = true
     end
-    if drag.active then
-        hx = tonumber(settings.checker_hud_x) or hx
-        hy = tonumber(settings.checker_hud_y) or hy
-    end
+
     local wantInput = checkerHudWantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
         + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar
@@ -24269,49 +26510,32 @@ function drawCheckerHudOverlay()
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
-    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(CHECKER_HUD_W, 0), imgui.ImVec2(CHECKER_HUD_W + 80, 900))
+
+    imgui.SetNextWindowSizeConstraints(
+        imgui.ImVec2(CHECKER_HUD_W, 0), imgui.ImVec2(CHECKER_HUD_W + 80, 900))
     if imgui.SetNextWindowBgAlpha then
         imgui.SetNextWindowBgAlpha(checkerSpTheme.HUD_OVERLAY_ALPHA or 0.80)
     end
-    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
+    if not checkerState.hudPlaced then
+        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
+        checkerState.hudPlaced = true
+    elseif checkerState.hudDrag and checkerState.hudDrag.active then
+        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
+    end
+
     checkerSpTheme.pushHudChrome()
+    local headerBottomY = nil
     if imgui.Begin('###desk_checker_hud', nil, flags) then
         checkerSpTheme.drawPanelFrame()
-        local titleY = imgui.GetCursorPosY()
         local hudAdmins, hudLeaders, hudFriends = checkerHudLists()
         checkerSpTheme.drawPanelTitle(
             '\xD7\xE5\xEA\xE5\xF0',
             string.format('(%i/%i/%i)', #hudAdmins, #hudLeaders, #hudFriends),
             col_accent, col_muted2, uiText)
-        local titleH = imgui.GetCursorPosY() - titleY
-        imgui.SetCursorPos(imgui.ImVec2(0, titleY))
-        imgui.InvisibleButton('##checker_hud_drag', imgui.ImVec2(-1, math.max(22, titleH)))
-        checkerState.hudHovered = imgui.IsItemHovered() or imgui.IsItemActive() or drag.active
-        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
-            local delta = imgui.GetMouseDragDelta(0)
-            local wp = imgui.GetWindowPos()
-            local ww = imgui.GetWindowWidth()
-            local wh = imgui.GetWindowHeight()
-            if not drag.active then
-                drag.active = true
-                drag.offX = wp.x
-                drag.offY = wp.y
-                imgui.ResetMouseDragDelta(0)
-                delta = imgui.GetMouseDragDelta(0)
-            end
-            local nx = drag.offX + delta.x
-            local ny = drag.offY + delta.y
-            nx, ny = checkerClampHudPos(nx, ny, ww, wh)
-            settings.checker_hud_x = nx
-            settings.checker_hud_y = ny
-            if type(markDirtySettings) == 'function' then markDirtySettings() end
-        elseif drag.active and not imgui.IsMouseDown(0) then
-            drag.active = false
-            local wp = imgui.GetWindowPos()
-            checkerPersistHudPos(wp.x, wp.y, imgui.GetWindowWidth(), imgui.GetWindowHeight())
-            if type(flushDirtyConfigNow) == 'function' then SafeCall('flushDirtyConfigNow', flushDirtyConfigNow) end
+        if imgui.GetCursorScreenPos then
+            headerBottomY = imgui.GetCursorScreenPos().y + 2
         end
-        imgui.SetCursorPosY(titleY + math.max(22, titleH))
+
         if settings.checker_show_admins ~= false then
             checkerSpTheme.drawSectionLabel(
                 '\xC0\xE4\xEC\xE8\xED\xFB:',
@@ -24333,10 +26557,49 @@ function drawCheckerHudOverlay()
             drawCheckerFriendsBlock()
             imgui.Spacing()
         end
+
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
+        local mp = imgui.GetIO().MousePos
+        checkerState.hudHovered = mp.x >= wp.x and mp.x < wp.x + ww
+            and mp.y >= wp.y and mp.y < wp.y + wh
         checkerState.hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
+
+        local headerBottom = headerBottomY or (wp.y + 36)
+        local onHeader = mp.x >= wp.x and mp.x < wp.x + ww
+            and mp.y >= wp.y and mp.y < headerBottom
+        if not checkerState.hudDrag then
+            checkerState.hudDrag = { active = false, offX = 0, offY = 0 }
+        end
+        local drag = checkerState.hudDrag
+
+        if onHeader and imgui.IsMouseDragging(0) and not imgui.IsAnyItemActive() then
+            local delta = imgui.GetMouseDragDelta(0)
+            if not drag.active then
+                drag.active = true
+                drag.offX = wp.x
+                drag.offY = wp.y
+                imgui.ResetMouseDragDelta(0)
+                delta = imgui.GetMouseDragDelta(0)
+            end
+            local nx = drag.offX + delta.x
+            local ny = drag.offY + delta.y
+            nx, ny = checkerClampHudPos(nx, ny, ww, wh)
+            settings.checker_hud_x = nx
+            settings.checker_hud_y = ny
+            if type(markDirtySettings) == 'function' then markDirtySettings() end
+            if imgui.SetWindowPos then
+                imgui.SetWindowPos(imgui.ImVec2(nx, ny))
+            end
+        elseif drag.active and not imgui.IsMouseDown(0) then
+            drag.active = false
+            checkerPersistHudPos(wp.x, wp.y, ww, wh)
+            if type(flushDirtyConfigNow) == 'function' then
+                SafeCall('flushDirtyConfigNow', flushDirtyConfigNow)
+            end
+        end
+
         imgui.End()
     end
     checkerSpTheme.popHudChrome()

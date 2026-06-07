@@ -1,7 +1,7 @@
 --[[ Admin Report Desk — точка входа MoonLoader (/reps, bundle loader). ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('3.98.39')
+script_version('3.98.40')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB v3, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS', 'mimgui')
 script_moonloader(26)
@@ -20,6 +20,7 @@ local function prepareDeskReload()
         'report_desk_spectate_camera',
         'report_desk_sp_theme',
         'report_desk_sp_vehicle_hud',
+        'report_desk_sp_keys_hud',
         'report_desk_checker_parser',
         'report_desk_checker_catalog',
     }) do

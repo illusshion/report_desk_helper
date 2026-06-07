@@ -37,6 +37,9 @@ return {
         spectate_vehicle_hud = true,
         spectate_vehicle_hud_x = -10,
         spectate_vehicle_hud_y = -10,
+        spectate_keys_hud = true,
+        spectate_keys_hud_y = -100,
+        spectate_keys_hud_custom = false,
         -- spectate_vehicle_td_x_min/max/y_min — опционально, зона парсинга server TD (defaults в sp_vehicle_hud).
         spectate_hud_layout_v2 = true,
         spectate_wheel_zoom = true,

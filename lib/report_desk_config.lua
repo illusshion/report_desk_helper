@@ -421,6 +421,14 @@ function saveConfig()
     f:write(string.format('    spectate_vehicle_hud_layout_v4 = %s,\n', settings.spectate_vehicle_hud_layout_v4 and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud_layout_v5 = %s,\n', settings.spectate_vehicle_hud_layout_v5 and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud_layout_v6 = %s,\n', settings.spectate_vehicle_hud_layout_v6 and 'true' or 'false'))
+    f:write(string.format('    spectate_keys_hud = %s,\n', settings.spectate_keys_hud ~= false and 'true' or 'false'))
+    if settings.spectate_keys_hud_x ~= nil then
+        f:write(string.format('    spectate_keys_hud_x = %d,\n', math.floor(tonumber(settings.spectate_keys_hud_x) or 0)))
+    end
+    if settings.spectate_keys_hud_y ~= nil then
+        f:write(string.format('    spectate_keys_hud_y = %d,\n', math.floor(tonumber(settings.spectate_keys_hud_y) or -100)))
+    end
+    f:write(string.format('    spectate_keys_hud_custom = %s,\n', settings.spectate_keys_hud_custom == true and 'true' or 'false'))
     f:write(string.format('    spectate_wheel_zoom = %s,\n', settings.spectate_wheel_zoom ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud = %s,\n', settings.checker_hud ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud_persist = %s,\n', settings.checker_hud_persist ~= false and 'true' or 'false'))

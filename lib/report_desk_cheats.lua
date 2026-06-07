@@ -645,19 +645,76 @@ function markerFindSampVehicleId(carHandle)
     return nil
 end
 
---[[ Свободное место — водитель / пассажир. ]]
+--[[ Свободное место — как AdminTools getCarFreeSeat. ]]
 function deskGetCarFreeSeat(car)
-    local driver = getDriverOfCar(car)
-    if driver == -1 or driver == nil or not doesCharExist(driver) then
-        return 0
+    if doesCharExist(getDriverOfCar(car)) then
+        local maxPass = getMaximumNumberOfPassengers(car)
+        for seat = 0, maxPass do
+            if isCarPassengerSeatFree(car, seat) then
+                return seat + 1
+            end
+        end
+        return nil
     end
-    local maxPass = getMaximumNumberOfPassengers(car)
-    for seat = 0, maxPass do
-        if isCarPassengerSeatFree(car, seat) then
-            return seat + 1
+    return 0
+end
+
+--[[ /acar — 1:1 AdminTools getcar: RPC enter + warp + машина к игроку. ]]
+function deskAcarEnter(arg)
+    if not arg or not string.match(arg, '%d') then
+        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /acar [ID \xF2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xED\xEE\xE3\xEE \xF1\xF0\xE5\xE4\xF1\xF2\xE2\xE0].')
+        return
+    end
+    local vid = tonumber(string.match(arg, '%d+'))
+    if not vid then return end
+    local ok, car = sampGetCarHandleBySampVehicleId(vid)
+    if not ok or not car or not doesVehicleExist(car) then
+        say('\xD2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xED\xEE\xE3\xEE \xF1\xF0\xE5\xE4\xF1\xF2\xE2\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xE2 \xE7\xEE\xED\xE5 \xEF\xF0\xEE\xF0\xE8\xF1\xEE\xE2\xEA\xE8 \xED\xE5\xF2.')
+        return
+    end
+    if getDriverOfCar(car) ~= -1 then
+        say('\xCD\xE5\xEB\xFC\xE7\xFF \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2\xE8\xF0\xEE\xE2\xE0\xF2\xFC\xF1\xFF \xE2 \xD2\xD1 \xF1 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.')
+        return
+    end
+    local px, py, pz = getCharCoordinates(PLAYER_PED)
+    if sampSendEnterVehicle then sampSendEnterVehicle(vid, false) end
+    warpCharIntoCar(PLAYER_PED, car)
+    if restoreCameraJumpcut then pcall(restoreCameraJumpcut) end
+    setCarCoordinates(car, px, py, pz)
+end
+
+--[[ Посадка по SAMP id + handle (AdminTools getcar / jumpIntoCar). ]]
+function markerEnterVehicleById(vid, carHandle)
+    vid = tonumber(vid)
+    if not vid or vid < 0 then return false end
+    if sampGetCarHandleBySampVehicleId then
+        local ok, h = sampGetCarHandleBySampVehicleId(vid)
+        if ok and h and doesVehicleExist(h) then
+            carHandle = h
         end
     end
-    return nil
+    if not carHandle or not doesVehicleExist(carHandle) then return false end
+    if sampIsVehicleDefined and not sampIsVehicleDefined(vid) then return false end
+
+    local seat = deskGetCarFreeSeat(carHandle)
+    if seat == nil then return false end
+    local asPassenger = (seat ~= 0)
+
+    if sampSendEnterVehicle then
+        sampSendEnterVehicle(vid, asPassenger)
+    end
+    if seat == 0 then
+        if type(warpCharIntoCar) ~= 'function' then return false end
+        warpCharIntoCar(PLAYER_PED, carHandle)
+    else
+        warpCharIntoCarAsPassenger(PLAYER_PED, carHandle, seat - 1)
+    end
+    if restoreCameraJumpcut then pcall(restoreCameraJumpcut) end
+    if seat == 0 then
+        local px, py, pz = getCharCoordinates(PLAYER_PED)
+        setCarCoordinates(carHandle, px, py, pz)
+    end
+    return true
 end
 
 -- Marker Resolve Car And Vid
@@ -709,216 +766,40 @@ function markerTeleportAt(x, y, z)
     deskSafeRestoreCamera()
 end
 
---[[ Посадка в ТС: только свободное место через sampSendEnterVehicle. Закрытые — /getcar на сервере (админ). ]]
-local DESK_ENTER_VEH_POLL_MS = 50
-local DESK_ENTER_VEH_TIMEOUT_MS = 4500
-local DESK_ENTER_VEH_TP_DIST = 4.0
-local DESK_ENTER_VEH_BUSY_TIMEOUT = 8.0
-local deskEnterVehBusy = false
-local deskEnterVehBusySince = 0
-
--- Desk hook/helper.
-function deskEnterVehBusyClear()
-    deskEnterVehBusy = false
-    deskEnterVehBusySince = 0
-end
-
--- Desk hook/helper.
-function deskEnterVehBusyClaim()
-    if deskEnterVehBusy then
-        if deskEnterVehBusySince > 0 and os.clock() - deskEnterVehBusySince > DESK_ENTER_VEH_BUSY_TIMEOUT then
-            deskEnterVehBusyClear()
-        else
-            return false
-        end
-    end
-    deskEnterVehBusy = true
-    deskEnterVehBusySince = os.clock()
-    return true
-end
-
--- Desk hook/helper.
-function deskMyVehicleSampId()
-    if not isCharInAnyCar(PLAYER_PED) then return nil, nil end
-    local car = storeCarCharIsInNoSave(PLAYER_PED)
-    if not car or not doesVehicleExist(car) then return nil, nil end
-    local vid = markerFindSampVehicleId(car)
-    return car, vid
-end
-
--- Desk hook/helper.
-function deskWaitEnterRpc(vehId, timeoutMs)
-    vehId = tonumber(vehId)
-    if not vehId then return false end
-    local deadline = os.clock() + (tonumber(timeoutMs) or DESK_ENTER_VEH_TIMEOUT_MS) / 1000
-    while os.clock() < deadline do
-        local _, vid = deskMyVehicleSampId()
-        if vid == vehId then
-            return true
-        end
-        wait(DESK_ENTER_VEH_POLL_MS)
-    end
-    return select(2, deskMyVehicleSampId()) == vehId
-end
-
--- Desk hook/helper.
-function deskPlaceBesideCar(car)
-    if not car or not doesVehicleExist(car) then return false end
-    if isCharInAnyCar(PLAYER_PED) then return false end
-    local cx, cy, cz = getCarCoordinates(car)
-    local h = getCarHeading(car)
-    local r = math.rad(h)
-    local tx = cx + math.cos(r) * 2.0
-    local ty = cy + math.sin(r) * 2.0
-    local tz = cz + 0.45
-    if getGroundZFor3dCoord then
-        local gz = getGroundZFor3dCoord(tx, ty, cz + 10.0)
-        if gz and gz > -100 then tz = gz + 0.45 end
-    end
-    setCharCoordinates(PLAYER_PED, tx, ty, tz)
-    deskSafeRestoreCamera()
-    return true
-end
-
--- Desk hook/helper.
-function deskLeaveCurrentVehicleIfNeeded(targetVid)
-    targetVid = tonumber(targetVid)
-    local car, vid = deskMyVehicleSampId()
-    if not car then return true end
-    if targetVid and vid == targetVid then return true end
-    local px, py, pz = getCharCoordinates(PLAYER_PED)
-    if vid and sampSendExitVehicle then
-        sampSendExitVehicle(vid)
-        wait(200)
-    end
-    if isCharInAnyCar(PLAYER_PED) then
-        if warpCharFromCarToCoord then
-            warpCharFromCarToCoord(PLAYER_PED, px + 1.2, py + 0.6, pz + 0.2)
-        else
-            setCharCoordinates(PLAYER_PED, px + 1.2, py + 0.6, pz + 0.2)
-        end
-        wait(100)
-        deskSafeRestoreCamera()
-    end
-    return not isCharInAnyCar(PLAYER_PED)
-end
-
--- Desk hook/helper.
-function deskEnterVehicleSamp(vehId, carHandle)
-    vehId = tonumber(vehId)
-    if not vehId or vehId < 0 then return false end
-    if sampGetCarHandleBySampVehicleId then
-        local ok, h = sampGetCarHandleBySampVehicleId(vehId)
-        if ok and h and doesVehicleExist(h) then carHandle = h end
-    end
-    if not carHandle or not doesVehicleExist(carHandle) then return false end
-    if sampIsVehicleDefined and not sampIsVehicleDefined(vehId) then return false end
-
-    if cheatState.marker.active then
-        pcall(markerSetMode, false)
-    end
-    pcall(function()
-        if sampToggleCursor then sampToggleCursor(false) end
-        if sampSetCursorMode and CMODE_DISABLED then sampSetCursorMode(CMODE_DISABLED) end
-    end)
-
-    local _, myVid = deskMyVehicleSampId()
-    if myVid == vehId then return true end
-
-    local seat = deskGetCarFreeSeat(carHandle)
-    if seat == nil then return false end
-    local asPassenger = (seat ~= 0)
-
-    if cheatState.airbreak then cheatsSetAirbreak(false) end
-    freezeCharPosition(PLAYER_PED, false)
-    setCharCollision(PLAYER_PED, true)
-
-    if not deskLeaveCurrentVehicleIfNeeded(vehId) then return false end
-
-    local px, py, pz = getCharCoordinates(PLAYER_PED)
-    local cx, cy, cz = getCarCoordinates(carHandle)
-    if getDistanceBetweenCoords3d(px, py, pz, cx, cy, cz) > DESK_ENTER_VEH_TP_DIST then
-        if not deskPlaceBesideCar(carHandle) then return false end
-        wait(120)
-    end
-
-    if sampSendEnterVehicle then
-        sampSendEnterVehicle(vehId, asPassenger)
-    end
-    if deskWaitEnterRpc(vehId, DESK_ENTER_VEH_TIMEOUT_MS) then
-        deskSafeRestoreCamera()
-        return true
-    end
-    if sampSendEnterVehicle then
-        wait(200)
-        sampSendEnterVehicle(vehId, asPassenger)
-        if deskWaitEnterRpc(vehId, DESK_ENTER_VEH_TIMEOUT_MS) then
-            deskSafeRestoreCamera()
-            return true
-        end
-    end
-    return select(2, deskMyVehicleSampId()) == vehId
-end
-
--- Desk hook/helper.
-function deskEnterVehicleAsync(vehId, carHandle, onDone)
-    if not deskEnterVehBusyClaim() then
-        if onDone then onDone(false, '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF') end
-        return false
-    end
-    lua_thread.create(function()
-        local ok, err = false, nil
-        local function finish()
-            deskEnterVehBusyClear()
-            if onDone then onDone(ok, err) end
-        end
-        local runOk, runErr = pcall(function()
-            if deskInputState.playerSpectating then
-                err = '\xC2\xFB\xE9\xE4\xE8\xF2\xE5 \xE8\xE7 /sp'
-                return
-            end
-            ok = deskEnterVehicleSamp(vehId, carHandle)
-            if not ok then
-                err = '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1 (\xED\xE5\xF2 \xEC\xE5\xF1\xF2\xE0 \xE8\xEB\xE8 \xEC\xE0\xF8\xE8\xED\xE0 \xE7\xE0\xED\xFF\xF2\xE0)'
-            end
-        end)
-        if not runOk then
-            ok = false
-            err = tostring(runErr)
-        end
-        finish()
-    end)
-    return true
-end
-
 -- Marker Enter Vehicle
 function markerEnterVehicle(car, pick)
     if not car or not doesVehicleExist(car) then
         return false, '\xCD\xE5\xF2 \xEC\xE0\xF8\xE8\xED\xFB'
     end
+    if deskInputState.playerSpectating then
+        return false, '\xC2\xFB\xE9\xE4\xE8\xF2\xE5 \xE8\xE7 /sp'
+    end
+    if cheatState.airbreak then cheatsSetAirbreak(false) end
+    freezeCharPosition(PLAYER_PED, false)
+    setCharCollision(PLAYER_PED, true)
+
     local carHandle, vid = markerResolveCarAndVid(car)
+    local m = cheatState.marker
+    if m and m.vehSampId then
+        local cachedVid = tonumber(m.vehSampId)
+        if cachedVid and cachedVid >= 0 then
+            vid = cachedVid
+            if sampGetCarHandleBySampVehicleId then
+                local ok, h = sampGetCarHandleBySampVehicleId(vid)
+                if ok and h and doesVehicleExist(h) then carHandle = h end
+            end
+        end
+    end
     if not vid then
         return false, '\xCD\xE5 \xED\xE0\xE9\xE4\xE5\xED SAMP ID \xEC\xE0\xF8\xE8\xED\xFB'
     end
-    if not carHandle then
-        carHandle = car
+    if not carHandle or not doesVehicleExist(carHandle) then
+        return false, '\xCD\xE5\xF2 \xEC\xE0\xF8\xE8\xED\xFB'
     end
-    local seat = deskGetCarFreeSeat(carHandle)
-    if seat == nil then
-        return false, '\xCD\xE5\xF2 \xF1\xE2\xEE\xE1\xEE\xE4\xED\xFB\xF5 \xEC\xE5\xF1\xF2'
+    if markerEnterVehicleById(vid, carHandle) then
+        return true
     end
-    if not deskEnterVehicleAsync(vid, carHandle, function(ok, err)
-        if ok then
-            say('\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xD2\xD1 (id ' .. tostring(vid or '?') .. ')')
-        elseif err then
-            say(tostring(err))
-        else
-            say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1')
-        end
-    end) then
-        return false, '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF'
-    end
-    return true
+    return false, '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF1\xE5\xF1\xF2\xFC \xE2 \xD2\xD1 (id ' .. tostring(vid) .. ')'
 end
 
 -- Marker Teleport To
@@ -955,6 +836,33 @@ function markerResolveVehicleId(car)
     return markerFindSampVehicleId(car)
 end
 
+-- Marker Nearest Car At
+function markerNearestCarAt(x, y, z, maxDist)
+    maxDist = tonumber(maxDist) or 3.2
+    if not sampGetCarHandleBySampVehicleId then return nil end
+    local best, bestD = nil, maxDist
+    local maxId = 2000
+    if sampGetMaxVehicleId then
+        maxId = tonumber(sampGetMaxVehicleId(false)) or maxId
+    end
+    for i = 0, maxId do
+        local defined = true
+        if sampIsVehicleDefined then defined = sampIsVehicleDefined(i) end
+        if defined then
+            local ok, h = sampGetCarHandleBySampVehicleId(i)
+            if ok and h and doesVehicleExist(h) then
+                local vx, vy, vz = getCarCoordinates(h)
+                local d = getDistanceBetweenCoords3d(x, y, z, vx, vy, vz)
+                if d < bestD then
+                    best = h
+                    bestD = d
+                end
+            end
+        end
+    end
+    return best
+end
+
 -- Marker Pick Target
 function markerPickTarget(screenX, screenY)
     if not convertScreenCoordsToWorld3D or not processLineOfSight then return nil end
@@ -986,6 +894,9 @@ function markerPickTarget(screenX, screenY)
     end
     car = carFromCol(col)
     if not car then car = carFromCol(col2) end
+    if not car then
+        car = markerNearestCarAt(gx, gy, gz, 3.2)
+    end
     local px0, py0, pz0 = getCharCoordinates(PLAYER_PED)
     local dist = getDistanceBetweenCoords3d(px0, py0, pz0, gx, gy, gz)
     return {

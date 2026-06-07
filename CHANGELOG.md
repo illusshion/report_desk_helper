@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.7
+
+- Perf: кэш ellipsize, меньше лишней работы UI при закрытом окне; оптимизация startup-сообщения.
+- SP: восстановлены зум колёсиком (`spectate_camera`), HUD клавиш `/sp` (`sp_keys_hud`), синхронизация session/stats без лишних reset.
+- SP: чат `/ans` — **C** открыть/закрыть (Enter отправить, Esc закрыть).
+- Чекер: ГА/ЗГА (Arthas_Bartolomeo, Amattore_Adderio) — отдельные теги и зелёный цвет, не сбрасываются после `/adms`.
+- Маркер/clickwarp: посадка в ТС по SAMP id (как AdminTools getcar); команда **`/acar ID`** для проверки.
+- Bundle: в релизное ядро добавлены `spectate_camera` и `sp_keys_hud` (zip без lib/ больше не падает на /sp).
+
 ## 1.0.6
 
 - Fix: ГА/ЗГА (Arthas_Bartolomeo, Amattore_Adderio) — отдельные теги и зелёный цвет в блоке «Админы», не сбрасываются после `/adms`.

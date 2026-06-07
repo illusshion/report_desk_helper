@@ -7,6 +7,7 @@ local spUi = require 'report_desk_sp_ui'
 local specMenuMod = require 'report_desk_spectate_menu'
 local spTheme = require 'report_desk_sp_theme'
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
+local keysHud = require 'report_desk_sp_keys_hud'
 local specCamera = require 'report_desk_spectate_camera'
 
 local SP_MSG_COLOR = 1728027135
@@ -873,6 +874,7 @@ function M.markPendingSpCommand(id, nick)
     if cur ~= id then
         if cur >= 0 then clearPendingSt() end
         pcall(vehicleHud.reset)
+        pcall(keysHud.reset)
     end
     pcall(specSession.markAwaitingSpectate, true)
 end
@@ -1115,6 +1117,7 @@ function M.clearSpectateTarget(force)
     M.cancelPendingSp()
     pcall(specMenuMod.resetMenuSelection)
     pcall(specCamera.onSpectateEnd)
+    pcall(keysHud.reset)
 end
 
 -- Публичный API модуля.
@@ -2355,6 +2358,7 @@ function M.installInputHooks(deps)
     spUi.installInputHooks(uiDeps)
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
+    pcall(keysHud.installSampev, deps.sampev)
     if wmHandlerInstalled then
         return
     end
@@ -2412,6 +2416,27 @@ end
 -- Публичный API модуля.
 function M.shouldShowVehicleHud(settings)
     return vehicleHud.shouldShow(settings or (getSettings and getSettings()))
+end
+
+-- Публичный API модуля.
+function M.drawKeysHud(settings)
+    settings = settings or (getSettings and getSettings())
+    pcall(keysHud.draw, settings)
+end
+
+-- Публичный API модуля.
+function M.shouldShowKeysHud(settings)
+    return keysHud.shouldShow(settings or (getSettings and getSettings()))
+end
+
+-- Публичный API модуля.
+function M.wantsKeysHudInput()
+    return keysHud.wantsInput and keysHud.wantsInput() or false
+end
+
+-- Публичный API модуля.
+function M.wantsVehicleHudInput()
+    return vehicleHud.wantsInput and vehicleHud.wantsInput() or false
 end
 
 -- Публичный API модуля.
@@ -2504,6 +2529,24 @@ function M.install(deps)
         getSettings = getSettings,
         getSpectateTargetId = function() return M.getTargetId() end,
         inputDeps = deps,
+    })
+    keysHud.configure({
+        uiText = uiText,
+        toU32 = toU32,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_muted = col_muted,
+        col_muted2 = col_muted2,
+        markDirtySettings = markDirtySettings,
+        flushDirtyConfigNow = flushDirtyConfigNow,
+        getSettings = getSettings,
+        getSpectateTargetId = function() return M.getTargetId() end,
+        isSpectating = function()
+            if inputDeps and inputDeps.getPlayerSpectating then
+                return inputDeps.getPlayerSpectating() == true
+            end
+            return specSession.isSpectatingMode()
+        end,
     })
 end
 

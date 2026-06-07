@@ -1869,6 +1869,7 @@ function syncSettingsUiFromSettings()
     uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
     uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
     uiSpecVehicleHud[0] = settings.spectate_vehicle_hud ~= false
+    uiSpecKeysHud[0] = settings.spectate_keys_hud ~= false
     uiSpecWheelZoom[0] = settings.spectate_wheel_zoom ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiRemoteChatSamp[0] = settings.remote_chat_samp_mirror ~= false
@@ -1976,11 +1977,15 @@ function drawSettingsTab()
         settings.spectate_vehicle_hud = v
         markDirtySettings()
     end, 'spec_vehicle_hud') then end
+    if deskFormCheckboxRow('\xCA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xE0 \xE8\xE3\xF0\xEE\xEA\xE0', uiSpecKeysHud, function(v)
+        settings.spectate_keys_hud = v
+        markDirtySettings()
+    end, 'spec_keys_hud') then end
     if deskFormCheckboxRow('\xC7\xF3\xEC \xEA\xE0\xEC\xE5\xF0\xFB \xEA\xEE\xEB\xB8\xF1\xE8\xEA\xEE\xEC', uiSpecWheelZoom, function(v)
         settings.spectate_wheel_zoom = v
         markDirtySettings()
     end, 'spec_wheel_zoom') then end
-    drawSettingsHint('\xCF\xE0\xED\xE5\xEB\xE8 \xEC\xEE\xE6\xED\xEE \xEF\xE5\xF0\xE5\xF2\xE0\xF1\xEA\xE8\xE2\xE0\xF2\xFC \xEC\xFB\xF8\xFC\xFE \xE2 /sp \xB7 \xEA\xEE\xEB\xB8\xF1\xE8\xEA\xEE \xE2 /sp \xEE\xF2\xE4\xE0\xEB\xFF\xE5\xF2/\xEF\xF0\xE8\xE1\xEB\xE8\xE6\xE0\xE5\xF2 \xEA\xE0\xEC\xE5\xF0\xF3')
+    drawSettingsHint('\xCF\xE0\xED\xE5\xEB\xE8 \xEC\xEE\xE6\xED\xEE \xEF\xE5\xF0\xE5\xF2\xE0\xF1\xEA\xE8\xE2\xE0\xF2\xFC \xEC\xFB\xF8\xFC\xFE \xE2 /sp \xB7 \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xF3 \xE2 \xE7\xEE\xED\xE5 \xF6\xE5\xED\xF2\xF0\xE0 \xF1\xED\xE8\xE7\xF3')
 
     drawSettingsSubsection('\xCF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5')
     if deskFormCheckboxRow('\xC7\xE0\xEF\xF0\xE0\xF8\xE8\xE2\xE0\xF2\xFC /st \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5', uiSpecAutoSt, function(v)
@@ -2346,6 +2351,29 @@ do
             end
             if deskSpectateStats.drawVehicleHud then
                 pcall(deskSpectateStats.drawVehicleHud, settings)
+            end
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            self.HideCursor = true
+            self.LockPlayer = false
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
+            if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            if not sessionLive then return false end
+            if settings.spectate_keys_hud == false then return false end
+            return deskSpectateStats.shouldShowKeysHud and deskSpectateStats.shouldShowKeysHud(settings)
+        end,
+        function(self)
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                pcall(updateMimguiGameInputPassthrough)
+            end
+            if deskSpectateStats.drawKeysHud then
+                pcall(deskSpectateStats.drawKeysHud, settings)
             end
             if type(updateMimguiGameInputPassthrough) == 'function' then
                 pcall(updateMimguiGameInputPassthrough)

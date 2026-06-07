@@ -139,6 +139,9 @@ function main()
     sampRegisterChatCommand('hist', function(arg)
         pcall(sendHistoryByPlayerId, arg)
     end)
+    sampRegisterChatCommand('acar', function(arg)
+        pcall(deskAcarEnter, arg)
+    end)
 
     pcall(checkerInit)
 

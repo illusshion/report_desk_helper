@@ -206,6 +206,8 @@ $libModules = @(
 
     @{ Name = 'report_desk_sp_theme'; File = 'report_desk_sp_theme.lua' },
     @{ Name = 'report_desk_sp_vehicle_hud'; File = 'report_desk_sp_vehicle_hud.lua' },
+    @{ Name = 'report_desk_sp_keys_hud'; File = 'report_desk_sp_keys_hud.lua' },
+    @{ Name = 'report_desk_spectate_camera'; File = 'report_desk_spectate_camera.lua' },
     @{ Name = 'report_desk_spectate_session'; File = 'report_desk_spectate_session.lua' },
     @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
     @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },

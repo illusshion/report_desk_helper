@@ -1,5 +1,5 @@
 {
-    "changelog":  "Fix core error: restore shared bundle scope, checker stays separate",
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.5/admin_report_desk_core.lua",
-    "version":  "1.0.5"
+    "changelog":  "Perf UI/SP, clickwarp+acar, bundle fix spectate modules",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.7/admin_report_desk_core.lua",
+    "version":  "1.0.7"
 }
