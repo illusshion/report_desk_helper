@@ -13,7 +13,7 @@ if ($ZipPath -eq '') {
     if (Test-Path $fixed) {
         $ZipPath = $fixed
     } else {
-        $candidates = Get-ChildItem (Join-Path $MoonloaderRoot 'dist') -Filter 'AdminReportDesk-*.zip' -ErrorAction SilentlyContinue |
+        $candidates = Get-ChildItem (Join-Path $MoonloaderRoot 'dist') -Filter 'report_desk_helper_main.zip' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending
         if ($candidates) {
             $ZipPath = $candidates[0].FullName

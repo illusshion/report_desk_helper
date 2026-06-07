@@ -1,4 +1,4 @@
-# Полный релиз Report Desk: bundle + version.json + zip для GitHub Releases.
+# Полный релиз Report Desk: bundle + version.json + zip + verify для GitHub Releases.
 param(
     [string]$MoonloaderRoot = (Split-Path $PSScriptRoot -Parent),
     [Parameter(Mandatory = $true)]
@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release_lib.ps1')
+$Utf8NoBom = Get-DeskUtf8NoBom
+
 $bundleScript = Join-Path $PSScriptRoot 'bundle_report_desk.ps1'
 if ($SkipLuac) {
     & $bundleScript -MoonloaderRoot $MoonloaderRoot -SkipLuac
@@ -32,28 +35,33 @@ if (-not (Test-Path $coreLuac) -or $SkipLuac) {
     if (Test-Path $coreLua) {
         $coreAsset = 'admin_report_desk_core.lua'
         Write-Warning "Shipping $coreAsset (luac missing or -SkipLuac)"
+    } else {
+        Write-Error 'Bundle produced no core file in dist\report_desk\'
     }
 }
 if ($Changelog -eq '') {
     $Changelog = "Report Desk $Version"
 }
+
+$zipName = 'report_desk_helper_main.zip'
 $versionJson = @{
-    version   = $Version
-    core_url  = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
+    version           = $Version
+    core_url          = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
     core_url_fallback = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
-    changelog = $Changelog
+    zip_url           = "https://github.com/$owner/$repoName/releases/download/$tag/$zipName"
+    changelog         = $Changelog
 } | ConvertTo-Json -Depth 3
 
 $releaseDir = Join-Path $MoonloaderRoot 'release'
 $versionPath = Join-Path $releaseDir 'version.json'
-$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($versionPath, $versionJson + "`n", $Utf8NoBom)
 
-# Синхронизация ядра в repo (raw fallback + git)
+# Синхронизация ядра в repo (raw fallback = тот же файл, что уйдёт в Release)
+Clear-DeskGitIndexFlags $MoonloaderRoot @('report_desk/admin_report_desk_core.lua')
 $repoCoreDir = Join-Path $MoonloaderRoot 'report_desk'
 New-Item -ItemType Directory -Force -Path $repoCoreDir | Out-Null
 Copy-Item $coreLua (Join-Path $repoCoreDir 'admin_report_desk_core.lua') -Force
-Write-Host "Synced report_desk\admin_report_desk_core.lua for git"
+Write-Host "Synced report_desk\admin_report_desk_core.lua (fallback on main)"
 
 $manifestUrl = "https://raw.githubusercontent.com/$owner/$repoName/main/release/version.json"
 $updaterSrc = Join-Path $MoonloaderRoot 'lib\report_desk_autoupdate.lua'
@@ -64,17 +72,17 @@ $updaterDist = Join-Path $MoonloaderRoot 'dist\report_desk_autoupdate.lua'
 $updater = [System.IO.File]::ReadAllText($updaterSrc, $Utf8NoBom)
 $updater = $updater -replace "M\.VERSION_JSON_URL = '[^']*'", "M.VERSION_JSON_URL = '$manifestUrl'"
 [System.IO.File]::WriteAllText($updaterDist, $updater, $Utf8NoBom)
-Write-Host "version.json + dist autoupdate URL -> $manifestUrl"
+Write-Host "dist autoupdate URL -> $manifestUrl"
 
-# Patch stub version
-$stubPath = Join-Path $MoonloaderRoot 'dist\admin_report_desk.lua'
-$stub = [System.IO.File]::ReadAllText($stubPath, $Utf8NoBom)
-$stub = $stub -replace "script_version\('[^']*'\)", "script_version('$Version')"
-[System.IO.File]::WriteAllText($stubPath, $stub, $Utf8NoBom)
+# Версия launcher: tools stub (источник) + dist (zip)
+$stubSrc = Join-Path $PSScriptRoot 'admin_report_desk_stub.lua'
+$stubDist = Join-Path $MoonloaderRoot 'dist\admin_report_desk.lua'
+Set-DeskStubVersion $stubSrc $Version
+Set-DeskStubVersion $stubDist $Version
+Write-Host "Launcher version -> $Version (tools stub + dist)"
 
-# Zip (launcher + configs + preview assets)
+# Zip (launcher + autoupdate + deps + core + configs + preview assets)
 $distDir = Join-Path $MoonloaderRoot 'dist'
-$zipName = 'report_desk_helper_main.zip'
 $zipPath = Join-Path $distDir $zipName
 $stage = Join-Path $distDir '_zip_stage'
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
@@ -90,6 +98,8 @@ if (-not (Test-Path $depsSrc)) {
 }
 if (Test-Path $depsSrc) {
     Copy-Item $depsSrc (Join-Path $stage 'report_desk_deps.lua') -Force
+} else {
+    Write-Error 'Missing lib\report_desk_deps.lua'
 }
 
 $configDir = Join-Path $stage 'config'
@@ -133,10 +143,17 @@ Compress-Archive -Path $items -DestinationPath $zipPath -Force
 Remove-Item $stage -Recurse -Force
 $zipMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "Release zip: $zipPath ($zipMb MB)"
-Write-Host ""
-Write-Host "GitHub Release $tag upload:"
-Write-Host "  - $coreAsset  (from dist\report_desk\)"
-Write-Host "  - report_desk_helper_main.zip"
-Write-Host "  - commit release\version.json to main"
-Write-Host ""
-Write-Host "Quick publish: .\publish_release.ps1 -Version $Version"
+
+# Проверка: dist core = repo core = zip core; версии совпадают
+$artifacts = Test-DeskReleaseArtifacts -MoonloaderRoot $MoonloaderRoot -Version $Version -CoreAssetName $coreAsset -ZipName $zipName
+$manifestPath = Write-DeskBuildManifest -MoonloaderRoot $MoonloaderRoot -Version $Version -Tag $tag -Artifacts $artifacts
+
+Write-Host ''
+Write-Host 'Release verify OK' -ForegroundColor Green
+Write-Host "  core sha256: $($artifacts.core.sha256)"
+Write-Host "  core bytes:  $($artifacts.core.bytes)"
+Write-Host "  zip sha256:  $($artifacts.zip.sha256)"
+Write-Host "  manifest:    $manifestPath"
+Write-Host ''
+Write-Host "Next: .\publish_release.ps1 -Version $Version -GitCommit"
+Write-Host "  (commit + push main, THEN GitHub Release $tag with dist artifacts)"

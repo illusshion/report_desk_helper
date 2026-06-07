@@ -508,6 +508,8 @@ Write-Host "Wrote dist\report_desk_autoupdate.lua"
 
 
 
-Write-Host 'Done. Next: tools\build_release.ps1 -Version 3.42.1'
+Write-Host 'Done.'
+Write-Host 'NOTE: bundle alone is NOT a full release (no version.json, no zip verify, no git sync).'
+Write-Host '       Use: tools\build_release.ps1 -Version X.Y.Z'
 
 
