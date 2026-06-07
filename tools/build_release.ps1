@@ -61,6 +61,12 @@ Clear-DeskGitIndexFlags $MoonloaderRoot @('report_desk/admin_report_desk_core.lu
 $repoCoreDir = Join-Path $MoonloaderRoot 'report_desk'
 New-Item -ItemType Directory -Force -Path $repoCoreDir | Out-Null
 Copy-Item $coreLua (Join-Path $repoCoreDir 'admin_report_desk_core.lua') -Force
+$gitAttr = Join-Path $MoonloaderRoot '.gitattributes'
+if (-not (Test-Path $gitAttr)) {
+    Write-Warning '.gitattributes missing — git may alter core line endings (raw fallback != Release)'
+} elseif ((Get-Content $gitAttr -Raw) -notlike '*admin_report_desk_core.lua binary*') {
+    Write-Warning '.gitattributes must mark admin_report_desk_core.lua as binary'
+}
 Write-Host "Synced report_desk\admin_report_desk_core.lua (fallback on main)"
 
 $manifestUrl = "https://raw.githubusercontent.com/$owner/$repoName/main/release/version.json"
