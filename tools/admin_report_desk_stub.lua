@@ -135,13 +135,17 @@ function main()
 
     local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
     if autoupdate and autoupdate.chatSay then
+        local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
         local extra = ''
         if updateStatus == 'uptodate' then
             extra = ', \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF \xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xFB'
         elseif updateStatus == 'offline' then
             extra = ', \xEF\xF0\xEE\xE2\xE5\xF0\xEA\xE0 \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE9 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0'
+        elseif updateStatus == 'fail' then
+            extra = ', \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED\xEE'
         end
-        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED v' .. ver .. extra .. ' (F7)')
+        local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('launcher v' .. ver)
+        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. extra .. ' (F7)')
     end
 
     local ok, runErr = pcall(function()

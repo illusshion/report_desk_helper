@@ -62,10 +62,11 @@ function M.readLocalVersion()
 end
 
 -- Публичный API модуля.
-function M.downloadSync(url, dest, timeoutSec)
+function M.downloadSync(url, dest, timeoutSec, minBytes)
     if not downloadUrlToFile then
         return false, 'downloadUrlToFile unavailable'
     end
+    minBytes = tonumber(minBytes) or 64
     if doesFileExist(dest) then
         os.remove(dest)
     end
@@ -77,12 +78,15 @@ function M.downloadSync(url, dest, timeoutSec)
             if f then
                 local n = f:seek('end') or 0
                 f:close()
-                if n > 64 then
+                if n >= minBytes then
                     return true
                 end
             end
         end
         wait(100)
+    end
+    if doesFileExist(dest) then
+        pcall(os.remove, dest)
     end
     return false, 'timeout'
 end
@@ -202,7 +206,7 @@ end
 function M.downloadCore(url, corePath)
     M.ensureCoreDir(corePath)
     local tmp = corePath .. '.download'
-    local ok, err = M.downloadSync(url, tmp, 120)
+    local ok, err = M.downloadSync(url, tmp, 180, 65536)
     if not ok then
         return false, err
     end
@@ -247,7 +251,18 @@ function M.check(corePath)
     notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. remoteVer .. '...')
     local ok, derr = M.downloadCore(coreUrl, corePath)
     if not ok then
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8: ' .. tostring(derr))
+        local dir = M.coreDir()
+        local hadCore = doesFileExist(corePath)
+        if not hadCore then
+            hadCore = doesFileExist(dir .. '\\admin_report_desk_core.lua')
+                or doesFileExist(dir .. '\\admin_report_desk_core.luac')
+        end
+        if hadCore then
+            local prev = M.readInstalledCoreVersion()
+            notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xE8\xEB\xEE\xF1\xFC (' .. tostring(derr) .. '), \xFF\xE4\xF0\xEE ' .. (prev ~= '' and prev or '\xEF\xF0\xE5\xE6\xED\xE5\xE5'))
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8: ' .. tostring(derr))
+        end
         return false, 'fail'
     end
     M.writeInstalledCoreVersion(remoteVer)

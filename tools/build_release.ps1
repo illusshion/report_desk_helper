@@ -39,7 +39,7 @@ if ($Changelog -eq '') {
 }
 $versionJson = @{
     version   = $Version
-    core_url  = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
+    core_url  = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
     changelog = $Changelog
 } | ConvertTo-Json -Depth 3
 
