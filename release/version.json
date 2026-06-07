@@ -1,6 +1,7 @@
 {
-    "changelog":  "Full bundle sync: SP handshake, scenario_learn, remote_chat, all spectate modules",
+    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.8/report_desk_helper_main.zip",
     "core_url_fallback":  "https://raw.githubusercontent.com/illusshion/report_desk_helper/main/report_desk/admin_report_desk_core.lua",
     "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.8/admin_report_desk_core.lua",
-    "version":  "1.0.8"
+    "version":  "1.0.8",
+    "changelog":  "Full bundle sync: SP handshake, scenario_learn, remote_chat, all spectate modules"
 }

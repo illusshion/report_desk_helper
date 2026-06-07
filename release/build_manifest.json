@@ -1,0 +1,39 @@
+{
+    "tag":  "v1.0.8",
+    "version":  "1.0.8",
+    "built_at":  "2026-06-07T23:46:25.5469819+03:00",
+    "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
+    "artifacts":  {
+                      "version":  "1.0.8",
+                      "autoupdate":  {
+                                         "path":  "dist\\report_desk_autoupdate.lua",
+                                         "sha256":  "44ef81c6d0d6d66f94aa6d03c8b581e352fc1d830452c1654cfce5bc731b3745",
+                                         "bytes":  10233
+                                     },
+                      "core":  {
+                                   "repo_path":  "report_desk\\admin_report_desk_core.lua",
+                                   "sha256":  "4ca1e8ac748611c1a5822706e42f870d9f9e51d391057ad06533c4d7e69bdbc6",
+                                   "dist_path":  "dist\\report_desk\\admin_report_desk_core.lua",
+                                   "bytes":  968395
+                               },
+                      "verified":  true,
+                      "zip":  {
+                                  "path":  "dist\\report_desk_helper_main.zip",
+                                  "sha256":  "f5b72930dffc4fe31a8a0504d35e5ae4b469073a5be50d4873dde7834483613c",
+                                  "bytes":  48933538
+                              },
+                      "core_asset":  "admin_report_desk_core.lua",
+                      "deps":  {
+                                   "path":  "dist\\report_desk_deps.lua",
+                                   "sha256":  "315a3ba73fc5509d553f978e480185a0f42bdf334bcb6ab1a8e59f7c77b60eaf",
+                                   "bytes":  5097
+                               },
+                      "launcher":  {
+                                       "path":  "dist\\admin_report_desk.lua",
+                                       "sha256":  "0b171d4757042122bb069cd34267ff0d3d60ddfe4840f9fa2783c7665fe99e72",
+                                       "bytes":  5758
+                                   }
+                  },
+    "verified":  true,
+    "core_asset":  "admin_report_desk_core.lua"
+}

@@ -2,6 +2,7 @@
 
 ## 1.0.8
 
+- **Release pipeline:** verify SHA256 (dist = git = zip), `build_manifest.json`, снятие `assume-unchanged`, правильный git commit, `zip_url` в manifest.
 - **Release sync:** bundle полностью совпадает с dev (`scenario_learn`, `remote_chat`, все SP-модули).
 - **SP:** handshake `/sp` — `expectSpectateOff`, `isAwaitingSpectate`, защита от ложного `toggle(false)`, deferred `/st`.
 - **Autoupdate:** `core_url` → GitHub Release asset (+ raw fallback в manifest).

@@ -22895,6 +22895,23 @@ function installDeskPlayerColorHook()
     sampev.onSetPlayerColor = deskCache.playerColorHandler
 end
 
+-- Note Manual Stats Command — ручной /st из чата: показать server dialog, не HUD-парсинг.
+function noteManualStatsCommand(command)
+    command = trim(command or '')
+    local stId = command:match('^%/?st%s+(%d+)%s*$')
+    if not stId then return end
+    if tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0 then
+        return
+    end
+    local s = spSession()
+    if s and s.wasRecentOutboundCommand and s.wasRecentOutboundCommand(command) then
+        return
+    end
+    if deskSpectateStats.markPendingSt then
+        pcall(deskSpectateStats.markPendingSt, tonumber(stId), { showDialog = true })
+    end
+end
+
 -- Перехват исходящего чата (profanity, auto-rules).
 function installDeskSendChatHook()
     if deskCache.sendChatHandler and sampev.onSendChat == deskCache.sendChatHandler then
@@ -22920,23 +22937,6 @@ function installDeskSendChatHook()
         end
     end
     sampev.onSendChat = deskCache.sendChatHandler
-end
-
--- Note Manual Stats Command — ручной /st из чата: показать server dialog, не HUD-парсинг.
-local function noteManualStatsCommand(command)
-    command = trim(command or '')
-    local stId = command:match('^%/?st%s+(%d+)%s*$')
-    if not stId then return end
-    if tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0 then
-        return
-    end
-    local s = spSession()
-    if s and s.wasRecentOutboundCommand and s.wasRecentOutboundCommand(command) then
-        return
-    end
-    if deskSpectateStats.markPendingSt then
-        pcall(deskSpectateStats.markPendingSt, tonumber(stId), { showDialog = true })
-    end
 end
 
 -- Try Handle Sp Spectate Command
