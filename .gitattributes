@@ -1,0 +1,2 @@
+# Bundled core must be byte-identical in git (raw fallback) and GitHub Release.
+report_desk/admin_report_desk_core.lua binary
