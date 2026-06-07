@@ -1,21 +1,44 @@
---[[ Spectate /st stats: parse SP line + stat dialog, HUD overlay ]]
+--[[ Модуль: /st stats parse, HUD overlay, spectate health. ]]
 local M = {}
 
 local imgui = require 'mimgui'
+local specSession = require 'report_desk_spectate_session'
+local spUi = require 'report_desk_sp_ui'
+local specMenuMod = require 'report_desk_spectate_menu'
+local spTheme = require 'report_desk_sp_theme'
+local vehicleHud = require 'report_desk_sp_vehicle_hud'
+local specCamera = require 'report_desk_spectate_camera'
 
 local SP_MSG_COLOR = 1728027135
 local PENDING_ST_SEC = 12.0
-local AUTO_ST_COOLDOWN = 8.0
-local SPEC_STEP_COOLDOWN = 0.35
+local AUTO_ST_COOLDOWN = 4.0
+local SPEC_STEP_COOLDOWN = 0.45
+local SPEC_STEP_AUTO_ST_DELAY = 2.5
+local PENDING_SP_SEC = 6.0
+local SPECTATE_FORCE_EXIT_COOLDOWN = 0.8
+local SPECTATE_ORPHAN_GRACE_SEC = 3.0
+local SPECTATE_TARGET_OFFLINE_GRACE_SEC = 2.5
+local SPECTATE_HEALTH_INTERVAL = 0.25
+local WM_ACTIVATEAPP = 0x001c
+local lastForceExitAt = 0
+local orphanSinceAt = nil
+local orphanRecoveryTried = false
+local orphanLocalCleared = false
+local lastValidTargetAt = 0
+local SPECTATE_ADV_REFRESH_GRACE_SEC = 8.0
+local targetOfflineSinceAt = nil
+local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
 local lastSpecStepAt = 0
+local lastSpectateHealthAt = 0
 
-local trim, stripTags, sendChat, uiText, toU32
-local col_accent, col_muted, col_muted2, col_label, col_warn
+local trim, stripTags, sendChat, sendMenuOutbound, uiText, toU32
+local col_accent, col_accent_dim, col_muted, col_muted2, col_label, col_warn
 local sampIsPlayerConnected, sampGetPlayerNickname, sampGetPlayerColor
 local sampGetPlayerPing, sampGetPlayerScore
 local inputDeps
 
+-- Проверка playerSpectating из input deps.
 local function specPlayerActive()
     return inputDeps and inputDeps.getPlayerSpectating and inputDeps.getPlayerSpectating()
 end
@@ -27,6 +50,7 @@ local state = {
     targetNick = '',
     pendingStId = nil,
     pendingStAt = 0,
+    stShowNative = false,
     lastAutoStAt = 0,
     cache = {},
     cacheOrder = {},
@@ -34,11 +58,66 @@ local state = {
     hudHovered = false,
     hudPlaced = false,
     persistHudId = -1,
+    pendingSpId = nil,
+    pendingSpNick = '',
+    pendingSpAt = 0,
 }
 
-local HUD_PANEL_W = 292
-local HUD_LABEL_W = 108
-local HUD_PAD_X = 10
+-- ID цели на handshake /sp: pending → session → локальный state.
+local function resolveSpectateHandshakeId()
+    local pid = tonumber(state.pendingSpId)
+    if pid and pid >= 0 then return pid end
+    if specSession.getTargetId then
+        pid = specSession.getTargetId()
+        if pid and pid >= 0 then return pid end
+    end
+    pid = tonumber(state.targetId)
+    if pid and pid >= 0 then return pid end
+    return -1
+end
+
+-- Nick цели на handshake /sp.
+local function resolveSpectateTargetNick(pid)
+    pid = tonumber(pid)
+    local nick = trim(state.pendingSpNick or '')
+    if nick == '' and specSession.getTargetNick then
+        local sn = specSession.getTargetNick()
+        if sn and sn ~= '' then nick = trim(sn) end
+    end
+    if nick == '' and tonumber(state.targetId) == pid and state.targetNick ~= '' then
+        nick = state.targetNick
+    end
+    if nick == '' and sampGetPlayerNickname and sampIsPlayerConnected then
+        pcall(function()
+            if sampIsPlayerConnected(pid) then
+                nick = trim(sampGetPlayerNickname(pid) or '')
+            end
+        end)
+    end
+    return nick
+end
+
+local HUD_PANEL_W = 268
+local HUD_LABEL_W = 104
+local HUD_PAD_X = 12
+
+local STAT_STACK_FIELDS = {
+    org = true,
+    rank = true,
+    job = true,
+    family = true,
+    status = true,
+}
+
+local STAT_STACK_MIN_W = 150
+
+local function statLabelWidth(label)
+    label = uiText(label or '')
+    local w = imgui.CalcTextSize(label).x + 8
+    local minVal = 80
+    local maxLbl = HUD_PANEL_W - HUD_PAD_X * 2 - minVal
+    return math.max(HUD_LABEL_W, math.min(w, maxLbl))
+end
 
 local HUD_FIELD_ORDER = {
     'ping', 'level', 'family', 'org', 'rank', 'job', 'warns', 'wanted', 'money', 'score', 'status',
@@ -62,12 +141,14 @@ local FIELD_LABELS = {
     phone = '\xD2\xE5\xEB\xE5\xF4\xEE\xED',
 }
 
+-- Low
 local function low(s)
     s = trim(s or '')
     if s == '' then return '' end
     return s:lower()
 end
 
+-- Vec4
 local function vec4(r, g, b, a)
     return imgui.ImVec4(r, g, b, a or 1.0)
 end
@@ -131,6 +212,7 @@ local FACTION_NICK_COLORS = {
     },
 }
 
+-- Samp Color To Im Vec4
 local function sampColorToImVec4(color)
     color = tonumber(color) or 0
     if color < 0 then color = bit.band(color, 0xFFFFFFFF) end
@@ -143,6 +225,7 @@ local function sampColorToImVec4(color)
     return imgui.ImVec4(rr / 255, gg / 255, bb / 255, aa / 255)
 end
 
+-- Org Text For Color
 local function orgTextForColor(e)
     if not e then return '' end
     local parts = {}
@@ -159,6 +242,7 @@ local function orgTextForColor(e)
     return table.concat(parts, ' ')
 end
 
+-- Nick Color From Org Text
 local function nickColorFromOrgText(text)
     text = low(text)
     if text == '' then return nil end
@@ -175,6 +259,7 @@ local function nickColorFromOrgText(text)
     return nil
 end
 
+-- Is Near White Or Gray
 local function isNearWhiteOrGray(c)
     if not c then return false end
     local r, g, b = c.x, c.y, c.z
@@ -184,6 +269,7 @@ local function isNearWhiteOrGray(c)
     return (maxc - minc) < 0.12
 end
 
+-- Публичный API модуля.
 function M.nickColorFor(id, e)
     local fromOrg = nickColorFromOrgText(orgTextForColor(e))
     if fromOrg then return fromOrg end
@@ -200,6 +286,7 @@ function M.nickColorFor(id, e)
     return vec4(1.0, 1.0, 1.0)
 end
 
+-- Публичный API модуля.
 function M.isGameTextInputActive()
     if inputDeps and inputDeps.sampIsChatInputActive and inputDeps.sampIsChatInputActive() then
         return true
@@ -210,6 +297,7 @@ function M.isGameTextInputActive()
     return false
 end
 
+-- Публичный API модуля.
 function M.frameWantsCursor()
     if M.isGameTextInputActive() then return true end
     if state.hudDrag.active then return true end
@@ -218,6 +306,7 @@ function M.frameWantsCursor()
     return false
 end
 
+-- Label Has
 local function labelHas(label, ...)
     label = trim(label or '')
     if label == '' then return false end
@@ -231,6 +320,7 @@ local function labelHas(label, ...)
     return false
 end
 
+-- Classify Label
 local function classifyLabel(label)
     label = trim(label or '')
     if label == '' then return nil end
@@ -248,6 +338,9 @@ local function classifyLabel(label)
     end
     if labelHas(label, '\xD1\xE5\xEC\xFC', '\xF1\xE5\xEC\xFC', 'family', '\xEA\xEB\xE0\xED') then
         return 'family'
+    end
+    if labelHas(label, '\xC4\xEE\xEB\xE6\xED\xEE\xF1\xF2', '\xE4\xEE\xEB\xE6\xED\xEE\xF1\xF2', 'dolzhnost') then
+        return 'job'
     end
     if labelHas(label, '\xD0\xE0\xE1\xEE\xF2', '\xF0\xE0\xE1\xEE\xF2', 'job', '\xEF\xF0\xEE\xF4') then
         return 'job'
@@ -275,12 +368,14 @@ local function classifyLabel(label)
     return nil
 end
 
+-- Strip Dialog Markup
 local function stripDialogMarkup(s)
     s = stripTags(s or '')
     s = s:gsub('{[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]}', '')
     return trim(s)
 end
 
+-- Split Label Value
 local function splitLabelValue(line)
     line = stripDialogMarkup(line)
     if line == '' then return nil, nil end
@@ -292,7 +387,10 @@ local function splitLabelValue(line)
         label, value = line:match('^(.-)%s+\226%128%148%s+(.+)$')
     end
     if not label then
-        label, value = line:match('^(.-)%s*\t%s*(.+)$')
+        local tabs = select(2, line:gsub('\t', ''))
+        if tabs == 1 then
+            label, value = line:match('^(.-)%s*\t%s*(.+)$')
+        end
     end
     if label and value then
         return trim(label), trim(value)
@@ -300,6 +398,7 @@ local function splitLabelValue(line)
     return nil, nil
 end
 
+-- Store Field
 local function storeField(e, key, value)
     if not e or not key or not value or value == '' then return end
     value = trim(value)
@@ -307,6 +406,7 @@ local function storeField(e, key, value)
     e.fields[key] = value
 end
 
+-- Normalize Warns Value
 local function normalizeWarnsValue(value)
     value = trim(value or '')
     if value == '' then return nil end
@@ -319,6 +419,74 @@ local function normalizeWarnsValue(value)
     return value
 end
 
+-- Split Tab Cols
+local function splitTabCols(line)
+    local cols = {}
+    for col in tostring(line or ''):gmatch('[^\t]+') do
+        cols[#cols + 1] = trim(col)
+    end
+    return cols
+end
+
+-- Line Looks Like Stats Header
+local function lineLooksLikeStatsHeader(cols)
+    if #cols < 2 then return false end
+    for _, c in ipairs(cols) do
+        if c ~= '' and not classifyLabel(c) then
+            return false
+        end
+    end
+    return true
+end
+
+-- Parse Tab Stats Block
+local function parseTabStatsBlock(text, e)
+    if not text or not e then return end
+    local headerKeys = nil
+    for line in text:gmatch('[^\r\n]+') do
+        line = stripDialogMarkup(line)
+        if line ~= '' and line:find('\t', 1, true) then
+            local cols = splitTabCols(line)
+            if lineLooksLikeStatsHeader(cols) then
+                headerKeys = {}
+                for _, c in ipairs(cols) do
+                    headerKeys[#headerKeys + 1] = classifyLabel(c)
+                end
+            elseif headerKeys then
+                for i, key in ipairs(headerKeys) do
+                    local val = cols[i]
+                    if key and val and val ~= '' then
+                        if key == 'warns' then
+                            storeField(e, key, normalizeWarnsValue(val))
+                        else
+                            storeField(e, key, val)
+                        end
+                    end
+                end
+                headerKeys = nil
+            elseif #cols == 2 then
+                local key = classifyLabel(cols[1])
+                if key then
+                    if key == 'warns' then
+                        storeField(e, key, normalizeWarnsValue(cols[2]))
+                    else
+                        storeField(e, key, cols[2])
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Extra Label Ok
+local function extraLabelOk(lbl)
+    lbl = trim(lbl or '')
+    if lbl == '' then return false end
+    if classifyLabel(lbl) then return false end
+    return true
+end
+
+-- Cache Protect Id
 local function cacheProtectId(id)
     id = tonumber(id)
     if id == nil then return false end
@@ -326,6 +494,7 @@ local function cacheProtectId(id)
     return false
 end
 
+-- Touch Cache Id
 local function touchCacheId(id)
     id = tonumber(id)
     if not id then return end
@@ -345,6 +514,7 @@ local function touchCacheId(id)
     end
 end
 
+-- Extract Warns From Text
 local function extractWarnsFromText(text, e)
     if not text or not e then return end
     local patterns = {
@@ -415,6 +585,7 @@ local BULK_FIELD_PATTERNS = {
     },
 }
 
+-- Парсинг данных с сервера/чата.
 local function parseBulkFields(text, e)
     for key, patterns in pairs(BULK_FIELD_PATTERNS) do
         for _, pat in ipairs(patterns) do
@@ -433,12 +604,14 @@ local function parseBulkFields(text, e)
     extractWarnsFromText(text, e)
 end
 
+-- Resolve Dialog Close Button
 local function resolveDialogCloseButton(button1, button2)
     if button1 and trim(button1) ~= '' then return 1 end
     if button2 and trim(button2) ~= '' then return 0 end
     return 1
 end
 
+-- Close Stats Dialog Once
 local function closeStatsDialogOnce(dialogId, button1, button2)
     local btn = resolveDialogCloseButton(button1, button2)
     if type(sampSendDialogResponse) == 'function' and dialogId then
@@ -449,6 +622,21 @@ local function closeStatsDialogOnce(dialogId, button1, button2)
     end
 end
 
+-- Close Stats Dialog Once — повтор через 120/350 ms (SAMP иногда игнорирует первый ответ).
+local function deferCloseStatsDialog(dialogId, button1, button2)
+    closeStatsDialogOnce(dialogId, button1, button2)
+    if not lua_thread or not lua_thread.create then return end
+    lua_thread.create(function()
+        wait(120)
+        closeStatsDialogOnce(dialogId, button1, button2)
+        wait(350)
+        if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then
+            closeStatsDialogOnce(dialogId, button1, button2)
+        end
+    end)
+end
+
+-- Text Has Any
 local function textHasAny(s, ...)
     s = s or ''
     for i = 1, select('#', ...) do
@@ -460,6 +648,7 @@ local function textHasAny(s, ...)
     return false
 end
 
+-- Dialog Has Stats Body
 local function dialogHasStatsBody(text)
     text = stripDialogMarkup(text or '')
     if text == '' then return false end
@@ -475,6 +664,7 @@ local function dialogHasStatsBody(text)
     return hits >= 2
 end
 
+-- Ensure Entry
 local function ensureEntry(id)
     id = tonumber(id)
     if not id or id < 0 then return nil end
@@ -487,10 +677,35 @@ local function ensureEntry(id)
     return e
 end
 
-function M.getTargetId()
-    return tonumber(state.targetId) or -1
+-- Clear Pending St
+local function clearPendingSt()
+    state.pendingStId = nil
+    state.pendingStAt = 0
+    state.stShowNative = false
 end
 
+-- Reset Entry Stats
+local function resetEntryStats(e)
+    if not e then return end
+    e.fields = {}
+    e.extras = {}
+    e.updatedAt = 0
+end
+
+-- Публичный API модуля.
+function M.getTargetId()
+    local sid = specSession.getTargetId and specSession.getTargetId() or -1
+    if sid >= 0 then return sid end
+    if specPlayerActive() then
+        local pending = tonumber(state.pendingSpId)
+        if pending and pending >= 0 then return pending end
+        local tid = tonumber(state.targetId)
+        if tid and tid >= 0 then return tid end
+    end
+    return -1
+end
+
+-- Публичный API модуля.
 function M.getMyPlayerId()
     if sampGetPlayerIdByCharHandle then
         local ok, id = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
@@ -499,6 +714,7 @@ function M.getMyPlayerId()
     return -1
 end
 
+-- Публичный API модуля.
 function M.getMaxPlayerId()
     local maxId = MAX_SPEC_PLAYER_ID
     if sampGetMaxPlayerId then
@@ -508,6 +724,7 @@ function M.getMaxPlayerId()
     return maxId
 end
 
+-- Публичный API модуля.
 function M.isSpectateCandidate(id)
     id = tonumber(id)
     if not id or id < 0 then return false end
@@ -517,32 +734,43 @@ function M.isSpectateCandidate(id)
     return true
 end
 
+-- Публичный API модуля.
 function M.findAdjacentSpectateId(curId, delta)
     curId = tonumber(curId)
     if curId == nil then return nil end
     local maxId = M.getMaxPlayerId()
+    local me = M.getMyPlayerId()
     delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    local function candidate(id)
+        id = tonumber(id)
+        if not id or id < 0 then return false end
+        if me >= 0 and id == me then return false end
+        return sampIsPlayerConnected and sampIsPlayerConnected(id)
+    end
     if delta > 0 then
         for i = curId + 1, maxId do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
         for i = 0, curId - 1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
     else
         for i = curId - 1, 0, -1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
         for i = maxId, curId + 1, -1 do
-            if M.isSpectateCandidate(i) then return i end
+            if candidate(i) then return i end
         end
     end
     return nil
 end
 
+-- Публичный API модуля.
 function M.stepSpectate(delta)
     local now = os.clock()
-    if now - lastSpecStepAt < SPEC_STEP_COOLDOWN then return true end
+    if now - lastSpecStepAt < SPEC_STEP_COOLDOWN then
+        return false
+    end
     lastSpecStepAt = now
     local cur = M.getTargetId()
     if cur < 0 then
@@ -551,10 +779,17 @@ function M.stepSpectate(delta)
     end
     local nextId = M.findAdjacentSpectateId(cur, delta)
     if not nextId then return false end
-    if sendChat then sendChat('sp ' .. tostring(nextId)) end
+    M.markPendingSpCommand(nextId, '')
+    local cmd = 'sp ' .. tostring(nextId)
+    if sendMenuOutbound then
+        sendMenuOutbound(cmd)
+    elseif sendChat then
+        sendChat(cmd)
+    end
     return true
 end
 
+-- Публичный API модуля.
 function M.hasStats(id)
     id = tonumber(id)
     if not id or id < 0 then return false end
@@ -569,6 +804,242 @@ function M.hasStats(id)
     return false
 end
 
+-- Публичный API модуля.
+function M.syncFromSession(id, nick, settings, syncOpts)
+    syncOpts = syncOpts or {}
+    id = tonumber(id)
+    if not id or id < 0 then
+        state.targetId = -1
+        state.targetNick = ''
+        return
+    end
+    local prevId = state.targetId
+    if prevId ~= id then
+        state.hudPlaced = false
+        pcall(specMenuMod.resetMenuSelection)
+        clearPendingSt()
+    end
+    M.cancelPendingSp()
+    state.targetId = id
+    state.targetNick = trim(nick or '')
+    lastValidTargetAt = os.clock()
+    orphanLocalCleared = false
+    if inputDeps and inputDeps.setPlayerSpectating then
+        inputDeps.setPlayerSpectating(true)
+    end
+    local e = ensureEntry(id)
+    if e then
+        if state.targetNick ~= '' then e.nick = state.targetNick end
+        if prevId ~= id then
+            resetEntryStats(e)
+            if state.targetNick ~= '' then e.nick = state.targetNick end
+        end
+        M.refreshLivePing(id)
+    end
+    local s = settings
+    if not s and getSettings then s = getSettings() end
+    if not (e and s and s.spectate_auto_st ~= false) or syncOpts.skipAutoSt then
+        return
+    end
+    local mustForce = syncOpts.forceAutoSt == true or prevId ~= id
+    if syncOpts.forceAutoSt and prevId == id then
+        resetEntryStats(e)
+        if state.targetNick ~= '' then e.nick = state.targetNick end
+    end
+    if mustForce then
+        M.refreshLivePing(id)
+        M.requestStats(id, { force = true })
+        return
+    end
+    M.maybeAutoRequest(id, s, false)
+end
+
+-- Публичный API модуля.
+function M.markPendingSpCommand(id, nick)
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    nick = trim(nick or '')
+    if nick == '' and sampIsPlayerConnected and sampGetPlayerNickname then
+        pcall(function()
+            if sampIsPlayerConnected(id) then
+                nick = trim(sampGetPlayerNickname(id) or '')
+            end
+        end)
+    end
+    state.pendingSpId = id
+    state.pendingSpNick = nick
+    state.pendingSpAt = os.clock()
+    local cur = M.getTargetId()
+    if cur ~= id then
+        if cur >= 0 then clearPendingSt() end
+        pcall(vehicleHud.reset)
+    end
+    pcall(specSession.markAwaitingSpectate, true)
+end
+
+-- Публичный API модуля.
+function M.cancelPendingSp()
+    if not state.pendingSpId then return end
+    state.pendingSpId = nil
+    state.pendingSpNick = ''
+    state.pendingSpAt = 0
+    pcall(specSession.markAwaitingSpectate, false)
+end
+
+-- Публичный API модуля.
+function M.hasPendingSp()
+    return state.pendingSpId ~= nil
+end
+
+-- Plain Server Msg
+local function plainServerMsg(text)
+    text = stripTags(text or '')
+    return text:gsub('{[0-9A-Fa-f]+}', '')
+end
+
+-- Is Sp Command Rejected
+local function isSpCommandRejected(text)
+    local plain = plainServerMsg(text)
+    if plain == '' then return false end
+    if plain:find('\xF3\xE6\xE5', 1, true) and plain:find('\xF0\xE5\xE6\xE8\xEC', 1, true) then
+        return true
+    end
+    if plain:find('\xE0\xE2\xF2\xEE\xF0\xE8\xE7', 1, true) then return true end
+    if plain:find('\xED\xE5\xEB\xFC\xE7\xFF', 1, true) and plain:find('\xF1\xEB\xE5\xE4', 1, true) then
+        return true
+    end
+    if plain:find('spectate', 1, true) and plain:find('already', 1, true) then return true end
+    if plain:find('not authorized', 1, true) or plain:find('not logged', 1, true) then
+        return true
+    end
+    return false
+end
+
+local lastStatsWatchdogAt = 0
+
+-- Публичный API модуля.
+function M.tickStatsDialogWatchdog()
+    if state.stShowNative then return end
+    if not M.hasPendingSt() then return end
+    local now = os.clock()
+    if now - (state.pendingStAt or 0) < 0.4 then return end
+    if now - lastStatsWatchdogAt < 0.5 then return end
+    if type(sampIsDialogActive) ~= 'function' or not sampIsDialogActive() then return end
+    lastStatsWatchdogAt = now
+    closeStatsDialogOnce(nil, 'Close', '')
+end
+
+-- Публичный API модуля.
+function M.tickPendingSp()
+    M.tickSpectateHealth()
+    M.tickStatsDialogWatchdog()
+    local id = state.pendingSpId
+    if not id then return end
+    local at = tonumber(state.pendingSpAt) or 0
+    if at > 0 and os.clock() - at > PENDING_SP_SEC then
+        M.cancelPendingSp()
+    end
+end
+
+-- Публичный API модуля.
+function M.forceExitSpectate(opts)
+    opts = opts or {}
+    local now = os.clock()
+    if not opts.allowRepeat and now - lastForceExitAt < SPECTATE_FORCE_EXIT_COOLDOWN then
+        return false
+    end
+    lastForceExitAt = now
+    if opts.reason == 'orphan' then
+        orphanLocalCleared = true
+    end
+    M.clearSpectateTarget(true)
+    M.onSpCommandOff()
+    if opts.sendServer ~= false then
+        if sendMenuOutbound then
+            sendMenuOutbound('sp')
+        elseif sendChat then
+            sendChat('sp')
+        end
+    end
+    return true
+end
+
+-- Публичный API модуля.
+-- === Spectate health: orphan/offline detection ===
+function M.tickSpectateHealth()
+    local now = os.clock()
+    if now - lastSpectateHealthAt < SPECTATE_HEALTH_INTERVAL then
+        return
+    end
+    lastSpectateHealthAt = now
+
+    if not gameAppActive then
+        targetOfflineSinceAt = nil
+        orphanSinceAt = nil
+        orphanRecoveryTried = false
+        return
+    end
+    if not specPlayerActive() then
+        orphanSinceAt = nil
+        orphanRecoveryTried = false
+        orphanLocalCleared = false
+        targetOfflineSinceAt = nil
+        return
+    end
+    if M.hasPendingSp() then
+        orphanSinceAt = nil
+        orphanRecoveryTried = false
+        targetOfflineSinceAt = nil
+        return
+    end
+    local id = M.getTargetId()
+    if id < 0 then
+        targetOfflineSinceAt = nil
+        if orphanLocalCleared then
+            return
+        end
+        if lastValidTargetAt > 0
+            and (now - lastValidTargetAt) < SPECTATE_ADV_REFRESH_GRACE_SEC then
+            orphanSinceAt = nil
+            orphanRecoveryTried = false
+            return
+        end
+        orphanSinceAt = orphanSinceAt or now
+        local elapsed = now - orphanSinceAt
+        if elapsed >= 1.0 and not orphanRecoveryTried then
+            orphanRecoveryTried = true
+            if specSession.tryRecoverFromChat and specSession.tryRecoverFromChat() then
+                orphanSinceAt = nil
+                orphanRecoveryTried = false
+                return
+            end
+        end
+        if elapsed < SPECTATE_ORPHAN_GRACE_SEC then
+            return
+        end
+        orphanSinceAt = nil
+        orphanRecoveryTried = false
+        -- Локальная очистка UI: сервер может быть в валидном SP refresh, sp toggle опасен.
+        M.forceExitSpectate({ reason = 'orphan', sendServer = false })
+        return
+    end
+    orphanSinceAt = nil
+    orphanRecoveryTried = false
+    orphanLocalCleared = false
+    lastValidTargetAt = now
+    if sampIsPlayerConnected and not sampIsPlayerConnected(id) then
+        targetOfflineSinceAt = targetOfflineSinceAt or now
+        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC then
+            return
+        end
+        targetOfflineSinceAt = nil
+        M.forceExitSpectate({ reason = 'target_offline', sendServer = true })
+        return
+    end
+    targetOfflineSinceAt = nil
+end
+
+-- Публичный API модуля.
 function M.setSpectateTarget(id, nick, settings)
     id = tonumber(id)
     if not id or id < 0 then
@@ -576,34 +1047,32 @@ function M.setSpectateTarget(id, nick, settings)
         state.targetNick = ''
         return
     end
-    if state.targetId ~= id then
+    local prevId = state.targetId
+    if prevId ~= id then
         state.hudPlaced = false
+        pcall(specMenuMod.resetMenuSelection)
+        clearPendingSt()
     end
     state.targetId = id
     state.targetNick = trim(nick or '')
-    if inputDeps and inputDeps.setPlayerSpectating then
-        inputDeps.setPlayerSpectating(true)
-    end
+    lastValidTargetAt = os.clock()
+    orphanLocalCleared = false
+    pcall(specSession.markAwaitingSpectate, false)
+    pcall(specSession.beginSession, id, state.targetNick, { source = 'cmd' })
     local e = ensureEntry(id)
     if e then
+        if prevId ~= id then
+            resetEntryStats(e)
+        end
         if state.targetNick ~= '' then e.nick = state.targetNick end
         M.refreshLivePing(id)
     end
-    local s = settings
-    if not s and getSettings then s = getSettings() end
-    if e and s and s.spectate_auto_st ~= false then
-        e.fields.level = nil
-        e.fields.warns = nil
-        e.fields.wanted = nil
-        e.fields.family = nil
-        e.fields.org = nil
-        e.fields.rank = nil
-        e.fields.job = nil
-        e.fields.money = nil
-        M.requestStats(id, {})
+    if specPlayerActive and specPlayerActive() then
+        pcall(specSession.setSpectating, true)
     end
 end
 
+-- Публичный API модуля.
 function M.persistHudEnabled(settings)
     settings = settings or (getSettings and getSettings())
     if not settings then return true end
@@ -612,24 +1081,29 @@ function M.persistHudEnabled(settings)
     return true
 end
 
+-- Публичный API модуля.
 function M.shouldPersistHud()
     return M.persistHudEnabled()
 end
 
+-- Публичный API модуля.
 function M.snapshotPersistHud()
     if not M.persistHudEnabled() then return end
     local id = tonumber(state.targetId)
     if id and id >= 0 then state.persistHudId = id end
 end
 
+-- Публичный API модуля.
 function M.getHudDisplayId()
-    local id = tonumber(state.targetId)
-    if id and id >= 0 then return id end
+    local id = M.getTargetId()
+    if id >= 0 then return id end
+    if specPlayerActive() then return -1 end
     id = tonumber(state.persistHudId)
     if id and id >= 0 then return id end
     return -1
 end
 
+-- Публичный API модуля.
 function M.clearSpectateTarget(force)
     if not force and M.persistHudEnabled() then
         M.snapshotPersistHud()
@@ -638,25 +1112,49 @@ function M.clearSpectateTarget(force)
     state.targetId = -1
     state.targetNick = ''
     state.persistHudId = -1
+    M.cancelPendingSp()
+    pcall(specMenuMod.resetMenuSelection)
+    pcall(specCamera.onSpectateEnd)
 end
 
+-- Публичный API модуля.
 function M.isHudActive()
     local id = tonumber(state.targetId)
     return id and id >= 0
 end
 
+-- Публичный API модуля.
 function M.shouldShowHud(settings)
     if not settings or settings.spectate_hud == false then return false end
     return M.getHudDisplayId() >= 0
 end
 
-function M.markPendingSt(id)
+-- Публичный API модуля.
+function M.hasPendingSt()
+    local pid = state.pendingStId
+    if not pid then
+        state.stShowNative = false
+        return false
+    end
+    if (os.clock() - (state.pendingStAt or 0)) > PENDING_ST_SEC then
+        state.pendingStId = nil
+        state.stShowNative = false
+        return false
+    end
+    return true
+end
+
+-- Публичный API модуля.
+function M.markPendingSt(id, opts)
+    opts = opts or {}
     id = tonumber(id)
     if not id or id < 0 then return end
     state.pendingStId = id
     state.pendingStAt = os.clock()
+    state.stShowNative = opts.showDialog == true
 end
 
+-- Публичный API модуля.
 function M.refreshLivePing(id)
     id = tonumber(id)
     if not id or not sampIsPlayerConnected or not sampIsPlayerConnected(id) then return end
@@ -671,6 +1169,7 @@ function M.refreshLivePing(id)
     if nick and trim(nick) ~= '' then e.nick = trim(nick) end
 end
 
+-- Публичный API модуля.
 function M.parseSpServerLine(text)
     text = stripTags(text or '')
     local nick, id, ping = text:match('%[SP%]%s*(.-)%[(%d+)%]%s*|%s*PING%s+(%d+)')
@@ -689,6 +1188,7 @@ function M.parseSpServerLine(text)
     return true
 end
 
+-- Публичный API модуля.
 function M.parseDialogText(text, playerId)
     text = stripDialogMarkup(text or '')
     if text == '' then return nil end
@@ -702,31 +1202,34 @@ function M.parseDialogText(text, playerId)
     if not e.extras then e.extras = {} end
 
     parseBulkFields(text, e)
+    parseTabStatsBlock(text, e)
 
     local pendingKey = nil
     for line in text:gmatch('[^\r\n]+') do
-        local label, value = splitLabelValue(line)
-        if label and value then
-            pendingKey = nil
-            local key = classifyLabel(label)
-            if key then
-                if key == 'warns' then
-                    storeField(e, key, normalizeWarnsValue(value))
-                else
-                    storeField(e, key, value)
+        if not line:find('\t', 1, true) then
+            local label, value = splitLabelValue(line)
+            if label and value then
+                pendingKey = nil
+                local key = classifyLabel(label)
+                if key then
+                    if key == 'warns' then
+                        storeField(e, key, normalizeWarnsValue(value))
+                    else
+                        storeField(e, key, value)
+                    end
+                elseif extraLabelOk(label) then
+                    e.extras[label] = value
                 end
             else
-                e.extras[label] = value
-            end
-        else
-            line = stripDialogMarkup(line)
-            if line ~= '' then
-                local key = classifyLabel(line)
-                if key then
-                    pendingKey = key
-                elseif pendingKey then
-                    storeField(e, pendingKey, line)
-                    pendingKey = nil
+                line = stripDialogMarkup(line)
+                if line ~= '' then
+                    local key = classifyLabel(line)
+                    if key then
+                        pendingKey = key
+                    elseif pendingKey then
+                        storeField(e, pendingKey, line)
+                        pendingKey = nil
+                    end
                 end
             end
         end
@@ -741,16 +1244,26 @@ function M.parseDialogText(text, playerId)
     return e
 end
 
+-- Публичный API модуля.
 function M.requestStats(id, opts)
     opts = opts or {}
-    id = tonumber(id) or state.targetId
+    id = tonumber(id) or M.getTargetId()
     if not id or id < 0 then return false end
+    M.markPendingSt(id, { showDialog = opts.showDialog == true })
+    if opts.force then
+        state.lastAutoStAt = os.clock()
+    end
+    local cmd = 'st ' .. tostring(id)
+    if sendMenuOutbound then
+        pcall(sendMenuOutbound, cmd)
+        return true
+    end
     if not sendChat then return false end
-    M.markPendingSt(id)
-    sendChat('st ' .. tostring(id))
+    sendChat(cmd)
     return true
 end
 
+-- Публичный API модуля.
 function M.maybeAutoRequest(id, settings, force)
     if not settings or settings.spectate_auto_st == false then return end
     id = tonumber(id) or state.targetId
@@ -761,21 +1274,29 @@ function M.maybeAutoRequest(id, settings, force)
     M.requestStats(id, {})
 end
 
+-- Публичный API модуля.
 function M.autoRequestIfEnabled(id, settings)
     if not settings or settings.spectate_auto_st == false then return end
     M.requestStats(tonumber(id), {})
 end
 
+-- Публичный API модуля.
 function M.onServerMessage(color, text)
     if not text or text == '' then return false end
+    if state.pendingSpId and isSpCommandRejected(text) then
+        M.cancelPendingSp()
+        return false
+    end
     color = tonumber(color) or 0
     if color < 0 then color = color + 4294967296 end
     if color == SP_MSG_COLOR or text:find('%[SP%]', 1, true) then
+        pcall(specSession.parseSpLine, text)
         return M.parseSpServerLine(text)
     end
     return false
 end
 
+-- Публичный API модуля.
 function M.dialogLooksLikePlayerStats(title, text, expectId)
     local titlePlain = stripDialogMarkup(title or '')
     local plain = stripDialogMarkup(text or '')
@@ -818,42 +1339,119 @@ function M.dialogLooksLikePlayerStats(title, text, expectId)
     return dialogHasStatsBody(plain)
 end
 
-function M.shouldInterceptStatsDialog(title, text, style)
-    local expectId = tonumber(state.targetId)
-    local pid = state.pendingStId
-    local pendingFresh = pid and (os.clock() - (state.pendingStAt or 0)) <= PENDING_ST_SEC
-    style = tonumber(style) or -1
-    if pendingFresh then
-        if M.dialogLooksLikePlayerStats(title, text, pid) then
-            return true, pid
-        end
-        if (style == 0 or style == 1) and dialogHasStatsBody(text) then
-            return true, pid
-        end
-    end
-    if expectId and expectId >= 0 and M.dialogLooksLikePlayerStats(title, text, expectId) then
-        return true, expectId
-    end
-    return false, nil
+-- Extract Dialog Player Id From Title
+local function extractDialogPlayerIdFromTitle(title)
+    local titlePlain = stripDialogMarkup(title or '')
+    return tonumber(titlePlain:match('%[(%d+)%]'))
 end
 
+-- Extract Dialog Player Id From Body
+local function extractDialogPlayerIdFromBody(text)
+    local plain = stripDialogMarkup(text or '')
+    return tonumber(plain:match('%[(%d+)%]'))
+end
+
+-- Dialog Looks Like Stats For Target
+local function dialogLooksLikeStatsForTarget(title, text, targetId)
+    if M.dialogLooksLikePlayerStats(title, text, targetId) then return true end
+    local plain = stripDialogMarkup(text or '')
+    if plain == '' then return false end
+    return dialogHasStatsBody(plain)
+end
+
+-- Resolve Stats Dialog Owner
+local function resolveStatsDialogOwner(title, text)
+    local plain = stripDialogMarkup(text or '')
+    if plain == '' then return nil end
+    if not dialogLooksLikeStatsForTarget(title, text, nil) then
+        return nil
+    end
+
+    local targetId = M.getTargetId()
+    local pendingId = state.pendingStId
+    local pendingFresh = pendingId and (os.clock() - (state.pendingStAt or 0)) <= PENDING_ST_SEC
+    local titleId = extractDialogPlayerIdFromTitle(title)
+
+    -- Авто /st в /sp: перехват без жёсткого совпадения titleId.
+    if pendingFresh and pendingId and not state.stShowNative then
+        if titleId and titleId ~= pendingId then
+            local bodyId = extractDialogPlayerIdFromBody(text)
+            if bodyId and bodyId ~= pendingId then
+                return nil
+            end
+        end
+        return pendingId
+    end
+
+    if titleId then
+        if pendingFresh and titleId == pendingId then
+            return titleId
+        end
+        if targetId >= 0 and titleId == targetId then
+            return titleId
+        end
+        if pendingFresh and targetId >= 0
+                and dialogLooksLikeStatsForTarget(title, text, targetId) then
+            return targetId
+        end
+        if state.stShowNative and pendingFresh and titleId == pendingId then
+            return titleId
+        end
+        return nil
+    end
+
+    if pendingFresh and pendingId then
+        local bodyId = extractDialogPlayerIdFromBody(text)
+        if bodyId and bodyId ~= pendingId then
+            return nil
+        end
+        return pendingId
+    end
+
+    if targetId >= 0 and dialogLooksLikeStatsForTarget(title, text, targetId) then
+        return targetId
+    end
+
+    return nil
+end
+
+-- Публичный API модуля.
+function M.shouldInterceptStatsDialog(title, text, style)
+    local ownerId = resolveStatsDialogOwner(title, text)
+    if not ownerId then
+        return false, nil
+    end
+    return true, ownerId
+end
+
+-- Show Native Stats Dialog
+local function shouldShowNativeStatsDialog(pid)
+    if not state.stShowNative then return false end
+    pid = tonumber(pid)
+    if not pid or pid < 0 then return false end
+    if tonumber(state.pendingStId) ~= pid then return false end
+    return (os.clock() - (state.pendingStAt or 0)) <= PENDING_ST_SEC
+end
+
+-- Публичный API модуля.
+-- === Запрос /st и parse stat dialog ===
 function M.onShowDialog(dialogId, style, title, button1, button2, text)
     local ok, pid = M.shouldInterceptStatsDialog(title, text, style)
     if not ok or not pid then
         return false
     end
+    if shouldShowNativeStatsDialog(pid) then
+        return false
+    end
 
     local plain = stripDialogMarkup(text or '')
-    local titlePlain = stripDialogMarkup(title or '')
-    local idFromTitle = titlePlain:match('%[(%d+)%]')
-    if idFromTitle then pid = tonumber(idFromTitle) end
-
     M.parseDialogText(plain, pid)
-    state.pendingStId = nil
-    closeStatsDialogOnce(dialogId, button1, button2)
+    clearPendingSt()
+    deferCloseStatsDialog(dialogId, button1, button2)
     return true
 end
 
+-- Публичный API модуля.
 function M.getEntry(id)
     id = tonumber(id)
     if not id or id < 0 then return nil end
@@ -861,6 +1459,7 @@ function M.getEntry(id)
     return state.cache[id]
 end
 
+-- Публичный API модуля.
 function M.formatCompact(id)
     local e = M.getEntry(id)
     if not e then return '' end
@@ -889,6 +1488,7 @@ function M.formatCompact(id)
     return table.concat(parts, '  ·  ')
 end
 
+-- Публичный API модуля.
 function M.pingColor(pingStr)
     local p = tonumber(pingStr)
     if not p then return col_muted2 end
@@ -897,10 +1497,17 @@ function M.pingColor(pingStr)
     return imgui.ImVec4(0.92, 0.38, 0.38, 1.0)
 end
 
+-- Hud Value Width
 local function hudValueWidth()
     return HUD_PANEL_W - HUD_PAD_X * 2 - HUD_LABEL_W
 end
 
+-- Hud Content Width
+local function hudContentWidth()
+    return HUD_PANEL_W - HUD_PAD_X * 2
+end
+
+-- Wrap Words To Lines
 local function wrapWordsToLines(text, maxWidth)
     text = uiText(text or '')
     if text == '' then return {} end
@@ -914,11 +1521,29 @@ local function wrapWordsToLines(text, maxWidth)
             buf, bufW = '', 0
         end
     end
+    local function splitLongWord(word)
+        local parts = {}
+        local chunk = ''
+        for i = 1, #word do
+            local ch = word:sub(i, i)
+            local try = chunk .. ch
+            if chunk ~= '' and imgui.CalcTextSize(try).x > maxWidth then
+                parts[#parts + 1] = chunk
+                chunk = ch
+            else
+                chunk = try
+            end
+        end
+        if chunk ~= '' then parts[#parts + 1] = chunk end
+        return parts
+    end
     for word in text:gmatch('%S+') do
         local wW = imgui.CalcTextSize(word).x
         if wW > maxWidth then
             flush()
-            lines[#lines + 1] = word
+            for _, part in ipairs(splitLongWord(word)) do
+                lines[#lines + 1] = part
+            end
         else
             local addW = (buf == '') and wW or (spaceW + wW)
             if buf ~= '' and (bufW + addW) > maxWidth then
@@ -936,20 +1561,34 @@ local function wrapWordsToLines(text, maxWidth)
     return lines
 end
 
-function M.drawStatRow(label, value, valueCol)
-    if not value or value == '' then return end
-    local lines = wrapWordsToLines(value, hudValueWidth())
-    if #lines == 0 then return end
+-- Публичный API модуля.
+function M.drawStatRow(label, value, valueCol, opts)
+    if not value or trim(tostring(value)) == '' then return end
+    opts = type(opts) == 'table' and opts or {}
     local col = valueCol or col_label
-    imgui.TextColored(col_muted2, uiText(label))
-    imgui.SameLine(HUD_LABEL_W)
+    local stack = opts.stack == true
+    local maxW = stack and hudContentWidth() or hudValueWidth()
+    local lines = wrapWordsToLines(value, maxW)
+    if #lines == 0 then return end
+    local lblCol = spTheme.labelCol and spTheme.labelCol() or col_muted2
+    local labelW = statLabelWidth(label)
+    imgui.AlignTextToFramePadding()
+    imgui.TextColored(lblCol, uiText(label))
+    if stack then
+        for _, line in ipairs(lines) do
+            imgui.TextColored(col, line)
+        end
+        return
+    end
+    imgui.SameLine(labelW)
     imgui.TextColored(col, lines[1])
     for i = 2, #lines do
-        imgui.SetCursorPosX(HUD_LABEL_W)
+        imgui.SetCursorPosX(labelW)
         imgui.TextColored(col, lines[i])
     end
 end
 
+-- Публичный API модуля.
 function M.wantedColor(lvl, active)
     lvl = tonumber(lvl) or 0
     if not active then
@@ -962,11 +1601,14 @@ function M.wantedColor(lvl, active)
 end
 
 local WANTED_LEVEL_MAX = 6
+local WARN_LEVEL_MAX = 3
 local WANTED_STAR_OUTER = 5.5
 local WANTED_STAR_INNER = 2.3
 local WANTED_STAR_STEP = 13
+local STAR_ROW_PAD = 3
 local HUD_ID_COLOR = imgui.ImVec4(0.95, 0.95, 0.97, 1.0)
 
+-- Draw Wanted Star
 local function drawWantedStar(dl, cx, cy, filled, col)
     if not dl or not toU32 then return end
     dl:PathClear()
@@ -988,6 +1630,7 @@ local function drawWantedStar(dl, cx, cy, filled, col)
     end
 end
 
+-- Normalize Wanted Level
 local function normalizeWantedLevel(val)
     val = trim(val or '')
     if val == '' then return nil end
@@ -996,29 +1639,125 @@ local function normalizeWantedLevel(val)
     return math.max(0, math.min(WANTED_LEVEL_MAX, math.floor(n + 0.5)))
 end
 
-function M.drawWantedRow(label, value)
-    local lvl = normalizeWantedLevel(value)
-    if lvl == nil then return end
+local function parseWarnsFraction(value)
+    value = trim(value or '')
+    if value == '' then return nil end
+    local a, b = value:match('(%d+)%s*/%s*(%d+)')
+    if a and b then return tonumber(a), tonumber(b) end
+    a, b = value:match('(%d+)%s*èç%s*(%d+)')
+    if a and b then return tonumber(a), tonumber(b) end
+    a = value:match('^(%d+)$')
+    if a then return tonumber(a), WARN_LEVEL_MAX end
+    return nil
+end
 
-    imgui.TextColored(col_muted2, uiText(label))
-    imgui.SameLine(HUD_LABEL_W)
+local function warnStarColor(active)
+    if not active then
+        return imgui.ImVec4(0.38, 0.36, 0.42, 0.55)
+    end
+    return col_warn or imgui.ImVec4(1.0, 0.86, 0.18, 1.0)
+end
+
+local function drawStarRatingRow(label, current, maxSlots, colorFn)
+    maxSlots = math.max(1, math.min(WANTED_LEVEL_MAX, tonumber(maxSlots) or 1))
+    current = math.max(0, math.min(maxSlots, tonumber(current) or 0))
+    local lblCol = spTheme.labelCol and spTheme.labelCol() or col_muted2
+    local labelW = statLabelWidth(label)
+    imgui.AlignTextToFramePadding()
+    imgui.TextColored(lblCol, uiText(label))
+    imgui.SameLine(labelW)
 
     local dl = imgui.GetWindowDrawList()
-    local lineH = imgui.GetTextLineHeight()
+    local starH = WANTED_STAR_OUTER * 2 + STAR_ROW_PAD
+    local lineH = math.max(imgui.GetTextLineHeight(), starH)
     local base = imgui.GetCursorScreenPos()
     local centerY = base.y + lineH * 0.5
     local startX = base.x + WANTED_STAR_OUTER
 
-    for i = 1, WANTED_LEVEL_MAX do
+    for i = 1, maxSlots do
         local cx = startX + (i - 1) * WANTED_STAR_STEP
-        local active = i <= lvl
-        local col = M.wantedColor(lvl, active)
-        drawWantedStar(dl, cx, centerY, active, col)
+        local active = i <= current
+        drawWantedStar(dl, cx, centerY, active, colorFn(i, active, current))
     end
 
-    imgui.Dummy(imgui.ImVec2(WANTED_LEVEL_MAX * WANTED_STAR_STEP + WANTED_STAR_OUTER, lineH))
+    imgui.Dummy(imgui.ImVec2(maxSlots * WANTED_STAR_STEP + WANTED_STAR_OUTER, lineH))
 end
 
+-- Публичный API модуля.
+function M.drawWantedRow(label, value)
+    local lvl = normalizeWantedLevel(value)
+    if lvl == nil then return end
+    drawStarRatingRow(label, lvl, WANTED_LEVEL_MAX, function(_, active, l)
+        return M.wantedColor(l, active)
+    end)
+end
+
+-- Публичный API модуля.
+function M.drawWarnsRow(label, value)
+    local cur, max = parseWarnsFraction(value)
+    if cur == nil then
+        M.drawStatRow(label, value, col_warn)
+        return
+    end
+    max = math.max(cur, math.min(WANTED_LEVEL_MAX, tonumber(max) or WARN_LEVEL_MAX))
+    drawStarRatingRow(label, cur, max, function(_, active)
+        return warnStarColor(active)
+    end)
+end
+
+-- Should Stack Field Value
+local function shouldStackFieldValue(val)
+    val = uiText and uiText(val or '') or (val or '')
+    if val == '' then return false end
+    return imgui.CalcTextSize(val).x > STAT_STACK_MIN_W
+end
+
+-- Field Value Visible
+local function fieldValueVisible(key, val)
+    val = trim and trim(val or '') or (val or '')
+    if val == '' or val == '-' or val == '\xCD\xE5\xF2' then
+        if key == 'warns' or key == 'wanted' then
+            return val ~= ''
+        end
+        return false
+    end
+    if key == 'level' and val == '0' then return false end
+    return true
+end
+
+-- Field Value Color
+local function fieldValueColor(key, val)
+    if key == 'ping' then return M.pingColor(val) end
+    if key == 'level' then return imgui.ImVec4(0.82, 0.72, 1.0, 1.0) end
+    if key == 'warns' then return col_warn end
+    if key == 'money' then return imgui.ImVec4(0.55, 0.92, 0.62, 1.0) end
+    return col_label
+end
+
+-- Draw Stats Body
+local function drawStatsBody(e)
+    local hasAny = false
+    for _, key in ipairs(HUD_FIELD_ORDER) do
+        local val = e.fields[key]
+        if fieldValueVisible(key, val) then
+            hasAny = true
+            local lbl = FIELD_LABELS[key] or key
+            local vcol = fieldValueColor(key, val)
+            if key == 'wanted' then
+                M.drawWantedRow(lbl, val)
+            elseif key == 'warns' then
+                M.drawWarnsRow(lbl, val)
+            elseif STAT_STACK_FIELDS[key] and shouldStackFieldValue(val) then
+                M.drawStatRow(lbl, val, vcol, { stack = true })
+            else
+                M.drawStatRow(lbl, val, vcol)
+            end
+        end
+    end
+    return hasAny
+end
+
+-- Draw Hud Nick Header
 local function drawHudNickHeader(nick, id, nickCol, maxW)
     local nickText = uiText(nick or '')
     local idText = uiText(' [' .. tostring(id) .. ']')
@@ -1043,6 +1782,7 @@ local function drawHudNickHeader(nick, id, nickCol, maxW)
     end
 end
 
+-- Clamp Hud Pos
 local function clampHudPos(hx, hy, winW, winH, sw, sh, pivotX)
     winW = math.max(HUD_PANEL_W, tonumber(winW) or HUD_PANEL_W)
     winH = math.max(48, tonumber(winH) or 120)
@@ -1055,7 +1795,16 @@ local function clampHudPos(hx, hy, winW, winH, sw, sh, pivotX)
     return hx, hy
 end
 
+-- Публичный API модуля.
 function M.drawOverlay(settings)
+    local ok, err = pcall(M.drawOverlayImpl, settings)
+    if not ok then
+        print('[Report Desk] spectate stats HUD: ' .. tostring(err))
+    end
+end
+
+-- Публичный API модуля.
+function M.drawOverlayImpl(settings)
     if not settings or settings.spectate_hud == false then return end
     local id = M.getHudDisplayId()
     if id < 0 then return end
@@ -1080,72 +1829,91 @@ function M.drawOverlay(settings)
     end
     hx, hy = clampHudPos(hx, hy, HUD_PANEL_W, 160, sw, sh, pivotX)
 
+    local drag = state.hudDrag
+    if drag.active then
+        hx = drag.offX
+        hy = drag.offY
+        pivotX = 0
+    end
+
+    local wantInput = M.wantsHudInput() or drag.active
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
         + imgui.WindowFlags.NoScrollbar
-    local deskWinOpen = inputDeps and inputDeps.getShowWindow and inputDeps.getShowWindow()
-    if not deskWinOpen and not state.hudDrag.active then
-        if imgui.WindowFlags.NoInputs then
-            flags = flags + imgui.WindowFlags.NoInputs
-        end
-    elseif specPlayerActive() and not M.isGameTextInputActive() and not state.hudDrag.active then
-        if imgui.WindowFlags.NoInputs then
-            flags = flags + imgui.WindowFlags.NoInputs
-        end
+    if not wantInput and imgui.WindowFlags.NoInputs then
+        flags = flags + imgui.WindowFlags.NoInputs
     end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
 
-    imgui.SetNextWindowBgAlpha(0.88)
     imgui.SetNextWindowSize(imgui.ImVec2(HUD_PANEL_W, 0), imgui.Cond.Always)
-    if not state.hudPlaced then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, 0))
-        state.hudPlaced = true
-    elseif state.hudDrag.active then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, 0))
+    if imgui.SetNextWindowBgAlpha then
+        imgui.SetNextWindowBgAlpha(spTheme.HUD_OVERLAY_ALPHA or 0.80)
     end
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, 0))
 
+    spTheme.pushHudChrome()
     if imgui.Begin('###desk_spec_stats', nil, flags) then
-        M.updateHudHoverRect()
+        spTheme.drawPanelFrame()
         if imgui.PushItemWidth then imgui.PushItemWidth(HUD_PANEL_W - HUD_PAD_X * 2) end
 
-        local nick = e.nick ~= '' and e.nick or (state.targetNick ~= '' and state.targetNick or ('ID:' .. id))
+        local nick = e.nick
+        if (not nick or nick == '') and id == M.getTargetId() and state.targetNick ~= '' then
+            nick = state.targetNick
+        end
+        if not nick or nick == '' then nick = 'ID:' .. id end
         local nickCol = M.nickColorFor(id, e)
-        drawHudNickHeader(nick, id, nickCol, HUD_PANEL_W - HUD_PAD_X * 2)
-
-        imgui.Separator()
+        local headerY = imgui.GetCursorPosY()
+        spTheme.drawPlayerHeader(nick, id, nickCol, uiText, { accentCol = col_accent, scale = 1.04 })
+        local headerH = imgui.GetCursorPosY() - headerY
+        imgui.SetCursorPos(imgui.ImVec2(0, headerY))
+        imgui.InvisibleButton('##spec_stats_hud_drag', imgui.ImVec2(-1, math.max(22, headerH)))
+        state.hudHovered = imgui.IsItemHovered() or imgui.IsItemActive() or drag.active
+        M.updateHudHoverRect()
+        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
+            local delta = imgui.GetMouseDragDelta(0)
+            local wp = imgui.GetWindowPos()
+            if not drag.active then
+                drag.active = true
+                drag.offX = wp.x
+                drag.offY = wp.y
+                drag.pivotX = pivotX
+                drag.sw = sw
+                imgui.ResetMouseDragDelta(0)
+                delta = imgui.GetMouseDragDelta(0)
+            end
+            local nx = drag.offX + delta.x
+            local ny = drag.offY + delta.y
+            nx, ny = clampHudPos(nx, ny, HUD_PANEL_W, imgui.GetWindowHeight(), sw, sh, 0)
+            drag.offX = nx
+            drag.offY = ny
+            if drag.pivotX == 1 then
+                settings.spectate_hud_x = nx - sw
+            else
+                settings.spectate_hud_x = nx
+            end
+            settings.spectate_hud_y = ny
+            if markDirtySettings then markDirtySettings() end
+        elseif drag.active and not imgui.IsMouseDown(0) then
+            drag.active = false
+            local wp = imgui.GetWindowPos()
+            local ww = imgui.GetWindowWidth()
+            local wh = imgui.GetWindowHeight()
+            local nx, ny = clampHudPos(wp.x, wp.y, ww, wh, sw, sh, drag.pivotX or 0)
+            if (drag.pivotX or 0) == 1 then
+                settings.spectate_hud_x = nx - sw
+            else
+                settings.spectate_hud_x = nx
+            end
+            settings.spectate_hud_y = ny
+            if markDirtySettings then markDirtySettings() end
+            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+        end
+        imgui.SetCursorPosY(headerY + math.max(22, headerH))
 
         local pendingSt = state.pendingStId == id
             and (os.clock() - (state.pendingStAt or 0)) < PENDING_ST_SEC
-        local hasAny = false
-        for _, key in ipairs(HUD_FIELD_ORDER) do
-            local val = e.fields[key]
-            local showRow = val and val ~= '' and val ~= '-' and val ~= '\xCD\xE5\xF2'
-            if showRow and key == 'level' and val == '0' then
-                showRow = false
-            end
-            if key == 'warns' and val and val ~= '' then
-                showRow = true
-            end
-            if key == 'wanted' and val ~= nil and val ~= '' then
-                showRow = true
-            end
-            if showRow then
-                hasAny = true
-                local lbl = FIELD_LABELS[key] or key
-                if key == 'ping' then
-                    M.drawStatRow(lbl, val, M.pingColor(val))
-                elseif key == 'level' then
-                    M.drawStatRow(lbl, val, col_accent)
-                elseif key == 'warns' then
-                    M.drawStatRow(lbl, val, col_warn)
-                elseif key == 'wanted' then
-                    M.drawWantedRow(lbl, val)
-                else
-                    M.drawStatRow(lbl, val, nil)
-                end
-            end
-        end
+        local hasAny = drawStatsBody(e)
 
         if not e.fields.wanted or e.fields.wanted == '' then
             for lbl, val in pairs(e.extras or {}) do
@@ -1165,7 +1933,7 @@ function M.drawOverlay(settings)
                 if ll:find('warn', 1, true) or lbl:find('\xCF\xF0\xE5\xE4', 1, true)
                     or lbl:find('\xEF\xF0\xE5\xE4', 1, true) or lbl:find('\xE2\xE0\xF0\xED', 1, true) then
                     hasAny = true
-                    M.drawStatRow(FIELD_LABELS.warns, val, col_warn)
+                    M.drawWarnsRow(FIELD_LABELS.warns, val)
                     break
                 end
             end
@@ -1175,10 +1943,10 @@ function M.drawOverlay(settings)
             local shown = 0
             for lbl, val in pairs(e.extras) do
                 if shown >= 6 then break end
-                if val and val ~= '' then
+                if val and val ~= '' and extraLabelOk(lbl) then
                     hasAny = true
                     shown = shown + 1
-                    M.drawStatRow(lbl, val, nil)
+                    M.drawStatRow(lbl, val, nil, { stack = true })
                 end
             end
         end
@@ -1189,58 +1957,29 @@ function M.drawOverlay(settings)
             imgui.TextColored(col_muted2, uiText('\xCE\xE6\xE8\xE4\xE0\xED\xE8\xE5 /st \xE8\xEB\xE8 \xAB\xCE\xE1\xED\xEE\xE2\xE8\xF2\xFC\xBB'))
         end
 
-        if state.hudHovered and imgui.IsMouseDragging(0) and not imgui.IsAnyItemActive() then
-            local delta = imgui.GetMouseDragDelta(0)
-            if not state.hudDrag.active then
-                local wp = imgui.GetWindowPos()
-                state.hudDrag.active = true
-                state.hudDrag.offX = wp.x
-                state.hudDrag.offY = wp.y
-                imgui.ResetMouseDragDelta(0)
-            end
-            local nx = state.hudDrag.offX + delta.x
-            if pivotX == 1 then nx = nx - sw end
-            settings.spectate_hud_x = nx
-            settings.spectate_hud_y = state.hudDrag.offY + delta.y
-            if markDirtySettings then markDirtySettings() end
-        elseif state.hudDrag.active and not imgui.IsMouseDown(0) then
-            state.hudDrag.active = false
-            if markDirtySettings then markDirtySettings() end
-            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
-        end
-        if state.hudHovered and imgui.IsMouseReleased(0) and not imgui.IsAnyItemActive() then
-            local wp = imgui.GetWindowPos()
-            local ww = imgui.GetWindowWidth()
-            local wh = imgui.GetWindowHeight()
-            local nx, ny = clampHudPos(wp.x, wp.y, ww, wh, sw, sh, pivotX)
-            if pivotX == 1 then
-                settings.spectate_hud_x = nx - sw
-            else
-                settings.spectate_hud_x = nx
-            end
-            settings.spectate_hud_y = ny
-            if markDirtySettings then markDirtySettings() end
-            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
-        end
-
         if imgui.PopItemWidth then imgui.PopItemWidth() end
         imgui.End()
     end
+    spTheme.popHudChrome()
 end
 
+-- Публичный API модуля.
 function M.isHudHovered()
     return state.hudHovered or state.hudDrag.active
 end
 
+-- Публичный API модуля.
 function M.resetHudDrag()
     state.hudDrag.active = false
     state.hudHovered = false
 end
 
+-- Публичный API модуля.
 function M.isHudDragActive()
     return state.hudDrag.active
 end
 
+-- Публичный API модуля.
 function M.wantsHudInput()
     if state.hudDrag.active then return true end
     if state.hudHovered then return true end
@@ -1250,27 +1989,19 @@ function M.wantsHudInput()
     return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
 end
 
+-- Публичный API модуля.
 function M.updateHudHoverRect()
     local p = imgui.GetWindowPos()
     local w = imgui.GetWindowWidth()
     local h = imgui.GetWindowHeight()
     state.hudRect = { x0 = p.x, y0 = p.y, x1 = p.x + w, y1 = p.y + h }
-    local mp = imgui.GetIO().MousePos
-    state.hudHovered = mp.x >= p.x and mp.x < p.x + w and mp.y >= p.y and mp.y < p.y + h
 end
 
 local markDirtySettings
 local flushDirtyConfigNow
 local getSettings
-local frameInstalled = false
-
-local inputInstalled = false
-local specToggleOffAt = 0
+local wmHandlerInstalled = false
 local specArrowPrev = {}
-local specClickHandler = nil
-local specToggleHandler = nil
-local specSpectatePlayerHandler = nil
-local hookPrevSpectatePlayer = nil
 
 local WM = {
     KEYDOWN = 0x0100,
@@ -1279,14 +2010,117 @@ local WM = {
     SYSKEYUP = 0x0105,
 }
 
+-- Активен ли режим spectate (SAMP flag).
 local function specIsSpectating()
     return specPlayerActive()
 end
 
+-- Публичный API модуля.
 function M.isSpectating()
     return specPlayerActive()
 end
 
+-- Сборка deps для sp_ui (session, menu, ans).
+local function buildSpUiDeps(deps)
+    return {
+        sampev = deps and deps.sampev,
+        trim = trim,
+        stripTags = stripTags,
+        readInputBuf = deps and deps.readInputBuf,
+        utf8ToCp1251 = deps and deps.utf8ToCp1251,
+        sendChat = sendChat,
+        sendMenuOutbound = sendMenuOutbound,
+        imgui = deps and deps.imgui,
+        uiText = uiText,
+        getSettings = getSettings,
+        getTargetId = function() return M.getTargetId() end,
+        getLocalTargetId = function() return state.targetId end,
+        getTargetNick = function()
+            local nk = specSession.getTargetNick and specSession.getTargetNick()
+            if nk and nk ~= '' then return nk end
+            return state.targetNick
+        end,
+        getPlayerSpectating = deps and deps.getPlayerSpectating,
+        isGameTextInputActive = M.isGameTextInputActive,
+        isDeskTypingActive = deps and deps.isDeskTypingActive,
+        getShowWindow = deps and deps.getShowWindow,
+        vkeys = deps and deps.vkeys,
+        isVkDown = deps and deps.isVkDown,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_label = col_label,
+        col_muted2 = col_muted2,
+        markDirtySettings = markDirtySettings,
+        flushDirtyConfigNow = flushDirtyConfigNow,
+        playFrontEndSound = function(id)
+            if playSoundFrontEnd then pcall(playSoundFrontEnd, tonumber(id) or 0) end
+        end,
+        requestStats = function(id, opts) M.requestStats(id, opts or { force = true }) end,
+        markPendingSt = function(id) M.markPendingSt(id) end,
+        sendTrPlayer = deps and deps.sendTrPlayer,
+        sendSlapPlayer = deps and deps.sendSlapPlayer,
+        isStatsPending = function()
+            local pid = state.pendingStId
+            return pid and (os.clock() - (state.pendingStAt or 0)) < PENDING_ST_SEC
+        end,
+        setPlayerSpectating = deps and deps.setPlayerSpectating,
+        sampIsPlayerConnected = sampIsPlayerConnected,
+        sampGetPlayerNickname = sampGetPlayerNickname,
+        onSpLocalExit = function()
+            M.clearSpectateTarget(true)
+            M.onSpCommandOff()
+        end,
+        onSessionBegin = function(id, nick, meta)
+            meta = meta or {}
+            local syncOpts = {}
+            local src = meta.source
+            if src == 'cmd' or src == 'toggle' or src == 'sp_line' then
+                syncOpts.forceAutoSt = true
+            elseif src == 'spectate_player' then
+                if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
+                        and M.hasStats(id) then
+                    syncOpts.skipAutoSt = true
+                end
+            end
+            M.syncFromSession(id, nick, getSettings and getSettings(), syncOpts)
+        end,
+        onSessionEnd = function()
+            local sid = specSession.getTargetId and specSession.getTargetId() or -1
+            if sid >= 0 then return end
+            M.clearSpectateTarget(false)
+        end,
+        onSpectatingOn = deps and deps.onSpectatingOn,
+        onSpectatingOff = deps and deps.onSpectatingOff,
+        setPendingTarget = function(id, nick)
+            M.markPendingSpCommand(id, nick)
+        end,
+        captureActive = specCaptureActive,
+        consumeMenuShieldKey = M.consumeSpectateMenuKey,
+        isMenuShieldActive = specMenuShieldActive,
+        transmitAns = function(id, body)
+            id = tonumber(id)
+            body = trim and trim(body) or body
+            if not id or body == '' then return end
+            if transmitAnsWire then
+                pcall(transmitAnsWire, id, body, {})
+            elseif sendChat then
+                pcall(sendChat, string.format('ans %d %s', id, body))
+            end
+        end,
+        enableSpectateCursor = deps and deps.enableSpectateCursor,
+        rememberSpectateCursor = deps and deps.rememberSpectateCursor,
+        setSpectateUiMode = deps and deps.setSpectateUiMode,
+        updateInputPassthrough = deps and deps.updateInputPassthrough,
+        onAnsBarClosed = deps and deps.onAnsBarClosed,
+        markTypingActive = function()
+            if deps and deps.markAnsTypingActive then
+                pcall(deps.markAnsTypingActive)
+            end
+        end,
+    }
+end
+
+-- Блокировка клавиш меню (чат/окно desk).
 local function specMenuShieldActive()
     if not specIsSpectating() then return false end
     if inputDeps and inputDeps.sampIsChatInputActive and inputDeps.sampIsChatInputActive() then
@@ -1305,6 +2139,7 @@ local function specMenuShieldActive()
     return false
 end
 
+-- Захват ввода spectate (ans/menu).
 local function specCaptureActive()
     if not inputDeps then return false end
     if inputDeps.hotkeyCapture and inputDeps.hotkeyCapture() then return true end
@@ -1312,6 +2147,68 @@ local function specCaptureActive()
     return false
 end
 
+local specWheelIoCacheAt = 0
+local specWheelIoCapture = false
+
+local function specDeskCapturesMouse()
+    if not inputDeps or not inputDeps.getShowWindow or not inputDeps.getShowWindow() then
+        return false
+    end
+    local now = os.clock()
+    if now - specWheelIoCacheAt < 0.05 then
+        return specWheelIoCapture
+    end
+    specWheelIoCacheAt = now
+    specWheelIoCapture = false
+    local imguiMod = inputDeps.imgui
+    if imguiMod and imguiMod.GetIO then
+        local okIo, io = pcall(imguiMod.GetIO)
+        if okIo and io and io.WantCaptureMouse then
+            specWheelIoCapture = true
+        end
+    end
+    return specWheelIoCapture
+end
+
+local function specWheelBlocked()
+    if not specIsSpectating() then return true end
+    if specCaptureActive() then return true end
+    if inputDeps and inputDeps.sampIsChatInputActive and inputDeps.sampIsChatInputActive() then
+        return true
+    end
+    if inputDeps and inputDeps.sampIsDialogActive and inputDeps.sampIsDialogActive() then
+        return true
+    end
+    if type(_G.cheatState) == 'table' and _G.cheatState.marker and _G.cheatState.marker.active then
+        return true
+    end
+    if type(_G.deskSpectateCameraBlocked) == 'function' and _G.deskSpectateCameraBlocked() then
+        return true
+    end
+    if M.isHudDragActive and M.isHudDragActive() then return true end
+    if specDeskCapturesMouse() then return true end
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
+    return false
+end
+
+local function specUiBlocksCameraMaintain()
+    if not specIsSpectating() then return true end
+    if specDeskCapturesMouse() then return true end
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
+    return false
+end
+
+local function specCameraDeps(sampevOverride)
+    return {
+        sampev = sampevOverride or (inputDeps and inputDeps.sampev),
+        getSettings = getSettings,
+        isSpectating = specIsSpectating,
+        isWheelBlocked = specWheelBlocked,
+        isUiBlockingCamera = specUiBlocksCameraMaintain,
+    }
+end
+
+-- Spec Arrow Hit
 local function specArrowHit(vk)
     vk = tonumber(vk) or 0
     if vk <= 0 or not inputDeps or not inputDeps.isVkDown then return false end
@@ -1327,14 +2224,21 @@ local function specArrowHit(vk)
     return false
 end
 
+-- Spec Step By Arrow
 local function specStepByArrow(delta)
     if not specIsSpectating() or specMenuShieldActive() or specCaptureActive() then return false end
     return M.stepSpectate(delta)
 end
 
+-- Публичный API модуля.
 function M.handleSpectateWindowMessage(msg, wparam)
-    if not specIsSpectating() or specMenuShieldActive() or specCaptureActive() then return false end
+    if specCaptureActive() then return false end
+    if specCamera.handleWindowMessage(msg, wparam) then return true end
     if msg ~= WM.KEYDOWN and msg ~= WM.SYSKEYDOWN then return false end
+    if not specIsSpectating() or specCaptureActive() then return false end
+    -- Чат и серверный диалог — стрелки для игры, не для /sp и не для spectate step.
+    if M.isGameTextInputActive() then return false end
+    if specMenuShieldActive() then return false end
     local vkeysMod = inputDeps and inputDeps.vkeys
     local vkL = (vkeysMod and vkeysMod.VK_LEFT) or 0x25
     local vkR = (vkeysMod and vkeysMod.VK_RIGHT) or 0x27
@@ -1342,182 +2246,236 @@ function M.handleSpectateWindowMessage(msg, wparam)
     return specStepByArrow(wparam == vkR and 1 or -1)
 end
 
+function M.maintainCamera()
+    pcall(specCamera.maintain)
+end
+
+-- Публичный API модуля.
 function M.consumeSpectateMenuKey(msg, wparam)
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return false end
     if not specMenuShieldActive() then return false end
     if msg ~= WM.KEYDOWN and msg ~= WM.SYSKEYDOWN and msg ~= WM.KEYUP and msg ~= WM.SYSKEYUP then
         return false
     end
     local vkeysMod = inputDeps and inputDeps.vkeys
     if not vkeysMod then return false end
-    if wparam == vkeysMod.VK_SHIFT or wparam == vkeysMod.VK_MENU or wparam == vkeysMod.VK_CONTROL then
+    if wparam == vkeysMod.VK_MENU or wparam == vkeysMod.VK_CONTROL then
         return true
     end
     if wparam == vkeysMod.VK_SPACE or wparam == vkeysMod.VK_TAB then return true end
     return false
 end
 
+-- Публичный API модуля.
 function M.pollSpectateArrowKeys()
-    if not specIsSpectating() or specMenuShieldActive() or specCaptureActive() then return end
-    local vkeysMod = inputDeps and inputDeps.vkeys
-    if not vkeysMod then return end
-    if specArrowHit(vkeysMod.VK_LEFT) then
-        specStepByArrow(-1)
-    elseif specArrowHit(vkeysMod.VK_RIGHT) then
-        specStepByArrow(1)
-    end
+    -- Стрелки обрабатываются только через onWindowMessage (handleSpectateWindowMessage).
+    -- Poll здесь давал двойной /sp на одно нажатие и antiflood «не флудите».
 end
 
+-- Публичный API модуля.
 function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
-        specToggleOffAt = 0
-        if inputDeps.setPlayerSpectating then inputDeps.setPlayerSpectating(true) end
-        if inputDeps.onSpectatingOn then inputDeps.onSpectatingOn() end
+        local hadPending = state.pendingSpId ~= nil
+        local pid = resolveSpectateHandshakeId()
+        if pid >= 0 then
+            local sessionActive = false
+            if type(specSession.isActive) == 'function' then
+                local okActive, active = pcall(specSession.isActive)
+                sessionActive = okActive and active == true
+            end
+            if hadPending or M.getTargetId() ~= pid or not sessionActive or not specPlayerActive() then
+                local nick = resolveSpectateTargetNick(pid)
+                local settings = getSettings and getSettings()
+                local okSet, setErr = pcall(M.setSpectateTarget, pid, nick, settings)
+                if not okSet then
+                    print('[Report Desk] sp target: ' .. tostring(setErr))
+                end
+            end
+        end
+        M.cancelPendingSp()
+        pcall(specCamera.onSpectateStart)
+        spUi.onToggleSpectating(true)
         return
     end
-    if inputDeps.setPlayerSpectating then inputDeps.setPlayerSpectating(false) end
-    specToggleOffAt = os.clock()
-    if inputDeps.onSpectatingOff then inputDeps.onSpectatingOff() end
-    local offAt = specToggleOffAt
-    lua_thread.create(function()
-        wait(600)
-        if specToggleOffAt ~= offAt then return end
-        if inputDeps.getPlayerSpectating and inputDeps.getPlayerSpectating() then return end
-        M.clearSpectateTarget(false)
-    end)
+    -- ADV: toggle(false) during /sp handshake -- keep pending and session.
+    if specPlayerActive() then return end
+    if state.pendingSpId then return end
+    if M.getTargetId() >= 0 then return end
+    pcall(specCamera.onSpectateEnd)
+    spUi.onToggleSpectating(false)
 end
 
+-- Публичный API модуля.
 function M.onSpCommandOff()
-    specToggleOffAt = 0
     M.snapshotPersistHud()
-    if inputDeps and inputDeps.setPlayerSpectating then inputDeps.setPlayerSpectating(false) end
+    spUi.onSpCommandOff()
 end
 
+local spOverlayFrame = nil
+
+-- Подписка OnFrame overlay spectate HUD.
+local function ensureSpSpectateFrame()
+    if spOverlayFrame and spOverlayFrame.Unsubscribe then
+        pcall(function() spOverlayFrame:Unsubscribe() end)
+        spOverlayFrame = nil
+    end
+    rawset(_G, '__desk_spSpectateFrame', nil)
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' and cache.spSpectateFrame and cache.spSpectateFrame.Unsubscribe then
+        pcall(function() cache.spSpectateFrame:Unsubscribe() end)
+        cache.spSpectateFrame = nil
+    end
+end
+
+-- Публичный API модуля.
+function M.uninstallSpSpectateOverlayFrame()
+    if spOverlayFrame and spOverlayFrame.Unsubscribe then
+        pcall(function() spOverlayFrame:Unsubscribe() end)
+    end
+    spOverlayFrame = nil
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' and cache.spSpectateFrame and cache.spSpectateFrame.Unsubscribe then
+        pcall(function() cache.spSpectateFrame:Unsubscribe() end)
+        cache.spSpectateFrame = nil
+    end
+    local prev = rawget(_G, '__desk_spSpectateFrame')
+    if prev and prev.Unsubscribe then
+        pcall(function() prev:Unsubscribe() end)
+    end
+    rawset(_G, '__desk_spSpectateFrame', nil)
+end
+
+-- Публичный API модуля.
 function M.installInputHooks(deps)
     inputDeps = deps
-    if inputInstalled then return end
-    inputInstalled = true
+    flushDirtyConfigNow = deps.flushDirtyConfigNow or flushDirtyConfigNow
+    local uiDeps = buildSpUiDeps(deps)
+    spUi.install(uiDeps)
+    spUi.installInputHooks(uiDeps)
+    ensureSpSpectateFrame()
+    specCamera.install(specCameraDeps(deps.sampev))
+    if wmHandlerInstalled then
+        return
+    end
+    wmHandlerInstalled = true
 
     addEventHandler('onWindowMessage', function(msg, wparam, lparam)
+        if msg == WM_ACTIVATEAPP then
+            gameAppActive = (tonumber(wparam) or 0) ~= 0
+            if gameAppActive then
+                targetOfflineSinceAt = nil
+            end
+            return
+        end
         if specCaptureActive() then return end
         if M.handleSpectateWindowMessage(msg, wparam) then
             consumeWindowMessage(true, true, true)
-            return
-        end
-        if M.consumeSpectateMenuKey(msg, wparam) then
-            consumeWindowMessage(true, true, true)
         end
     end, true)
-
-    local sampev = deps.sampev
-    if not sampev then return end
-
-    local prevClick = sampev.onSendClickTextDraw
-    if prevClick == specClickHandler then prevClick = nil end
-    specClickHandler = function(textdrawId)
-        if specMenuShieldActive() then return false end
-        if type(prevClick) == 'function' then return prevClick(textdrawId) end
-    end
-    sampev.onSendClickTextDraw = specClickHandler
-
-    local prevToggle = sampev.onToggleSelectTextDraw
-    if prevToggle == specToggleHandler then prevToggle = nil end
-    specToggleHandler = function(state, hovercolor)
-        if state and specMenuShieldActive() then return false end
-        if type(prevToggle) == 'function' then return prevToggle(state, hovercolor) end
-    end
-    sampev.onToggleSelectTextDraw = specToggleHandler
 end
 
+-- Публичный API модуля.
 function M.ensureInputHooks()
     if not inputDeps or not inputDeps.sampev then return end
-    local sampev = inputDeps.sampev
-    if sampev.onSendClickTextDraw == specClickHandler
-        and sampev.onToggleSelectTextDraw == specToggleHandler then
-        return
-    end
-    local prevClick = sampev.onSendClickTextDraw
-    if prevClick == specClickHandler then prevClick = nil end
-    specClickHandler = function(textdrawId)
-        if specMenuShieldActive() then return false end
-        if type(prevClick) == 'function' then return prevClick(textdrawId) end
-    end
-    sampev.onSendClickTextDraw = specClickHandler
-
-    local prevToggle = sampev.onToggleSelectTextDraw
-    if prevToggle == specToggleHandler then prevToggle = nil end
-    specToggleHandler = function(state, hovercolor)
-        if state and specMenuShieldActive() then return false end
-        if type(prevToggle) == 'function' then return prevToggle(state, hovercolor) end
-    end
-    sampev.onToggleSelectTextDraw = specToggleHandler
+    spUi.ensureInputHooks()
 end
 
-function M.getTargetId()
-    return state.targetId
+-- Публичный API модуля.
+function M.drawSpMenu(settings)
+    if M.getTargetId() < 0 then return end
+    local specActive = specPlayerActive()
+    if not specActive and specSession.isActive then
+        specActive = specSession.isActive()
+    end
+    if not specActive then return end
+    settings = settings or (getSettings and getSettings())
+    local ok, err = pcall(specMenuMod.drawMenu, settings, true)
+    if not ok then
+        print('[Report Desk] sp menu: ' .. tostring(err))
+    end
 end
 
+-- Публичный API модуля.
+function M.drawSpAns(settings)
+    if spUi.drawAnsBar then
+        pcall(spUi.drawAnsBar, settings or (getSettings and getSettings()))
+    end
+end
+
+-- Публичный API модуля.
+function M.drawVehicleHud(settings)
+    settings = settings or (getSettings and getSettings())
+    pcall(vehicleHud.draw, settings)
+end
+
+-- Публичный API модуля.
+function M.shouldShowVehicleHud(settings)
+    return vehicleHud.shouldShow(settings or (getSettings and getSettings()))
+end
+
+-- Публичный API модуля.
+function M.isAnsLayoutSwitch()
+    return spUi.isAnsLayoutSwitch and spUi.isAnsLayoutSwitch() or false
+end
+
+-- Публичный API модуля.
+function M.isAnsBarOpen()
+    return spUi.isAnsBarOpen and spUi.isAnsBarOpen() or false
+end
+
+-- Публичный API модуля.
+function M.wantsAnsInput()
+    return spUi.wantsAnsInput and spUi.wantsAnsInput() or false
+end
+
+-- Публичный API модуля.
 function M.notifyTargetQuit(playerId)
     playerId = tonumber(playerId)
-    if not playerId or state.targetId ~= playerId then return end
-    M.clearSpectateTarget(false)
+    if not playerId or M.getTargetId() ~= playerId then return end
+    M.forceExitSpectate({ reason = 'quit', sendServer = true })
 end
 
+-- Публичный API модуля.
 function M.uninstallSpectatePlayerHook()
-    local sampev = inputDeps and inputDeps.sampev
-    if not sampev then return end
-    if specSpectatePlayerHandler and sampev.onSpectatePlayer == specSpectatePlayerHandler then
-        sampev.onSpectatePlayer = hookPrevSpectatePlayer
-    end
-    specSpectatePlayerHandler = nil
-    hookPrevSpectatePlayer = nil
+    spUi.uninstallSampevHooks()
 end
 
+-- Публичный API модуля.
 function M.ensureSpectatePlayerHook()
-    if not inputDeps or not inputDeps.sampev then return end
-    local sampev = inputDeps.sampev
-    if specSpectatePlayerHandler and sampev.onSpectatePlayer == specSpectatePlayerHandler then
-        return
-    end
-    local prev = sampev.onSpectatePlayer
-    if prev == specSpectatePlayerHandler then prev = nil end
-    if hookPrevSpectatePlayer == nil then hookPrevSpectatePlayer = prev end
-    specSpectatePlayerHandler = function(id)
-        id = tonumber(id)
-        if not id or id < 0 then
-            if type(hookPrevSpectatePlayer) == 'function' then
-                return hookPrevSpectatePlayer(id)
-            end
-            return
-        end
-        local nick = ''
-        pcall(function()
-            if sampIsPlayerConnected and sampIsPlayerConnected(id) and sampGetPlayerNickname then
-                nick = sampGetPlayerNickname(id) or ''
-            end
-        end)
-        if inputDeps and inputDeps.setPlayerSpectating then
-            inputDeps.setPlayerSpectating(true)
-        end
-        M.setSpectateTarget(id, nick, getSettings())
-        if type(hookPrevSpectatePlayer) == 'function' then
-            return hookPrevSpectatePlayer(id)
-        end
-    end
-    sampev.onSpectatePlayer = specSpectatePlayerHandler
+    spUi.ensureInputHooks()
 end
 
+-- Публичный API модуля.
+function M.hasOutboundPending()
+    if spUi.hasOutboundPending then
+        return spUi.hasOutboundPending()
+    end
+    return false
+end
+
+-- Публичный API модуля.
+function M.flushOutbound()
+    spUi.flushOutbound()
+end
+
+-- Публичный API модуля.
 function M.configure(deps)
     trim = deps.trim
     stripTags = deps.stripTags
     sendChat = deps.sendChat
+    sendMenuOutbound = deps.sendMenuOutbound or deps.sendChat
     uiText = deps.uiText
     toU32 = deps.toU32
     col_accent = deps.col_accent
+    col_accent_dim = deps.col_accent_dim
     col_muted = deps.col_muted
     col_muted2 = deps.col_muted2
     col_label = deps.col_label
     col_warn = deps.col_warn
+    if toU32 and spTheme.setColorConverter then
+        pcall(spTheme.setColorConverter, toU32)
+    end
     sampIsPlayerConnected = deps.sampIsPlayerConnected
     sampGetPlayerNickname = deps.sampGetPlayerNickname
     sampGetPlayerColor = deps.sampGetPlayerColor
@@ -1527,37 +2485,26 @@ function M.configure(deps)
     getSettings = deps.getSettings
 end
 
+-- Публичный API модуля.
 function M.install(deps)
     M.configure(deps)
-    if frameInstalled then return end
-    frameInstalled = true
-
-    local sampev = deps.sampev
-    local getSettings = deps.getSettings
-    local getSpectating = deps.getSpectating
-    local getShowWindow = deps.getShowWindow
-
-    local frame = imgui.OnFrame(
-        function()
-            return M.shouldShowHud(getSettings())
-        end,
-        function(self)
-            local s = getSettings()
-            pcall(M.drawOverlay, s)
-            if getShowWindow and getShowWindow() then
-                self.HideCursor = true
-            elseif specPlayerActive() then
-                self.HideCursor = true
-            else
-                self.HideCursor = not M.frameWantsCursor()
-            end
-            self.LockPlayer = false
-        end
-    )
-    frame.HideCursor = true
-    frame.LockPlayer = false
-
-    M.ensureSpectatePlayerHook()
+    markDirtySettings = deps.markDirtySettings
+    flushDirtyConfigNow = deps.flushDirtyConfigNow
+    vehicleHud.configure({
+        uiText = uiText,
+        toU32 = toU32,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_muted = col_muted,
+        col_muted2 = col_muted2,
+        col_warn = col_warn,
+        col_label = col_label,
+        markDirtySettings = markDirtySettings,
+        flushDirtyConfigNow = flushDirtyConfigNow,
+        getSettings = getSettings,
+        getSpectateTargetId = function() return M.getTargetId() end,
+        inputDeps = deps,
+    })
 end
 
 return M

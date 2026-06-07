@@ -49,7 +49,10 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($versionPath, $versionJson + "`n", $Utf8NoBom)
 
 $manifestUrl = "https://raw.githubusercontent.com/$owner/$repoName/main/release/version.json"
-$updaterSrc = Join-Path $MoonloaderRoot 'report_desk_autoupdate.lua'
+$updaterSrc = Join-Path $MoonloaderRoot 'lib\report_desk_autoupdate.lua'
+if (-not (Test-Path $updaterSrc)) {
+    $updaterSrc = Join-Path $MoonloaderRoot 'report_desk_autoupdate.lua'
+}
 $updaterDist = Join-Path $MoonloaderRoot 'dist\report_desk_autoupdate.lua'
 $updater = [System.IO.File]::ReadAllText($updaterSrc, $Utf8NoBom)
 $updater = $updater -replace "M\.VERSION_JSON_URL = '[^']*'", "M.VERSION_JSON_URL = '$manifestUrl'"
@@ -74,7 +77,10 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item (Join-Path $distDir 'admin_report_desk.lua') $stage
 Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') $stage
 Copy-Item (Join-Path $distDir 'report_desk') (Join-Path $stage 'report_desk') -Recurse
-$depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+$depsSrc = Join-Path $MoonloaderRoot 'lib\report_desk_deps.lua'
+if (-not (Test-Path $depsSrc)) {
+    $depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+}
 if (Test-Path $depsSrc) {
     Copy-Item $depsSrc (Join-Path $stage 'report_desk_deps.lua') -Force
 }

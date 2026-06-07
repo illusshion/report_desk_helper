@@ -1,4 +1,4 @@
---[[ Report Desk config load/save ]]
+--[[ Модуль: load/save config Lua files. ]]
 function migrateLegacyAutoRules(src)
     if type(src) ~= 'table' then return end
     for _, r in ipairs(src) do
@@ -21,6 +21,7 @@ function migrateLegacyAutoRules(src)
     end
 end
 
+-- Load Config
 function loadConfig()
     quickScenarios = cloneQuickScenarios(DEFAULT_QUICK_SCENARIOS)
     reloadProfanityWordsFromDict()
@@ -62,21 +63,35 @@ function loadConfig()
         end
     end
     if settings.watch_notify then
-        settings.watch_notify = normalizeStoredText(settings.watch_notify, isUtf8Text(settings.watch_notify))
+        if looksCorruptedConfigText(settings.watch_notify) then markDirtySettings() end
+        settings.watch_notify = repairStoredConfigText(settings.watch_notify, 'see')
     end
     if settings.gg_reply then
-        settings.gg_reply = normalizeStoredText(settings.gg_reply, isUtf8Text(settings.gg_reply))
+        if looksCorruptedConfigText(settings.gg_reply) then markDirtySettings() end
+        settings.gg_reply = repairStoredConfigText(settings.gg_reply, DEFAULT_GG_REPLY)
     end
     if settings.time_reply then
-        settings.time_reply = normalizeStoredText(settings.time_reply, isUtf8Text(settings.time_reply))
+        if looksCorruptedConfigText(settings.time_reply) then markDirtySettings() end
+        settings.time_reply = repairStoredConfigText(settings.time_reply, DEFAULT_TIME_REPLY)
     end
     if settings.tech_reply then
-        settings.tech_reply = normalizeStoredText(settings.tech_reply, isUtf8Text(settings.tech_reply))
+        if looksCorruptedConfigText(settings.tech_reply) then markDirtySettings() end
+        settings.tech_reply = repairStoredConfigText(settings.tech_reply, DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    settings.poll_chat_log = nil
+    settings.poll_events_only = nil
+    settings.ingest_pc = nil
+    settings.ingest_s = nil
+    settings.ingest_m = nil
+    settings.ingest_admin_actions = nil
+    settings.debug = nil
+    settings.history_limit = nil
+    settings.max_threads = nil
     if settings.auto_rules_enabled == nil then settings.auto_rules_enabled = true end
     if settings.auto_time_enabled == nil then settings.auto_time_enabled = true end
     if settings.auto_gg_enabled == nil then settings.auto_gg_enabled = true end
+    if settings.scenario_learn_enabled == nil then settings.scenario_learn_enabled = true end
     local al = tonumber(settings.admin_level)
     if al == nil or al < 1 then
         settings.admin_level = 3
@@ -95,7 +110,12 @@ function loadConfig()
         settings.skin_radius = 20
     end
     cheatState.hudPlaced = false
+    cheatState.hudPosValidated = false
     cheatsUiSynced = false
+    if type(checkerState) == 'table' then
+        checkerState.hudPlaced = false
+        checkerState.hudPosValidated = false
+    end
     if type(data.report_colors) == 'table' then
         for _, c in ipairs(data.report_colors) do
             REPORT_COLORS[normColor(c)] = true
@@ -176,9 +196,6 @@ function loadConfig()
         pruneOldThreads()
     end
     bumpScenariosGen()
-    if settings.poll_events_only and settings.poll_chat_log == false then
-        settings.poll_chat_log = true
-    end
 
     if not doesFileExist(USER_CONFIG_PATH) then
         pcall(saveUserConfig)
@@ -191,6 +208,7 @@ function loadConfig()
     deskConfigReady = true
 end
 
+-- Backup User Config File
 function backupUserConfigFile()
     if not doesFileExist(USER_CONFIG_PATH) then return end
     local rf = io.open(USER_CONFIG_PATH, 'rb')
@@ -204,6 +222,7 @@ function backupUserConfigFile()
     wf:close()
 end
 
+-- Save User Config
 function saveUserConfig()
     if not scenariosHasContent(quickScenarios) then
         print('[Report Desk] user save skipped: empty scenarios')
@@ -259,15 +278,23 @@ function saveUserConfig()
             f:write(luaQuoteUtf8(kw))
         end
         f:write('},\n')
+        if type(sc.negative_keywords) == 'table' and #sc.negative_keywords > 0 then
+            f:write('      negative_keywords = {')
+            for i, kw in ipairs(sc.negative_keywords) do
+                if i > 1 then f:write(', ') end
+                f:write(luaQuoteUtf8(kw))
+            end
+            f:write('},\n')
+        end
         f:write('    },\n')
     end
     f:write('  },\n')
-    pcall(checkerSaveCatalogToUser, f)
     f:write('}\n')
     f:close()
     return true
 end
 
+-- Load User Config
 function loadUserConfig()
     local path = USER_CONFIG_PATH
     if not doesFileExist(path) and doesFileExist(USER_CONFIG_BACKUP) then
@@ -313,7 +340,12 @@ function loadUserConfig()
         quickScenarios = cloneQuickScenarios(data.quick_scenarios, true)
         bumpScenariosGen()
     end
-    pcall(checkerLoadCatalogFromUser, data)
+    if type(data.checker) == 'table' then
+        local catalogPath = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.lua'
+        if not doesFileExist(catalogPath) then
+            rawset(_G, '__desk_pendingCheckerCatalog', data.checker)
+        end
+    end
     if rulesHasContent(data.rules) then
         migrateLegacyAutoRules(data.rules)
         ensureComposerQuickButtons()
@@ -323,6 +355,7 @@ function loadUserConfig()
     return true
 end
 
+-- Save Config
 function saveConfig()
     if not deskConfigReady and doesFileExist(CONFIG_PATH) then
         print('[Report Desk] save skipped: config was not loaded')
@@ -343,29 +376,22 @@ function saveConfig()
     f:write('return {\n')
     f:write('  settings = {\n')
     f:write(string.format('    hotkey = %d,\n', settings.hotkey or vkeys.VK_F7))
-    f:write(string.format('    history_limit = %d,\n', settings.history_limit or 100))
     f:write(string.format('    sound = %s,\n', settings.sound and 'true' or 'false'))
     f:write(string.format('    auto_only_unread = %s,\n', settings.auto_only_unread and 'true' or 'false'))
-    f:write(string.format('    poll_chat_log = %s,\n', settings.poll_chat_log ~= false and 'true' or 'false'))
-    f:write(string.format('    poll_events_only = %s,\n', settings.poll_events_only and 'true' or 'false'))
-    f:write(string.format('    debug = %s,\n', settings.debug and 'true' or 'false'))
-    f:write(string.format('    watch_notify = %q,\n', settings.watch_notify or 'see'))
+    f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
     f:write(string.format('    watch_auto_notify = %s,\n', settings.watch_auto_notify ~= false and 'true' or 'false'))
-    f:write(string.format('    gg_reply = %q,\n', getGgReplyText()))
-    f:write(string.format('    tech_reply = %q,\n', getTechReplyText()))
+    f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
+    f:write(string.format('    tech_reply = %s,\n', luaQuoteUtf8(getTechReplyText())))
     f:write(string.format('    auto_rules_enabled = %s,\n', settings.auto_rules_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    auto_time_enabled = %s,\n', settings.auto_time_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    auto_gg_enabled = %s,\n', settings.auto_gg_enabled ~= false and 'true' or 'false'))
-    f:write(string.format('    time_reply = %q,\n', getTimeReplyText()))
+    f:write(string.format('    time_reply = %s,\n', luaQuoteUtf8(getTimeReplyText())))
     f:write(string.format('    ingest_srv_any_color = %s,\n', settings.ingest_srv_any_color and 'true' or 'false'))
-    f:write(string.format('    ingest_pc = %s,\n', settings.ingest_pc ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_s = %s,\n', settings.ingest_s ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_m = %s,\n', settings.ingest_m ~= false and 'true' or 'false'))
-    f:write(string.format('    ingest_admin_actions = %s,\n', settings.ingest_admin_actions ~= false and 'true' or 'false'))
-    f:write(string.format('    max_threads = %d,\n', tonumber(settings.max_threads) or DEFAULT_MAX_THREADS))
     f:write(string.format('    profanity_filter_enabled = %s,\n', settings.profanity_filter_enabled and 'true' or 'false'))
     f:write(string.format('    profanity_filter_sound = %s,\n', settings.profanity_filter_sound ~= false and 'true' or 'false'))
     f:write(string.format('    profanity_filter_chat = %s,\n', settings.profanity_filter_chat and 'true' or 'false'))
+    f:write(string.format('    remote_chat_samp_mirror = %s,\n', settings.remote_chat_samp_mirror ~= false and 'true' or 'false'))
+    f:write(string.format('    scenario_learn_enabled = %s,\n', settings.scenario_learn_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    admin_level = %d,\n', getLocalAdminLevel()))
     f:write(string.format('    skin_radius = %d,\n', tonumber(settings.skin_radius) or 20))
     f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 1200))
@@ -377,9 +403,25 @@ function saveConfig()
     f:write(string.format('    spectate_hud = %s,\n', settings.spectate_hud ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_auto_st = %s,\n', settings.spectate_auto_st ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_hud_persist = %s,\n', settings.spectate_hud_persist ~= false and 'true' or 'false'))
+    f:write(string.format('    spectate_sp_menu_sound = %s,\n', settings.spectate_sp_menu_sound == true and 'true' or 'false'))
     f:write(string.format('    spectate_hud_x = %d,\n', math.floor(tonumber(settings.spectate_hud_x) or 14)))
     f:write(string.format('    spectate_hud_y = %d,\n', math.floor(tonumber(settings.spectate_hud_y) or 120)))
     f:write(string.format('    spectate_hud_layout_v2 = %s,\n', settings.spectate_hud_layout_v2 and 'true' or 'false'))
+    f:write(string.format('    spectate_sp_ui = %s,\n', settings.spectate_sp_ui ~= false and 'true' or 'false'))
+    f:write(string.format('    spectate_sp_ui_custom = %s,\n', settings.spectate_sp_ui_custom == true and 'true' or 'false'))
+    f:write(string.format('    spectate_sp_ui_x = %d,\n', math.floor(tonumber(settings.spectate_sp_ui_x) or -28)))
+    f:write(string.format('    spectate_sp_ui_y = %d,\n', math.floor(tonumber(settings.spectate_sp_ui_y) or 0)))
+    f:write(string.format('    spectate_sp_ui_layout_v2 = %s,\n', settings.spectate_sp_ui_layout_v2 and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud = %s,\n', settings.spectate_vehicle_hud ~= false and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_x = %d,\n', math.floor(tonumber(settings.spectate_vehicle_hud_x) or -24)))
+    f:write(string.format('    spectate_vehicle_hud_y = %d,\n', math.floor(tonumber(settings.spectate_vehicle_hud_y) or -132)))
+    f:write(string.format('    spectate_vehicle_hud_custom = %s,\n', settings.spectate_vehicle_hud_custom == true and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_layout_v2 = %s,\n', settings.spectate_vehicle_hud_layout_v2 and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_layout_v3 = %s,\n', settings.spectate_vehicle_hud_layout_v3 and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_layout_v4 = %s,\n', settings.spectate_vehicle_hud_layout_v4 and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_layout_v5 = %s,\n', settings.spectate_vehicle_hud_layout_v5 and 'true' or 'false'))
+    f:write(string.format('    spectate_vehicle_hud_layout_v6 = %s,\n', settings.spectate_vehicle_hud_layout_v6 and 'true' or 'false'))
+    f:write(string.format('    spectate_wheel_zoom = %s,\n', settings.spectate_wheel_zoom ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud = %s,\n', settings.checker_hud ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud_persist = %s,\n', settings.checker_hud_persist ~= false and 'true' or 'false'))
     f:write(string.format('    checker_hud_x = %d,\n', math.floor(tonumber(settings.checker_hud_x) or 8)))
@@ -396,6 +438,7 @@ function saveConfig()
     f:write(string.format('    checker_auto_sync = %s,\n', settings.checker_auto_sync == true and 'true' or 'false'))
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
+    f:write(string.format('    checker_dev_rpc_probe = %s,\n', settings.checker_dev_rpc_probe == true and 'true' or 'false'))
     ensureCheatsSettings()
     local ch = settings.cheats
     f:write('    cheats = {\n')
@@ -492,6 +535,7 @@ function saveConfig()
     return true
 end
 
+-- Is Excluded Chat Line
 function isExcludedChatLine(text)
     if not text or text == '' then return true end
     if text:find('^%[A%]', 1) then return true end
@@ -500,6 +544,9 @@ function isExcludedChatLine(text)
     if text:find(L_ADMINS_ONLINE, 1, true) then return true end
     if text:find(L_ADMIN_FOR, 1, true) then return true end
     if text:find(MSG_PREFIX_PLAIN, 1, true) then return true end
+    if deskIngest.looksLikePlayerStatusLine and deskIngest.looksLikePlayerStatusLine(text) then
+        return true
+    end
     if deskIngest.looksLikePlayerStatusBody then
         local body = text:match('^[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
         if body and deskIngest.looksLikePlayerStatusBody(body) then return true end
@@ -507,6 +554,7 @@ function isExcludedChatLine(text)
     return false
 end
 
+-- Is Valid Player Nick
 function isValidPlayerNick(nick)
     if not nick or nick == '' then return false end
     if nick:find('[', 1, true) or nick:find(']', 1, true) then return false end

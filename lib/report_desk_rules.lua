@@ -1,4 +1,4 @@
---[[ Report Desk auto-rules / scenarios ]]
+--[[ Модуль: auto-rules, scenarios, processChatLineIngest. ]]
 function cloneBuiltinAutoRule(tpl, payload)
     local kw = {}
     for _, k in ipairs(tpl.keywords or {}) do
@@ -18,6 +18,7 @@ function cloneBuiltinAutoRule(tpl, payload)
     }
 end
 
+-- Get Active Builtin Auto Rules
 function getActiveBuiltinAutoRules()
     local list = {}
     if settings.auto_time_enabled ~= false then
@@ -29,10 +30,12 @@ function getActiveBuiltinAutoRules()
     return list
 end
 
+-- Get Active Auto Rules
 function getActiveAutoRules()
     return getActiveBuiltinAutoRules()
 end
 
+-- Process Auto Rules
 function processAutoRules(t, body)
     if not t or not body or #trim(body) < 1 then return nil end
     if settings.auto_rules_enabled == false then return nil end
@@ -75,6 +78,14 @@ function processAutoRules(t, body)
     return false
 end
 
+-- Clear All Pending Auto
+function clearAllPendingAuto()
+    for k in pairs(pendingAuto) do
+        pendingAuto[k] = nil
+    end
+end
+
+-- Schedule Auto Rules Retry
 function scheduleAutoRulesRetry(t, body, attempt)
     attempt = tonumber(attempt) or 0
     if attempt >= AUTO_RETRY_MAX then return end
@@ -97,6 +108,7 @@ function scheduleAutoRulesRetry(t, body, attempt)
     end)
 end
 
+-- Run Auto Rules For Report
 function runAutoRulesForReport(t, body, source)
     if not t or not body then return end
     if not deskAutoReplyAllowed() then return end
@@ -106,6 +118,7 @@ function runAutoRulesForReport(t, body, source)
     end
 end
 
+-- Confirm Pending Auto
 function confirmPendingAuto(threadKey)
     local p = pendingAuto[threadKey]
     if not p then return end
@@ -123,11 +136,13 @@ function confirmPendingAuto(threadKey)
     pendingAuto[threadKey] = nil
 end
 
+-- Get Pending Auto For Selected
 function getPendingAutoForSelected()
     if not selectedKey then return nil end
     return pendingAuto[selectedKey]
 end
 
+-- Add Thread Event Message
 function addThreadEventMessage(targetNick, targetId, opts)
     opts = opts or {}
     local text = trim(opts.displayText or opts.text or '')
@@ -146,13 +161,10 @@ function addThreadEventMessage(targetNick, targetId, opts)
         punishReason = opts.punishReason,
         ts = os.time(),
     })
-    touchThreadOrder(key)
-    if opts.isLive then
-        requestChatScrollForThread(key)
-    end
     return true
 end
 
+-- Find Existing Thread Key
 function findExistingThreadKey(targetNick, targetId)
     targetNick = trim(targetNick or '')
     targetId = tonumber(targetId)
@@ -165,6 +177,7 @@ function findExistingThreadKey(targetNick, targetId)
     return nil, nil
 end
 
+-- Add Thread Event Message To Existing
 function addThreadEventMessageToExisting(targetNick, targetId, opts)
     opts = opts or {}
     local text = trim(opts.displayText or opts.text or '')
@@ -183,13 +196,10 @@ function addThreadEventMessageToExisting(targetNick, targetId, opts)
         punishReason = opts.punishReason,
         ts = os.time(),
     })
-    touchThreadOrder(key)
-    if opts.isLive then
-        requestChatScrollForThread(key)
-    end
     return true
 end
 
+-- Ingest Admin Action Event
 function ingestAdminActionEvent(ev, source, isLive, rawLine)
     if not ev or ev.type ~= 'admin_action' then return false end
     local text = trim(ev.text or '')
@@ -233,6 +243,7 @@ function ingestAdminActionEvent(ev, source, isLive, rawLine)
     return true
 end
 
+-- Ingest Punishment Event
 function ingestPunishmentEvent(ev, source, isLive, rawLine)
     if not ev or ev.type ~= 'punishment' then return false end
     local text = trim(ev.text or '')
@@ -259,6 +270,7 @@ function ingestPunishmentEvent(ev, source, isLive, rawLine)
     return true
 end
 
+-- Process Chat Line Ingest
 function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta)
     if tryIngestAdminReplyLine(plain) then return true end
 
@@ -268,9 +280,6 @@ function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta
     end
     local ev = deskIngest.tryParseChatEvent(plain, parseOpts)
     if not ev then return false end
-    if source == 'chat' and settings.poll_events_only and ev.type ~= 'player_report' then
-        return false
-    end
 
     if ev.type == 'player_report' then
         if source == 'chat' and not ev.channel then
@@ -292,6 +301,7 @@ function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta
     return false
 end
 
+-- On Incoming Report
 function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     local key, t = resolveThread(nick, id)
     t.status = 'open'
@@ -309,11 +319,10 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
         dir = 'in', kind = 'player', text = body, ts = os.time(), raw = raw,
         channel = channel,
     })
-    touchThreadOrder(key)
-    requestChatScrollForThread(key)
     markDirtyThreads()
     if isLive then
         local runAuto = not (settings.auto_only_unread and hadUnread)
+        if runAuto and not deskAutoReplyAllowed() then runAuto = false end
         local src = source or 'live'
         local nickCopy, idCopy, bodyCopy = nick, id, body
         lua_thread.create(function()
@@ -335,6 +344,7 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     end
 end
 
+-- Ingest Report
 function ingestReport(color, text, source, isLive, rawLine, ingestMeta, ev)
     local nick, id, body, channel
     if ev and ev.type == 'player_report' then
@@ -367,6 +377,7 @@ function ingestReport(color, text, source, isLive, rawLine, ingestMeta, ev)
     return true
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendAnsToThread(t, text)
     text = trim(text)
     if text == '' then return false end
@@ -375,6 +386,7 @@ function sendAnsToThread(t, text)
     return ok
 end
 
+-- Default Composer Quick Buttons
 function defaultComposerQuickButtons()
     return {
         { id = 'gg', label = 'GG', text = DEFAULT_GG_REPLY },
@@ -382,6 +394,7 @@ function defaultComposerQuickButtons()
     }
 end
 
+-- Normalize Composer Quick Button
 function normalizeComposerQuickButton(raw, fromUtf8)
     if type(raw) ~= 'table' then return nil end
     fromUtf8 = fromUtf8 or raw._utf8
@@ -393,6 +406,7 @@ function normalizeComposerQuickButton(raw, fromUtf8)
     return { id = id, label = label, text = text }
 end
 
+-- Ensure Composer Quick Buttons
 function ensureComposerQuickButtons()
     if type(settings.composer_quick_buttons) ~= 'table' or #settings.composer_quick_buttons == 0 then
         local gg = trim(settings.gg_reply or '')
@@ -401,6 +415,7 @@ function ensureComposerQuickButtons()
             { id = 'gg', label = 'GG', text = gg ~= '' and gg or DEFAULT_GG_REPLY },
             { id = 'tech', label = '\xD2\xE5\xF5\xED\xE8\xF7\xEA\xE0', text = tech ~= '' and tech or DEFAULT_TECH_REPLY },
         }
+        bumpComposerQuickGen()
         return
     end
     local out = {}
@@ -413,8 +428,10 @@ function ensureComposerQuickButtons()
     else
         settings.composer_quick_buttons = out
     end
+    bumpComposerQuickGen()
 end
 
+-- Sync Legacy Gg Tech From Composer Buttons
 function syncLegacyGgTechFromComposerButtons()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
@@ -423,12 +440,14 @@ function syncLegacyGgTechFromComposerButtons()
     end
 end
 
+-- Get Time Reply Text
 function getTimeReplyText()
     local text = trim(settings.time_reply or '')
     if text == '' then text = DEFAULT_TIME_REPLY end
     return text
 end
 
+-- Sync Gg Reply To Composer
 function syncGgReplyToComposer(text)
     text = trim(text or '')
     if text == '' then return end
@@ -439,6 +458,7 @@ function syncGgReplyToComposer(text)
     end
 end
 
+-- Get Gg Reply Text
 function getGgReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
@@ -449,6 +469,7 @@ function getGgReplyText()
     return text
 end
 
+-- Get Tech Reply Text
 function getTechReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
@@ -459,6 +480,7 @@ function getTechReplyText()
     return text
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendReplyToSelected()
     local t, key = getSelectedThread()
     if not t then return false end
@@ -480,6 +502,7 @@ function sendReplyToSelected()
     return false
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendPresetReplyToSelected(kind, getText)
     local t, key = getSelectedThread()
     if not t then return false end
@@ -500,14 +523,17 @@ function sendPresetReplyToSelected(kind, getText)
     return false
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendGgReplyToSelected()
     return sendPresetReplyToSelected('gg', getGgReplyText)
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendTechReplyToSelected()
     return sendPresetReplyToSelected('tech', getTechReplyText)
 end
 
+-- Run Helper Cmd
 function runHelperCmd(cmd)
     local t = getSelectedThread()
     if not t then return end
@@ -518,6 +544,7 @@ function runHelperCmd(cmd)
     sendChat(cmd .. ' ' .. id)
 end
 
+-- Thread Matches Filter
 function threadMatchesFilter(t)
     if filterMode[0] == 0 then
         return (t.unread or 0) > 0
@@ -525,6 +552,7 @@ function threadMatchesFilter(t)
     return true
 end
 
+-- Thread Matches Search
 function threadMatchesSearch(t, key)
     local q = trim(readInputBuf(searchBuf)):lower()
     if q == '' then return true end
@@ -537,40 +565,31 @@ function threadMatchesSearch(t, key)
     return false
 end
 
+-- Get Filter List Sig
 function getFilterListSig()
-    return tostring(filterMode[0] or 0) .. '|' .. trim(readInputBuf(searchBuf)):lower() .. '|' .. deskCache.threadRev
+    return tostring(filterMode[0] or 0) .. '|' .. trim(readInputBuf(searchBuf)):lower()
+        .. '|' .. tostring(deskCache.threadStructRev or 0)
 end
 
+-- Get Filtered Thread Keys
 function getFilteredThreadKeys()
     local sig = getFilterListSig()
     if deskCache.filterKeys and deskCache.filterSig == sig then
         return deskCache.filterKeys
     end
     local keys = {}
-    local seen = {}
-    for _, key in ipairs(threadOrder) do
-        local t = threads[key]
-        if t and not seen[key] and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
-            keys[#keys + 1] = key
-            seen[key] = true
-        end
-    end
     for key, t in pairs(threads) do
-        if not seen[key] and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
+        if t and threadMatchesFilter(t) and threadMatchesSearch(t, key) then
             keys[#keys + 1] = key
         end
     end
-    table.sort(keys, function(a, b)
-        local ta, tb = threads[a], threads[b]
-        if not ta or not tb then return a < b end
-        if ta.pinned ~= tb.pinned then return ta.pinned end
-        return (ta.lastAt or 0) > (tb.lastAt or 0)
-    end)
+    table.sort(keys, threadSortBefore)
     deskCache.filterKeys = keys
     deskCache.filterSig = sig
     return keys
 end
 
+-- Last Preview
 function lastPreview(t)
     local msgs = t.messages
     if not msgs or #msgs == 0 then return '' end
@@ -592,6 +611,7 @@ function lastPreview(t)
     return '< ' .. (m.text or '')
 end
 
+-- Draw Accent Strip
 function drawAccentStrip()
     local dl = imgui.GetWindowDrawList()
     local pos = imgui.GetWindowPos()
@@ -599,6 +619,7 @@ function drawAccentStrip()
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
+-- Push Panel Style
 function pushPanelStyle(bg)
     imgui.PushStyleColor(imgui.Col.ChildBg, bg or col_sidebar)
     imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.18, 0.18, 0.22, 0.35))
@@ -607,11 +628,13 @@ function pushPanelStyle(bg)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(PANEL_PAD, PANEL_PAD))
 end
 
+-- Pop Panel Style
 function popPanelStyle()
     imgui.PopStyleVar(3)
     imgui.PopStyleColor(2)
 end
 
+-- Settings Section
 function settingsSection(title)
     imgui.Dummy(imgui.ImVec2(0, 10))
     imgui.TextColored(col_label, uiText(title))
@@ -619,11 +642,13 @@ function settingsSection(title)
     imgui.Dummy(imgui.ImVec2(0, 8))
 end
 
+-- Settings Hint
 function settingsHint(text)
     imgui.TextColored(col_muted2, uiText(text))
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
+-- Settings Block Begin
 function settingsBlockBegin(id, title, hint)
     imgui.Dummy(imgui.ImVec2(0, 8))
     imgui.TextColored(col_accent, uiText(title))
@@ -635,10 +660,12 @@ function settingsBlockBegin(id, title, hint)
     imgui.Dummy(imgui.ImVec2(0, 6))
 end
 
+-- Settings Block End
 function settingsBlockEnd()
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
+-- Settings Sub Label
 function settingsSubLabel(text)
     imgui.Dummy(imgui.ImVec2(0, 4))
     imgui.TextColored(col_muted, uiText(text))
@@ -647,6 +674,7 @@ end
 
 local SET_BIND_BTN_H = DESK_FORM_ROW_H
 
+-- Desk hook/helper.
 function deskPanelChildFlags()
     return 0
 end

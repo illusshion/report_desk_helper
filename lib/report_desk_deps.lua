@@ -5,29 +5,35 @@ M.MIMGUI_ZIP_URL = 'https://github.com/THE-FYP/mimgui/releases/download/v1.7.1/m
 M.MIMGUI_INIT = 'lib\\mimgui\\init.lua'
 M.MIMGUI_DLL = 'lib\\mimgui\\cimguidx9.dll'
 
+-- Публичный API модуля.
 function M.root()
     return getWorkingDirectory()
 end
 
+-- Публичный API модуля.
 function M.path(rel)
     return M.root() .. '\\' .. rel:gsub('/', '\\')
 end
 
+-- Публичный API модуля.
 function M.hasMimgui()
     return doesFileExist(M.path(M.MIMGUI_INIT)) and doesFileExist(M.path(M.MIMGUI_DLL))
 end
 
+-- Публичный API модуля.
 function M.canRequireMimgui()
     if package.loaded.mimgui then return true end
     local ok = pcall(require, 'mimgui')
     return ok == true
 end
 
+-- Ps Literal
 local function psLiteral(s)
     s = tostring(s or ''):gsub("'", "''")
     return "'" .. s .. "'"
 end
 
+-- Публичный API модуля.
 function M.downloadSync(url, dest, timeoutSec)
     if not downloadUrlToFile then
         return false, 'downloadUrlToFile unavailable'
@@ -53,6 +59,7 @@ function M.downloadSync(url, dest, timeoutSec)
     return false, 'timeout'
 end
 
+-- Публичный API модуля.
 function M.installMimguiZip(zipPath)
     local root = M.root()
     local tmp = root .. '\\report_desk\\_deps_mimgui_tmp'
@@ -66,10 +73,10 @@ function M.installMimguiZip(zipPath)
         '$dest=' .. psLiteral(dest) .. ';',
         'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue;',
         'Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force;',
-        'if (-not (Test-Path (Join-Path $tmp ''mimgui''))) { exit 2 };',
+        "if (-not (Test-Path (Join-Path $tmp 'mimgui'))) { exit 2 };",
         'New-Item -ItemType Directory -Path $lib -Force | Out-Null;',
         'Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue;',
-        'Copy-Item -LiteralPath (Join-Path $tmp ''mimgui'') -Destination $dest -Recurse -Force;',
+        "Copy-Item -LiteralPath (Join-Path $tmp 'mimgui') -Destination $dest -Recurse -Force;",
         'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue',
         '}"',
     }, ' ')
@@ -80,6 +87,7 @@ function M.installMimguiZip(zipPath)
     return false
 end
 
+-- Публичный API модуля.
 function M.checkRuntime(opts)
     opts = opts or {}
     local say = opts.say
@@ -101,6 +109,7 @@ function M.checkRuntime(opts)
     return #problems == 0, problems
 end
 
+-- Публичный API модуля.
 function M.ensureMimgui(opts)
     opts = opts or {}
     local say = opts.say
@@ -144,6 +153,7 @@ function M.ensureMimgui(opts)
     return true, true
 end
 
+-- Публичный API модуля.
 function M.ensureCoreDir(filePath)
     local dir = filePath:match('^(.*)\\[^\\]+$')
     if dir and dir ~= '' and not doesDirectoryExist(dir) then
@@ -151,6 +161,7 @@ function M.ensureCoreDir(filePath)
     end
 end
 
+-- Публичный API модуля.
 function M.ensureAll(opts)
     opts = opts or {}
     local runtimeOk = M.checkRuntime(opts)

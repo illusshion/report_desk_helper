@@ -1,5 +1,10 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.6
+
+- Fix: ГА/ЗГА (Arthas_Bartolomeo, Amattore_Adderio) — отдельные теги и зелёный цвет в блоке «Админы», не сбрасываются после `/adms`.
+- SP: чат `/ans` с целью — **C** вместо Alt (Enter — отправить, Esc — закрыть, C — открыть/закрыть).
+
 ## 1.0.5
 
 - Fix: core error после 1.0.4 — app-модули снова в одном chunk (общий scope), checker отдельно (лимит 200 locals).

@@ -1,4 +1,4 @@
---[[ Report Desk — каталог транспорта MTA (превью + спавн сеткой /carsp) ]]
+--[[ Модуль: спавн транспорта, каталог. ]]
 local imgui = require 'mimgui'
 local deskGrid = require 'report_desk_catalog_grid'
 local deskTexLoad = require 'report_desk_tex_loader'
@@ -47,15 +47,18 @@ local function uiText(s)
     return ok and t or s
 end
 
+-- Read Buf
 local function readBuf(buf)
     if not buf then return '' end
     return ffi.string(buf):gsub('%z.*$', '')
 end
 
+-- Публичный API модуля.
 function M.texRelease(tex)
     if tex and imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, tex) end
 end
 
+-- Публичный API модуля.
 function M.releaseTextures()
     if deskTex then
         deskTex.releaseAll(TEX_NS_VEH, M.texRelease, true)
@@ -64,6 +67,7 @@ function M.releaseTextures()
     deskTexPipeline.requestDeferredFlush()
 end
 
+-- Публичный API модуля.
 function M.bind(ctx)
     settingsRef = ctx.settings
     sendChatFn = ctx.sendChat
@@ -78,6 +82,7 @@ function M.bind(ctx)
     col_chat_bg = ctx.col_chat_bg or col_chat_bg
 end
 
+-- Push Panel
 local function pushPanel()
     imgui.PushStyleColor(imgui.Col.ChildBg, col_chat_bg)
     imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.18, 0.18, 0.22, 0.35))
@@ -86,11 +91,13 @@ local function pushPanel()
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 10))
 end
 
+-- Pop Panel
 local function popPanel()
     imgui.PopStyleVar(3)
     imgui.PopStyleColor(2)
 end
 
+-- Публичный API модуля.
 function M.loadCatalog()
     if vehCatalog then return end
     vehCatalog = {}
@@ -128,10 +135,12 @@ function M.loadCatalog()
     table.sort(vehCatalog, function(a, b) return (a.id or 0) < (b.id or 0) end)
 end
 
+-- Ensure Ctx
 local function ensureCtx()
     if imgui.SwitchContext then pcall(imgui.SwitchContext) end
 end
 
+-- Публичный API модуля.
 function M.pipelinePathForId(id)
     M.loadCatalog()
     local entry = vehCatalogById[tonumber(id) or id]
@@ -142,6 +151,7 @@ function M.pipelinePathForId(id)
     return path, meta or { lowQuality = lowQ }
 end
 
+-- Публичный API модуля.
 function M.pipelineOnUploaded(id, meta)
     local entry = vehCatalogById[tonumber(id) or id]
     if entry and meta and meta.lowQuality then
@@ -149,21 +159,25 @@ function M.pipelineOnUploaded(id, meta)
     end
 end
 
+-- Peek Tex
 local function peekTex(entry)
     if not entry or not deskTex then return nil end
     return deskTex.peek(TEX_NS_VEH, entry.id)
 end
 
+-- Mark Dirty
 local function markDirty()
     if markDirtyFn then markDirtyFn() end
 end
 
+-- Публичный API модуля.
 function M.preloadProgress()
     local pending = deskTexPipeline.pendingCount(TEX_NS_VEH)
     local loaded = deskTex and deskTex.count(TEX_NS_VEH) or 0
     return loaded, pending + loaded
 end
 
+-- Enqueue Visible
 local function enqueueVisible(firstIdx, lastIdx, items)
     if not deskTex then return end
     local ids = {}
@@ -174,6 +188,7 @@ local function enqueueVisible(firstIdx, lastIdx, items)
     deskTexPipeline.syncVisible(TEX_NS_VEH, ids, deskTex, { priority = { vehSelectedId } })
 end
 
+-- Публичный API модуля.
 function M.onTabEnter()
     M.loadCatalog()
     deskTexPipeline.registerNs(TEX_NS_VEH, {
@@ -184,11 +199,13 @@ function M.onTabEnter()
     deskTexPipeline.activate(TEX_NS_VEH)
 end
 
+-- Публичный API модуля.
 function M.onTabLeave()
     deskTexPipeline.deactivate(TEX_NS_VEH, deskTex)
     deskTexPipeline.requestDeferredFlush()
 end
 
+-- Rebuild Filter
 local function rebuildFilter()
     M.loadCatalog()
     local filter = readBuf(vehFilterBuf):lower()
@@ -207,6 +224,7 @@ local function rebuildFilter()
     vehGridLayoutCache = nil
 end
 
+-- Veh Layout For Count
 local function vehLayoutForCount(count)
     count = math.max(1, math.min(30, math.floor(tonumber(count) or 1)))
     if count <= 5 then
@@ -217,6 +235,7 @@ local function vehLayoutForCount(count)
     return rows, cols
 end
 
+-- Spawn Vehicles
 local function spawnVehicles()
     local id = tonumber(vehSelectedId) or 0
     local count = math.max(1, math.min(30, uiVehSpawnCount[0]))
@@ -238,6 +257,7 @@ local function spawnVehicles()
     end
 end
 
+-- Draw Cell
 local function drawCell(entry, layout)
     if not entry or not entry.id then return end
     local tex = peekTex(entry)
@@ -274,6 +294,7 @@ local function drawCell(entry, layout)
     end
 end
 
+-- Публичный API модуля.
 function M.drawTab()
     M.loadCatalog()
     if not vehTabSynced then
@@ -383,6 +404,7 @@ function M.drawTab()
     pcall(deskCatalogTexTick)
 end
 
+-- Публичный API модуля.
 function M.preloadDone()
     return deskTexPipeline.pendingCount(TEX_NS_VEH) == 0
 end

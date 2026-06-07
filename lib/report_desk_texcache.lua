@@ -1,10 +1,11 @@
---[[ Постоянный LRU-кэш превью каталога (скины / ТС). При persistent=true — без вытеснения. ]]
+--[[ Модуль: GPU кэш ImGui текстур. ]]
 local M = {}
 
 local DEFAULT_MAX = 512
 local caches = {}
 local pendingRelease = {}
 
+-- Ns Data
 local function nsData(ns)
     if not caches[ns] then
         caches[ns] = {
@@ -18,6 +19,7 @@ local function nsData(ns)
     return caches[ns]
 end
 
+-- Публичный API модуля.
 function M.configure(ns, opts)
     opts = opts or {}
     local d = nsData(ns)
@@ -29,26 +31,31 @@ function M.configure(ns, opts)
     end
 end
 
+-- Публичный API модуля.
 function M.isPersistent(ns)
     return nsData(ns).persistent
 end
 
+-- Публичный API модуля.
 function M.clearFailed(ns, id)
     local d = nsData(ns)
     id = tonumber(id) or id
     if id then d.fail[id] = nil end
 end
 
+-- Публичный API модуля.
 function M.clearAllFailed(ns)
     nsData(ns).fail = {}
 end
 
+-- Queue Release
 local function queueRelease(tex, releaseFn)
     if tex and releaseFn then
         pendingRelease[#pendingRelease + 1] = { tex = tex, fn = releaseFn }
     end
 end
 
+-- Публичный API модуля.
 function M.flushPendingRelease(maxCount)
     maxCount = maxCount or #pendingRelease
     local n = 0
@@ -61,6 +68,7 @@ function M.flushPendingRelease(maxCount)
     end
 end
 
+-- Touch
 local function touch(d, id)
     for i, v in ipairs(d.order) do
         if v == id then
@@ -71,6 +79,7 @@ local function touch(d, id)
     d.order[#d.order + 1] = id
 end
 
+-- Evict One
 local function evictOne(d, releaseFn, defer)
     local id = table.remove(d.order, 1)
     if not id then return end
@@ -85,6 +94,7 @@ local function evictOne(d, releaseFn, defer)
     end
 end
 
+-- Публичный API модуля.
 function M.trim(ns, releaseFn, keepSet, deferRelease)
     local d = nsData(ns)
     if d.persistent then return end
@@ -112,6 +122,7 @@ function M.trim(ns, releaseFn, keepSet, deferRelease)
     end
 end
 
+-- Публичный API модуля.
 function M.releaseAll(ns, releaseFn, deferRelease)
     local d = nsData(ns)
     for id, entry in pairs(d.map) do
@@ -128,6 +139,7 @@ function M.releaseAll(ns, releaseFn, deferRelease)
     d.fail = {}
 end
 
+-- Публичный API модуля.
 function M.get(ns, id, loadFn, releaseFn)
     id = tonumber(id) or id
     if not id then return nil end
@@ -155,6 +167,7 @@ function M.get(ns, id, loadFn, releaseFn)
     return tex
 end
 
+-- Публичный API модуля.
 function M.ensure(ns, id, loadFn, releaseFn)
     id = tonumber(id) or id
     if not id then return nil end
@@ -169,23 +182,27 @@ function M.ensure(ns, id, loadFn, releaseFn)
     return M.get(ns, id, loadFn, releaseFn)
 end
 
+-- Публичный API модуля.
 function M.has(ns, id)
     id = tonumber(id) or id
     local e = nsData(ns).map[id]
     return e and e.tex ~= nil
 end
 
+-- Публичный API модуля.
 function M.isFailed(ns, id)
     id = tonumber(id) or id
     local d = nsData(ns)
     return (tonumber(d.fail[id]) or 0) >= 5
 end
 
+-- Публичный API модуля.
 function M.markFailed(ns, id)
     id = tonumber(id) or id
     if id then nsData(ns).fail[id] = 5 end
 end
 
+-- Публичный API модуля.
 function M.peek(ns, id)
     id = tonumber(id) or id
     local e = nsData(ns).map[id]
@@ -193,6 +210,7 @@ function M.peek(ns, id)
     return nil
 end
 
+-- Публичный API модуля.
 function M.adopt(ns, id, tex, releaseFn)
     id = tonumber(id) or id
     if not id or not tex then return nil end
@@ -214,6 +232,7 @@ function M.adopt(ns, id, tex, releaseFn)
     return tex
 end
 
+-- Публичный API модуля.
 function M.count(ns)
     return #nsData(ns).order
 end

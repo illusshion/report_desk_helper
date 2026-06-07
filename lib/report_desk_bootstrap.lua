@@ -1,5 +1,4 @@
---[[ Report Desk bootstrap: requires, encoding, imgui compat ]]
-
+--[[ Модуль: bootstrap — require зависимостей, imgui compat, encoding CP1251. ]]
 require 'lib.moonloader'
 require 'lib.sampfuncs'
 
@@ -24,6 +23,7 @@ local vkeys = require 'lib.vkeys'
 encoding.default = 'CP1251'
 local u8 = encoding.UTF8
 
+-- Совместимость старых версий mimgui (RadioButton, PushID).
 if imgui and not imgui.RadioButton then
     if imgui.RadioButtonIntPtr then
         imgui.RadioButton = imgui.RadioButtonIntPtr

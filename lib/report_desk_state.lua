@@ -1,4 +1,4 @@
---[[ Report Desk shared state ]]
+--[[ Модуль: settings, deskCache, threads state, builtin auto-rules. ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 --[[
@@ -42,14 +42,10 @@ BUILTIN_AUTO_RULE_GG = {
     skip_if_report_id = false,
 }
 
-local settings = {
+settings = {
     hotkey = vkeys.VK_F7,
-    history_limit = 80,
     sound = false,
     auto_only_unread = false,
-    poll_chat_log = true,
-    poll_events_only = false,
-    debug = false,
     watch_notify = 'see',
     watch_auto_notify = true,
     gg_reply = DEFAULT_GG_REPLY,
@@ -60,13 +56,11 @@ local settings = {
     auto_time_enabled = true,
     auto_gg_enabled = true,
     ingest_srv_any_color = false,
-    ingest_pc = true,
-    ingest_s = true,
-    ingest_m = true,
-    max_threads = DEFAULT_MAX_THREADS,
     profanity_filter_enabled = true,
     profanity_filter_sound = true,
     profanity_filter_chat = false,
+    remote_chat_samp_mirror = true,
+    scenario_learn_enabled = true,
     admin_level = 3,
     skin_radius = 20,
     skin_apply_delay_ms = 2500,
@@ -79,9 +73,24 @@ local settings = {
     spectate_hud = true,
     spectate_auto_st = true,
     spectate_hud_persist = true,
-    ingest_admin_actions = true,
+    spectate_sp_menu_sound = false,
     spectate_hud_x = 14,
     spectate_hud_y = 120,
+    spectate_sp_ui = true,
+    spectate_sp_ui_x = -28,
+    spectate_sp_ui_y = 0,
+    spectate_sp_ui_custom = false,
+    spectate_hud_layout_v2 = true,
+    spectate_sp_ui_layout_v2 = true,
+    spectate_vehicle_hud = true,
+    spectate_vehicle_hud_x = -12,
+    spectate_vehicle_hud_y = -8,
+    spectate_vehicle_hud_custom = false,
+    spectate_vehicle_hud_layout_v2 = true,
+    spectate_vehicle_hud_layout_v3 = true,
+    spectate_vehicle_hud_layout_v4 = true,
+    spectate_vehicle_hud_layout_v5 = true,
+    spectate_vehicle_hud_layout_v6 = true,
     checker_hud = true,
     checker_hud_persist = true,
     checker_hud_x = 8,
@@ -98,6 +107,7 @@ local settings = {
     checker_auto_admin = true,
 }
 
+-- Default Cheats Settings
 local function defaultCheatsSettings()
     return {
         gm_on_start = false,
@@ -140,6 +150,7 @@ local function defaultCheatsSettings()
     }
 end
 
+-- Дефолты и миграция settings.cheats.
 function ensureCheatsSettings()
     if type(settings.cheats) ~= 'table' then
         settings.cheats = defaultCheatsSettings()
@@ -196,6 +207,7 @@ local DEFAULT_QUICK_SCENARIOS = {
 local quickScenarios = {}
 local threads = {}
 local threadOrder = {}
+local threadCount = 0
 
 local showWindow = new.bool(false)
 local activeTab = new.int(0)
@@ -219,7 +231,13 @@ local deskInputState = {
     spectateWantCursorMode = nil,
     spectateUiModeActive = false,
     panelOpenPrev = false,
+    deskUiOpenPrev = false,
+    sampChatHeldOff = false,
     chatScrollFrames = 0,
+    chatSnapBottomKey = nil,
+    chatSnapAttempts = 0,
+    chatFollowBottom = true,
+    chatLastScrollY = nil,
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -230,7 +248,7 @@ local catWarmup = {
 local cheatState = {
     godmode = false,
     wallhack = false,
-    hudDrag = { active = false, offX = 0, offY = 0 },
+    hudDrag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 },
     hudHovered = false,
     hudPlaced = false,
     hudRect = nil,
@@ -276,9 +294,9 @@ local uiAdminLevel = new.int(3)
 local skinRadiusJob = { active = false, cancel = false }
 local skinApplyCooldownUntil = 0
 local SKIN_RADIUS_MIN, SKIN_RADIUS_MAX = 3, 80
-local SKIN_RADIUS_MAX_TARGETS = 12
+local SKIN_RADIUS_MAX_TARGETS = 12  -- макс. игроков skin radius
 local SKIN_LIST_MAX_TARGETS = 16
-local SKIN_APPLY_COOLDOWN_SEC = 2.0
+local SKIN_APPLY_COOLDOWN_SEC = 2.0  -- cooldown выдачи скинов, сек
 local MOUSE_BIND_VKS = {
     [0x01] = true, [0x02] = true, [0x04] = true, [0x05] = true, [0x06] = true,
 }
@@ -294,6 +312,7 @@ local RECENT = {
 }
 local lastMapPrune = 0
 local lastSettingsSave = 0
+local lastScenarioLearnSave = 0
 local lastThreadsSave = 0
 local scenariosGen = 0
 local cachedSortedScenarioIdx = nil
@@ -323,10 +342,19 @@ local deskCache = {
     filterKeys = nil,
     filterSig = '',
     threadRev = 0,
+    threadStructRev = 0,
+    threadMsgRev = 0,
+    ellipsize = {},
+    ellipsizeOrder = {},
+    composerQuickItems = nil,
+    composerQuickGen = -1,
     nickKeys = {},
     profNorm = {},
     profSet = {},
-    profToasts = {},
+    remoteChatDedup = {},
+    remoteChatDedupOrd = {},
+    remoteChatQueue = {},
+    sampPlayerColors = {},
     profLineSeen = {},
     profHooksInstalled = false,
     quickBtn = {},
@@ -346,6 +374,7 @@ local deskCache = {
     playerQuitHandler = nil,
     playerJoinHandler = nil,
     playerStreamInHandler = nil,
+    playerColorHandler = nil,
     profBubbleHandler = nil,
     profChatHandler = nil,
     hookPrevServerMsg = nil,
@@ -356,6 +385,7 @@ local deskCache = {
     hookPrevPlayerQuit = nil,
     hookPrevPlayerJoin = nil,
     hookPrevPlayerStreamIn = nil,
+    hookPrevPlayerColor = nil,
     hookPrevProfBubble = nil,
     hookPrevProfChat = nil,
     mainPanelFrame = nil,
@@ -366,8 +396,14 @@ local deskCache = {
         SYSKEYUP = 0x0105,
         CHAR = 0x0102,
         LBUTTONDOWN = 0x0201,
+        LBUTTONUP = 0x0202,
         RBUTTONDOWN = 0x0204,
+        RBUTTONUP = 0x0205,
         MBUTTONDOWN = 0x0207,
+        MBUTTONUP = 0x0208,
+        MOUSEMOVE = 0x0200,
+        MOUSEWHEEL = 0x020A,
+        MOUSEHWHEEL = 0x020E,
         XBUTTONDOWN = 0x020B,
         KILLFOCUS = 0x0008,
         CHAT_KEYS = {
@@ -397,10 +433,6 @@ local deskCache = {
 
 local uiSound = new.bool(false)
 local uiAutoOnlyUnread = new.bool(false)
-local uiHistoryLimit = new.int(80)
-local uiPollChat = new.bool(true)
-local uiPollEventsOnly = new.bool(false)
-local uiDebug = new.bool(false)
 local deskReplyBuf = {
     watch = new.char[256](),
     time = new.char[512](),
@@ -426,17 +458,20 @@ local scKwNew = new.char[96]()
 scKwEdit = {}
 local scKwBulk = new.char[2048]()
 local scTestBuf = new.char[256]()
+settingsScenarioLearn = new.bool(true)
 local scTestResult = new.char[128]()
 local uiAutoRulesEnabled = new.bool(true)
 local uiAutoTimeEnabled = new.bool(true)
 local uiAutoGgEnabled = new.bool(true)
-local uiMaxThreads = new.int(DEFAULT_MAX_THREADS)
 local uiWatchAutoNotify = new.bool(true)
 local uiSpecHud = new.bool(true)
 local uiSpecAutoSt = new.bool(true)
 local uiSpecHudPersist = new.bool(true)
-local uiIngestAdmin = new.bool(true)
+local uiSpecSpMenuSound = new.bool(false)
+local uiSpecVehicleHud = new.bool(true)
+local uiSpecWheelZoom = new.bool(true)
 local uiProfanityFilter = new.bool(true)
+local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
 editRuleMatch = new.int(1)
 editRulePriority = new.int(0)
@@ -446,12 +481,12 @@ local ruleTestBuf = new.char[256]()
 local ruleTestResult = new.char[128]()
 rulesTestOpen = new.bool(false)
 
-local AUTO_RETRY_MS = 280
+local AUTO_RETRY_MS = 280  -- retry auto-reply, мс
 local AUTO_RETRY_MAX = 4
 local AUTO_REPLY_DELAY_MS = 250
 local myPlayerNick = ''
 local myNickTick = 0
-local PLAYER_NICK_CACHE_INTERVAL = 2.0
+local PLAYER_NICK_CACHE_INTERVAL = 2.0  -- интервал кэша nick→id, сек
 local CHAT_UI_RENDER_MAX = 100
 local playerNickToId = {}
 local playerNickCacheAt = 0
@@ -470,4 +505,5 @@ local ruleKwNew = new.char[96]()
 ruleKwEdit = {}
 selectedRuleIdx = 1
 rulesUiSynced = false
+settingsUiSynced = false
 deskWantsKeyboard = false

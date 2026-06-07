@@ -1,6 +1,7 @@
---[[ Report Desk — publish core locals into shared env for late chunks ]]
+--[[ Модуль: публикация locals в env для late chunk (checker). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
+-- Экспорт core locals в env — checker chunk видит imgui, settings, deskCache и т.д.
 do
     local e = getfenv(1)
     if type(e) ~= 'table' then return end
@@ -26,6 +27,7 @@ do
     e.showWindow = showWindow
     e.threads = threads
     e.threadOrder = threadOrder
+    e.threadCount = threadCount
     e.MAX_PLAYER_ID = MAX_PLAYER_ID
     e.findPlayerIdByNick = findPlayerIdByNick
     e.refreshPlayerNickCache = refreshPlayerNickCache
@@ -33,5 +35,10 @@ do
     if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
     if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
     if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+    if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
+    if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
+    if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
+    if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
+    if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
     if deskCache then _G.deskCache = deskCache end
 end

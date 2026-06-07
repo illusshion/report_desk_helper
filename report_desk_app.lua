@@ -1,4 +1,4 @@
---[[ Report Desk application loader — loads domain chunks into one scope ]]
+--[[ Report Desk: загрузчик core + checker chunks в общий Lua env. ]]
 local M = {}
 
 local MODULE_DIR = 'lib\\'
@@ -18,6 +18,7 @@ local CORE_CHUNK_FILES = {
     'report_desk_threads.lua',
     'report_desk_config.lua',
     'report_desk_ingest_runtime.lua',
+    'report_desk_scenario_learn.lua',
     'report_desk_rules.lua',
     'report_desk_ui.lua',
     'report_desk_hooks.lua',
@@ -29,13 +30,19 @@ local LATE_CHUNK_FILES = {
     'report_desk_checker.lua',
 }
 
+local REMOTE_CHAT_CHUNK_FILES = {
+    'report_desk_remote_chat.lua',
+}
+
 local loaded = false
 local env = nil
 
+-- Module Path
 local function modulePath(wd, name)
     return wd .. '\\' .. MODULE_DIR .. name
 end
 
+-- Read Module Text
 local function readModuleText(wd, name)
     local path = modulePath(wd, name)
     if not doesFileExist(path) then
@@ -50,6 +57,7 @@ local function readModuleText(wd, name)
     return text
 end
 
+-- Run Chunk Bundle
 local function runChunkBundle(wd, names, targetEnv, label)
     _G.__REPORT_DESK_BUNDLE_ACTIVE = true
     local parts = {}
@@ -70,6 +78,7 @@ local function runChunkBundle(wd, names, targetEnv, label)
     end
 end
 
+-- Загружает core + checker chunks в общий env.
 function M.load()
     if loaded then return env end
 
@@ -78,12 +87,20 @@ function M.load()
     setmetatable(env, { __index = _G })
 
     runChunkBundle(wd, CORE_CHUNK_FILES, env, 'core')
-    runChunkBundle(wd, LATE_CHUNK_FILES, env, 'checker')
+    local okRemote, errRemote = pcall(runChunkBundle, wd, REMOTE_CHAT_CHUNK_FILES, env, 'remote_chat')
+    if not okRemote then
+        print('[Report Desk] remote chat disabled: ' .. tostring(errRemote))
+    end
+    local okLate, errLate = pcall(runChunkBundle, wd, LATE_CHUNK_FILES, env, 'late')
+    if not okLate then
+        print('[Report Desk] late modules disabled: ' .. tostring(errLate))
+    end
 
     loaded = true
     return env
 end
 
+-- Выгрузка bundle, deskUninstall.
 function M.unload()
     if not loaded then return end
     if env and type(env.deskUninstall) == 'function' then

@@ -1,4 +1,4 @@
---[[ Report Desk skins catalog ]]
+--[[ Модуль: выдача скинов, каталог превью. ]]
 function skinsLoadCatalog()
     if skinCatalog then return end
     skinCatalog = {}
@@ -29,16 +29,19 @@ function skinsLoadCatalog()
     end
 end
 
+-- Skins Preload Progress
 function skinsPreloadProgress()
     local pending = deskTexPipeline.pendingCount(TEX_NS_SKIN)
     local loaded = deskTex and deskTex.count(TEX_NS_SKIN) or 0
     return loaded, pending + loaded
 end
 
+-- Skins File Path
 function skinsFilePath(entry)
     return deskTexLoad.resolveSkinPath(SKINS_DIR, entry)
 end
 
+-- Skins Path For Id
 function skinsPathForId(id)
     skinsLoadCatalog()
     local entry = skinCatalogById[tonumber(id) or id]
@@ -46,11 +49,13 @@ function skinsPathForId(id)
     return skinsFilePath(entry)
 end
 
+-- Skin Peek Texture
 function skinPeekTexture(entry)
     if not entry or not entry.id then return nil end
     return deskTex.peek(TEX_NS_SKIN, entry.id)
 end
 
+-- Skin Draw Texture Safe
 function skinDrawTextureSafe(tex, id, w, h, asButton, label)
     if not tex or not id or not deskTex.has(TEX_NS_SKIN, id) then return false, false end
     local size = imgui.ImVec2(w, h)
@@ -68,6 +73,7 @@ function skinDrawTextureSafe(tex, id, w, h, asButton, label)
     return false, false
 end
 
+-- Skins Enqueue Visible
 function skinsEnqueueVisible(firstIdx, lastIdx, items)
     if not deskTex then return end
     local ids = {}
@@ -78,16 +84,19 @@ function skinsEnqueueVisible(firstIdx, lastIdx, items)
     deskTexPipeline.syncVisible(TEX_NS_SKIN, ids, deskTex, { priority = { skinSelectedId } })
 end
 
+-- Skins On Tab Enter
 function skinsOnTabEnter()
     skinsLoadCatalog()
     deskTexPipeline.activate(TEX_NS_SKIN)
 end
 
+-- Skins On Tab Leave
 function skinsOnTabLeave()
     deskTexPipeline.deactivate(TEX_NS_SKIN, deskTex)
     deskTexPipeline.requestDeferredFlush()
 end
 
+-- Init Desk Catalog Warmup
 function initDeskCatalogWarmup()
     deskTexPipeline.configure({
         maxBytes = SKIN_MAX_FILE_BYTES,
@@ -104,21 +113,25 @@ function initDeskCatalogWarmup()
     catWarmup.inited = true
 end
 
+-- Ensure Desk Catalog Warmup
 function ensureDeskCatalogWarmup()
     if catWarmup.inited then return end
     pcall(initDeskCatalogWarmup)
 end
 
+-- Reset Desk Catalog Warmup
 function resetDeskCatalogWarmup()
     pcall(deskTexPipeline.halt, deskTex)
     catWarmup.inited = false
     pcall(ensureDeskCatalogWarmup)
 end
 
+-- Desk hook/helper.
 function deskCatalogTabActive()
     return skinUiTabActive or (deskVeh and deskVeh.tabActive == true)
 end
 
+-- Desk hook/helper.
 function deskCatalogTexTick()
     if deskTexPipeline.isDead and deskTexPipeline.isDead() then return end
     if not deskCatalogTabActive() then return end
@@ -127,12 +140,14 @@ function deskCatalogTexTick()
     deskTexPipeline.tick(imgui, deskTex, CATALOG_GPU_BUDGET)
 end
 
+-- Desk hook/helper.
 function deskFlushCatalogTexPending()
     if not deskCache.catalogTexFlushPending then return end
     deskCache.catalogTexFlushPending = false
     pcall(deskTexPipeline.flushDeferred, deskTex, imgui)
 end
 
+-- Skins Count Files
 function skinsCountFiles()
     if not doesDirectoryExist or not doesDirectoryExist(SKINS_DIR) then return 0 end
     local n = 0
@@ -144,11 +159,13 @@ function skinsCountFiles()
     return n
 end
 
+-- Skin Get Texture
 function skinGetTexture(entry)
     if not entry or not entry.id then return nil end
     return deskTex.peek(TEX_NS_SKIN, entry.id)
 end
 
+-- Skins Get Nearby Count
 function skinsGetNearbyCount()
     local r = skinsGetRadius()
     local now = os.clock()
@@ -161,6 +178,7 @@ function skinsGetNearbyCount()
     return skinNearbyCache.n
 end
 
+-- Skins Rebuild Filter
 function skinsRebuildFilter()
     skinsLoadCatalog()
     local filter = readInputBuf(skinFilterBuf)
@@ -179,6 +197,7 @@ function skinsRebuildFilter()
     deskCache.skinGridPage = 1
 end
 
+-- Skins Parse Target Ids
 function skinsParseTargetIds(text)
     local ids = {}
     local seen = {}
@@ -192,6 +211,7 @@ function skinsParseTargetIds(text)
     return ids
 end
 
+-- Skins Validate Skin Id
 function skinsValidateSkinId(sid)
     sid = tonumber(sid) or 0
     if sid <= 0 or sid > 311 or sid == 74 then
@@ -200,6 +220,7 @@ function skinsValidateSkinId(sid)
     return sid
 end
 
+-- Skins Get Radius
 function skinsGetRadius()
     local r = tonumber(uiSkinRadius[0]) or tonumber(settings.skin_radius) or 20
     r = math.max(SKIN_RADIUS_MIN, math.min(SKIN_RADIUS_MAX, math.floor(r)))
@@ -207,6 +228,7 @@ function skinsGetRadius()
     return r
 end
 
+-- Skins Set Radius
 function skinsSetRadius(r)
     r = math.max(SKIN_RADIUS_MIN, math.min(SKIN_RADIUS_MAX, math.floor(tonumber(r) or 20)))
     uiSkinRadius[0] = r
@@ -215,10 +237,12 @@ function skinsSetRadius(r)
     markDirtySettings()
 end
 
+-- Skins Adjust Radius
 function skinsAdjustRadius(delta)
     skinsSetRadius(skinsGetRadius() + (tonumber(delta) or 0))
 end
 
+-- Draw Skin Radius Control
 function drawSkinRadiusControl()
     local radius = skinsGetRadius()
     local btnSz = 28
@@ -240,6 +264,7 @@ function drawSkinRadiusControl()
     end
 end
 
+-- Skins Collect Nearby
 function skinsCollectNearby(radius)
     local list = {}
     if not sampGetMaxPlayerId or not sampIsPlayerConnected or not sampGetCharHandleBySampPlayerId then
@@ -264,6 +289,7 @@ function skinsCollectNearby(radius)
     return list
 end
 
+-- Skins Cancel Apply Job
 function skinsCancelApplyJob()
     if skinRadiusJob.active then
         skinRadiusJob.cancel = true
@@ -271,6 +297,7 @@ function skinsCancelApplyJob()
     end
 end
 
+-- Skins Start Apply Job
 function skinsStartApplyJob(targets, sid)
     if skinRadiusJob.active then
         say('\xC2\xFB\xE4\xE0\xF7\xE0 \xF1\xEA\xE8\xED\xEE\xE2 \xF3\xE6\xE5 \xE8\xE4\xB8\xF2...')
@@ -305,6 +332,7 @@ function skinsStartApplyJob(targets, sid)
     return true
 end
 
+-- Skins Apply To Listed Targets
 function skinsApplyToListedTargets()
     local now = os.clock()
     if now < skinApplyCooldownUntil then
@@ -332,6 +360,7 @@ function skinsApplyToListedTargets()
     skinsStartApplyJob(targets, sid)
 end
 
+-- Skins Apply In Radius
 function skinsApplyInRadius()
     local sid = skinsValidateSkinId(skinSelectedId)
     if not sid then
@@ -356,6 +385,7 @@ function skinsApplyInRadius()
     skinsStartApplyJob(targets, sid)
 end
 
+-- Skins Draw Grid Cell
 function skinsDrawGridCell(entry, layout)
     if not entry or not entry.id then return end
     if imgui.PushIDInt then imgui.PushIDInt(entry.id) end
@@ -381,6 +411,7 @@ function skinsDrawGridCell(entry, layout)
     if imgui.PopID then imgui.PopID() end
 end
 
+-- Draw Skins Tab
 function drawSkinsTab()
     skinsLoadCatalog()
     if not skinsTabSynced then

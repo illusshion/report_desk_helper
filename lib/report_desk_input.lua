@@ -1,4 +1,4 @@
---[[ Report Desk input / camera / F7 ]]
+--[[ Модуль: ввод, hotkeys, cursor policy, spectate input. ]]
 function drawCheatsTab()
     if not cheatsUiSynced then syncCheatsUiFromSettings() end
     ensureCheatsSettings()
@@ -101,10 +101,12 @@ function drawCheatsTab()
     popPanelStyle()
 end
 
+-- Imgui Item Edited
 function imguiItemEdited()
     return imgui.IsItemDeactivatedAfterEdit and imgui.IsItemDeactivatedAfterEdit()
 end
 
+-- Release Desk Input Capture
 function releaseDeskInputCapture(force)
     if showWindow[0] and not force then return end
     deskWantsKeyboard = false
@@ -112,6 +114,7 @@ function releaseDeskInputCapture(force)
     if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
 end
 
+-- Clear Desk Imgui Input State
 function clearDeskImguiInputState(force)
     if showWindow[0] and not force then return end
     pcall(function()
@@ -139,6 +142,7 @@ function clearDeskImguiInputState(force)
     end)
 end
 
+-- Desk hook/helper.
 function deskSetPlayerSpectating(active)
     deskInputState.playerSpectating = active and true or false
     if not active then
@@ -147,10 +151,12 @@ function deskSetPlayerSpectating(active)
     end
 end
 
+-- Desk hook/helper.
 function deskSpectatingNow()
     return deskInputState.playerSpectating == true
 end
 
+-- Desk hook/helper.
 function deskSyncSpectateState(force)
     if force == false then
         if deskSpectatingNow() then
@@ -169,29 +175,56 @@ function deskSyncSpectateState(force)
     return deskSpectatingNow()
 end
 
+-- Desk hook/helper.
 function deskImguiNeedsInput()
     if showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then
         return true
     end
-    if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if sampIsDialogActive and sampIsDialogActive() then return true end
     if cheatState.marker.active then return true end
-    if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then
+    if not sessionLive then return false end
+    if type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput() then
         return true
+    end
+    if type(cheatsIsHudDragActive) == 'function' and cheatsIsHudDragActive() then
+        return true
+    end
+    if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then
+        return true
+    end
+    if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then
+        return true
+    end
+    if type(deskSpectateStats) == 'table' then
+        local function spWants(fn)
+            if type(fn) ~= 'function' then return false end
+            local ok, v = pcall(fn)
+            return ok and v == true
+        end
+        if spWants(deskSpectateStats.isHudDragActive) then return true end
+        if spWants(deskSpectateStats.wantsHudInput) then return true end
+        if spWants(deskSpectateStats.wantsSpMenuInput) then return true end
+        if spWants(deskSpectateStats.wantsVehicleHudInput) then return true end
+        if spWants(deskSpectateStats.isAnsBarOpen) then
+            if spWants(deskSpectateStats.isAnsLayoutSwitch) then return false end
+            return true
+        end
     end
     return false
 end
 
+-- Desk hook/helper.
 function deskSpectateCameraMode()
-    if deskInputState.spectateWantCursorMode ~= nil then
-        return deskInputState.spectateWantCursorMode
+    local saved = deskInputState.spectateWantCursorMode
+    if saved ~= nil and deskIsSpectateCameraMode(saved) then
+        return saved
     end
     if CMODE_LOCKCAM ~= nil then return CMODE_LOCKCAM end
     if CMODE_LOCKCAMANDCONTROL ~= nil then return CMODE_LOCKCAMANDCONTROL end
     if CMODE_LOCKCAM_NOCURSOR ~= nil then return CMODE_LOCKCAM_NOCURSOR end
-    return nil
+    return saved
 end
 
+-- Desk hook/helper.
 function deskIsSpectateCameraMode(cm)
     cm = tonumber(cm)
     if cm == nil then return false end
@@ -201,19 +234,25 @@ function deskIsSpectateCameraMode(cm)
     return false
 end
 
+-- Desk hook/helper.
 function deskRememberSpectateCursorMode()
     if not sampGetCursorMode then return end
     local cm = sampGetCursorMode()
-    if deskIsSpectateCameraMode(cm) then
-        deskInputState.spectateWantCursorMode = cm
+    if CMODE_DISABLED ~= nil and cm == CMODE_DISABLED then
+        if deskIsSpectateCameraMode(deskInputState.spectateWantCursorMode) then return end
+        if CMODE_LOCKCAM ~= nil then deskInputState.spectateWantCursorMode = CMODE_LOCKCAM end
+        return
     end
+    deskInputState.spectateWantCursorMode = cm
 end
 
+-- Desk hook/helper.
 function deskSpectateHudWantsInput()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
     return false
 end
 
+-- Desk hook/helper.
 function deskReleaseImguiCapture()
     deskWantsKeyboard = false
     releaseDeskInputCapture(true)
@@ -222,6 +261,7 @@ function deskReleaseImguiCapture()
     if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
 end
 
+-- Desk hook/helper.
 function deskSpectateCameraBlocked()
     if deskSpectateHudWantsInput() then return true end
     if cheatState.marker.active then return true end
@@ -230,17 +270,24 @@ function deskSpectateCameraBlocked()
     return false
 end
 
+-- Desk hook/helper.
 function deskRestoreSpectateCamera()
-    if deskInputState.spectateWantCursorMode == nil then
-        deskRememberSpectateCursorMode()
-    end
-    local want = deskSpectateCameraMode()
-    if want and sampSetCursorMode then
-        pcall(sampSetCursorMode, want)
+    deskInputState.spectateUiModeActive = false
+    setDeskPlayerLock(false)
+    if not deskSpectatingNow() then return end
+    -- В /sp SAMP сам держит LOCKCAM для камеры наблюдателя. Не трогаем режим на open;
+    -- на close — только если мы (или чат) его сбили с spectate-режима.
+    if sampGetCursorMode and sampSetCursorMode then
+        local cm = sampGetCursorMode()
+        if not deskIsSpectateCameraMode(cm) then
+            local want = deskSpectateCameraMode()
+            if want then pcall(sampSetCursorMode, want) end
+        end
     end
     if sampToggleCursor then pcall(sampToggleCursor, false) end
 end
 
+-- Desk hook/helper.
 function deskRestoreNormalGameCamera()
     setDeskPlayerLock(false)
     deskInputState.spectateUiModeActive = false
@@ -252,12 +299,14 @@ function deskRestoreNormalGameCamera()
     end)
 end
 
+-- Desk hook/helper.
 function deskLeaveSpectateMode()
     deskSetPlayerSpectating(false)
     deskRestoreNormalGameCamera()
     updateMimguiGameInputPassthrough()
 end
 
+-- Desk hook/helper.
 function deskEnsureCameraAfterPanelClose()
     deskClearImguiCaptureAfterPanel()
     setDeskPlayerLock(false)
@@ -268,26 +317,31 @@ function deskEnsureCameraAfterPanelClose()
         deskCache.mainPanelFrame.HideCursor = true
         deskCache.mainPanelFrame.LockPlayer = false
     end
-    if deskSpectateCameraBlocked() then
-        updateMimguiGameInputPassthrough()
-        return
-    end
     if deskSpectatingNow() then
         deskRestoreSpectateCamera()
-    else
+        if type(deskSpectateStats) == 'table' and deskSpectateStats.maintainCamera then
+            pcall(deskSpectateStats.maintainCamera)
+        end
+    elseif not deskSpectateCameraBlocked() then
         deskRestoreNormalGameCamera()
     end
     updateMimguiGameInputPassthrough()
 end
 
+-- Desk hook/helper.
 function deskEnableUiCursorForSamp()
+    -- В /sp камера наблюдателя = SAMP LOCKCAM; mimgui рисует курсор через HideCursor.
+    if deskSpectatingNow() then return end
     if CMODE_DISABLED == nil or not sampSetCursorMode then return end
     if sampGetCursorMode and sampGetCursorMode() == CMODE_DISABLED then return end
     pcall(sampSetCursorMode, CMODE_DISABLED)
 end
 
+-- Desk hook/helper.
 function deskEnsureUiCursorForOpenPanel()
-    if not showWindow[0] or not deskSpectatingNow() then return end
+    if deskSpectatingNow() then return end
+    if not showWindow[0] then return end
+    if deskImguiTypingActive() or deskInputState.replyFocused then return end
     if deskSpectateCameraBlocked() then return end
     if not sampGetCursorMode or CMODE_DISABLED == nil then return end
     if deskIsSpectateCameraMode(sampGetCursorMode()) then
@@ -295,6 +349,7 @@ function deskEnsureUiCursorForOpenPanel()
     end
 end
 
+-- Desk hook/helper.
 function deskClearImguiCaptureAfterPanel()
     deskWantsKeyboard = false
     releaseDeskInputCapture(true)
@@ -303,28 +358,30 @@ function deskClearImguiCaptureAfterPanel()
     if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
 end
 
+-- Desk hook/helper.
 function deskOnPanelOpened()
     if deskCache.mainPanelFrame then
         deskCache.mainPanelFrame.HideCursor = false
         deskCache.mainPanelFrame.LockPlayer = false
     end
     if deskSpectatingNow() then
-        deskRememberSpectateCursorMode()
-        deskEnableUiCursorForSamp()
         deskInputState.spectateUiModeActive = true
     end
     updateMimguiGameInputPassthrough()
 end
 
+-- Desk hook/helper.
 function deskOnPanelClosed()
     deskEnsureCameraAfterPanelClose()
 end
 
+-- Desk hook/helper.
 function deskSteadyPanelHidden()
     setDeskPlayerLock(false)
     updateMimguiGameInputPassthrough()
 end
 
+-- Desk hook/helper.
 function deskGameCursorActive()
     if showWindow[0] or deskSpectatingNow() then return false end
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
@@ -333,9 +390,13 @@ function deskGameCursorActive()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
     if deskSpectateStats.isHudHovered and deskSpectateStats.isHudHovered() then return true end
     if deskSpectateStats.wantsHudInput and deskSpectateStats.wantsHudInput() then return true end
+    if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then return true end
+    if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then return true end
+    if deskSpectateStats.wantsAnsInput and deskSpectateStats.wantsAnsInput() then return true end
     return false
 end
 
+-- Reset Desk Mouse State
 function resetDeskMouseState()
     if showWindow[0] then return end
     deskApplyInputPolicy()
@@ -352,12 +413,18 @@ function resetDeskMouseState()
     if deskSpectateStats and deskSpectateStats.resetHudDrag then
         pcall(deskSpectateStats.resetHudDrag)
     end
+    if type(checkerState) == 'table' then
+        if checkerState.hudDrag then checkerState.hudDrag.active = false end
+        checkerState.hudHovered = false
+    end
 end
 
+-- Ensure Desk Not Blocking Game
 function ensureDeskNotBlockingGame()
     deskApplyInputPolicy()
 end
 
+-- Desk hook/helper.
 function deskApplyInputPolicy()
     local panelOpen = showWindow[0] and true or false
     local wasOpen = deskInputState.panelOpenPrev and true or false
@@ -378,37 +445,322 @@ function deskApplyInputPolicy()
     end
 
     deskInputState.panelOpenPrev = panelOpen
+
+    local uiOpen = deskDeskOrAnsUiOpen()
+    if uiOpen and not deskInputState.deskUiOpenPrev then
+        deskHoldSampChatInput()
+    elseif not uiOpen and deskInputState.deskUiOpenPrev then
+        deskReleaseSampChatInput()
+    end
+    deskInputState.deskUiOpenPrev = uiOpen
 end
 
-function deskEnforceNoSampChat()
-    if not showWindow[0] then return end
+-- Desk hook/helper.
+function deskAnsBarBlocksSampChat()
+    return type(deskSpectateStats) == 'table'
+        and type(deskSpectateStats.isAnsBarOpen) == 'function'
+        and deskSpectateStats.isAnsBarOpen()
+end
+
+-- Desk hook/helper.
+function deskDeskOrAnsUiOpen()
+    return showWindow[0] or deskAnsBarBlocksSampChat()
+end
+
+-- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
+local deskSampInputFfiReady = false
+local deskSampInputEnableHook = nil
+local deskSampCInputThis = nil
+
+local deskSampTextMsgs = {
+    [0x0102] = true, -- WM_CHAR
+    [0x0106] = true, -- WM_SYSCHAR
+    [0x0109] = true, -- WM_UNICHAR
+    [0x0286] = true, -- WM_IME_CHAR
+}
+
+local function deskSpectateDeskMouseMsg(msg)
+    if not showWindow[0] or not deskSpectatingNow() then return false end
+    if not deskCache or not deskCache.wm then return false end
+    local wm = deskCache.wm
+    return msg == wm.MOUSEMOVE or msg == wm.LBUTTONDOWN or msg == wm.LBUTTONUP
+        or msg == wm.RBUTTONDOWN or msg == wm.RBUTTONUP
+        or msg == wm.MBUTTONDOWN or msg == wm.MBUTTONUP
+        or msg == wm.MOUSEWHEEL or msg == wm.MOUSEHWHEEL
+        or msg == wm.XBUTTONDOWN
+end
+
+local function deskEnsureSampInputFfi()
+    if deskSampInputFfiReady then return true end
+    if type(sampGetInputInfoPtr) ~= 'function' then return false end
+    local ok = pcall(function()
+        ffi.cdef[[
+            typedef void (*stSampCmdProc)(char*);
+            typedef struct {
+                void* pD3DDevice;
+                void* pDXUTDialog;
+                void* pDXUTEditBox;
+                stSampCmdProc pCMDs[144];
+                char szCMDNames[144][33];
+                int iCMDCount;
+                int iInputEnabled;
+            } stSampInputInfo;
+        ]]
+    end)
+    if not ok then return false end
+    deskSampInputFfiReady = true
+    return true
+end
+
+local function deskVerifySampSig(addr, sig)
+    if not memory or not memory.getuint8 then return false end
+    for i, b in ipairs(sig) do
+        if memory.getuint8(addr + i - 1, true) ~= b then return false end
+    end
+    return true
+end
+
+local function deskClampSampChatInputOff()
+    if not deskEnsureSampInputFfi() then return end
+    pcall(function()
+        local base = sampGetInputInfoPtr()
+        if not base or base == 0 then return end
+        local inp = ffi.cast('stSampInputInfo*', base)
+        inp.iInputEnabled = 0
+    end)
+end
+
+local function deskFindInputEnableAddr()
+    if not getModuleHandle then return nil end
+    local ok, base = pcall(getModuleHandle, 'samp.dll')
+    if not ok or not base or base == 0 then return nil end
+    local sig = { 0x83, 0xEC, 0x10, 0x56, 0x8B }
+    local hits = {}
+    for addr = base + 0x64000, base + 0x69000 do
+        if deskVerifySampSig(addr, sig) then
+            hits[#hits + 1] = addr
+        end
+    end
+    if #hits == 1 then return hits[1] end
+    if #hits > 1 then
+        local prefer = base + 0x657E0
+        for _, addr in ipairs(hits) do
+            if addr == prefer then return addr end
+        end
+        return hits[1]
+    end
+    local fallback = base + 0x657E0
+    if deskVerifySampSig(fallback, sig) then return fallback end
+    return nil
+end
+
+local function deskInstallThiscallHook5(callback, addr)
+    local okCdef = pcall(function()
+        ffi.cdef[[
+            int VirtualProtect(void* lpAddress, unsigned long dwSize, unsigned long flNewProtect, unsigned long* lpflOldProtect);
+        ]]
+    end)
+    if not okCdef then return nil end
+    local size = 5
+    local voidAddr = ffi.cast('void*', addr)
+    local oldProt = ffi.new('unsigned long[1]')
+    local orgBytes = ffi.new('uint8_t[?]', size)
+    ffi.copy(orgBytes, voidAddr, size)
+    local detourAddr = tonumber(ffi.cast('intptr_t', ffi.cast('void*', ffi.cast('void(__thiscall*)(void*)', callback))))
+    local hookBytes = ffi.new('uint8_t[?]', size, 0x90)
+    hookBytes[0] = 0xE9
+    ffi.cast('uint32_t*', hookBytes + 1)[0] = detourAddr - addr - 5
+    local hookObj = { active = false, voidAddr = voidAddr, size = size, orgBytes = orgBytes, hookBytes = hookBytes, oldProt = oldProt, addr = addr }
+    local castOrig = ffi.cast('void(__thiscall *)(void*)', addr)
+    function hookObj.set(on)
+        hookObj.active = on and true or false
+        ffi.C.VirtualProtect(voidAddr, size, 0x40, oldProt)
+        ffi.copy(voidAddr, on and hookBytes or orgBytes, size)
+        ffi.C.VirtualProtect(voidAddr, size, oldProt[0], oldProt)
+    end
+    function hookObj.stop() hookObj.set(false) end
+    function hookObj.start() hookObj.set(true) end
+    setmetatable(hookObj, {
+        __call = function(_, this)
+            hookObj.stop()
+            castOrig(this)
+            hookObj.start()
+        end,
+    })
+    hookObj.start()
+    return hookObj
+end
+
+local function deskInstallSampInputEnableHook()
+    if deskSampInputEnableHook then return true end
+    if not isSampAvailable or not isSampAvailable() then return false end
+    local addr = deskFindInputEnableAddr()
+    if not addr then return false end
+    local hookObj
+    local function detour(this)
+        if this ~= nil then deskSampCInputThis = this end
+        if deskDeskOrAnsUiOpen() then return end
+        if type(isSampfuncsConsoleActive) == 'function' and isSampfuncsConsoleActive() then return end
+        hookObj(this)
+    end
+    hookObj = deskInstallThiscallHook5(detour, addr)
+    if not hookObj then return false end
+    deskSampInputEnableHook = hookObj
+    if deskCache then deskCache.sampInputEnableHook = hookObj end
+    return true
+end
+
+function deskUninstallSampInputEnableHook()
+    if deskSampInputEnableHook then
+        pcall(function() deskSampInputEnableHook.stop() end)
+        deskSampInputEnableHook = nil
+    end
+    if deskCache then deskCache.sampInputEnableHook = nil end
+end
+
+function deskHoldSampChatInput()
+    deskInputState.sampChatHeldOff = true
+    pcall(deskInstallSampInputEnableHook)
+    if type(sampSetChatInputEnabled) == 'function' then
+        pcall(sampSetChatInputEnabled, false)
+    end
+    deskClampSampChatInputOff()
+end
+
+function deskReleaseSampChatInput()
+    if not deskInputState.sampChatHeldOff then return end
+    deskInputState.sampChatHeldOff = false
+end
+
+function deskCloseSampChatIfOpen()
+    deskHoldSampChatInput()
+end
+
+function deskRestoreSampChatIfNeeded()
+    deskReleaseSampChatInput()
+end
+
+function deskSampChatGuardFrame()
+    if not deskDeskOrAnsUiOpen() then return end
+    pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
     end
 end
 
+-- Запасной слой: consumeWindowMessage для лаунчеров, которые обходят sampSetChatInputEnabled.
+function deskShouldBlockSampChatKey(msg, wparam)
+    if not deskDeskOrAnsUiOpen() then return false end
+    if not deskCache or not deskCache.wm then return false end
+    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    msg = tonumber(msg) or 0
+    wparam = tonumber(wparam) or 0
+    if deskSpectateDeskMouseMsg(msg) then return true end
+    if deskSampTextMsgs[msg] then
+        return true
+    end
+    local wm = deskCache.wm
+    if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN or msg == wm.KEYUP or msg == wm.SYSKEYUP then
+        if type(deskPassesGameKey) == 'function' and deskPassesGameKey(wparam) then return false end
+        if wm.CHAT_KEYS[wparam] then return true end
+        if showWindow[0] then return true end
+        if deskAnsBarBlocksSampChat() then return true end
+    end
+    return false
+end
+
+-- Desk hook/helper.
+function deskConsumeSampChatKey(msg)
+    msg = tonumber(msg) or 0
+    if deskSpectateDeskMouseMsg(msg) then
+        consumeWindowMessage(true, false)
+        return
+    end
+    if deskSampTextMsgs[msg] then
+        consumeWindowMessage(true, false)
+    else
+        consumeWindowMessage(true, true)
+    end
+    deskClampSampChatInputOff()
+end
+
+-- Desk hook/helper.
+function deskShouldBlockGameInput(msg, wparam)
+    return deskShouldBlockSampChatKey(msg, wparam)
+end
+
+-- Desk hook/helper.
+function deskOverlayTextInputActive()
+    return deskAnsBarBlocksSampChat()
+end
+
+-- Desk hook/helper.
 function deskWarmupMutesGameInput()
     return false
 end
 
+-- Apply Desk Warmup Input Policy
 function applyDeskWarmupInputPolicy()
     updateMimguiGameInputPassthrough()
 end
 
-function updateMimguiGameInputPassthrough()
-    if imgui.DisableInput == nil then return end
-    imgui.DisableInput = not deskImguiNeedsInput()
+local DESK_CHAT_WM_KEY = '__rd_wm_chat__'
+
+local function uninstallDeskChatWm()
+    local prev = _G[DESK_CHAT_WM_KEY]
+    if prev and removeEventHandler then
+        pcall(removeEventHandler, 'onWindowMessage', prev)
+    end
+    _G[DESK_CHAT_WM_KEY] = nil
 end
 
+local function installDeskChatWmHandler()
+    uninstallDeskChatWm()
+    local handler = function(msg, wparam, lparam)
+        if deskDeskOrAnsUiOpen() and deskShouldBlockSampChatKey(msg, wparam) then
+            deskConsumeSampChatKey(msg)
+        end
+    end
+    addEventHandler('onWindowMessage', handler, true)
+    _G[DESK_CHAT_WM_KEY] = handler
+end
+
+installDeskChatWmHandler()
+
+-- Update Mimgui Game Input Passthrough
+function updateMimguiGameInputPassthrough()
+    if not imgui or imgui.DisableInput == nil then return end
+    if deskDeskOrAnsUiOpen() then
+        imgui.DisableInput = not (deskImguiNeedsInput() == true)
+        return
+    end
+    if sampIsDialogActive and sampIsDialogActive() then
+        imgui.DisableInput = true
+        return
+    end
+    if sampIsChatInputActive and sampIsChatInputActive() then
+        imgui.DisableInput = true
+        return
+    end
+    if deskSpectatingNow() and not deskImguiNeedsInput() then
+        imgui.DisableInput = true
+        return
+    end
+    imgui.DisableInput = not (deskImguiNeedsInput() == true)
+end
+
+-- Desk hook/helper.
 function deskIsSpectating()
     return deskInputState.playerSpectating == true
 end
 
+-- Desk hook/helper.
 function deskSafeRestoreCamera()
     if deskSpectatingNow() then return end
     if restoreCameraJumpcut then pcall(restoreCameraJumpcut) end
 end
 
+-- Set Desk Player Lock
 function setDeskPlayerLock(lock)
     if lock then
         if not deskInputState.playerLocked then
@@ -421,11 +773,13 @@ function setDeskPlayerLock(lock)
     end
 end
 
+-- Desk hook/helper.
 function deskOpenLocksPlayer()
     if sampIsDialogActive and sampIsDialogActive() then return false end
     return showWindow[0] and not cheatState.airbreak and not deskSpectatingNow()
 end
 
+-- Update Desk Input Capture
 function updateDeskInputCapture()
     if not showWindow[0] then return end
     deskSyncInputFocusState()
@@ -435,7 +789,7 @@ function updateDeskInputCapture()
         setDeskPlayerLock(false)
     end
     local io = imgui.GetIO and imgui.GetIO()
-    local wantKb = deskImguiTypingActive()
+    local wantKb = deskWindowWantsKeyboard()
     if io and (io.WantCaptureKeyboard or io.WantTextInput) then
         wantKb = true
     end
@@ -450,7 +804,11 @@ function updateDeskInputCapture()
     deskEnsureUiCursorForOpenPanel()
 end
 
+-- Сброс/отправка очереди.
 function flushDirtyConfigNow()
+    if type(flushCheckerCatalogNow) == 'function' then
+        pcall(flushCheckerCatalogNow)
+    end
     if dirtySettings or dirtyThreads then
         pcall(saveConfig)
         dirtySettings = false
@@ -460,6 +818,7 @@ function flushDirtyConfigNow()
     end
 end
 
+-- Hide Desk Window For Capture
 function hideDeskWindowForCapture()
     if showWindow[0] then
         showWindow[0] = false
@@ -470,6 +829,7 @@ function hideDeskWindowForCapture()
     end
 end
 
+-- Close Desk Window
 function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
@@ -494,21 +854,29 @@ function closeDeskWindow()
     flushDirtyConfigNow()
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendGameCmd(cmd)
-    local stId = trim(cmd or ''):match('^st%s+(%d+)$')
+    cmd = trim(cmd or '')
+    local stId = cmd:match('^st%s+(%d+)$')
     if stId then
         deskSpectateStats.markPendingSt(tonumber(stId))
     end
+    local spId = cmd:match('^sp%s+(%d+)%s*$')
+    if spId and deskSpectateStats.markPendingSpCommand then
+        deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
+    end
     releaseDeskInputCapture(true)
-    sendChat(cmd)
     closeDeskWindow()
+    sendChat(cmd)
 end
 
+-- Get Local Admin Level
 function getLocalAdminLevel()
     local lv = tonumber(settings.admin_level) or 3
     return math.max(1, math.min(4, math.floor(lv)))
 end
 
+-- Thread Action Target Id
 function threadActionTargetId(t)
     if not t then return nil end
     if type(t.messages) == 'table' then

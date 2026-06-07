@@ -1,4 +1,4 @@
---[[ Report Desk ingest runtime ]]
+--[[ Модуль: runtime ingest, admin reply, auto-rules UI. ]]
 function initDeskIngest()
     deskIngest.configure({
         maxPlayerId = MAX_PLAYER_ID,
@@ -7,17 +7,19 @@ function initDeskIngest()
         stripChatTimestamp = stripChatTimestamp,
         isExcludedChatLine = isExcludedChatLine,
         isValidPlayerNick = isValidPlayerNick,
-        ingest_pc = settings.ingest_pc ~= false,
-        ingest_s = settings.ingest_s ~= false,
-        ingest_m = settings.ingest_m ~= false,
-        ingest_admin_bracket = settings.ingest_admin_actions ~= false,
+        ingest_pc = true,
+        ingest_s = true,
+        ingest_m = true,
+        ingest_admin_bracket = true,
     })
 end
 
+-- Try Parse Report
 function tryParseReport(text)
     return deskIngest.tryParseReport(text)
 end
 
+-- Should Ingest Server Report
 function shouldIngestServerReport(color, plain)
     if not tryParseReport(plain) then return false end
     if settings.ingest_srv_any_color then return true end
@@ -28,10 +30,12 @@ function shouldIngestServerReport(color, plain)
     return true
 end
 
+-- Парсинг данных с сервера/чата.
 function parseReportLine(text, color)
     return tryParseReport(text)
 end
 
+-- Learn Report Color
 function learnReportColor(color)
     local c = normColor(color)
     if c and c ~= 0 and not REPORT_COLORS[c] then
@@ -48,6 +52,7 @@ function learnReportColor(color)
     end
 end
 
+-- Парсинг данных с сервера/чата.
 function parseAdminReply(text)
     if not text or text == '' then return nil end
     text = trim(stripChatTimestamp(stripTags(text)))
@@ -76,6 +81,7 @@ function parseAdminReply(text)
     return trim(adminNick), tonumber(adminId), tonumber(targetId), trim(targetNick), trim(body)
 end
 
+-- Looks Like Admin Reply Line
 function looksLikeAdminReplyLine(text)
     text = trim(stripChatTimestamp(stripTags(text or '')))
     if text == '' then return false end
@@ -83,12 +89,14 @@ function looksLikeAdminReplyLine(text)
     return text:find('\xE4\xEB\xFF', 1, true) ~= nil
 end
 
+-- Try Ingest Admin Reply Line
 function tryIngestAdminReplyLine(text)
     local adminNick, adminId, targetId, targetNick, body = parseAdminReply(text)
     if not adminNick or not targetId or not body then return false end
     return handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick)
 end
 
+-- Handle Admin Reply From Chat
 function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick)
     body = normalizeOutboundBody(body)
     if body == '' then return false end
@@ -143,7 +151,6 @@ function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick
                 existing.adminNick = nil
                 existing.kind = 'reply_self'
                 markThreadAnswered(t)
-                requestChatScrollForThread(key)
             end
             markOutboundEchoHandled(targetId, body, key, targetNick)
             return true
@@ -157,10 +164,12 @@ function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick
     return true
 end
 
+-- Rule Cooldown Key
 function ruleCooldownKey(threadKey, ruleName)
     return tostring(threadKey) .. ':' .. tostring(ruleName)
 end
 
+-- Is Rule On Cooldown
 function isRuleOnCooldown(threadKey, rule)
     local key = ruleCooldownKey(threadKey, rule.name)
     local untilTs = ruleCooldowns[key]
@@ -172,11 +181,13 @@ function isRuleOnCooldown(threadKey, rule)
     return true
 end
 
+-- Set Rule Cooldown
 function setRuleCooldown(threadKey, rule)
     local key = ruleCooldownKey(threadKey, rule.name)
     ruleCooldowns[key] = os.time() + (tonumber(rule.cooldown) or 120)
 end
 
+-- Normalize Match Text
 function normalizeMatchText(s)
     s = trim(stripTags(s or ''):lower():gsub('%s+', ' '))
     s = s:gsub('\xB8', '\xE5')
@@ -184,12 +195,14 @@ function normalizeMatchText(s)
     return s
 end
 
+-- Rule Match Mode Label
 function ruleMatchModeLabel(mode)
     if mode == 'contains' then return 'contains' end
     if mode == 'all_words' then return 'all_words' end
     return 'exact'
 end
 
+-- Rule Match Mode From Int
 function ruleMatchModeFromInt(v)
     v = tonumber(v) or 0
     if v == 1 then return 'contains' end
@@ -197,18 +210,21 @@ function ruleMatchModeFromInt(v)
     return 'exact'
 end
 
+-- Rule Match Mode To Int
 function ruleMatchModeToInt(mode)
     if mode == 'contains' then return 1 end
     if mode == 'all_words' then return 2 end
     return 0
 end
 
+-- Match Text Padded
 function matchTextPadded(s)
     s = normalizeMatchText(s)
     if s == '' then return '' end
     return ' ' .. s:gsub('%s+', ' ') .. ' '
 end
 
+-- Token Min Length
 function tokenMinLength(token)
     token = normalizeMatchText(token)
     if token == '' then return MIN_CONTAINS_TRIGGER_LEN end
@@ -216,6 +232,7 @@ function tokenMinLength(token)
     return MIN_CONTAINS_TRIGGER_LEN
 end
 
+-- Text Contains Token
 function textContainsToken(msg, msgAlt, token, msgTypo)
     token = normalizeMatchText(token)
     if token == '' or #token < tokenMinLength(token) then return false end
@@ -227,6 +244,7 @@ function textContainsToken(msg, msgAlt, token, msgTypo)
     return false
 end
 
+-- Words Share Stem
 function wordsShareStem(word, token, minStem)
     minStem = minStem or 6
     word = normalizeMatchText(word)
@@ -274,6 +292,7 @@ function textMatchesContainsToken(msg, msgAlt, token, msgTypo)
     return false
 end
 
+-- Split Trigger Words
 function splitTriggerWords(kw)
     local parts = {}
     local seen = {}
@@ -288,6 +307,7 @@ function splitTriggerWords(kw)
     return parts
 end
 
+-- Text Has All Words
 function textHasAllWords(msg, msgAlt, kw, msgTypo)
     msgTypo = msgTypo or normalizeMatchTextTypo(msg)
     kw = tostring(kw or ''):gsub('+', ' ')
@@ -312,6 +332,7 @@ function textHasAllWords(msg, msgAlt, kw, msgTypo)
     return false
 end
 
+-- Keyword Match Score
 function keywordMatchScore(kw, msg, msgAlt, mode, msgTypo)
     local raw = trim(kw or '')
     if raw == '' then return 0 end
@@ -331,6 +352,7 @@ function keywordMatchScore(kw, msg, msgAlt, mode, msgTypo)
     return 0
 end
 
+-- Scenario Match Score
 function scenarioMatchScore(sc, text)
     local msg, msgAlt, msgTypo = matchMessageVariants(text)
     local mode = sc.match or 'contains'
@@ -341,6 +363,7 @@ function scenarioMatchScore(sc, text)
     return best
 end
 
+-- Trigger Matches Keyword
 function triggerMatchesKeyword(kw, msg, msgAlt, mode, msgTypo)
     local raw = trim(kw or '')
     if raw == '' then return false end
@@ -369,6 +392,7 @@ function triggerMatchesKeyword(kw, msg, msgAlt, mode, msgTypo)
     return false
 end
 
+-- Get Sorted Rule Indices
 function getSortedRuleIndices()
     local rules = getActiveAutoRules()
     local idx = {}
@@ -382,6 +406,7 @@ function getSortedRuleIndices()
     return idx, rules
 end
 
+-- Find Matching Rule
 function findMatchingRule(body)
     local order, rules = getSortedRuleIndices()
     for _, i in ipairs(order) do
@@ -395,12 +420,14 @@ function findMatchingRule(body)
     return nil
 end
 
+-- Keyword Dedupe Key
 function keywordDedupeKey(part)
     local norm = normalizeMatchText(part)
     if norm ~= '' then return norm end
     return (part or ''):lower()
 end
 
+-- Keywords To Multiline
 function keywordsToMultiline(kw)
     local parts = {}
     for _, k in ipairs(kw or {}) do
@@ -410,6 +437,7 @@ function keywordsToMultiline(kw)
     return table.concat(parts, '\n')
 end
 
+-- Парсинг данных с сервера/чата.
 function parseKeywordList(line)
     local kw = {}
     local seen = {}
@@ -427,6 +455,7 @@ function parseKeywordList(line)
     return kw
 end
 
+-- Сброс/отправка очереди.
 function flushRuleKeywordsPreview()
     if selectedRuleIdx < 1 or selectedRuleIdx > #rules then return end
     local r = rules[selectedRuleIdx]
@@ -440,6 +469,7 @@ function flushRuleKeywordsPreview()
     markDirtySettings()
 end
 
+-- Сброс/отправка очереди.
 function flushRuleEditorToRule()
     if selectedRuleIdx < 1 or selectedRuleIdx > #rules then return end
     local r = rules[selectedRuleIdx]
@@ -462,6 +492,7 @@ function flushRuleEditorToRule()
     markDirtySettings()
 end
 
+-- Remove Rule Keyword At
 function removeRuleKeywordAt(idx)
     if not ruleKwEdit[idx] then return end
     table.remove(ruleKwEdit, idx)
@@ -469,6 +500,7 @@ function removeRuleKeywordAt(idx)
     flushRuleEditorToRule()
 end
 
+-- Sync Rule Kw Edit From Rule
 function syncRuleKwEditFromRule(r)
     ruleKwEdit = {}
     if not r then
@@ -493,6 +525,7 @@ function syncRuleKwEditFromRule(r)
     setInputBuf(ruleKwNew, '')
 end
 
+-- Sync Rule Keywords From Bulk Buf
 function syncRuleKeywordsFromBulkBuf()
     local block = readInputBuf(ruleKwBulk)
     ruleKwEdit = {}
@@ -513,6 +546,7 @@ function syncRuleKeywordsFromBulkBuf()
     markRuleEditorDirty()
 end
 
+-- Add Keywords To Rule Edit
 function addKeywordsToRuleEdit(words)
     local seen = {}
     for _, ex in ipairs(ruleKwEdit) do
@@ -537,6 +571,7 @@ function addKeywordsToRuleEdit(words)
     return added
 end
 
+-- Try Add Keyword From Input
 function tryAddKeywordFromInput()
     local line = trim(readInputBuf(ruleKwNew))
     if line == '' then return 0 end
@@ -551,6 +586,7 @@ function tryAddKeywordFromInput()
     return n
 end
 
+-- Draw Keyword Chip
 function drawKeywordChip(i, kw, onRemove, prefix)
     prefix = tostring(prefix or 'kw')
     local shown = ellipsizeToWidth(catalogWarmupDlUtf(kw), 150)
@@ -579,6 +615,7 @@ function drawKeywordChip(i, kw, onRemove, prefix)
     imgui.SameLine(0, 6)
 end
 
+-- Draw Keywords Flow List
 function drawKeywordsFlowList(editList, onRemove, prefix)
     local x0 = imgui.GetCursorPosX()
     local avail = imgui.GetContentRegionAvail().x
@@ -596,6 +633,7 @@ function drawKeywordsFlowList(editList, onRemove, prefix)
     imgui.Dummy(imgui.ImVec2(0, 2))
 end
 
+-- Draw Keywords Editor
 function drawKeywordsEditor(prefix, editList, newBuf, newBufSize, bulkBuf, bulkBufSize, onAddInput, onAddBulk)
     prefix = tostring(prefix or 'kw')
     editList = editList or {}
@@ -655,6 +693,7 @@ function drawKeywordsEditor(prefix, editList, newBuf, newBufSize, bulkBuf, bulkB
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
+-- Draw Rules Edit Panel
 function drawRulesEditPanel()
     imgui.TextColored(col_muted2, uiText('\xCD\xE0\xE7\xE2\xE0\xED\xE8\xE5'))
     imgui.PushItemWidth(-1)
@@ -706,6 +745,7 @@ function drawRulesEditPanel()
     end
 end
 
+-- Keyword Matches
 function keywordMatches(rule, body)
     local msg, msgAlt, msgTypo = matchMessageVariants(body)
     if msg == '' and msgAlt == '' and msgTypo == '' then return false end
@@ -718,6 +758,7 @@ function keywordMatches(rule, body)
     return false
 end
 
+-- Execute Rule Action
 function executeRuleAction(t, rule)
     local id = getResolvedAnsId(t)
     local payload = expandTemplate(rule.payload, id)

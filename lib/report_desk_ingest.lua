@@ -1,4 +1,4 @@
---[[ Report ingest: classify player reports, admin replies, actions, punishments ]]
+--[[ Модуль: парс репортов [PC]/[S]/[M] и chat events. ]]
 local M = {}
 
 local MAX_PLAYER_ID = 1000
@@ -67,6 +67,7 @@ local ACTION_CLASS_RULES = {
     { marker = 'kick', title = 'Kick', kind = 'kick' },
 }
 
+-- Публичный API модуля.
 function M.configure(deps)
     MAX_PLAYER_ID = deps.maxPlayerId or 1000
     trim = deps.trim
@@ -80,6 +81,7 @@ function M.configure(deps)
     if deps.ingest_admin_bracket ~= nil then ingestAdminBracket = deps.ingest_admin_bracket end
 end
 
+-- Finalize Nick Id
 local function finalizeNickId(nick, id)
     nick = trim(nick or '')
     id = tonumber(id)
@@ -89,6 +91,7 @@ local function finalizeNickId(nick, id)
     return nick, id
 end
 
+-- Finalize Nick Id Body
 local function finalizeNickIdBody(nick, id, body)
     body = trim(body or '')
     if body == '' then return nil end
@@ -98,16 +101,59 @@ local function finalizeNickIdBody(nick, id, body)
     return nick, id, body
 end
 
+-- Нормализация текста статуса (UTF-8 bubble / CP1251 чат → CP1251).
+local function normalizeStatusText(text)
+    text = trim(stripTags(text or ''))
+    if text == '' then return '' end
+    if isUtf8Text and isUtf8Text(text) then
+        text = utf8ToCp1251(text) or text
+    end
+    return text
+end
+
+-- Публичный API модуля.
 function M.looksLikePlayerStatusBody(body)
-    body = trim(body or '')
+    body = normalizeStatusText(body)
     if body == '' then return true end
+    if body:find('\xCD\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
+    local low = body:lower()
+    if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
     if body:match('^%([^)]*lvl') then return true end
     if body:match('^%d+%s*lvl') then return true end
     if body:match('^Voice') then return true end
     if body:match('^%<%s*%(') then return true end
+    if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
+    if body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('pause', 1, true) then return true end
+    if body:find('paused', 1, true) then return true end
+    if body:find('AFK', 1, true) then return true end
+    if body:find('\xF1\xED\xFF', 1, true) and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('\xF1\xED\xFF', 1, true) and body:find('AFK', 1, true) then return true end
+    if body:find('\xE8\xE3\xF0\xEE\xEA', 1, true) and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
+    if body:find('\xE2 \xEE\xED\xEB\xE0\xE9\xED', 1, true) then return true end
+    if body:find('\xE2\xFB\xF8\xE5\xEB', 1, true) and #body < 48 then return true end
+    if body:find('\xE7\xE0\xF8\xE5\xEB', 1, true) and #body < 48 then return true end
+    if body:match('^%d+%s*[%xsec%:%.]') and body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
     return false
 end
 
+-- Строка чата целиком — статус / AFK / пауза (до парсинга nick[id]).
+function M.looksLikePlayerStatusLine(plain)
+    plain = normalizeStatusText(plain)
+    if plain == '' then return true end
+    if M.looksLikePlayerStatusBody(plain) then return true end
+    local body = plain:match('^[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%[%w+%]%s*[%w][%w_]+%[%d+%]%s*:?%s*(.+)$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%-%s*(.+)%s+%([%w][%w_]*%)%[%d+%]%s*$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    body = plain:match('^%*%s*(.+)%s+%([%w][%w_]*%)%[%d+%]%s*$')
+    if body and M.looksLikePlayerStatusBody(body) then return true end
+    return false
+end
+
+-- Публичный API модуля.
 function M.looksLikeAdminActionText(text)
     text = trim(text or ''):lower()
     if text == '' then return false end
@@ -119,6 +165,7 @@ function M.looksLikeAdminActionText(text)
     return false
 end
 
+-- Публичный API модуля.
 function M.classifyAdminAction(body)
     body = trim(body or '')
     local low = body:lower()
@@ -133,6 +180,7 @@ function M.classifyAdminAction(body)
     return { kind = 'other', title = '\xC7\xE0\xEF\xE8\xF1\xFC', detail = body }
 end
 
+-- Публичный API модуля.
 function M.formatActionDisplay(adminNick, targetNick, targetId, body, classified)
     body = trim(body or '')
     adminNick = trim(adminNick or '')
@@ -143,6 +191,7 @@ function M.formatActionDisplay(adminNick, targetNick, targetId, body, classified
     return body
 end
 
+-- Extract Target From Action
 local function extractTargetFromAction(text)
     text = trim(text or '')
     if text == '' then return nil end
@@ -162,6 +211,7 @@ local function extractTargetFromAction(text)
     return nil
 end
 
+-- Build Admin Action Ev
 local function buildAdminActionEv(adminNick, adminId, body)
     body = trim(body or '')
     local targetNick, targetId = extractTargetFromAction(body)
@@ -184,6 +234,7 @@ local function buildAdminActionEv(adminNick, adminId, body)
     }
 end
 
+-- Парсинг данных с сервера/чата.
 local function parseChannelReport(text, channelTag)
     if not text or text == '' then return nil end
     local nick, id, body = text:match('^%[' .. channelTag .. '%]%s+([%w][%w_]*)%[(%d+)%]%s*:%s*(.+)$')
@@ -197,6 +248,7 @@ local function parseChannelReport(text, channelTag)
     return nick, id, body, channelTag
 end
 
+-- Channel Ingest Enabled
 local function channelIngestEnabled(tag)
     if tag == 'PC' then return ingestPc end
     if tag == 'S' then return ingestS end
@@ -204,6 +256,7 @@ local function channelIngestEnabled(tag)
     return false
 end
 
+-- Line Starts Report Channel
 local function lineStartsReportChannel(text)
     if not text or text == '' then return false end
     for _, tag in ipairs(REPORT_CHANNEL_ORDER) do
@@ -212,6 +265,7 @@ local function lineStartsReportChannel(text)
     return false
 end
 
+-- Парсинг данных с сервера/чата.
 local function parseAdvanceReportLine(text)
     for _, tag in ipairs(REPORT_CHANNEL_ORDER) do
         if channelIngestEnabled(tag) then
@@ -222,6 +276,7 @@ local function parseAdvanceReportLine(text)
     return nil
 end
 
+-- Парсинг данных с сервера/чата.
 local function parsePlayerReportStrict(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) or text:find('%[A%]%s', 1) then return nil end
@@ -238,6 +293,7 @@ local function parsePlayerReportStrict(text)
     return finalizeNickIdBody(nick, id, body)
 end
 
+-- Парсинг данных с сервера/чата.
 local function parseAdminBracketLine(text)
     if not text or text == '' then return nil end
 
@@ -265,6 +321,7 @@ local function parseAdminBracketLine(text)
     return buildAdminActionEv(adminNick, adminId, body)
 end
 
+-- Публичный API модуля.
 function M.formatPunishmentDisplay(adminNick, targetNick, rawText)
     rawText = trim(rawText or '')
     adminNick = trim(adminNick or '')
@@ -292,6 +349,7 @@ function M.formatPunishmentDisplay(adminNick, targetNick, rawText)
     return out
 end
 
+-- Парсинг данных с сервера/чата.
 local function parsePunishmentLine(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) then return nil end
@@ -340,6 +398,7 @@ local function parsePunishmentLine(text)
     }
 end
 
+-- Публичный API модуля.
 function M.tryParsePlayerReport(text)
     if not text or text == '' then return nil end
     text = stripChatTimestamp(stripTags(text))
@@ -349,6 +408,7 @@ function M.tryParsePlayerReport(text)
     return parsePlayerReportStrict(text)
 end
 
+-- Публичный API модуля.
 function M.tryParseChatEvent(text, opts)
     opts = opts or {}
     if not text or text == '' then return nil end
@@ -394,6 +454,7 @@ function M.tryParseChatEvent(text, opts)
     return nil
 end
 
+-- Публичный API модуля.
 function M.tryParseReport(text)
     local ev = M.tryParseChatEvent(text)
     if ev and ev.type == 'player_report' then
@@ -402,6 +463,7 @@ function M.tryParseReport(text)
     return nil
 end
 
+-- Публичный API модуля.
 function M.isPlayerChannelMessage(rawOrText)
     local t = rawOrText or ''
     for _, tag in ipairs(REPORT_CHANNEL_ORDER) do
@@ -410,6 +472,7 @@ function M.isPlayerChannelMessage(rawOrText)
     return false
 end
 
+-- Публичный API модуля.
 function M.ingestDedupKey(id, body, rawLine, normalizeBody)
     local raw = rawLine or ''
     local ts = raw:match('(%[%d+:%d+:%d+%])')

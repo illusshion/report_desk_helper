@@ -112,6 +112,48 @@ end
 
 
 
+function Wrap-AppChunkSafe($name, $content) {
+
+    $open, $close = Get-LuaLongBracket $content
+
+    $chunkTag = '@' + $name
+
+    return @"
+
+do
+
+    local okChunk, errChunk = pcall(function()
+
+        local chunkFn, chunkErr = loadstring($open
+
+$content
+
+$close, '$chunkTag')
+
+        if not chunkFn then error('[Report Desk] bundle chunk ${name}: ' .. tostring(chunkErr)) end
+
+        setfenv(chunkFn, __desk_bundle_env)
+
+        chunkFn()
+
+    end)
+
+    if not okChunk then
+
+        print('[Report Desk] checker disabled: ' .. tostring(errChunk))
+
+    end
+
+end
+
+
+
+"@
+
+}
+
+
+
 function Wrap-AppChunkGroup($label, $parts) {
 
     $combined = ($parts -join "`n") + "`n"
@@ -162,12 +204,15 @@ $libModules = @(
 
     @{ Name = 'report_desk_ingest'; File = 'report_desk_ingest.lua' },
 
-    @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
-    @{ Name = 'report_desk_spectate_session'; File = 'report_desk_spectate_session.lua' },
-    @{ Name = 'report_desk_sp_ui'; File = 'report_desk_sp_ui.lua' },
-    @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },
-    @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
     @{ Name = 'report_desk_sp_theme'; File = 'report_desk_sp_theme.lua' },
+    @{ Name = 'report_desk_sp_vehicle_hud'; File = 'report_desk_sp_vehicle_hud.lua' },
+    @{ Name = 'report_desk_spectate_session'; File = 'report_desk_spectate_session.lua' },
+    @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
+    @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },
+    @{ Name = 'report_desk_sp_ui'; File = 'report_desk_sp_ui.lua' },
+    @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
+    @{ Name = 'report_desk_checker_parser'; File = 'report_desk_checker_parser.lua' },
+    @{ Name = 'report_desk_checker_catalog'; File = 'report_desk_checker_catalog.lua' },
 
     @{ Name = 'report_desk_vehicles'; File = 'report_desk_vehicles.lua' },
 
@@ -304,7 +349,7 @@ foreach ($chunk in $appChunks) {
 
 $checkerPath = Join-Path $libDir 'report_desk_checker.lua'
 $checkerText = Read-ModuleText $checkerPath
-[void]$sb.Append((Wrap-AppChunk 'report_desk_checker.lua' $checkerText))
+[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_checker.lua' $checkerText))
 
 [void]$sb.Append($footer)
 
@@ -386,9 +431,19 @@ if (-not (Test-Path $launcherSrc)) {
 }
 Copy-Item $launcherSrc (Join-Path $distDir 'admin_report_desk.lua') -Force
 
-Copy-Item (Join-Path $MoonloaderRoot 'report_desk_autoupdate.lua') $distDir -Force
+$autoupdateSrc = Join-Path $libDir 'report_desk_autoupdate.lua'
+if (-not (Test-Path $autoupdateSrc)) {
+    $autoupdateSrc = Join-Path $MoonloaderRoot 'report_desk_autoupdate.lua'
+}
+if (-not (Test-Path $autoupdateSrc)) {
+    Write-Error "Missing lib\report_desk_autoupdate.lua"
+}
+Copy-Item $autoupdateSrc $distDir -Force
 
-$depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+$depsSrc = Join-Path $libDir 'report_desk_deps.lua'
+if (-not (Test-Path $depsSrc)) {
+    $depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
+}
 if (Test-Path $depsSrc) {
     Copy-Item $depsSrc $distDir -Force
     Write-Host "Wrote dist\report_desk_deps.lua"

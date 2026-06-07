@@ -1,4 +1,4 @@
---[[ Report Desk player actions / watch ]]
+--[[ Модуль: действия admin (ans, sp, history, nick cache). ]]
 function sendSlapPlayer(targetId)
     targetId = clampSuspectPlayerId(targetId)
     if not targetId then
@@ -8,6 +8,7 @@ function sendSlapPlayer(targetId)
     sendGameCmd('slap ' .. targetId)
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendTrPlayer(targetId)
     targetId = clampSuspectPlayerId(targetId)
     if not targetId then
@@ -16,12 +17,16 @@ function sendTrPlayer(targetId)
     end
     if getLocalAdminLevel() <= 2 then
         sendChat(string.format('/a /tr %d', targetId))
-        say(string.format('\xC7\xE0\xEF\xF0\xEE\xF1 \xE2 /a: /tr %d', targetId))
         return
     end
-    sendGameCmd('tr ' .. targetId)
+    if showWindow[0] then
+        sendGameCmd('tr ' .. targetId)
+    else
+        sendMenuOutbound('tr ' .. targetId)
+    end
 end
 
+-- Отправка команды/сообщения на сервер.
 function sendHistoryByPlayerId(arg)
     local id = clampSuspectPlayerId(tonumber(trim(tostring(arg or '')):match('(%d+)')))
     if not id then
@@ -45,10 +50,12 @@ function sendHistoryByPlayerId(arg)
     return false
 end
 
+-- Header Action Btn Width
 function headerActionBtnWidth(label)
     return math.max(52, math.floor(imgui.CalcTextSize(uiText(label or '?')).x + 18 + 0.5))
 end
 
+-- Push Player Action Btn Style
 function pushPlayerActionBtnStyle()
     imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.16, 0.24, 0.96))
     imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28, 0.22, 0.38, 1.0))
@@ -58,11 +65,13 @@ function pushPlayerActionBtnStyle()
     imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 4))
 end
 
+-- Pop Player Action Btn Style
 function popPlayerActionBtnStyle()
     imgui.PopStyleVar(2)
     imgui.PopStyleColor(4)
 end
 
+-- Clamp Suspect Player Id
 function clampSuspectPlayerId(id)
     id = tonumber(id)
     if not id or id < 0 or id > MAX_PLAYER_ID then return nil end
@@ -74,6 +83,7 @@ local REPORT_ID_MARKERS = {
     'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
 }
 
+-- Text Looks Like Player Report
 function textLooksLikePlayerReport(text)
     local low = normalizeMatchText(text)
     if low == '' then return false end
@@ -136,6 +146,7 @@ function extractSuspectIdForWatch(text)
     return nil
 end
 
+-- Find Enabled Watch Scenario
 function findEnabledWatchScenario()
     for _, sc in ipairs(quickScenarios) do
         if sc.action == 'watch' and sc.enabled then return sc end
@@ -143,6 +154,7 @@ function findEnabledWatchScenario()
     return nil
 end
 
+-- Get Watch Button Scenario
 function getWatchButtonScenario()
     local sc = findEnabledWatchScenario()
     if sc then return sc end
@@ -154,6 +166,7 @@ function getWatchButtonScenario()
     }
 end
 
+-- Schedule Watch Notify
 function scheduleWatchNotify(reporterNick, ansId, notify)
     reporterNick = trim(reporterNick or '')
     notify = trim(notify or '')
@@ -180,6 +193,7 @@ function scheduleWatchNotify(reporterNick, ansId, notify)
     end)
 end
 
+-- Clone Quick Scenarios
 function cloneQuickScenarios(src, fromUtf8)
     fromUtf8 = fromUtf8 == true
     local out = {}
@@ -190,11 +204,18 @@ function cloneQuickScenarios(src, fromUtf8)
                 kw[#kw + 1] = normalizeStoredText(k, fromUtf8)
             end
         end
+        local neg = {}
+        if type(sc.negative_keywords) == 'table' then
+            for _, k in ipairs(sc.negative_keywords) do
+                neg[#neg + 1] = normalizeStoredText(k, fromUtf8)
+            end
+        end
         out[i] = {
             label = normalizeStoredText(sc.label or '', fromUtf8),
             enabled = sc.enabled ~= false,
             match = sc.match or 'contains',
             keywords = kw,
+            negative_keywords = neg,
             reply = normalizeStoredText(sc.reply or '', fromUtf8),
             action = sc.action == 'watch' and 'watch' or 'reply',
             priority = tonumber(sc.priority) or 0,
@@ -204,13 +225,33 @@ function cloneQuickScenarios(src, fromUtf8)
     return out
 end
 
+-- Quick Scenario Matches
 function quickScenarioMatches(sc, body)
+    local keywords = sc.keywords or {}
+    local learned = scenarioLearnGetKeywordsForScenario and scenarioLearnGetKeywordsForScenario(sc.label or '')
+    if type(learned) == 'table' and #learned > 0 then
+        local merged = {}
+        for i = 1, #keywords do merged[i] = keywords[i] end
+        for i = 1, #learned do merged[#keywords + i] = learned[i] end
+        keywords = merged
+    end
     return keywordMatches({
         match = sc.match or 'contains',
-        keywords = sc.keywords or {},
+        keywords = keywords,
     }, body)
 end
 
+-- Quick Scenario Negative Matches
+function quickScenarioNegativeMatches(sc, body)
+    local neg = sc.negative_keywords
+    if type(neg) ~= 'table' or #neg < 1 then return false end
+    return keywordMatches({
+        match = sc.match or 'contains',
+        keywords = neg,
+    }, body)
+end
+
+-- Get Sorted Quick Scenario Indices
 function getSortedQuickScenarioIndices()
     if cachedSortedScenarioIdx and cachedSortedScenariosGen == scenariosGen then
         return cachedSortedScenarioIdx
@@ -228,6 +269,7 @@ function getSortedQuickScenarioIndices()
     return idx
 end
 
+-- Push Quick Scenario Btn Style
 function pushQuickScenarioBtnStyle(isWatch)
     if isWatch then
         imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.22, 0.26, 0.95))
@@ -244,11 +286,13 @@ function pushQuickScenarioBtnStyle(isWatch)
     imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 4))
 end
 
+-- Pop Quick Scenario Btn Style
 function popQuickScenarioBtnStyle()
     imgui.PopStyleVar(2)
     imgui.PopStyleColor(4)
 end
 
+-- Quick Btn Width
 function quickBtnWidth(label)
     local w = imgui.CalcTextSize(uiText(label or '?')).x + 18
     if w < QUICK_BTN_MIN_W then w = QUICK_BTN_MIN_W end
@@ -256,6 +300,7 @@ function quickBtnWidth(label)
     return w
 end
 
+-- Layout Quick Button Rows
 function layoutQuickButtonRows(quickBtns, maxWidth)
     local rows = {}
     local cur = {}
@@ -281,6 +326,7 @@ function layoutQuickButtonRows(quickBtns, maxWidth)
     return rows, h
 end
 
+-- Split Quick Buttons
 function splitQuickButtons(quickBtns)
     local watch, reply = {}, {}
     for _, qb in ipairs(quickBtns or {}) do
@@ -293,6 +339,7 @@ function splitQuickButtons(quickBtns)
     return watch, reply
 end
 
+-- Quick Buttons Inline Width
 function quickButtonsInlineWidth(btns)
     local w = 0
     for _, qb in ipairs(btns or {}) do
@@ -305,6 +352,7 @@ end
 local LBL_ACT_SLAP = '\xCF\xE5\xF0\xE5\xE2\xE5\xF0\xED\xF3\xF2\xFC'
 local LBL_ACT_TR = '\xC8\xE7 \xE2\xEE\xE4\xFB'
 
+-- Message Body For Scenarios
 function messageBodyForScenarios(m)
     if not m then return '' end
     local body = trim(m.text or '')
@@ -314,6 +362,7 @@ function messageBodyForScenarios(m)
     return body
 end
 
+-- Player Message Scenario Body
 function playerMessageScenarioBody(m)
     if not messageShowsScenarioButtons(m) then return '' end
     local body = messageBodyForScenarios(m)
@@ -321,6 +370,7 @@ function playerMessageScenarioBody(m)
     return body
 end
 
+-- Get Last Player Scenario Body
 function getLastPlayerScenarioBody(t)
     if not t or type(t.messages) ~= 'table' then return '' end
     for i = #t.messages, 1, -1 do
@@ -332,6 +382,7 @@ function getLastPlayerScenarioBody(t)
     return ''
 end
 
+-- Find Last Player Scenario Msg Idx
 function findLastPlayerScenarioMsgIdx(msgs, renderFrom)
     renderFrom = tonumber(renderFrom) or 1
     if type(msgs) ~= 'table' then return nil end
@@ -344,6 +395,7 @@ function findLastPlayerScenarioMsgIdx(msgs, renderFrom)
     return nil
 end
 
+-- Message Shows Scenario Buttons
 function messageShowsScenarioButtons(m)
     if not m then return false end
     local k = messageKind(m)
@@ -354,6 +406,7 @@ function messageShowsScenarioButtons(m)
     return false
 end
 
+-- Preview Quick Scenario Text
 function previewQuickScenarioText(sc, reporter, messageText)
     if not sc then return '' end
     if sc.action == 'watch' then
@@ -370,6 +423,7 @@ function previewQuickScenarioText(sc, reporter, messageText)
     return expandTemplate(text, getResolvedAnsId(reporter))
 end
 
+-- Draw Quick Scenario Tooltip
 function drawQuickScenarioTooltip(sc, reporter, messageText)
     if not sc then return end
     local body = previewQuickScenarioText(sc, reporter, messageText)
@@ -377,10 +431,12 @@ function drawQuickScenarioTooltip(sc, reporter, messageText)
     imgui.TextWrapped(uiText(truncate(body, 220)))
 end
 
+-- Quick Scenario Display Label
 function quickScenarioDisplayLabel(label)
     return ellipsizeToWidth(uiText(label or '?'), QUICK_BTN_MAX_W - 12)
 end
 
+-- Draw Quick Scenario Button
 function drawQuickScenarioButton(sc, lbl, btnId, btnW, scenarioText, reporter)
     local isWatch = sc and sc.action == 'watch'
     pushQuickScenarioBtnStyle(isWatch)
@@ -405,6 +461,7 @@ function drawQuickScenarioButton(sc, lbl, btnId, btnW, scenarioText, reporter)
     popQuickScenarioBtnStyle()
 end
 
+-- Draw Inline Watch Buttons
 function drawInlineWatchButtons(watchBtns, localX, localY, btnX, btnY, scenarioText, reporter, msgIdx)
     if not watchBtns or #watchBtns < 1 then return end
     imgui.PushID((msgIdx or 0) * 1000 + 7)
@@ -418,6 +475,7 @@ function drawInlineWatchButtons(watchBtns, localX, localY, btnX, btnY, scenarioT
     imgui.PopID()
 end
 
+-- Draw Quick Scenario Buttons
 function drawQuickScenarioButtons(quickBtns, localX, localY, btnRowY, rowW, padSide, scenarioText, reporter, msgIdx)
     if not quickBtns or #quickBtns < 1 then return end
     local btnAreaW = math.max(80, rowW - padSide * 2)
@@ -439,6 +497,7 @@ function drawQuickScenarioButtons(quickBtns, localX, localY, btnRowY, rowW, padS
     imgui.PopID()
 end
 
+-- Scenario Guard Blocks
 function scenarioGuardBlocks(sc, text)
     if not sc or not text then return false end
     local reply = trim(sc.reply or '')
@@ -486,6 +545,7 @@ function scenarioGuardBlocks(sc, text)
     return false
 end
 
+-- Scenario Visible On Message
 function scenarioVisibleOnMessage(sc, text)
     if not sc or not sc.enabled then return false end
     if sc.action == 'watch' then
@@ -497,9 +557,12 @@ function scenarioVisibleOnMessage(sc, text)
         return false
     end
     if scenarioGuardBlocks(sc, text) then return false end
-    return quickScenarioMatches(sc, text)
+    if not quickScenarioMatches(sc, text) then return false end
+    if quickScenarioNegativeMatches(sc, text) then return false end
+    return true
 end
 
+-- Collect Quick Buttons For Message
 function collectQuickButtonsForMessage(text)
     local cacheKey = normalizeMatchText(text)
     local sig = tostring(scenariosGen) .. '|' .. tostring(#quickScenarios)
@@ -562,6 +625,7 @@ function collectQuickButtonsForMessage(text)
     return out
 end
 
+-- Execute Quick Scenario
 function executeQuickScenario(sc, reporter, messageText)
     if not sc or not reporter then return end
     if sc.action == 'watch' then
@@ -579,7 +643,11 @@ function executeQuickScenario(sc, reporter, messageText)
     end
     text = expandTemplate(text, getResolvedAnsId(reporter))
     local tk = threadStorageKey(reporter)
-    local ok, res = sendOutgoingAns(reporter, text, { threadKey = tk })
+    local ok, res = sendOutgoingAns(reporter, text, {
+        threadKey = tk,
+        scenarioLabel = sc.label or '',
+        scenarioQuestion = messageText or '',
+    })
     if ok then
         clearThreadRuleCooldowns(tk)
         say('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE: ' .. (sc.label or ''))
@@ -588,6 +656,7 @@ function executeQuickScenario(sc, reporter, messageText)
     end
 end
 
+-- Execute Watch Suspect
 function executeWatchSuspect(reporter, suspectId, notifyOverride)
     if not reporter or not suspectId then return end
     local notify = trim(notifyOverride or settings.watch_notify or 'see')
@@ -610,6 +679,7 @@ function executeWatchSuspect(reporter, suspectId, notifyOverride)
     end
 end
 
+-- Normalize Stored Message
 function normalizeStoredMessage(m)
     if type(m) ~= 'table' then return end
     if m.adminNick and m.dir ~= 'system' and m.dir ~= 'out' and m.dir ~= 'event' then
@@ -646,6 +716,7 @@ function normalizeStoredMessage(m)
     end
 end
 
+-- Message Kind
 function messageKind(m)
     if not m then return 'player' end
     if m.kind then return m.kind end
@@ -655,6 +726,7 @@ function messageKind(m)
     return 'player'
 end
 
+-- Message Display Dir
 function messageDisplayDir(m)
     local k = messageKind(m)
     if k == 'action' or k == 'punish' then return 'event' end
@@ -664,6 +736,7 @@ function messageDisplayDir(m)
     return m.dir or 'in'
 end
 
+-- Message Author Key
 function messageAuthorKey(m)
     if not m then return '' end
     local dir = messageDisplayDir(m)
@@ -680,6 +753,7 @@ function messageAuthorKey(m)
     return 'player'
 end
 
+-- Can Group Chat Messages
 function canGroupChatMessages(prev, curr)
     if not prev or not curr then return false end
     local pDir = messageDisplayDir(prev)
@@ -697,6 +771,7 @@ function canGroupChatMessages(prev, curr)
     return true
 end
 
+-- Action Line For Chat
 function actionLineForChat(m, reporter)
     local body = trim(m.text or '')
     local adminNick = trim(m.adminNick or '')
@@ -712,12 +787,14 @@ function actionLineForChat(m, reporter)
     })
 end
 
+-- Truncate
 function truncate(s, n)
     s = trim(s or '')
     if #s <= n then return s end
     return s:sub(1, n - 3) .. '...'
 end
 
+-- Clone Rules
 function cloneRules(src, fromUtf8)
     fromUtf8 = fromUtf8 == true
     local out = {}
@@ -744,25 +821,30 @@ function cloneRules(src, fromUtf8)
     return out
 end
 
+-- Rule Name Exists
 function ruleNameExists(name)
     return false
 end
 
+-- Append Faq Pack Rules
 function appendFaqPackRules()
     return 0
 end
 
+-- Trim Messages
 function trimMessages(msgs)
-    local limit = math.max(20, settings.history_limit or 100)
+    local limit = DEFAULT_HISTORY_LIMIT
     while #msgs > limit do
         table.remove(msgs, 1)
     end
 end
 
+-- Nick Key
 function nickKey(nick)
     return trim(nick or ''):lower()
 end
 
+-- Sync Thread Ids From Player Cache
 function syncThreadIdsFromPlayerCache()
     local dirty = false
     for _, t in pairs(threads) do
@@ -776,6 +858,7 @@ function syncThreadIdsFromPlayerCache()
     if dirty then markDirtyThreads() end
 end
 
+-- Refresh Player Nick Cache
 function refreshPlayerNickCache(force)
     local now = os.clock()
     if not force and playerNickCacheAt > 0 and (now - playerNickCacheAt) < PLAYER_NICK_CACHE_INTERVAL then
@@ -803,6 +886,7 @@ function refreshPlayerNickCache(force)
     return true
 end
 
+-- Find Player Id By Nick
 function findPlayerIdByNick(nick)
     refreshPlayerNickCache(false)
     local nk = nickKey(nick)
@@ -810,6 +894,7 @@ function findPlayerIdByNick(nick)
     return playerNickToId[nk]
 end
 
+-- Find Thread Key By Nick
 function findThreadKeyByNick(nick)
     local nk = nickKey(nick)
     if nk == '' then return nil end
@@ -817,12 +902,14 @@ function findThreadKeyByNick(nick)
     return deskCache.nickKeys[nk]
 end
 
+-- Register Nick Index
 function registerNickIndex(key, t)
     if not key or not t then return end
     local nk = nickKey(t.nick)
     if nk ~= '' then deskCache.nickKeys[nk] = key end
 end
 
+-- Live Nick For Player Id
 function liveNickForPlayerId(id)
     id = tonumber(id)
     if not id or id < 0 then return '' end
@@ -832,6 +919,7 @@ function liveNickForPlayerId(id)
     return ''
 end
 
+-- Find Threads By Player Id
 function findThreadsByPlayerId(id)
     id = tonumber(id)
     local out = {}
@@ -844,6 +932,7 @@ function findThreadsByPlayerId(id)
     return out
 end
 
+-- Threads Same Identity
 function threadsSameIdentity(a, b)
     if not a or not b or a == b then return true end
     if nickKey(a.nick) == nickKey(b.nick) and nickKey(a.nick) ~= '' then return true end
@@ -857,6 +946,7 @@ function threadsSameIdentity(a, b)
     return false
 end
 
+-- Unique Thread Key
 function uniqueThreadKey(base)
     base = trim(base or '')
     if base == '' then base = 'thread' end
@@ -868,6 +958,7 @@ function uniqueThreadKey(base)
     return base .. '#' .. tostring(os.time())
 end
 
+-- Migrate Thread Auxiliaries
 function migrateThreadAuxiliaries(oldKey, newKey)
     if not oldKey or not newKey or oldKey == newKey then return end
     if pendingAuto[oldKey] then
@@ -890,6 +981,7 @@ function migrateThreadAuxiliaries(oldKey, newKey)
     end
 end
 
+-- Migrate Thread Key
 function migrateThreadKey(oldKey, newKey)
     if not oldKey or not newKey or oldKey == newKey then return newKey end
     local src = threads[oldKey]
@@ -929,8 +1021,10 @@ function migrateThreadKey(oldKey, newKey)
     end
     if selectedKey == oldKey then selectedKey = newKey end
     migrateThreadAuxiliaries(oldKey, newKey)
-    registerNickIndex(newKey, threads[newKey])
-    bumpThreadListRev()
+    local moved = threads[newKey]
+    if moved then moved._storageKey = newKey end
+    registerNickIndex(newKey, moved)
+    bumpThreadStructRev()
     markDirtyThreads()
     return newKey
 end

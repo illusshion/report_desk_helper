@@ -1,5 +1,4 @@
---[[ Загрузка превью каталога: PNG/JPG, staging, async pipeline. ]]
-
+--[[ Модуль: загрузка PNG с диска. ]]
 local M = {}
 
 local ffi = require 'ffi'
@@ -11,6 +10,7 @@ local stagingMax = DEFAULT_STAGING_MAX
 local staging = {}
 local stagingOrder = {}
 
+-- Публичный API модуля.
 function M.configure(opts)
     opts = opts or {}
     if opts.maxBytes then
@@ -21,6 +21,7 @@ function M.configure(opts)
     end
 end
 
+-- Touch Staging
 local function touchStaging(ns, id)
     if not stagingOrder[ns] then stagingOrder[ns] = {} end
     local order = stagingOrder[ns]
@@ -33,6 +34,7 @@ local function touchStaging(ns, id)
     order[#order + 1] = id
 end
 
+-- Evict Staging
 local function evictStaging(ns)
     local order = stagingOrder[ns]
     local bucket = staging[ns]
@@ -41,6 +43,7 @@ local function evictStaging(ns)
     if id then bucket[id] = nil end
 end
 
+-- Публичный API модуля.
 function M.readFileBytes(path)
     if not path then return nil end
     local f = io.open(path, 'rb')
@@ -53,6 +56,7 @@ function M.readFileBytes(path)
     return nil
 end
 
+-- Публичный API модуля.
 function M.storeStaging(ns, id, data, meta)
     id = tonumber(id) or id
     if not ns or not id or not data then return end
@@ -64,6 +68,7 @@ function M.storeStaging(ns, id, data, meta)
     end
 end
 
+-- Публичный API модуля.
 function M.hasStaging(ns, id)
     id = tonumber(id) or id
     if not ns or not id then return false end
@@ -71,6 +76,7 @@ function M.hasStaging(ns, id)
     return bucket and bucket[id] ~= nil
 end
 
+-- Публичный API модуля.
 function M.takeStaging(ns, id)
     id = tonumber(id) or id
     if not ns or not id then return nil end
@@ -89,6 +95,7 @@ function M.takeStaging(ns, id)
     return entry.data, entry.meta
 end
 
+-- Публичный API модуля.
 function M.dropStaging(ns, id)
     id = tonumber(id) or id
     if not ns or not id then return end
@@ -104,6 +111,7 @@ function M.dropStaging(ns, id)
     end
 end
 
+-- Публичный API модуля.
 function M.clearStaging(ns)
     if ns then
         staging[ns] = nil
@@ -114,14 +122,17 @@ function M.clearStaging(ns)
     end
 end
 
+-- Публичный API модуля.
 function M.clearNamespace(ns)
     M.clearStaging(ns)
 end
 
+-- Публичный API модуля.
 function M.clearAll()
     M.clearStaging()
 end
 
+-- Публичный API модуля.
 function M.createFromMemory(imgui, data)
     if not imgui or not data or #data <= 0 then return nil end
     if imgui.CreateTextureFromFileInMemory then
@@ -133,10 +144,12 @@ function M.createFromMemory(imgui, data)
     return nil
 end
 
+-- Публичный API модуля.
 function M.decodeTexture(imgui, data, meta)
     return M.createFromMemory(imgui, data)
 end
 
+-- First Existing
 local function firstExisting(paths)
     for _, p in ipairs(paths) do
         if p and doesFileExist(p) then return p end
@@ -144,6 +157,7 @@ local function firstExisting(paths)
     return nil
 end
 
+-- Публичный API модуля.
 function M.resolveSkinPath(dir, entry)
     if not entry or not entry.id then return nil end
     local id = entry.id
@@ -158,6 +172,7 @@ function M.resolveSkinPath(dir, entry)
     return nil
 end
 
+-- Публичный API модуля.
 function M.resolveVehPath(vehDir, overrideDir, entry)
     if not entry or not entry.id then return nil, false end
     local id = entry.id
@@ -182,10 +197,12 @@ function M.resolveVehPath(vehDir, overrideDir, entry)
     return nil, false
 end
 
+-- Публичный API модуля.
 function M.assetExistsSkin(dir, entry)
     return M.resolveSkinPath(dir, entry) ~= nil
 end
 
+-- Публичный API модуля.
 function M.assetExistsVeh(vehDir, overrideDir, entry)
     return M.resolveVehPath(vehDir, overrideDir, entry) ~= nil
 end

@@ -1,4 +1,4 @@
---[[ Report Desk thread model ]]
+--[[ Модуль: треды репортов, сообщения, unread. ]]
 function resolveThread(nick, id)
     nick = trim(nick or '')
     id = tonumber(id)
@@ -53,6 +53,7 @@ function resolveThread(nick, id)
             key = migrateThreadKey(key, wantKey)
             t = threads[key]
         end
+        if t and not t._storageKey then t._storageKey = key end
     else
         key = nk ~= '' and nk or uniqueThreadKey('id' .. tostring(id or 0))
         t = {
@@ -64,22 +65,27 @@ function resolveThread(nick, id)
             unread = 0,
             lastAt = os.time(),
             messages = {},
+            _storageKey = key,
         }
         threads[key] = t
         threadOrder[#threadOrder + 1] = key
+        threadCount = threadCount + 1
         registerNickIndex(key, t)
         markDirtyThreads()
+        bumpThreadStructRev()
         pruneOldThreads()
     end
     registerNickIndex(key, t)
     return key, t
 end
 
+-- Get Thread By Key
 function getThreadByKey(key)
     if not key then return nil end
     return threads[key]
 end
 
+-- Get Selected Thread
 function getSelectedThread()
     if selectedKey and threads[selectedKey] then
         local t = threads[selectedKey]
@@ -91,6 +97,7 @@ function getSelectedThread()
     return nil, nil
 end
 
+-- Resolve Thread For Player Id
 function resolveThreadForPlayerId(id, preferNick)
     id = tonumber(id)
     if not id then return nil, nil end
@@ -147,6 +154,7 @@ function resolveThreadForPlayerId(id, preferNick)
     return nil, nil
 end
 
+-- Get Resolved Ans Id
 function getResolvedAnsId(t)
     if not t then return -1 end
     local live = findPlayerIdByNick(t.nick)
@@ -161,6 +169,7 @@ function getResolvedAnsId(t)
     return tonumber(t.id) or -1
 end
 
+-- Resolve Ans Id For Reply
 function resolveAnsIdForReply(t)
     if not t then return nil, '\xCD\xE5 \xE2\xFB\xE1\xF0\xE0\xED \xE4\xE8\xE0\xEB\xEE\xE3' end
     local rid = tonumber(t.id)
@@ -178,6 +187,7 @@ function resolveAnsIdForReply(t)
     return validateReplyTarget(t)
 end
 
+-- Validate Reply Target
 function validateReplyTarget(t)
     if not t then return nil, '\xCD\xE5 \xE2\xFB\xE1\xF0\xE0\xED \xE4\xE8\xE0\xEB\xEE\xE3' end
     local liveId = findPlayerIdByNick(t.nick)
@@ -196,6 +206,7 @@ function validateReplyTarget(t)
     return liveId, nil
 end
 
+-- Get Thread
 function getThread(id)
     id = tonumber(id)
     if not id then return nil end
@@ -206,11 +217,13 @@ function getThread(id)
     return threads[key]
 end
 
+-- Find Thread By Player Id
 function findThreadByPlayerId(id, preferNick)
     local t = resolveThreadForPlayerId(id, preferNick)
     return t
 end
 
+-- Touch Thread Order
 function touchThreadOrder(key)
     for i, k in ipairs(threadOrder) do
         if k == key then
@@ -219,42 +232,72 @@ function touchThreadOrder(key)
         end
     end
     table.insert(threadOrder, 1, key)
-    bumpThreadListRev()
+    bumpThreadStructRev()
 end
 
+-- Request Chat Scroll Bottom
 function requestChatScrollBottom()
+    if deskInputState.chatFollowBottom == false then return end
     chatScrollToBottom = true
-    deskInputState.chatScrollFrames = 2
+    deskInputState.chatScrollFrames = 3
 end
 
+-- Request Chat Snap Bottom
+function requestChatSnapBottom(threadKey)
+    if not threadKey then return end
+    deskInputState.chatSnapBottomKey = threadKey
+    deskInputState.chatSnapAttempts = 0
+    deskInputState.chatFollowBottom = true
+end
+
+-- Request Chat Scroll For Thread
 function requestChatScrollForThread(threadKey)
     if threadKey and threadKey == selectedKey then
         requestChatScrollBottom()
     end
 end
 
+-- Add Message To Key
 function addMessageToKey(key, msg)
     local t = threads[key]
     if not t then return end
     t.messages[#t.messages + 1] = msg
     trimMessages(t.messages)
     t.lastAt = msg.ts or os.time()
+    if type(lastPreview) == 'function' then
+        t._previewText = lastPreview(t)
+    end
     markDirtyThreads()
-    bumpThreadListRev()
-    invalidateUiCaches()
+    bumpThreadMsgRev()
+    bumpThreadInFilterCache(key)
+    if key == selectedKey then
+        requestChatScrollForThread(key)
+    end
 end
 
-function addMessage(id, msg)
+-- Add Message
+function addMessage(id, msg, keyHint)
+    if keyHint and threads[keyHint] then
+        addMessageToKey(keyHint, msg)
+        return
+    end
     local t = getThread(id)
     if not t then return end
-    for key, th in pairs(threads) do
+    local key = t._storageKey
+    if key and threads[key] == t then
+        addMessageToKey(key, msg)
+        return
+    end
+    for k, th in pairs(threads) do
         if th == t then
-            addMessageToKey(key, msg)
+            t._storageKey = k
+            addMessageToKey(k, msg)
             return
         end
     end
 end
 
+-- Reset Session Unread
 function resetSessionUnread()
     totalUnread = 0
     for _, t in pairs(threads) do
@@ -262,6 +305,7 @@ function resetSessionUnread()
     end
 end
 
+-- Rebuild Thread Order
 function rebuildThreadOrder()
     threadOrder = {}
     local list = {}
@@ -275,20 +319,21 @@ function rebuildThreadOrder()
     for _, e in ipairs(list) do
         threadOrder[#threadOrder + 1] = e.key
     end
+    syncThreadStorageKeys()
     rebuildNickIndex()
-    bumpThreadListRev()
-    invalidateUiCaches()
+    syncThreadCount()
+    bumpThreadStructRev()
 end
 
+-- Count Threads
 function countThreads()
-    local n = 0
-    for _ in pairs(threads) do n = n + 1 end
-    return n
+    return threadCount
 end
 
+-- Prune Old Threads
 function pruneOldThreads()
-    local maxT = math.max(50, tonumber(settings.max_threads) or DEFAULT_MAX_THREADS)
-    local n = countThreads()
+    local maxT = DEFAULT_MAX_THREADS
+    local n = threadCount
     if n <= maxT then return end
     local list = {}
     for key, t in pairs(threads) do
@@ -302,6 +347,7 @@ function pruneOldThreads()
             pendingAuto[e.key] = nil
             threads[e.key] = nil
             n = n - 1
+            threadCount = n
         end
     end
     rebuildThreadOrder()

@@ -1,20 +1,31 @@
---[[ Report Desk utilities ]]
+--[[ Модуль: общие утилиты (строки, кодировки, ingest dedup, sendChat, звуки). ]]
+
 function trim(s)
     return (s or ''):match('^%s*(.-)%s*$') or ''
 end
 
+-- CP1251 → UTF-8 для ImGui (uiText).
 function uiText(s)
-    if not s or s == '' then return '' end
-    if s:find('[\208-\209][\128-\191]') then return s end
-    local ok, r = pcall(function() return u8(s) end)
-    return ok and r or s
+    return cp1251ToUtf8(s or '')
+end
+
+-- CP1251 → UTF-8 для ImGui DrawList (toast profanity, auto-rules preview).
+function catalogWarmupDlUtf(text)
+    return uiText(text or '')
 end
 
 function cp1251ToUtf8(text)
     if not text or text == '' then return '' end
-    if text:find('[\208-\209][\128-\191]') then return text end
+    if isUtf8Text(text) and not text:find('\239\191\189', 1, true) then return text end
     local ok, r = pcall(function() return u8(text) end)
-    return ok and r or text
+    if ok and r and r ~= '' then
+        if r:find('\239\191\189', 1, true) then
+            local okDec, decoded = pcall(function() return u8:decode(text) end)
+            if okDec and decoded and decoded ~= '' then return text end
+        end
+        return r
+    end
+    return text
 end
 
 function utf8ToCp1251(text)
@@ -28,10 +39,30 @@ function isUtf8Text(s)
     return type(s) == 'string' and s:find('[\208-\209][\128-\191]') ~= nil
 end
 
+-- Повреждённая кодировка (UTF-8 replacement / «пїЅ» после двойной конвертации).
+function looksCorruptedConfigText(s)
+    if not s or s == '' then return false end
+    if s:find('\239\191\189', 1, true) then return true end
+    local preview = cp1251ToUtf8(s)
+    if preview:find('\239\191\189', 1, true) then return true end
+    if preview:find('пї', 1, true) then return true end
+    return false
+end
+
+-- Нормализация текста при загрузке/сохранении config.
 function normalizeStoredText(s, fromUtf8)
     if not s or s == '' then return '' end
-    if fromUtf8 then return utf8ToCp1251(s) end
+    if fromUtf8 or isUtf8Text(s) then return utf8ToCp1251(s) end
     return s
+end
+
+-- Восстановление текста настроек при битой кодировке в config.
+function repairStoredConfigText(s, fallback)
+    s = trim(s or '')
+    if s == '' or looksCorruptedConfigText(s) then
+        return fallback or ''
+    end
+    return normalizeStoredText(s, isUtf8Text(s))
 end
 
 function configStoreText(s)
@@ -72,6 +103,7 @@ function profanityHasContent(list)
     return false
 end
 
+-- Чтение ImGui InputText (UTF-8) → CP1251 для SAMP.
 function readInputBuf(buf)
     local ok, s = pcall(function()
         return ffi.string(buf):match('^[^%z]*') or ''
@@ -89,15 +121,80 @@ function toU32(col)
     return imgui.ColorConvertFloat4ToU32(col)
 end
 
+-- Убирает SAMP color tags {RRGGBB}.
 function stripTags(s)
     return (s or ''):gsub('{[%x]+}', '')
 end
 
+-- SAMP color → uint32 (отрицательные int32 → unsigned).
 function normColor(c)
     if not c then return 0 end
     c = tonumber(c) or 0
     if c < 0 then c = c + 4294967296 end
     return c
+end
+
+-- SAMP int32 0xRRGGBBAA → {RRGGBB} (GetPlayerColor >>> 8).
+function sampColorToChatHex(c)
+    c = normColor(c)
+    if c == 0 then return nil end
+    if bit then
+        return string.format('%06X', bit.band(bit.rshift(c, 8), 0xFFFFFF))
+    end
+    return string.format('%06X', math.floor(c / 256) % 0x1000000)
+end
+
+-- Кэш clist: onPlayerJoin / onSetPlayerColor / onPlayerStreamIn (как в TAB).
+function sampStorePlayerColor(playerId, color)
+    if type(deskCache) ~= 'table' then return end
+    if type(deskCache.sampPlayerColors) ~= 'table' then
+        deskCache.sampPlayerColors = {}
+    end
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return end
+    color = normColor(color)
+    if color == 0 then return end
+    deskCache.sampPlayerColors[playerId] = color
+end
+
+function sampClearPlayerColor(playerId)
+    if type(deskCache) ~= 'table' or type(deskCache.sampPlayerColors) ~= 'table' then return end
+    playerId = tonumber(playerId)
+    if playerId then deskCache.sampPlayerColors[playerId] = nil end
+end
+
+function sampPlayerColorChatHex(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return nil end
+    local colors = type(deskCache) == 'table' and deskCache.sampPlayerColors
+    local c = colors and colors[playerId]
+    if not c and type(sampGetPlayerColor) == 'function' and type(sampIsPlayerConnected) == 'function' then
+        if sampIsPlayerConnected(playerId) then
+            local ok, live = pcall(sampGetPlayerColor, playerId)
+            if ok and live then
+                sampStorePlayerColor(playerId, live)
+                c = deskCache.sampPlayerColors[playerId]
+            end
+        end
+    end
+    if c and c ~= 0 then return sampColorToChatHex(c) end
+    return nil
+end
+
+function sampSyncAllPlayerColors()
+    if type(isSampAvailable) ~= 'function' or not isSampAvailable() then return end
+    if type(sampIsPlayerConnected) ~= 'function' or type(sampGetPlayerColor) ~= 'function' then return end
+    local maxId = 1000
+    if type(sampGetMaxPlayerId) == 'function' then
+        local ok, m = pcall(sampGetMaxPlayerId)
+        if ok and m then maxId = tonumber(m) or maxId end
+    end
+    for id = 0, maxId do
+        if sampIsPlayerConnected(id) then
+            local ok, c = pcall(sampGetPlayerColor, id)
+            if ok and c then sampStorePlayerColor(id, c) end
+        end
+    end
 end
 
 function isReportColor(color)
@@ -120,6 +217,7 @@ function normalizeIngestBody(body)
     return trim(stripTags(body or '')):lower()
 end
 
+-- Типичные опечатки в репортах для fuzzy match правил.
 local MATCH_TYPO_WORDS = {
     ['рабоать'] = 'работать',
     ['работаь'] = 'работать',
@@ -148,6 +246,7 @@ function normalizeMatchTextTypo(s)
     return table.concat(words, ' ')
 end
 
+-- Три варианта текста для trigger match (exact / lower / typo).
 function matchMessageVariants(body)
     local msg = normalizeMatchText(body)
     local msgAlt = normalizeIngestBody(body)
@@ -170,8 +269,101 @@ function invalidateUiCaches()
     deskCache.quickBtnGen = -1
 end
 
+function invalidateFilterCache()
+    deskCache.filterKeys = nil
+    deskCache.filterSig = ''
+end
+
+function bumpThreadStructRev()
+    deskCache.threadStructRev = (deskCache.threadStructRev or 0) + 1
+    deskCache.threadRev = deskCache.threadStructRev
+    invalidateFilterCache()
+end
+
+function bumpThreadMsgRev()
+    deskCache.threadMsgRev = (deskCache.threadMsgRev or 0) + 1
+end
+
 function bumpThreadListRev()
-    deskCache.threadRev = deskCache.threadRev + 1
+    bumpThreadStructRev()
+end
+
+function syncThreadCount()
+    local n = 0
+    for _ in pairs(threads) do n = n + 1 end
+    threadCount = n
+end
+
+function syncThreadStorageKeys()
+    for key, t in pairs(threads) do
+        if t then
+            t._storageKey = key
+            if type(lastPreview) == 'function' and not t._previewText then
+                t._previewText = lastPreview(t)
+            end
+        end
+    end
+end
+
+function threadSortBefore(a, b)
+    local ta, tb = threads[a], threads[b]
+    if not ta or not tb then return a < b end
+    if ta.pinned ~= tb.pinned then return ta.pinned end
+    return (ta.lastAt or 0) > (tb.lastAt or 0)
+end
+
+function findFilterInsertPos(keys, key)
+    for i = 1, #keys do
+        if threadSortBefore(key, keys[i]) then return i end
+    end
+    return #keys + 1
+end
+
+function bumpThreadInFilterCache(key)
+    if not key or not deskCache.filterKeys then return end
+    if type(getFilterListSig) ~= 'function' then return end
+    if type(threadMatchesFilter) ~= 'function' or type(threadMatchesSearch) ~= 'function' then return end
+    local sig = getFilterListSig()
+    if deskCache.filterSig ~= sig then return end
+    local t = threads[key]
+    if not t then return end
+    local keys = deskCache.filterKeys
+    for i = #keys, 1, -1 do
+        if keys[i] == key then
+            table.remove(keys, i)
+            break
+        end
+    end
+    if threadMatchesFilter(t) and threadMatchesSearch(t, key) then
+        table.insert(keys, findFilterInsertPos(keys, key), key)
+    end
+end
+
+function invalidateEllipsizeCache()
+    deskCache.ellipsize = {}
+    deskCache.ellipsizeOrder = {}
+end
+
+local ELLIPSIZE_CACHE_MAX = 512
+
+function ellipsizeCacheGet(cacheKey)
+    return deskCache.ellipsize[cacheKey]
+end
+
+function ellipsizeCachePut(cacheKey, value)
+    if deskCache.ellipsize[cacheKey] then return end
+    deskCache.ellipsize[cacheKey] = value
+    local order = deskCache.ellipsizeOrder
+    order[#order + 1] = cacheKey
+    while #order > ELLIPSIZE_CACHE_MAX do
+        local old = table.remove(order, 1)
+        if old then deskCache.ellipsize[old] = nil end
+    end
+end
+
+function bumpComposerQuickGen()
+    deskCache.composerQuickGen = (deskCache.composerQuickGen or 0) + 1
+    deskCache.composerQuickItems = nil
 end
 
 function rebuildNickIndex()
@@ -190,6 +382,7 @@ function bumpScenariosGen()
     deskCache.quickBtn = {}
 end
 
+-- LRU-подобная timed map с порядком eviction.
 function touchTimedMap(map, order, key)
     if not key or key == '' then return end
     local now = os.clock()
@@ -233,6 +426,7 @@ function pruneProfLineSeen()
     end
 end
 
+-- Периодическая очистка dedup-карт (ingest, auto, outbound echo, profanity).
 function pruneAllTimedMaps()
     pruneTimedMap(RECENT.ingest, RECENT.ingestOrd, TIMED_MAP_MAX_AGE)
     pruneTimedMap(RECENT.auto, RECENT.autoOrd, TIMED_MAP_MAX_AGE)
@@ -280,7 +474,7 @@ end
 function shouldSkipAutoFire(t, body)
     local key = autoFireKey(t, body)
     local prev = RECENT.auto[key]
-    if prev and (os.clock() - prev) < 6.0 then return true end
+    if prev and (os.clock() - prev) < 6.0 then return true end  -- dedup auto-rules, сек
     return false
 end
 
@@ -343,13 +537,66 @@ function markReportLineConsumed(rawLine)
     end
 end
 
+-- Можно ли слать auto-reply (не пауза, SAMP доступен).
 function deskAutoReplyAllowed()
     if not isSampAvailable() then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     if isGamePaused and isGamePaused() then return false end
+    if deskAdminPlayerPaused() then return false end
     return true
 end
 
+function deskAdminPlayerPaused()
+    if not isSampAvailable() then return false end
+    if type(sampIsPlayerPaused) ~= 'function' or type(sampGetPlayerIdByCharHandle) ~= 'function' then
+        return false
+    end
+    if not PLAYER_PED or type(doesCharExist) ~= 'function' or not doesCharExist(PLAYER_PED) then
+        return false
+    end
+    local ok, myId = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
+    if not ok or not myId then return false end
+    local ok2, paused = pcall(sampIsPlayerPaused, myId)
+    return ok2 and paused == true
+end
+
+local deskAdminPauseTracked = false
+
+function deskTickAdminPauseState()
+    local paused = deskAdminPlayerPaused()
+    local was = deskAdminPauseTracked
+    if paused and not was then
+        if type(clearAllPendingAuto) == 'function' then
+            pcall(clearAllPendingAuto)
+        end
+    elseif was and not paused then
+        pcall(seedSeenChatLines)
+    end
+    deskAdminPauseTracked = paused
+end
+
+-- ESC / pause menu — скрыть игровые HUD-оверлеи Report Desk.
+function deskGameMenuOpen()
+    if isPauseMenuActive and isPauseMenuActive() then return true end
+    if isGamePaused and isGamePaused() then return true end
+    return false
+end
+
+-- Локальный игрок заспawnился (не меню подключения / загрузка).
+function deskSampInGame()
+    if type(isSampAvailable) ~= 'function' or not isSampAvailable() then return false end
+    if type(sampIsLocalPlayerSpawned) == 'function' then
+        local ok, spawned = pcall(sampIsLocalPlayerSpawned)
+        return ok and spawned == true
+    end
+    if type(sampGetGamestate) == 'function' then
+        local ok, gs = pcall(sampGetGamestate)
+        return ok and gs == 3
+    end
+    return false
+end
+
+-- При старте помечает текущий буфер чата как «уже виденный» (anti-replay poll).
 function seedSeenChatLines()
     chatSeen.lines = {}
     chatSeen.order = {}
@@ -379,6 +626,7 @@ function normalizeForMatch(s)
     return s
 end
 
+-- Unix time в московской TZ (UTC+3).
 function moscowTimestamp()
     local now = os.time()
     local utc = os.time(os.date('!*t', now))
@@ -400,6 +648,7 @@ function moscowDateParts()
     return time, dateOnly, datetime
 end
 
+-- Подстановка {time}/{date}/{datetime}/{id} в шаблоны ответов.
 function expandTemplate(template, playerId)
     template = tostring(template or '')
     if template:find('{time}', 1, true) or template:find('{date}', 1, true)
@@ -427,12 +676,60 @@ end
 
 local TEMPLATE_PAYLOAD_HINT = '{datetime} {time} {date} {id}'
 
+-- Экранные координаты курсора (не зависят от imgui.DisableInput).
+function deskWin32MousePos()
+    if type(getCursorPos) == 'function' then
+        local ok, x, y = pcall(getCursorPos)
+        if ok and x and y then return x, y end
+    end
+    return nil, nil
+end
+
+function deskPointInRect(mx, my, r)
+    if not r or mx == nil or my == nil then return false end
+    return mx >= r.x0 and mx < r.x1 and my >= r.y0 and my < r.y1
+end
+
+function deskPointerInRect(r)
+    local mx, my = deskWin32MousePos()
+    return deskPointInRect(mx, my, r)
+end
+
+-- require()-модули (/sp menu, vehicle HUD) читают из _G, не из bundle env.
+_G.deskWin32MousePos = deskWin32MousePos
+_G.deskPointInRect = deskPointInRect
+_G.deskPointerInRect = deskPointerInRect
+
 function sendChat(line)
     line = trim(line)
     if line == '' then return false end
+    local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    local spId = cmdBody:match('^sp%s+(%d+)%s*$')
+    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+        local skip = deskCache and tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0
+        if not skip then
+            pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+        end
+    end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
     if type(sampSendChat) ~= 'function' then return false end
     return pcall(sampSendChat, line)
+end
+
+-- Меню /sp: sampSendChat идёт через onSendCommand — skipSpHookLocal не дублирует локальный /sp.
+function sendMenuOutbound(line)
+    line = trim(line)
+    if line == '' then return false end
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+    end
+    local ok = sendChat(line)
+    if type(cache) == 'table' then
+        local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
+        cache.skipSpHookLocal = n > 0 and n or nil
+    end
+    return ok
 end
 
 function playDeskAlertSound()
@@ -454,4 +751,3 @@ function playProfanityAlertSound()
     if settings.profanity_filter_sound == false then return end
     playDeskAlertSound()
 end
-

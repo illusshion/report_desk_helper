@@ -1,12 +1,14 @@
---[[ Адаптивная сетка каталога (скины / транспорт) с виртуальным скроллом ]]
+--[[ Модуль: сетка каталога skin/veh. ]]
 local imgui = require 'mimgui'
 
 local M = {}
 
+-- Row Total Width
 local function rowTotalWidth(cols, cellW, gap)
     return cols * cellW + math.max(0, cols - 1) * gap
 end
 
+-- Публичный API модуля.
 function M.contentWidth(opts)
     opts = opts or {}
     local w = imgui.GetContentRegionAvail().x
@@ -17,6 +19,7 @@ function M.contentWidth(opts)
     return math.max(80, w - margin)
 end
 
+-- Публичный API модуля.
 function M.compute(availW, aspectH, opts)
     opts = opts or {}
     local gap = opts.gap or 6
@@ -129,10 +132,12 @@ function M.drawVirtual(items, layout, drawCell, opts)
     imgui.Dummy(imgui.ImVec2(1, 1))
 end
 
+-- Публичный API модуля.
 function M.draw(items, layout, drawCell, opts)
     M.drawVirtual(items, layout, drawCell, opts)
 end
 
+-- Публичный API модуля.
 function M.fitPreview(baseW, baseH, maxW)
     maxW = maxW or baseW
     if maxW >= baseW - 4 then

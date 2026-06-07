@@ -1,4 +1,4 @@
---[[ Report Desk cheats / marker ]]
+--[[ Модуль: admin cheats (GM, WH, airbreak, marker, TP). ]]
 function vkToLabel(vk)
     vk = tonumber(vk) or 0
     if vk <= 0 then return '?' end
@@ -22,6 +22,7 @@ function vkToLabel(vk)
     return string.format('0x%02X', vk)
 end
 
+-- Cheats Inputs Blocked
 function cheatsInputsBlocked()
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
     if sampIsDialogActive and sampIsDialogActive() then return true end
@@ -31,6 +32,7 @@ function cheatsInputsBlocked()
     return false
 end
 
+-- Desk hook/helper.
 function deskSyncInputFocusState()
     if not showWindow[0] then
         deskInputState.replyFocused = false
@@ -39,11 +41,27 @@ function deskSyncInputFocusState()
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then
-        deskInputState.keyboardStickyUntil = os.clock() + 0.85
+    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard))
+        or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
+    if typing then
+        deskInputState.replyFocused = true
+    elseif deskInputState.replyFocused and deskInputState.keyboardStickyUntil <= os.clock() then
+        deskInputState.replyFocused = false
     end
 end
 
+-- Desk hook/helper.
+function deskKeepInputOnActiveItem()
+    local active = false
+    if imgui.IsItemActive then active = imgui.IsItemActive() end
+    if not active and imgui.IsItemFocused then active = imgui.IsItemFocused() end
+    if active or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
+        deskInputState.keyboardStickyUntil = os.clock() + 0.12
+        deskInputState.replyFocused = true
+    end
+end
+
+-- Desk hook/helper.
 function deskWindowWantsKeyboard()
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
@@ -58,7 +76,9 @@ function deskWindowWantsKeyboard()
     return false
 end
 
+-- Desk hook/helper.
 function deskImguiTypingActive()
+    if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
     if deskInputState.replyFocused then return true end
@@ -69,16 +89,19 @@ function deskImguiTypingActive()
     return false
 end
 
+-- Desk hook/helper.
 function deskTextInputActive()
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
     return deskImguiTypingActive()
 end
 
+-- Desk hook/helper.
 function deskModifierKeysDown()
     if not vkeys then return false end
     return isVkDown(vkeys.VK_SHIFT) or isVkDown(vkeys.VK_MENU) or isVkDown(vkeys.VK_CONTROL)
 end
 
+-- Is Vk Down
 function isVkDown(vk)
     vk = tonumber(vk) or 0
     if vk <= 0 then return false end
@@ -89,10 +112,12 @@ function isVkDown(vk)
     return isKeyDown and isKeyDown(vk)
 end
 
+-- Cheat Mod Down
 function cheatModDown(vk)
     return isVkDown(vk)
 end
 
+-- Cheat Modifiers Match
 function cheatModifiersMatch(c, prefix)
     if c[prefix .. '_ctrl'] and not cheatModDown(vkeys.VK_CONTROL) then return false end
     if c[prefix .. '_shift'] and not cheatModDown(vkeys.VK_SHIFT) then return false end
@@ -100,6 +125,7 @@ function cheatModifiersMatch(c, prefix)
     return true
 end
 
+-- Cheat Bind Label
 function cheatBindLabel(c, prefix)
     local parts = {}
     if c[prefix .. '_ctrl'] then parts[#parts + 1] = 'Ctrl' end
@@ -116,6 +142,7 @@ function cheatBindLabel(c, prefix)
     return uiText(s)
 end
 
+-- Is Cheat Bind Hit
 function isCheatBindHit(vk)
     vk = tonumber(vk) or 0
     if vk <= 0 then return false end
@@ -131,6 +158,7 @@ function isCheatBindHit(vk)
     return false
 end
 
+-- Is Cheat Bind Pressed
 function isCheatBindPressed(c, prefix)
     if cheatsInputsBlocked() then return false end
     if deskTextInputActive() and deskModifierKeysDown() then return false end
@@ -146,6 +174,7 @@ function isCheatBindPressed(c, prefix)
     return isCheatBindHit(key1)
 end
 
+-- Cheats Read Nt Settings
 function cheatsReadNtSettings()
     if not sampGetServerSettingsPtr then return nil end
     local ptr = sampGetServerSettingsPtr()
@@ -157,6 +186,7 @@ function cheatsReadNtSettings()
     }
 end
 
+-- Cheats Apply Wallhack
 function cheatsApplyWallhack(on)
     if not sampGetServerSettingsPtr then return end
     local ptr = sampGetServerSettingsPtr()
@@ -185,6 +215,7 @@ function cheatsApplyWallhack(on)
     if uiCheatWh then uiCheatWh[0] = cheatState.wallhack end
 end
 
+-- Cheats Apply Godmode
 function cheatsApplyGodmode(on)
     cheatState.godmode = on and true or false
     if uiCheatGm then uiCheatGm[0] = cheatState.godmode end
@@ -197,6 +228,7 @@ function cheatsApplyGodmode(on)
     end
 end
 
+-- Cheats Set Airbreak
 function cheatsSetAirbreak(on)
     ensureCheatsSettings()
     local wasOn = cheatState.airbreak
@@ -234,6 +266,7 @@ function cheatsSetAirbreak(on)
     end
 end
 
+-- Cheats Write Placement At
 function cheatsWritePlacementAt(entityPtr, x, y, z)
     if not entityPtr or entityPtr == 0 then return false end
     if not readMemory or not writeMemory or not representFloatAsInt then return false end
@@ -246,6 +279,7 @@ function cheatsWritePlacementAt(entityPtr, x, y, z)
     return true
 end
 
+-- Cheats Ab Key Down
 function cheatsAbKeyDown(vk)
     if sampIsChatInputActive and sampIsChatInputActive() then return false end
     if sampIsDialogActive and sampIsDialogActive() then return false end
@@ -253,6 +287,7 @@ function cheatsAbKeyDown(vk)
     return isVkDown(vk)
 end
 
+-- Cheats Camera Axes XY
 function cheatsCameraAxesXY()
     local cx, cy, cz = getActiveCameraCoordinates()
     local fx, fy = 0, 1
@@ -306,6 +341,7 @@ function cheatsCameraAxesXY()
     return fx, fy, rx, ry
 end
 
+-- Cheats Sync Heading To Camera
 function cheatsSyncHeadingToCamera(fx, fy)
     local h = math.deg(math.atan2(-fx, fy))
     if h < 0 then h = h + 360 end
@@ -317,6 +353,7 @@ function cheatsSyncHeadingToCamera(fx, fy)
     end
 end
 
+-- Cheats Apply Placement Delta
 function cheatsApplyPlacementDelta(dx, dy, dz)
     if not doesCharExist or not doesCharExist(PLAYER_PED) then return end
     if isCharInAnyCar(PLAYER_PED) then
@@ -340,6 +377,7 @@ function cheatsApplyPlacementDelta(dx, dy, dz)
     setCharCoordinates(PLAYER_PED, nx, ny, nz)
 end
 
+-- Cheats Get Ab Speed
 function cheatsGetAbSpeed()
     if cheatState.abSpeedLive ~= nil then
         return cheatState.abSpeedLive
@@ -348,6 +386,7 @@ function cheatsGetAbSpeed()
     return tonumber(settings.cheats.ab_speed) or 1.0
 end
 
+-- Cheats Ab Adjust Speed
 function cheatsAbAdjustSpeed(delta)
     local spd = cheatsGetAbSpeed()
     local newSpd = math.max(0.05, math.min(3.0, spd + delta))
@@ -361,6 +400,7 @@ function cheatsAbAdjustSpeed(delta)
     uiCheatAbSpeed[0] = newSpd
 end
 
+-- Cheats Reset Ab Key Hold
 function cheatsResetAbKeyHold()
     cheatState.abKeyHold.q.held = false
     cheatState.abKeyHold.q.nextAt = 0
@@ -368,6 +408,7 @@ function cheatsResetAbKeyHold()
     cheatState.abKeyHold.e.nextAt = 0
 end
 
+-- Cheats Tick Airbreak Speed Keys
 function cheatsTickAirbreakSpeedKeys()
     if not cheatState.airbreak then return end
     local now = os.clock()
@@ -392,6 +433,7 @@ function cheatsTickAirbreakSpeedKeys()
     tickKey(vkeys.VK_E, 'e', AB_SPEED_STEP)
 end
 
+-- Cheats Tick Airbreak Movement
 function cheatsTickAirbreakMovement()
     if not cheatState.airbreak then return end
     if not doesCharExist or not doesCharExist(PLAYER_PED) then return end
@@ -437,6 +479,7 @@ function cheatsTickAirbreakMovement()
     end
 end
 
+-- Cheats Toggle Godmode
 function cheatsToggleGodmode()
     cheatsApplyGodmode(not cheatState.godmode)
     if cheatState.godmode and isCharInAnyCar(PLAYER_PED) then
@@ -450,14 +493,17 @@ function cheatsToggleGodmode()
     end
 end
 
+-- Cheats Toggle Wallhack
 function cheatsToggleWallhack()
     cheatsApplyWallhack(not cheatState.wallhack)
 end
 
+-- Cheats Toggle Airbreak
 function cheatsToggleAirbreak()
     cheatsSetAirbreak(not cheatState.airbreak)
 end
 
+-- Desk hook/helper.
 function deskHotkeyBlockedByMarkerWheel(vk)
     ensureCheatsSettings()
     if settings.cheats.marker_wheel == false then return false end
@@ -468,6 +514,7 @@ function deskHotkeyBlockedByMarkerWheel(vk)
     return vk == mk
 end
 
+-- Cheats Process Keybinds
 function cheatsProcessKeybinds()
     if deskInputState.playerSpectating and deskModifierKeysDown() then return end
     ensureCheatsSettings()
@@ -487,6 +534,7 @@ function cheatsProcessKeybinds()
     end
 end
 
+-- Cheats Apply Startup
 function cheatsApplyStartup()
     ensureCheatsSettings()
     local c = settings.cheats
@@ -495,6 +543,7 @@ function cheatsApplyStartup()
     uiCheatAbSpeed[0] = tonumber(c.ab_speed) or 1.0
 end
 
+-- Cheats Maintain
 function cheatsMaintain()
     if not sampIsLocalPlayerSpawned or not sampIsLocalPlayerSpawned() then return end
     if not doesCharExist or not doesCharExist(PLAYER_PED) then return end
@@ -506,6 +555,7 @@ function cheatsMaintain()
     if cheatState.wallhack then cheatsApplyWallhack(true) end
 end
 
+-- Cheats Cleanup
 function cheatsCleanup()
     markerSetMode(false)
     if cheatState.airbreak then cheatsSetAirbreak(false) end
@@ -514,6 +564,7 @@ function cheatsCleanup()
     cheatState.ntBackup = nil
 end
 
+-- Marker Remove3d
 function markerRemove3d()
     local m = cheatState.marker
     if m.userMarker then
@@ -522,6 +573,7 @@ function markerRemove3d()
     end
 end
 
+-- Marker Set Cursor
 function markerSetCursor(on)
     if on then
         if sampSetCursorMode and CMODE_LOCKCAM then
@@ -534,6 +586,7 @@ function markerSetCursor(on)
     end
 end
 
+-- Marker Set Mode
 function markerSetMode(on)
     local m = cheatState.marker
     if on then
@@ -561,10 +614,12 @@ function markerSetMode(on)
     end
 end
 
+-- Marker Toggle Mode
 function markerToggleMode()
     markerSetMode(not cheatState.marker.active)
 end
 
+-- Marker Find Samp Vehicle Id
 function markerFindSampVehicleId(carHandle)
     if not carHandle or not doesVehicleExist(carHandle) then return nil end
     if sampGetVehicleIdByCarHandle then
@@ -605,6 +660,7 @@ function deskGetCarFreeSeat(car)
     return nil
 end
 
+-- Marker Resolve Car And Vid
 function markerResolveCarAndVid(carHandle)
     if not carHandle or not doesVehicleExist(carHandle) then
         return nil, nil
@@ -619,10 +675,12 @@ function markerResolveCarAndVid(carHandle)
     return carHandle, vid
 end
 
+-- Marker Write Placement Coords
 function markerWritePlacementCoords(entityPtr, x, y, z)
     return cheatsWritePlacementAt(entityPtr, x, y, z)
 end
 
+-- Marker Teleport At
 function markerTeleportAt(x, y, z)
     if not doesCharExist(PLAYER_PED) then return end
     if isCharInAnyCar(PLAYER_PED) then
@@ -659,11 +717,13 @@ local DESK_ENTER_VEH_BUSY_TIMEOUT = 8.0
 local deskEnterVehBusy = false
 local deskEnterVehBusySince = 0
 
+-- Desk hook/helper.
 function deskEnterVehBusyClear()
     deskEnterVehBusy = false
     deskEnterVehBusySince = 0
 end
 
+-- Desk hook/helper.
 function deskEnterVehBusyClaim()
     if deskEnterVehBusy then
         if deskEnterVehBusySince > 0 and os.clock() - deskEnterVehBusySince > DESK_ENTER_VEH_BUSY_TIMEOUT then
@@ -677,6 +737,7 @@ function deskEnterVehBusyClaim()
     return true
 end
 
+-- Desk hook/helper.
 function deskMyVehicleSampId()
     if not isCharInAnyCar(PLAYER_PED) then return nil, nil end
     local car = storeCarCharIsInNoSave(PLAYER_PED)
@@ -685,6 +746,7 @@ function deskMyVehicleSampId()
     return car, vid
 end
 
+-- Desk hook/helper.
 function deskWaitEnterRpc(vehId, timeoutMs)
     vehId = tonumber(vehId)
     if not vehId then return false end
@@ -699,6 +761,7 @@ function deskWaitEnterRpc(vehId, timeoutMs)
     return select(2, deskMyVehicleSampId()) == vehId
 end
 
+-- Desk hook/helper.
 function deskPlaceBesideCar(car)
     if not car or not doesVehicleExist(car) then return false end
     if isCharInAnyCar(PLAYER_PED) then return false end
@@ -717,6 +780,7 @@ function deskPlaceBesideCar(car)
     return true
 end
 
+-- Desk hook/helper.
 function deskLeaveCurrentVehicleIfNeeded(targetVid)
     targetVid = tonumber(targetVid)
     local car, vid = deskMyVehicleSampId()
@@ -739,6 +803,7 @@ function deskLeaveCurrentVehicleIfNeeded(targetVid)
     return not isCharInAnyCar(PLAYER_PED)
 end
 
+-- Desk hook/helper.
 function deskEnterVehicleSamp(vehId, carHandle)
     vehId = tonumber(vehId)
     if not vehId or vehId < 0 then return false end
@@ -795,6 +860,7 @@ function deskEnterVehicleSamp(vehId, carHandle)
     return select(2, deskMyVehicleSampId()) == vehId
 end
 
+-- Desk hook/helper.
 function deskEnterVehicleAsync(vehId, carHandle, onDone)
     if not deskEnterVehBusyClaim() then
         if onDone then onDone(false, '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF') end
@@ -825,6 +891,7 @@ function deskEnterVehicleAsync(vehId, carHandle, onDone)
     return true
 end
 
+-- Marker Enter Vehicle
 function markerEnterVehicle(car, pick)
     if not car or not doesVehicleExist(car) then
         return false, '\xCD\xE5\xF2 \xEC\xE0\xF8\xE8\xED\xFB'
@@ -854,6 +921,7 @@ function markerEnterVehicle(car, pick)
     return true
 end
 
+-- Marker Teleport To
 function markerTeleportTo(pick)
     if not pick or not pick.x then return end
     if cheatState.airbreak then cheatsSetAirbreak(false) end
@@ -881,11 +949,13 @@ function markerTeleportTo(pick)
     markerTeleportAt(x, y, z)
 end
 
+-- Marker Resolve Vehicle Id
 function markerResolveVehicleId(car)
     if not car or not doesVehicleExist(car) then return nil end
     return markerFindSampVehicleId(car)
 end
 
+-- Marker Pick Target
 function markerPickTarget(screenX, screenY)
     if not convertScreenCoordsToWorld3D or not processLineOfSight then return nil end
     local wx, wy, wz = convertScreenCoordsToWorld3D(screenX, screenY, 700.0)
@@ -927,6 +997,7 @@ function markerPickTarget(screenX, screenY)
     }
 end
 
+-- Marker Execute Teleport
 function markerExecuteTeleport(pick)
     if not pick then return end
     local m = cheatState.marker
@@ -947,6 +1018,7 @@ function markerExecuteTeleport(pick)
     markerSetMode(false)
 end
 
+-- Cheats Tick Marker
 function cheatsTickMarker()
     local m = cheatState.marker
     if not m.active then return end
@@ -1000,6 +1072,7 @@ function cheatsTickMarker()
     end
 end
 
+-- Sync Cheats Ui From Settings
 function syncCheatsUiFromSettings()
     ensureCheatsSettings()
     local c = settings.cheats
@@ -1014,89 +1087,191 @@ function syncCheatsUiFromSettings()
     cheatsUiSynced = true
 end
 
+local CHEATS_HUD_W = 54
+local CHEATS_HUD_H = 68
+local CHEATS_HUD_PAD_X = 10
+local CHEATS_HUD_PAD_Y = 8
+local CHEATS_HUD_LINE_H = 16
+local CHEATS_HUD_LABEL_W = 96
+local CHEATS_OVERLAY_PANEL_W = 188
+local CHEATS_AB_HUD_W = 108
+local CHEATS_AB_HUD_H = 28
+local CHEATS_AB_HUD_SIDE_PAD = 12
+
+local CHEATS_HUD_LINES = {
+    { 'WH', function() return cheatState.wallhack end },
+    { 'GM', function() return cheatState.godmode end },
+    { 'AB', function() return cheatState.airbreak end },
+}
+
+-- Cheats Hud Wants Input
 function cheatsHudWantsInput()
-    if cheatState.hudDrag.active then return true end
+    if cheatState.hudDrag and cheatState.hudDrag.active then return true end
     if cheatState.hudHovered then return true end
-    local r = cheatState.hudRect
-    if not r then return false end
-    local mp = imgui.GetIO().MousePos
-    return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+    if deskPointerInRect(cheatState.hudRect) then return true end
+    if settings and settings.cheats and settings.cheats.show_hud ~= false then
+        local hx = tonumber(settings.cheats.hud_x) or 12
+        local hy = tonumber(settings.cheats.hud_y) or 80
+        local est = { x0 = hx, y0 = hy, x1 = hx + CHEATS_HUD_W, y1 = hy + CHEATS_HUD_H }
+        if deskPointerInRect(est) then return true end
+    end
+    return false
 end
 
+-- Cheats Hud Drag Active
+function cheatsIsHudDragActive()
+    return cheatState.hudDrag and cheatState.hudDrag.active == true
+end
+
+-- Cheats Clamp Hud Pos
+local function cheatsClampHudPos(hx, hy, winW, winH)
+    local sw, sh = 1280, 720
+    if getScreenResolution then
+        local rw, rh = getScreenResolution()
+        if rw and rw > 0 then sw = rw end
+        if rh and rh > 0 then sh = rh end
+    end
+    winW = math.max(CHEATS_HUD_W, tonumber(winW) or CHEATS_HUD_W)
+    winH = math.max(CHEATS_HUD_H, tonumber(winH) or CHEATS_HUD_H)
+    hx = math.max(8, math.min(hx, sw - winW - 8))
+    hy = math.max(8, math.min(hy, sh - winH - 8))
+    return hx, hy
+end
+
+-- Cheats Persist Hud Pos
+local function cheatsPersistHudPos(hx, hy, winW, winH)
+    hx, hy = cheatsClampHudPos(hx, hy, winW, winH)
+    settings.cheats.hud_x = math.floor(hx + 0.5)
+    settings.cheats.hud_y = math.floor(hy + 0.5)
+    if markDirtySettings then markDirtySettings() end
+    return hx, hy
+end
+
+-- Cheats Overlay Theme
+local function cheatsOverlayTheme()
+    local t = package.loaded['report_desk_sp_theme']
+    if not t then
+        local ok, mod = pcall(require, 'report_desk_sp_theme')
+        if ok then t = mod end
+    end
+    if t and toU32 and t.setColorConverter then
+        pcall(t.setColorConverter, toU32)
+    end
+    return t
+end
+
+-- Draw Cheats Hud Labels
+local function drawCheatsHudLabels(wp)
+    if not wp or not toU32 then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+    local scale = 1.12
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    for i, row in ipairs(CHEATS_HUD_LINES) do
+        local on = row[2]()
+        local col = on and col_accent or col_muted2
+        local label = row[1]
+        local y = wp.y + CHEATS_HUD_PAD_Y + (i - 1) * CHEATS_HUD_LINE_H
+        dl:AddText(imgui.ImVec2(wp.x + CHEATS_HUD_PAD_X, y), toU32(col), label)
+    end
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
+-- Draw Cheats Hud Overlay
 function drawCheatsHudOverlay()
     ensureCheatsSettings()
     cheatState.hudHovered = false
     if settings.cheats.show_hud == false then return end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return end
+    if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then
+        cheatState.hudDrag.active = false
+        return
+    end
+
+    local spTheme = cheatsOverlayTheme()
+    local drag = cheatState.hudDrag
     local hx = tonumber(settings.cheats.hud_x) or 12
     local hy = tonumber(settings.cheats.hud_y) or 80
+
+    if not cheatState.hudPosValidated then
+        cheatState.hudPosValidated = true
+        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H)
+        cheatState.hudPlaced = false
+    end
+
     local wantInput = cheatsHudWantsInput()
-    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
-        + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
+        + imgui.WindowFlags.NoScrollbar
     if not wantInput and imgui.WindowFlags.NoInputs then
         flags = flags + imgui.WindowFlags.NoInputs
     end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
-    imgui.SetNextWindowBgAlpha(0.75)
+
+    imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_HUD_W, CHEATS_HUD_H), imgui.Cond.Always)
+    if imgui.SetNextWindowBgAlpha then
+        imgui.SetNextWindowBgAlpha(spTheme and spTheme.HUD_OVERLAY_ALPHA or 0.80)
+    end
     if not cheatState.hudPlaced then
         imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
         cheatState.hudPlaced = true
-    elseif cheatState.hudDrag.active then
+    elseif drag.active then
         imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
     end
+
+    if spTheme then spTheme.pushHudChrome() end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
     if imgui.Begin('###desk_cheats_hud', nil, flags) then
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
-        local mp = imgui.GetIO().MousePos
-        cheatState.hudHovered = mp.x >= wp.x and mp.x < wp.x + ww and mp.y >= wp.y and mp.y < wp.y + wh
         cheatState.hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
-        local function row(label, on)
-            if on then
-                imgui.TextColored(imgui.ImVec4(0.4, 0.9, 0.5, 1), uiText(label .. ': ON'))
-            else
-                imgui.TextColored(col_muted2, uiText(label .. ': off'))
-            end
+
+        imgui.SetCursorPos(imgui.ImVec2(0, 0))
+        imgui.InvisibleButton('##cheats_hud_drag', imgui.ImVec2(-1, -1))
+        if imgui.IsItemHovered() or imgui.IsItemActive() or drag.active then
+            cheatState.hudHovered = true
         end
-        row('GM', cheatState.godmode)
-        row('WH', cheatState.wallhack)
-        row('AB', cheatState.airbreak)
-        if cheatState.marker.active then
-            imgui.TextColored(col_warn, uiText('Marker: ON'))
+        if not cheatState.hudHovered and deskPointerInRect then
+            cheatState.hudHovered = deskPointerInRect(cheatState.hudRect) == true
         end
-        if cheatState.hudHovered and imgui.IsMouseDragging(0) and not imgui.IsAnyItemActive() then
+
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
+        drawCheatsHudLabels(wp)
+
+        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
             local delta = imgui.GetMouseDragDelta(0)
-            if not cheatState.hudDrag.active then
-                local wp = imgui.GetWindowPos()
-                cheatState.hudDrag.active = true
-                cheatState.hudDrag.offX = wp.x
-                cheatState.hudDrag.offY = wp.y
+            if not drag.active then
+                drag.active = true
+                drag.offX = wp.x
+                drag.offY = wp.y
                 imgui.ResetMouseDragDelta(0)
+                delta = imgui.GetMouseDragDelta(0)
             end
-            local nx = cheatState.hudDrag.offX + delta.x
-            local ny = cheatState.hudDrag.offY + delta.y
+            local nx = drag.offX + delta.x
+            local ny = drag.offY + delta.y
+            nx, ny = cheatsClampHudPos(nx, ny, ww, wh)
             settings.cheats.hud_x = nx
             settings.cheats.hud_y = ny
+            if markDirtySettings then markDirtySettings() end
             if imgui.SetWindowPos then
                 imgui.SetWindowPos(imgui.ImVec2(nx, ny))
             end
-            markDirtySettings()
-        elseif cheatState.hudDrag.active and not imgui.IsMouseDown(0) then
-            cheatState.hudDrag.active = false
-            flushDirtyConfigNow()
+        elseif drag.active and not imgui.IsMouseDown(0) then
+            drag.active = false
+            cheatsPersistHudPos(wp.x, wp.y, ww, wh)
+            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
         end
-        if cheatState.hudHovered and imgui.IsMouseReleased(0) and not imgui.IsAnyItemActive() then
-            local wp = imgui.GetWindowPos()
-            settings.cheats.hud_x = wp.x
-            settings.cheats.hud_y = wp.y
-            markDirtySettings()
-            flushDirtyConfigNow()
-        end
+
         imgui.End()
     end
+    imgui.PopStyleVar(2)
+    if spTheme then spTheme.popHudChrome() end
 end
 
+-- Draw Marker Hud Overlay
 function drawMarkerHudOverlay()
     local m = cheatState.marker
     if not m.active then return end
@@ -1117,33 +1292,86 @@ function drawMarkerHudOverlay()
     end
 
     local padX, padY = 14, 10
+    local panelW = CHEATS_OVERLAY_PANEL_W
     local wx, wy = sx + padX, sy + padY
-    local estW, estH = 160, 72
-    if wx + estW > sw - 8 then wx = sw - estW - 8 end
-    if wy + estH > sh - 8 then wy = sh - estH - 8 end
+    if wx + panelW > sw - 8 then wx = sw - panelW - 8 end
+    if wy + 120 > sh - 8 then wy = sh - 120 - 8 end
     if wx < 4 then wx = 4 end
     if wy < 4 then wy = 4 end
 
-    imgui.SetNextWindowBgAlpha(0.88)
+    local spTheme = cheatsOverlayTheme()
+    imgui.SetNextWindowSize(imgui.ImVec2(panelW, 0), imgui.Cond.Always)
     imgui.SetNextWindowPos(imgui.ImVec2(wx, wy), imgui.Cond.Always)
+    if spTheme then spTheme.pushHudChrome() end
     if imgui.Begin('###desk_marker_hud', nil, flags) then
-        imgui.TextColored(col_accent, uiText('\xCC\xE0\xF0\xEA\xE5\xF0'))
-        local distM = tonumber(m.dist) or 0
-        imgui.TextColored(col_muted2, uiText(string.format('%.0f \xEC', distM)))
-        if m.hoverCar and m.vehLabel ~= '' then
-            imgui.Text(uiText(m.vehLabel))
-            if m.aimCar then
-                imgui.TextColored(col_label, uiText('\xCB\xCA\xCC \x97 \xF1\xE5\xF1\xF2\xFC'))
-            else
-                imgui.TextColored(col_muted, uiText('\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3'))
-            end
+        if spTheme then
+            spTheme.drawPanelTitle('\xCC\xE0\xF0\xEA\xE5\xF0', nil, col_accent, col_muted, uiText)
         else
-            imgui.TextColored(col_muted, uiText('\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2'))
+            imgui.TextColored(col_accent, uiText('\xCC\xE0\xF0\xEA\xE5\xF0'))
+        end
+        local distM = tonumber(m.dist) or 0
+        if spTheme then
+            spTheme.drawStatRow(1, '\xD0\xE0\xF1\xF1\xF2\xEE\xFF\xED\xE8\xE5', string.format('%.0f \xEC', distM), col_label,
+                CHEATS_HUD_LABEL_W, uiText)
+            if m.hoverCar and m.vehLabel ~= '' then
+                spTheme.drawStatRow(2, '\xCC\xE0\xF8\xE8\xED\xE0', m.vehLabel, col_accent, CHEATS_HUD_LABEL_W, uiText)
+                spTheme.drawStatRow(3, '', m.aimCar and '\xCB\xCA\xCC \x97 \xF1\xE5\xF1\xF2\xFC' or '\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3',
+                    m.aimCar and col_label or col_muted, CHEATS_HUD_LABEL_W, uiText)
+            else
+                spTheme.drawStatRow(2, '', '\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2', col_muted, CHEATS_HUD_LABEL_W, uiText)
+            end
         end
         imgui.End()
     end
+    if spTheme then spTheme.popHudChrome() end
 end
 
+-- Draw Airbreak Hud Labels
+local function drawAirbreakHudLabels(wp, spd)
+    if not wp or not toU32 or not imgui.CalcTextSize then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+
+    local scale = 1.08
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+
+    local spdStr = string.format('%.2f', spd)
+    local qW = imgui.CalcTextSize('Q').x
+    local eW = imgui.CalcTextSize('E').x
+    local spdW = imgui.CalcTextSize(spdStr).x
+    local lh = imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 14
+    local y = wp.y + (CHEATS_AB_HUD_H - lh) * 0.5
+
+    local qCol = col_muted2
+    local eCol = col_muted2
+    local spdCol = col_accent
+    local flash = cheatState.abSpeedFlash
+    if flash and flash.expires and os.clock() < flash.expires then
+        if flash.dir and flash.dir < 0 then
+            qCol = col_warn
+            spdCol = col_muted
+        else
+            eCol = col_warn
+            spdCol = col_accent
+        end
+    else
+        cheatState.abSpeedFlash = nil
+    end
+    if cheatsAbKeyDown(vkeys.VK_Q) then qCol = col_label end
+    if cheatsAbKeyDown(vkeys.VK_E) then eCol = col_label end
+
+    local qX = wp.x + CHEATS_AB_HUD_SIDE_PAD
+    local eX = wp.x + CHEATS_AB_HUD_W - CHEATS_AB_HUD_SIDE_PAD - eW
+    local spdX = wp.x + (CHEATS_AB_HUD_W - spdW) * 0.5
+
+    dl:AddText(imgui.ImVec2(qX, y), toU32(qCol), 'Q')
+    dl:AddText(imgui.ImVec2(spdX, y), toU32(spdCol), spdStr)
+    dl:AddText(imgui.ImVec2(eX, y), toU32(eCol), 'E')
+
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
+-- Draw Airbreak Hud Overlay
 function drawAirbreakHudOverlay()
     if not cheatState.airbreak then return end
     local spd = cheatsGetAbSpeed()
@@ -1152,8 +1380,8 @@ function drawAirbreakHudOverlay()
     if sw < 100 then sw = 1920 end
     if sh < 100 then sh = 1080 end
 
-    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
-        + imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
+        + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoInputs
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
@@ -1161,27 +1389,19 @@ function drawAirbreakHudOverlay()
         flags = flags + imgui.WindowFlags.NoFocusOnAppearing
     end
 
-    imgui.SetNextWindowBgAlpha(0.88)
-    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh - 72), imgui.Cond.Always, imgui.ImVec2(0.5, 1.0))
+    local spTheme = cheatsOverlayTheme()
+    imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_AB_HUD_W, CHEATS_AB_HUD_H), imgui.Cond.Always)
+    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh - 52), imgui.Cond.Always, imgui.ImVec2(0.5, 1.0))
+    if spTheme then spTheme.pushHudChrome() end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
     if imgui.Begin('###desk_ab_hud', nil, flags) then
-        imgui.TextColored(col_accent, uiText('AirBreak'))
-        imgui.SameLine(0, 10)
-        imgui.TextColored(col_label, uiText(string.format('%.2f', spd)))
-        local flash = cheatState.abSpeedFlash
-        if flash and flash.expires and os.clock() < flash.expires then
-            local msg
-            if flash.dir and flash.dir < 0 then
-                msg = string.format('\xCC\xE5\xE4\xEB\xE5\xED\xED\xE5\xE5 \x97 %.2f', flash.spd or spd)
-            else
-                msg = string.format('\xC1\xFB\xF1\xF2\xF0\xE5\xE5 \x97 %.2f', flash.spd or spd)
-            end
-            imgui.TextColored(flash.dir and flash.dir < 0 and col_muted or col_warn, uiText(msg))
-        else
-            cheatState.abSpeedFlash = nil
-            imgui.TextColored(col_muted2, uiText('Q \xEC\xE8\xED\xF3\xF1   E \xEF\xEB\xFE\xF1'))
-        end
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
+        drawAirbreakHudLabels(imgui.GetWindowPos(), spd)
         imgui.End()
     end
+    imgui.PopStyleVar(2)
+    if spTheme then spTheme.popHudChrome() end
 end
 
 CHEAT_BIND_PREFIX = {
@@ -1204,6 +1424,7 @@ AB_SPEED_FLASH_SEC = 2.0
 AB_SPEED_HOLD_DELAY = 0.16
 AB_SPEED_HOLD_REPEAT = 0.05
 
+-- Cheat Clear Bind
 function cheatClearBind(prefix)
     ensureCheatsSettings()
     local c = settings.cheats
@@ -1215,6 +1436,7 @@ function cheatClearBind(prefix)
     markDirtySettings()
 end
 
+-- Cheat Live Bind Preview
 function cheatLiveBindPreview()
     local parts = {}
     if cheatModDown(vkeys.VK_CONTROL) then parts[#parts + 1] = 'Ctrl' end
@@ -1229,6 +1451,7 @@ function cheatLiveBindPreview()
     return uiText(table.concat(parts, '+') .. '+...')
 end
 
+-- Begin Cheat Bind Capture
 function beginCheatBindCapture(captureId, slot)
     hideDeskWindowForCapture()
     deskCache.cheatCapture = captureId
@@ -1236,18 +1459,21 @@ function beginCheatBindCapture(captureId, slot)
     deskCache.cheatCaptureAt = os.clock()
 end
 
+-- Begin Hotkey Capture
 function beginHotkeyCapture()
     hideDeskWindowForCapture()
     deskCache.hotkeyCapture = true
     deskCache.hotkeyCaptureAt = os.clock()
 end
 
+-- Cancel Desk Bind Capture
 function cancelDeskBindCapture()
     deskCache.hotkeyCapture = false
     deskCache.cheatCapture = nil
     deskCache.cheatCaptureSlot = 'main'
 end
 
+-- Draw Desk Bind Preset Chips
 function drawDeskBindPresetChips(presets, onPick, chipPrefix)
     if not presets or #presets == 0 then return end
     chipPrefix = chipPrefix or 'bp'
@@ -1266,6 +1492,7 @@ function drawDeskBindPresetChips(presets, onPick, chipPrefix)
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
+-- Draw Desk Bind Capture Banner
 function drawDeskBindCaptureBanner()
     if not deskCache.hotkeyCapture and not deskCache.cheatCapture then return end
     local dl = imgui.GetWindowDrawList()
@@ -1281,21 +1508,25 @@ function drawDeskBindCaptureBanner()
     imgui.Dummy(imgui.ImVec2(0, h + 4))
 end
 
+-- Desk hook/helper.
 function deskFormPushBindButtonStyle()
     imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.11, 0.11, 0.14, 1.0))
     imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.16, 0.24, 1.0))
     imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
 end
 
+-- Desk hook/helper.
 function deskFormPopBindButtonStyle()
     imgui.PopStyleColor(3)
 end
 
+-- Desk hook/helper.
 function deskHotkeyBlockedByTyping()
     -- settings.hotkey (F7, M4, M5, …) всегда переключает окно, даже с фокусом в ответе
     return false
 end
 
+-- Desk hook/helper.
 function deskHotkeyMessageIsDown(msg, wparam, lparam, hk)
     hk = tonumber(hk) or 0
     if hk <= 0 then return false end
@@ -1309,12 +1540,15 @@ function deskHotkeyMessageIsDown(msg, wparam, lparam, hk)
     return false
 end
 
+-- Desk hook/helper.
 function deskResetHotkeyDebounce(vk)
     vk = tonumber(vk) or tonumber(settings.hotkey or vkeys.VK_F7) or 0
     if vk > 0 then deskCache.hotkeyPrev[vk] = false end
 end
 
+-- Try Handle Desk Hotkey Message
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
+    if not sessionLive then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     local hk = settings.hotkey or vkeys.VK_F7
@@ -1351,6 +1585,7 @@ function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     return true
 end
 
+-- Draw Desk Bind Key Cap
 function drawDeskBindKeyCap(previewText, capturing, btnId, onClick)
     local menuW = DESK_BIND_MENU_BTN_W + 8
     local capW = math.max(72, imgui.GetContentRegionAvail().x - menuW)
@@ -1371,6 +1606,7 @@ function drawDeskBindKeyCap(previewText, capturing, btnId, onClick)
     if clicked and onClick then onClick() end
 end
 
+-- Draw Desk Bind Menu Button
 function drawDeskBindMenuButton(popupId, drawPopupBody, btnId)
     imgui.SameLine(0, 8)
     deskFormPushBindButtonStyle()
@@ -1386,6 +1622,7 @@ function drawDeskBindMenuButton(popupId, drawPopupBody, btnId)
     end
 end
 
+-- Draw Desk Bind Row
 function drawDeskBindRow(opts)
     opts = opts or {}
     if opts.label and opts.label ~= '' then
@@ -1401,6 +1638,7 @@ function drawDeskBindRow(opts)
     imgui.Dummy(imgui.ImVec2(0, 2))
 end
 
+-- Draw Desk Bind Change Button
 function drawDeskBindChangeButton(btnId, popupId)
     if not imgui.OpenPopup then return false end
     deskFormPushBindButtonStyle()
@@ -1412,6 +1650,7 @@ function drawDeskBindChangeButton(btnId, popupId)
     return clicked
 end
 
+-- Draw Desk Bind Value Row
 function drawDeskBindValueRow(previewText, capturing, btnId, popupId, drawPopupBody)
     drawDeskBindRow({
         previewText = previewText,
@@ -1424,12 +1663,14 @@ function drawDeskBindValueRow(previewText, capturing, btnId, popupId, drawPopupB
     })
 end
 
+-- Draw Cheat Bind Preview Text
 function drawCheatBindPreviewText(text, capturing, maxW)
     if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
     local shown = ellipsizeToWidth(uiText(text or ''), maxW or DESK_BIND_PREVIEW_W)
     imgui.TextColored(capturing and col_warn or col_muted, shown)
 end
 
+-- Desk hook/helper.
 function deskFormRowLabel(label)
     if not label or label == '' then return end
     if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
@@ -1442,10 +1683,12 @@ function deskFormRowLabel(label)
     if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
 end
 
+-- Desk hook/helper.
 function deskFormCheckboxRow(label, boolRef, onChange, stableId)
     return deskFormToggleRow(label, boolRef, onChange, stableId)
 end
 
+-- Desk hook/helper.
 function deskFormToggleRow(label, boolRef, onChange, stableId)
     boolRef[0] = boolRef[0] and true or false
     stableId = stableId or tostring(label)
@@ -1490,6 +1733,7 @@ function deskFormToggleRow(label, boolRef, onChange, stableId)
     return changed
 end
 
+-- Draw Cheat Bind Row
 function drawCheatBindRow(prefix, captureId, rowLabel)
     rowLabel = rowLabel or '\xC1\xE8\xED\xE4'
     ensureCheatsSettings()
@@ -1550,6 +1794,7 @@ function drawCheatBindRow(prefix, captureId, rowLabel)
     })
 end
 
+-- Draw Editor List Selectable
 function drawEditorListSelectable(label, id, selected, maxW)
     maxW = maxW or (DESK_EDITOR_LIST_W - 24)
     local shown = ellipsizeToWidth(uiText(label or ''), maxW)
@@ -1564,6 +1809,7 @@ DESK_FORM_TOGGLE_W = 42
 DESK_FORM_TOGGLE_H = 22
 DESK_EDITOR_LIST_W = 248
 
+-- Desk hook/helper.
 function deskFormSection(title)
     imgui.Dummy(imgui.ImVec2(0, 10))
     imgui.TextColored(col_accent, uiText(title))
@@ -1583,6 +1829,7 @@ function deskFormSection(title)
     imgui.Dummy(imgui.ImVec2(0, 8))
 end
 
+-- Desk hook/helper.
 function deskFormPanelBegin(id)
     id = tostring(id or 'panel')
     deskCache.ui.panelStack[#deskCache.ui.panelStack + 1] = id
@@ -1590,6 +1837,7 @@ function deskFormPanelBegin(id)
     imgui.Indent(8)
 end
 
+-- Desk hook/helper.
 function deskFormPanelEnd()
     if #deskCache.ui.panelStack > 0 then
         table.remove(deskCache.ui.panelStack)
@@ -1608,6 +1856,7 @@ function deskFormPanelEnd()
     imgui.Dummy(imgui.ImVec2(0, 10))
 end
 
+-- Desk hook/helper.
 function deskFormRowAvail(label, labelW)
     labelW = labelW or DESK_FORM_LABEL_W
     if label and label ~= '' then
@@ -1627,13 +1876,16 @@ function deskFormRowAvail(label, labelW)
     return math.max(72, imgui.GetContentRegionAvail().x - 4)
 end
 
+-- Draw Cheat Card Begin
 function drawCheatCardBegin(id, h)
 end
 
+-- Draw Cheat Card End
 function drawCheatCardEnd()
     imgui.Dummy(imgui.ImVec2(0, 2))
 end
 
+-- Draw Cheat Card Title
 function drawCheatCardTitle(title, tag)
     local head = title or ''
     if tag and tag ~= '' then
@@ -1642,6 +1894,7 @@ function drawCheatCardTitle(title, tag)
     deskFormSection(head)
 end
 
+-- Draw Cheat Feature Card
 function drawCheatFeatureCard(title, tag, captureId, prefix, stateEnabled, uiEnabled, uiOnStart, onStartKey, onToggle)
     deskFormPanelBegin('##ch_' .. captureId)
     drawCheatCardTitle(title, tag)
@@ -1659,10 +1912,12 @@ function drawCheatFeatureCard(title, tag, captureId, prefix, stateEnabled, uiEna
     deskFormPanelEnd()
 end
 
+-- Skin Tex Release
 local function skinTexRelease(tex)
     if tex and imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, tex) end
 end
 
+-- Skins Release Textures
 function skinsReleaseTextures()
     deskTex.releaseAll(TEX_NS_SKIN, skinTexRelease, true)
     deskTexLoad.clearNamespace(TEX_NS_SKIN)

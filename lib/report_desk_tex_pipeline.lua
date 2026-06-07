@@ -1,5 +1,4 @@
---[[ Продакшн-пайплайн превью: async disk IO (lua_thread) + budgeted GPU upload (main thread). ]]
-
+--[[ Модуль: async IO + budgeted GPU upload текстур. ]]
 local texLoad = require 'report_desk_tex_loader'
 
 local M = {}
@@ -17,10 +16,12 @@ local ioIdleMs = DEFAULT_IO_IDLE_MS
 local gpuBudget = DEFAULT_GPU_BUDGET
 local activeImgui = nil
 
+-- Ns Key
 local function nsKey(ns)
     return tostring(ns or '')
 end
 
+-- Ensure Ns
 local function ensureNs(ns)
     ns = nsKey(ns)
     if nsState[ns] then return nsState[ns] end
@@ -40,6 +41,7 @@ local function ensureNs(ns)
     return st
 end
 
+-- Публичный API модуля.
 function M.configure(opts)
     opts = opts or {}
     if opts.ioIdleMs then
@@ -54,6 +56,7 @@ function M.configure(opts)
     })
 end
 
+-- Публичный API модуля.
 function M.registerNs(ns, opts)
     opts = opts or {}
     local st = ensureNs(nsKey(ns))
@@ -62,6 +65,7 @@ function M.registerNs(ns, opts)
     if opts.onUploaded then st.onUploaded = opts.onUploaded end
 end
 
+-- Публичный API модуля.
 function M.activate(ns)
     if pipelineDead then return end
     local st = ensureNs(nsKey(ns))
@@ -69,6 +73,7 @@ function M.activate(ns)
     M.ensureIoWorker()
 end
 
+-- Публичный API модуля.
 function M.deactivate(ns, deskTex)
     ns = nsKey(ns)
     local st = nsState[ns]
@@ -86,22 +91,26 @@ function M.deactivate(ns, deskTex)
     texLoad.clearNamespace(ns)
 end
 
+-- Публичный API модуля.
 function M.deactivateAll(deskTex)
     for ns in pairs(nsState) do
         M.deactivate(ns, deskTex)
     end
 end
 
+-- Публичный API модуля.
 function M.isDead()
     return pipelineDead
 end
 
+-- Публичный API модуля.
 function M.requestDeferredFlush()
     if type(deskCache) == 'table' then
         deskCache.catalogTexFlushPending = true
     end
 end
 
+-- Публичный API модуля.
 function M.flushDeferred(deskTex, imgui, maxCount)
     imgui = imgui or activeImgui
     if imgui and imgui.SwitchContext then pcall(imgui.SwitchContext) end
@@ -110,6 +119,7 @@ function M.flushDeferred(deskTex, imgui, maxCount)
     end
 end
 
+-- Публичный API модуля.
 function M.halt(deskTex)
     for ns in pairs(nsState) do
         M.deactivate(ns, deskTex)
@@ -118,12 +128,14 @@ function M.halt(deskTex)
     M.requestDeferredFlush()
 end
 
+-- Публичный API модуля.
 function M.shutdown(deskTex, imgui)
     pipelineDead = true
     M.halt(deskTex)
     M.flushDeferred(deskTex, imgui)
 end
 
+-- Prune Io Queue
 local function pruneIoQueue(st, want)
     local kept, keptSet = {}, {}
     for _, job in ipairs(st.ioQueue) do
@@ -136,6 +148,7 @@ local function pruneIoQueue(st, want)
     st.ioSet = keptSet
 end
 
+-- Prune Upload Queue Ns
 local function pruneUploadQueueNs(ns, st, want)
     local kept, keptSet = {}, {}
     for _, id in ipairs(st.uploadQueue) do
@@ -150,6 +163,7 @@ local function pruneUploadQueueNs(ns, st, want)
     st.uploadSet = keptSet
 end
 
+-- Enqueue Io
 local function enqueueIo(ns, st, id, path, meta)
     if st.ioSet[id] or st.uploadSet[id] or texLoad.hasStaging(ns, id) then
         return false
@@ -159,6 +173,7 @@ local function enqueueIo(ns, st, id, path, meta)
     return true
 end
 
+-- Promote Io
 local function promoteIo(st, id)
     for i, job in ipairs(st.ioQueue) do
         if job and job.id == id then
@@ -169,6 +184,7 @@ local function promoteIo(st, id)
     end
 end
 
+-- Enqueue Upload
 local function enqueueUpload(st, id, front)
     if st.uploadSet[id] then
         if front then
@@ -190,6 +206,7 @@ local function enqueueUpload(st, id, front)
     st.uploadSet[id] = true
 end
 
+-- Публичный API модуля.
 function M.syncVisible(ns, ids, deskTex, opts)
     if pipelineDead or not deskTex then return end
     ns = nsKey(ns)
@@ -236,6 +253,7 @@ function M.syncVisible(ns, ids, deskTex, opts)
     end
 end
 
+-- Pop Io Job
 local function popIoJob()
     for _, ns in ipairs(nsOrder) do
         local st = nsState[ns]
@@ -250,6 +268,7 @@ local function popIoJob()
     return nil, nil, nil
 end
 
+-- Run Io Job
 local function runIoJob(ns, st, job)
     if pipelineDead or not st or not job or not job.id or not job.path then return false end
     if not st.active or not st.wanted[job.id] then return true end
@@ -261,6 +280,7 @@ local function runIoJob(ns, st, job)
     return true
 end
 
+-- Process Sync Io
 local function processSyncIo(budget)
     budget = math.max(1, tonumber(budget) or 2)
     local n = 0
@@ -272,6 +292,7 @@ local function processSyncIo(budget)
     end
 end
 
+-- Публичный API модуля.
 function M.ensureIoWorker()
     if pipelineDead or ioWorkerStarted or useSyncIo then return end
     if not lua_thread or not lua_thread.create then
@@ -292,6 +313,7 @@ function M.ensureIoWorker()
     end)
 end
 
+-- Pop Upload
 local function popUpload(st)
     while #st.uploadQueue > 0 do
         local id = table.remove(st.uploadQueue, 1)
@@ -301,6 +323,7 @@ local function popUpload(st)
     return nil
 end
 
+-- Публичный API модуля.
 function M.tick(imgui, deskTex, budget)
     activeImgui = imgui
     if pipelineDead or not imgui or not deskTex then return end
@@ -348,6 +371,7 @@ function M.tick(imgui, deskTex, budget)
     end
 end
 
+-- Публичный API модуля.
 function M.pendingCount(ns)
     ns = nsKey(ns)
     local st = nsState[ns]
@@ -355,6 +379,7 @@ function M.pendingCount(ns)
     return #st.ioQueue + #st.uploadQueue
 end
 
+-- Публичный API модуля.
 function M.anyPending()
     for _, st in pairs(nsState) do
         if st.active and (#st.ioQueue > 0 or #st.uploadQueue > 0) then

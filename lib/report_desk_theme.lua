@@ -1,4 +1,4 @@
---[[ Report Desk theme / ImGui style ]]
+--[[ Модуль: ImGui цвета, размеры UI чата/composer, applyModernDarkStyle. ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 col_accent = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
@@ -27,7 +27,7 @@ col_row_sel = imgui.ImVec4(0.22, 0.14, 0.32, 0.85)
 col_row_hover = imgui.ImVec4(0.14, 0.14, 0.18, 0.6)
 col_unread = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
 
-LIST_W = 310
+LIST_W = 310  -- ширина sidebar списка тредов, px
 THREAD_ROW_H = 74
 THREAD_PAD_L = 10
 THREAD_TEXT_OFF = 16
@@ -53,11 +53,11 @@ BUBBLE_PAD_Y_GROUPED = 7
 BUBBLE_SUB_GAP = 4
 CHAT_TIME_GAP = 8
 CHAT_TIME_PAD = 4
-CHAT_GROUP_MAX_SEC = 900
+CHAT_GROUP_MAX_SEC = 900  -- группировка bubble по времени, сек
 CHAT_DEFERRED_ADMIN_SEC = 4
-OUTBOUND_DEDUP_SEC = 120
+OUTBOUND_DEDUP_SEC = 120  -- dedup echo исходящих ans, сек
 OUTBOUND_SCAN_MAX = 64
-PENDING_OUTBOUND_SEC = 20
+PENDING_OUTBOUND_SEC = 20  -- ожидание echo pending ans, сек
 BUBBLE_RADIUS = 10
 BUBBLE_MAX_FRAC = 0.72
 QUICK_BTN_H = 26
@@ -66,7 +66,7 @@ QUICK_BTN_ROW_GAP = 4
 QUICK_BTN_BLOCK_TOP = 6
 QUICK_BTN_MIN_W = 72
 QUICK_BTN_MAX_W = 150
-WATCH_ANS_DELAY_MS = 450
+WATCH_ANS_DELAY_MS = 450  -- задержка watch auto-notify, мс
 CHAT_LOG_PAD = 14
 LABEL_H = 14
 TIME_H = 12
@@ -77,8 +77,10 @@ MIN_CONTAINS_TRIGGER_LEN = 3
 local ANS_CHAT_LINE_MAX = 125
 local ANS_SPLIT_DELAY_MS = 200
 
+-- ImGui тёмная тема Report Desk.
 function applyModernDarkStyle()
     imgui.StyleColorsDark()
+    invalidateEllipsizeCache()
     local s = imgui.GetStyle()
     local Col = imgui.Col
     s.WindowPadding = imgui.ImVec2(14, 12)

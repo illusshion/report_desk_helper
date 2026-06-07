@@ -8,10 +8,12 @@ M.VERSION_JSON_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_h
 M.CHAT_PREFIX = '{9E7BEF}[Report Desk] {FFFFFF}'
 M.CHAT_COLOR = 0xE8E8E8
 
+-- Log
 local function log(msg)
     print('[Report Desk] update: ' .. tostring(msg))
 end
 
+-- Публичный API модуля.
 function M.chatSay(text)
     text = tostring(text or '')
     if text == '' then return end
@@ -19,6 +21,7 @@ function M.chatSay(text)
     pcall(sampAddChatMessage, M.CHAT_PREFIX .. text, M.CHAT_COLOR)
 end
 
+-- Notify
 local function notify(msg, opts)
     opts = opts or {}
     log(msg)
@@ -26,6 +29,7 @@ local function notify(msg, opts)
     M.chatSay(msg)
 end
 
+-- Публичный API модуля.
 function M.parseVersion(v)
     v = tostring(v or ''):gsub('^v', '')
     local major, minor, patch, pre = v:match('^(%d+)%.(%d+)%.(%d+)(%-(.+))?$')
@@ -40,12 +44,16 @@ function M.parseVersion(v)
     local beta = pre:match('^beta%.(%d+)$')
     if beta then
         -- 1.0.0-beta.N < 1.0.0; beta.1 < beta.2 < …
-        return base - 10000 + tonumber(beta)
+        local n = tonumber(beta) or 0
+        if n < 0 then n = 0 end
+        if n > 9999 then n = 9999 end
+        return base - 10000 + n
     end
     -- Прочие pre-release ниже финального релиза той же версии.
     return base - 5000
 end
 
+-- Публичный API модуля.
 function M.readLocalVersion()
     if thisScript and thisScript().version then
         return tostring(thisScript().version)
@@ -53,6 +61,7 @@ function M.readLocalVersion()
     return '0.0.0'
 end
 
+-- Публичный API модуля.
 function M.downloadSync(url, dest, timeoutSec)
     if not downloadUrlToFile then
         return false, 'downloadUrlToFile unavailable'
@@ -78,6 +87,7 @@ function M.downloadSync(url, dest, timeoutSec)
     return false, 'timeout'
 end
 
+-- Публичный API модуля.
 function M.readJsonFile(path)
     local f = io.open(path, 'r')
     if not f then return nil end
@@ -96,6 +106,7 @@ function M.readJsonFile(path)
     return nil
 end
 
+-- Публичный API модуля.
 function M.fetchRemoteManifest(tmpJson)
     if M.VERSION_JSON_URL:find('YOUR_GITHUB_USER', 1, true) then
         return nil, 'update URL not configured'
@@ -108,14 +119,17 @@ function M.fetchRemoteManifest(tmpJson)
     return M.readJsonFile(tmpJson), nil
 end
 
+-- Публичный API модуля.
 function M.coreDir()
     return getWorkingDirectory() .. '\\report_desk'
 end
 
+-- Публичный API модуля.
 function M.installedCoreVersionPath()
     return M.coreDir() .. '\\_core_version.txt'
 end
 
+-- Публичный API модуля.
 function M.readInstalledCoreVersion()
     local f = io.open(M.installedCoreVersionPath(), 'r')
     if not f then return '' end
@@ -124,6 +138,7 @@ function M.readInstalledCoreVersion()
     return v
 end
 
+-- Публичный API модуля.
 function M.writeInstalledCoreVersion(version)
     version = tostring(version or '')
     if version == '' then return end
@@ -134,6 +149,7 @@ function M.writeInstalledCoreVersion(version)
     f:close()
 end
 
+-- Публичный API модуля.
 function M.coreIsCurrent(remoteVer, corePath)
     remoteVer = tostring(remoteVer or '')
     corePath = tostring(corePath or '')
@@ -142,6 +158,7 @@ function M.coreIsCurrent(remoteVer, corePath)
     return doesFileExist(corePath)
 end
 
+-- Публичный API модуля.
 function M.corePathFromUrl(url, fallback)
     url = tostring(url or '')
     local name = url:match('/([^/%?]+)$')
@@ -151,6 +168,7 @@ function M.corePathFromUrl(url, fallback)
     return fallback or (M.coreDir() .. '\\admin_report_desk_core.luac')
 end
 
+-- Публичный API модуля.
 function M.ensureCoreDir(corePath)
     local dir = corePath:match('^(.*)\\[^\\]+$')
     if dir and dir ~= '' and not doesDirectoryExist(dir) then
@@ -158,6 +176,7 @@ function M.ensureCoreDir(corePath)
     end
 end
 
+-- Публичный API модуля.
 function M.installCore(tmpPath, corePath)
     M.ensureCoreDir(corePath)
     if doesFileExist(corePath) then
@@ -179,6 +198,7 @@ function M.installCore(tmpPath, corePath)
     return ok == true or doesFileExist(corePath)
 end
 
+-- Публичный API модуля.
 function M.downloadCore(url, corePath)
     M.ensureCoreDir(corePath)
     local tmp = corePath .. '.download'
@@ -239,6 +259,7 @@ function M.check(corePath)
     return false, 'fail'
 end
 
+-- Публичный API модуля.
 function M.forceDownload(corePath)
     corePath = corePath or (getWorkingDirectory() .. '\\report_desk\\admin_report_desk_core.luac')
     local manifest = select(1, M.fetchRemoteManifest())
