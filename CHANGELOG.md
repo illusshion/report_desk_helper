@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.8
+
+- **Release sync:** bundle полностью совпадает с dev (`scenario_learn`, `remote_chat`, все SP-модули).
+- **SP:** handshake `/sp` — `expectSpectateOff`, `isAwaitingSpectate`, защита от ложного `toggle(false)`, deferred `/st`.
+- **Autoupdate:** `core_url` → GitHub Release asset (+ raw fallback в manifest).
+- **Bundle verify:** проверка всех входных файлов и ключевых символов при сборке.
+
 ## 1.0.7
 
 - Perf: кэш ellipsize, меньше лишней работы UI при закрытом окне; оптимизация startup-сообщения.

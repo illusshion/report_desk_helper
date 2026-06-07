@@ -3979,6 +3979,9 @@ local cbOnBegin, cbOnEnd, cbResetMenuState, cbResetMenuSelection, cbEnsureSampev
 
 local playerHandler, hookPrevPlayer
 local showTdHook, setStrHook, hookPrevShowTd, hookPrevSetStr
+local lastBeginSessionId = nil
+local lastBeginSessionAt = 0
+local BEGIN_SESSION_DEDUPE_SEC = 0.6
 
 local function trim(s)
     if trimFn then return trimFn(s) end
@@ -4133,10 +4136,17 @@ end
 -- Публичный API модуля.
 function M.shouldSuppressServerSpMenu()
     if not uiEnabled() then return false end
+    -- Подтверждённая цель: кастомное меню вместо серверного TD.
     if M.getTargetId() >= 0 then return true end
-    if session.spectating == true or playerSpectatingNow() then return true end
+    -- Handshake: pending есть, кастомное меню показывает pending id через stats getTargetId.
     if session.awaitingSpectate == true then return true end
+    -- Без цели и без pending — серверное меню не трогаем (нет «пустого» экрана).
     return false
+end
+
+-- Публичный API модуля.
+function M.isAwaitingSpectate()
+    return session.awaitingSpectate == true
 end
 
 -- Публичный API модуля.
@@ -4364,7 +4374,16 @@ function M.parseSpLine(text)
     if nick then nick = trim(nick) end
     M.setSpectating(true)
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-    return M.beginSession(id, nick, { source = 'sp_line', ping = ping and tonumber(ping) or nil })
+    return M.beginSession(id, nick, {
+        source = 'sp_line',
+        ping = ping and tonumber(ping) or nil,
+        forceSync = true,
+    })
+end
+
+-- Server-confirmed spectate target (authoritative).
+local function isServerConfirmedSource(src)
+    return src == 'sp_line' or src == 'spectate_player'
 end
 
 -- Публичный API модуля.
@@ -4374,6 +4393,19 @@ function M.beginSession(id, nick, opts)
     opts = opts or {}
     nick = trim(nick or '')
     local changed = session.targetId ~= id
+    local forceSync = opts.forceSync == true or isServerConfirmedSource(opts.source)
+    local now = os.clock()
+    if not changed and id == lastBeginSessionId
+            and (now - lastBeginSessionAt) < BEGIN_SESSION_DEDUPE_SEC then
+        session.active = true
+        session.spectating = true
+        session.awaitingSpectate = false
+        session.targetId = id
+        if nick ~= '' then session.targetNick = nick end
+        return true
+    end
+    lastBeginSessionId = id
+    lastBeginSessionAt = now
     session.active = true
     session.spectating = true
     session.awaitingSpectate = false
@@ -4386,7 +4418,7 @@ function M.beginSession(id, nick, opts)
     end
     if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
     if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
-    if changed or opts.forceSync == true then
+    if changed or forceSync then
         if cbOnBegin then pcall(cbOnBegin, id, nick, opts) end
     end
     return true
@@ -4489,7 +4521,7 @@ function M.installSampevHooks(sampev)
             end)
             M.setSpectating(true)
             if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-            M.beginSession(id, nick, { source = 'spectate_player' })
+            M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
         end
         if type(hookPrevPlayer) == 'function' then
             return hookPrevPlayer(id)
@@ -6329,19 +6361,12 @@ end
 -- Публичный API модуля.
 function M.onToggleSpectating(toggle)
     if toggle then
-        session.markAwaitingSpectate(false)
-        pcall(menu.resetMenuState)
+        if not (session.isActive and session.isActive()) then
+            pcall(menu.resetMenuState)
+        end
         if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
         session.setSpectating(true)
-        local id = M.getTargetId()
-        if id >= 0 then
-            local nick = ''
-            if deps.getTargetNick then
-                local ok, nk = pcall(deps.getTargetNick)
-                if ok and nk then nick = nk end
-            end
-            session.beginSession(id, nick, { source = 'toggle' })
-        end
+        -- Цель и session.beginSession — только после onSpectatePlayer / [SP] (server confirm).
         if deps.onSpectatingOn then pcall(deps.onSpectatingOn) end
         return
     end
@@ -6517,6 +6542,7 @@ local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
 local lastSpecStepAt = 0
 local lastSpectateHealthAt = 0
+local expectSpectateOff = false
 
 local trim, stripTags, sendChat, sendMenuOutbound, uiText, toU32
 local col_accent, col_accent_dim, col_muted, col_muted2, col_label, col_warn
@@ -6547,18 +6573,24 @@ local state = {
     pendingSpId = nil,
     pendingSpNick = '',
     pendingSpAt = 0,
+    lastSpOutboundAt = 0,
 }
 
 -- ID цели на handshake /sp: pending → session → локальный state.
 local function resolveSpectateHandshakeId()
     local pid = tonumber(state.pendingSpId)
     if pid and pid >= 0 then return pid end
+    if specSession.isAwaitingSpectate and specSession.isAwaitingSpectate() then
+        return -1
+    end
     if specSession.getTargetId then
         pid = specSession.getTargetId()
         if pid and pid >= 0 then return pid end
     end
-    pid = tonumber(state.targetId)
-    if pid and pid >= 0 then return pid end
+    if specPlayerActive() then
+        pid = tonumber(state.targetId)
+        if pid and pid >= 0 then return pid end
+    end
     return -1
 end
 
@@ -7185,9 +7217,10 @@ function M.getTargetId()
     if specPlayerActive() then
         local pending = tonumber(state.pendingSpId)
         if pending and pending >= 0 then return pending end
-        local tid = tonumber(state.targetId)
-        if tid and tid >= 0 then return tid end
+        return -1
     end
+    local tid = tonumber(state.targetId)
+    if tid and tid >= 0 then return tid end
     return -1
 end
 
@@ -7290,6 +7323,26 @@ function M.hasStats(id)
     return false
 end
 
+-- Запрос /st после подтверждённого SP (не в том же тике, что server confirm).
+local function scheduleAutoStats(id, force)
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    if state.pendingStId == id and (os.clock() - (state.pendingStAt or 0)) < 1.0 then
+        return
+    end
+    if lua_thread and lua_thread.create then
+        lua_thread.create(function()
+            wait(0.18)
+            if not specSession.isActive or not specSession.isActive() then return end
+            if M.getTargetId() ~= id then return end
+            if not specPlayerActive() then return end
+            M.requestStats(id, { force = force == true })
+        end)
+        return
+    end
+    M.requestStats(id, { force = force == true })
+end
+
 -- Публичный API модуля.
 function M.syncFromSession(id, nick, settings, syncOpts)
     syncOpts = syncOpts or {}
@@ -7306,6 +7359,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
         clearPendingSt()
     end
     M.cancelPendingSp()
+    expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
     lastValidTargetAt = os.clock()
@@ -7334,7 +7388,11 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     end
     if mustForce then
         M.refreshLivePing(id)
-        M.requestStats(id, { force = true })
+        if syncOpts.deferAutoSt then
+            scheduleAutoStats(id, true)
+        else
+            M.requestStats(id, { force = true })
+        end
         return
     end
     M.maybeAutoRequest(id, s, false)
@@ -7355,6 +7413,7 @@ function M.markPendingSpCommand(id, nick)
     state.pendingSpId = id
     state.pendingSpNick = nick
     state.pendingSpAt = os.clock()
+    state.lastSpOutboundAt = state.pendingSpAt
     local cur = M.getTargetId()
     if cur ~= id then
         if cur >= 0 then clearPendingSt() end
@@ -7424,6 +7483,14 @@ function M.tickPendingSp()
     if not id then return end
     local at = tonumber(state.pendingSpAt) or 0
     if at > 0 and os.clock() - at > PENDING_SP_SEC then
+        local confirmed = specSession.isActive and specSession.isActive()
+        if specPlayerActive() and not confirmed then
+            pcall(specSession.tryRecoverFromChat)
+            if specSession.isActive and specSession.isActive() then
+                M.cancelPendingSp()
+            end
+            return
+        end
         M.cancelPendingSp()
     end
 end
@@ -7436,6 +7503,7 @@ function M.forceExitSpectate(opts)
         return false
     end
     lastForceExitAt = now
+    expectSpectateOff = true
     if opts.reason == 'orphan' then
         orphanLocalCleared = true
     end
@@ -7479,6 +7547,16 @@ function M.tickSpectateHealth()
         targetOfflineSinceAt = nil
         return
     end
+    local sessionConfirmed = specSession.isActive and specSession.isActive()
+    if specPlayerActive() and not sessionConfirmed then
+        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+        if outboundAt > 0 and (now - outboundAt) < PENDING_SP_SEC + 2.0 then
+            orphanSinceAt = nil
+            orphanRecoveryTried = false
+            targetOfflineSinceAt = nil
+            return
+        end
+    end
     local id = M.getTargetId()
     if id < 0 then
         targetOfflineSinceAt = nil
@@ -7514,9 +7592,9 @@ function M.tickSpectateHealth()
     orphanRecoveryTried = false
     orphanLocalCleared = false
     lastValidTargetAt = now
-    if sampIsPlayerConnected and not sampIsPlayerConnected(id) then
+    if sessionConfirmed and id >= 0 and sampIsPlayerConnected and not sampIsPlayerConnected(id) then
         targetOfflineSinceAt = targetOfflineSinceAt or now
-        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC then
+        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC + 1.5 then
             return
         end
         targetOfflineSinceAt = nil
@@ -7544,8 +7622,6 @@ function M.setSpectateTarget(id, nick, settings)
     state.targetNick = trim(nick or '')
     lastValidTargetAt = os.clock()
     orphanLocalCleared = false
-    pcall(specSession.markAwaitingSpectate, false)
-    pcall(specSession.beginSession, id, state.targetNick, { source = 'cmd' })
     local e = ensureEntry(id)
     if e then
         if prevId ~= id then
@@ -8555,6 +8631,7 @@ local function buildSpUiDeps(deps)
         sampIsPlayerConnected = sampIsPlayerConnected,
         sampGetPlayerNickname = sampGetPlayerNickname,
         onSpLocalExit = function()
+            expectSpectateOff = true
             M.clearSpectateTarget(true)
             M.onSpCommandOff()
         end,
@@ -8562,12 +8639,14 @@ local function buildSpUiDeps(deps)
             meta = meta or {}
             local syncOpts = {}
             local src = meta.source
-            if src == 'cmd' or src == 'toggle' or src == 'sp_line' then
+            if src == 'sp_line' or src == 'spectate_player' then
                 syncOpts.forceAutoSt = true
-            elseif src == 'spectate_player' then
-                if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
-                        and M.hasStats(id) then
-                    syncOpts.skipAutoSt = true
+                syncOpts.deferAutoSt = true
+                if src == 'spectate_player' then
+                    if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
+                            and M.hasStats(id) then
+                        syncOpts.skipAutoSt = true
+                    end
                 end
             end
             M.syncFromSession(id, nick, getSettings and getSettings(), syncOpts)
@@ -8764,38 +8843,49 @@ end
 function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
-        local hadPending = state.pendingSpId ~= nil
-        local pid = resolveSpectateHandshakeId()
-        if pid >= 0 then
-            local sessionActive = false
-            if type(specSession.isActive) == 'function' then
-                local okActive, active = pcall(specSession.isActive)
-                sessionActive = okActive and active == true
-            end
-            if hadPending or M.getTargetId() ~= pid or not sessionActive or not specPlayerActive() then
-                local nick = resolveSpectateTargetNick(pid)
-                local settings = getSettings and getSettings()
-                local okSet, setErr = pcall(M.setSpectateTarget, pid, nick, settings)
-                if not okSet then
-                    print('[Report Desk] sp target: ' .. tostring(setErr))
-                end
-            end
+        if inputDeps.setPlayerSpectating then
+            pcall(inputDeps.setPlayerSpectating, true)
         end
-        M.cancelPendingSp()
+        pcall(specSession.setSpectating, true)
         pcall(specCamera.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
-    -- ADV: toggle(false) during /sp handshake -- keep pending and session.
-    if specPlayerActive() then return end
     if state.pendingSpId then return end
-    if M.getTargetId() >= 0 then return end
+    if not expectSpectateOff then
+        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+        local handshakeRecent = outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0)
+        if handshakeRecent and not (specSession.isActive and specSession.isActive()) then
+            if inputDeps.setPlayerSpectating then
+                pcall(inputDeps.setPlayerSpectating, true)
+            end
+            pcall(specSession.setSpectating, true)
+            return
+        end
+    end
+    -- ADV: ложный toggle(false) после server confirm — prev hook уже сбросил spectate в игре.
+    if not expectSpectateOff and specSession.isActive and specSession.isActive() then
+        if inputDeps.setPlayerSpectating then
+            pcall(inputDeps.setPlayerSpectating, true)
+        end
+        pcall(specSession.setSpectating, true)
+        if inputDeps.restoreSpectateCamera then
+            pcall(inputDeps.restoreSpectateCamera)
+        end
+        if inputDeps.updateInputPassthrough then
+            pcall(inputDeps.updateInputPassthrough)
+        end
+        return
+    end
+    expectSpectateOff = false
+    if specPlayerActive() then return end
     pcall(specCamera.onSpectateEnd)
     spUi.onToggleSpectating(false)
 end
 
 -- Публичный API модуля.
 function M.onSpCommandOff()
+    expectSpectateOff = true
     M.snapshotPersistHud()
     spUi.onSpCommandOff()
 end
@@ -11692,6 +11782,11 @@ end
 function sendMenuOutbound(line)
     line = trim(line)
     if line == '' then return false end
+    local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    local spId = cmdBody:match('^sp%s+(%d+)%s*$')
+    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+        pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+    end
     local cache = rawget(_G, 'deskCache')
     if type(cache) == 'table' then
         cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
@@ -18778,6 +18873,354 @@ end
     processAutoRules: nil = нет совпадения, true = отправлено/ожидание confirm, false = совпало но ошибка
 ]]
 
+--[[ Модуль: обучение FAQ-сценариев на ходу (Q→A из реальных ответов админа). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+SCENARIO_LEARN_MAX_KW_PER_SCENARIO = 40
+SCENARIO_LEARN_MAX_ENTRIES = 800
+SCENARIO_LEARN_MANUAL_PROMOTE_MIN = 2
+
+scenarioLearnData = scenarioLearnData or {
+    keywords_by_scenario = {},
+    stats = { session_records = 0, session_keywords = 0, total_records = 0 },
+}
+dirtyScenarioLearn = false
+scenarioLearnSessionKeywords = scenarioLearnSessionKeywords or 0
+
+local STOP_WORDS = {
+    ['как'] = true, ['где'] = true, ['что'] = true, ['это'] = true, ['или'] = true,
+    ['можно'] = true, ['надо'] = true, ['нужно'] = true, ['help'] = true,
+    ['помогите'] = true, ['пожалуйста'] = true, ['здравствуйте'] = true,
+    ['привет'] = true, ['очень'] = true, ['меня'] = true, ['мне'] = true,
+    ['если'] = true, ['когда'] = true, ['почему'] = true, ['какой'] = true,
+    ['какая'] = true, ['какие'] = true, ['есть'] = true, ['тут'] = true,
+    ['для'] = true, ['про'] = true, ['ещё'] = true, ['еще'] = true,
+    ['тоже'] = true, ['только'] = true, ['чтобы'] = true, ['чтоб'] = true,
+    ['админ'] = true, ['админы'] = true, ['скажите'] = true, ['подскажите'] = true,
+}
+
+local SKIP_ANSWER_EXACT = {
+    ['see'] = true, ['gg'] = true, ['спасибо'] = true, ['спс'] = true,
+    ['ок'] = true, ['ok'] = true, ['+'] = true, ['ожидайте'] = true,
+    ['ожидайте.'] = true, ['принял'] = true, ['принято'] = true,
+    ['понял'] = true, ['хорошо'] = true, ['минуту'] = true,
+}
+
+-- Scenario Learn Enabled
+function scenarioLearnEnabled()
+    return settings.scenario_learn_enabled ~= false
+end
+
+-- Scenario Learn Mark Dirty
+function scenarioLearnMarkDirty()
+    dirtyScenarioLearn = true
+end
+
+-- Scenario Learn Normalize Answer
+function scenarioLearnNormalizeAnswer(text)
+    return normalizeMatchText(text or '')
+end
+
+-- Scenario Learn Is Skippable Question
+function scenarioLearnIsSkippableQuestion(text)
+    text = trim(text or '')
+    if text == '' or #text < 8 then return true end
+    if textLooksLikePlayerReport(text) and extractSuspectIdFromReport(text) then
+        return true
+    end
+    local low = scenarioLearnNormalizeAnswer(text)
+    if low == 'help' or low == 'спасибо' or low == 'спс' or low == 'gg' then return true end
+    if low:find('помогите', 1, true) and #low < 24 then return true end
+    if low:find('памагите', 1, true) and #low < 24 then return true end
+    return false
+end
+
+-- Scenario Learn Is Skippable Answer
+function scenarioLearnIsSkippableAnswer(text)
+    text = trim(text or '')
+    if text == '' or #text < 2 then return true end
+    local low = scenarioLearnNormalizeAnswer(text)
+    if SKIP_ANSWER_EXACT[low] then return true end
+    if low:find('приятной игры', 1, true) then return true end
+    if low:find('хорошей игры', 1, true) then return true end
+    if low:find('ожидайте', 1, true) then return true end
+    if low:find('не могу', 1, true) and #low < 40 then return true end
+    if low:find('уточн', 1, true) and #low < 40 then return true end
+    return false
+end
+
+-- Scenario Learn Extract Keywords
+function scenarioLearnExtractKeywords(question)
+    local msg = normalizeMatchText(question or '')
+    if msg == '' then return nil end
+    local words = {}
+    for w in msg:gmatch('%S+') do
+        w = w:gsub('^[^%w]+', ''):gsub('[^%w]+$', '')
+        if #w >= 3 and not STOP_WORDS[w] then
+            words[#words + 1] = w
+        end
+    end
+    if #words < 1 then return nil end
+    if #words >= 2 then
+        local n = math.min(#words, 3)
+        local parts = {}
+        for i = 1, n do parts[i] = words[i] end
+        return table.concat(parts, '+')
+    end
+    if #words[1] >= 5 then return words[1] end
+    return nil
+end
+
+-- Scenario Learn Get Scenario Bucket
+function scenarioLearnGetScenarioBucket(label)
+    if not label or label == '' then return nil end
+    local root = scenarioLearnData.keywords_by_scenario
+    if type(root) ~= 'table' then
+        root = {}
+        scenarioLearnData.keywords_by_scenario = root
+    end
+    local bucket = root[label]
+    if type(bucket) ~= 'table' then
+        bucket = {}
+        root[label] = bucket
+    end
+    return bucket
+end
+
+-- Scenario Learn Promote Keyword
+function scenarioLearnPromoteKeyword(scLabel, question)
+    if not scenarioLearnEnabled() then return false end
+    local kw = scenarioLearnExtractKeywords(question)
+    if not kw or kw == '' then return false end
+    local key = keywordDedupeKey(kw)
+    if key == '' then return false end
+    local bucket = scenarioLearnGetScenarioBucket(scLabel)
+    if not bucket then return false end
+    local hit = bucket[key]
+    if hit then
+        hit.count = (tonumber(hit.count) or 0) + 1
+        hit.last_at = os.time()
+        return false
+    end
+    local n = 0
+    for _ in pairs(bucket) do n = n + 1 end
+    if n >= SCENARIO_LEARN_MAX_KW_PER_SCENARIO then
+        scenarioLearnPruneScenarioBucket(bucket)
+    end
+    bucket[key] = {
+        kw = kw,
+        count = 1,
+        learned = true,
+        last_at = os.time(),
+    }
+    scenarioLearnSessionKeywords = scenarioLearnSessionKeywords + 1
+    local st = scenarioLearnData.stats or {}
+    st.session_keywords = (tonumber(st.session_keywords) or 0) + 1
+    scenarioLearnData.stats = st
+    bumpScenariosGen()
+    invalidateUiCaches()
+    return true
+end
+
+-- Scenario Learn Prune Scenario Bucket
+function scenarioLearnPruneScenarioBucket(bucket)
+    local list = {}
+    for k, v in pairs(bucket) do
+        list[#list + 1] = { key = k, count = tonumber(v.count) or 0, last_at = tonumber(v.last_at) or 0 }
+    end
+    table.sort(list, function(a, b)
+        if a.count ~= b.count then return a.count < b.count end
+        return a.last_at < b.last_at
+    end)
+    for i = 1, math.min(5, #list) do
+        bucket[list[i].key] = nil
+    end
+end
+
+-- Scenario Learn Find Scenario By Reply
+function scenarioLearnFindScenarioByReply(answer)
+    local want = scenarioLearnNormalizeAnswer(answer)
+    if want == '' then return nil end
+    for _, sc in ipairs(quickScenarios or {}) do
+        if sc.enabled ~= false and sc.action ~= 'watch' then
+            local got = scenarioLearnNormalizeAnswer(sc.reply or '')
+            if got ~= '' and (got == want or got:find(want, 1, true) or want:find(got, 1, true)) then
+                return sc.label or ''
+            end
+        end
+    end
+    return nil
+end
+
+-- Scenario Learn Track Manual Cluster
+function scenarioLearnTrackManualCluster(question, answer)
+    scenarioLearnData.manual_clusters = scenarioLearnData.manual_clusters or {}
+    local aKey = scenarioLearnNormalizeAnswer(answer)
+    if aKey == '' then return end
+    local qKey = normalizeMatchText(question or '')
+    local cluster = scenarioLearnData.manual_clusters[aKey]
+    if type(cluster) ~= 'table' then
+        cluster = { answer = trim(answer), count = 0, questions = {} }
+        scenarioLearnData.manual_clusters[aKey] = cluster
+    end
+    cluster.count = (tonumber(cluster.count) or 0) + 1
+    cluster.last_at = os.time()
+    if qKey ~= '' and not cluster.questions[qKey] then
+        cluster.questions[qKey] = trim(question)
+    end
+    if cluster.count >= SCENARIO_LEARN_MANUAL_PROMOTE_MIN then
+        local scLabel = scenarioLearnFindScenarioByReply(answer)
+        if scLabel and scLabel ~= '' then
+            for _, q in pairs(cluster.questions) do
+                scenarioLearnPromoteKeyword(scLabel, q)
+            end
+        end
+    end
+end
+
+-- Scenario Learn Get Keywords For Scenario
+function scenarioLearnGetKeywordsForScenario(label)
+    if not scenarioLearnEnabled() then return nil end
+    local bucket = scenarioLearnData.keywords_by_scenario and scenarioLearnData.keywords_by_scenario[label]
+    if type(bucket) ~= 'table' then return nil end
+    local out = {}
+    for _, item in pairs(bucket) do
+        if type(item) == 'table' and trim(item.kw or '') ~= '' then
+            out[#out + 1] = item.kw
+        end
+    end
+    if #out < 1 then return nil end
+    return out
+end
+
+-- Scenario Learn On Reply
+function scenarioLearnOnReply(question, answer, opts)
+    if not scenarioLearnEnabled() then return end
+    opts = opts or {}
+    question = trim(question or '')
+    answer = trim(answer or '')
+    if scenarioLearnIsSkippableQuestion(question) then return end
+    if scenarioLearnIsSkippableAnswer(answer) then return end
+
+    local st = scenarioLearnData.stats or {}
+    st.session_records = (tonumber(st.session_records) or 0) + 1
+    st.total_records = (tonumber(st.total_records) or 0) + 1
+    scenarioLearnData.stats = st
+    scenarioLearnSessionKeywords = scenarioLearnSessionKeywords or 0
+
+    local promoted = false
+    if opts.scenarioLabel and opts.scenarioLabel ~= '' then
+        promoted = scenarioLearnPromoteKeyword(opts.scenarioLabel, question) or promoted
+    elseif opts.source == 'manual' then
+        local scLabel = scenarioLearnFindScenarioByReply(answer)
+        if scLabel and scLabel ~= '' then
+            promoted = scenarioLearnPromoteKeyword(scLabel, question) or promoted
+        else
+            scenarioLearnTrackManualCluster(question, answer)
+        end
+    end
+
+    scenarioLearnMarkDirty()
+end
+
+-- Scenario Learn Last Player Question
+function scenarioLearnLastPlayerQuestion(t)
+    if not t or type(t.messages) ~= 'table' then return '' end
+    for i = #t.messages, 1, -1 do
+        local m = t.messages[i]
+        if m and messageKind(m) == 'player' then
+            local body = messageBodyForScenarios(m)
+            if body == '' then body = trim(m.text or '') end
+            if body ~= '' then return body end
+        end
+    end
+    return ''
+end
+
+-- Scenario Learn Count Keywords
+function scenarioLearnCountKeywords()
+    local n = 0
+    local root = scenarioLearnData.keywords_by_scenario
+    if type(root) ~= 'table' then return 0 end
+    for _, bucket in pairs(root) do
+        if type(bucket) == 'table' then
+            for _ in pairs(bucket) do n = n + 1 end
+        end
+    end
+    return n
+end
+
+-- Load Scenario Learn Data
+function loadScenarioLearnData()
+    local path = SCENARIO_LEARN_PATH
+    if not doesFileExist(path) then return false end
+    local chunk, err = loadfile(path)
+    if not chunk then
+        print('[Report Desk] scenario learn load: ' .. tostring(err))
+        return false
+    end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= 'table' then return false end
+    if type(data.keywords_by_scenario) == 'table' then
+        scenarioLearnData.keywords_by_scenario = data.keywords_by_scenario
+    end
+    if type(data.stats) == 'table' then
+        scenarioLearnData.stats = data.stats
+        scenarioLearnData.stats.session_records = 0
+        scenarioLearnData.stats.session_keywords = 0
+    end
+    if type(data.manual_clusters) == 'table' then
+        scenarioLearnData.manual_clusters = data.manual_clusters
+    end
+    dirtyScenarioLearn = false
+    return true
+end
+
+-- Save Scenario Learn Data
+function saveScenarioLearnData()
+    local dir = getWorkingDirectory() .. '\\config'
+    if not doesDirectoryExist(dir) then createDirectory(dir) end
+    local f, err = io.open(SCENARIO_LEARN_PATH, 'w')
+    if not f then
+        print('[Report Desk] scenario learn save: ' .. tostring(err))
+        return false
+    end
+    f:write('-- Report Desk scenario learn data (UTF-8)\n')
+    f:write('return {\n')
+    f:write('  keywords_by_scenario = {\n')
+    for label, bucket in pairs(scenarioLearnData.keywords_by_scenario or {}) do
+        if type(bucket) == 'table' then
+            f:write(string.format('    [%s] = {\n', luaQuoteUtf8(label)))
+            for _, item in pairs(bucket) do
+                if type(item) == 'table' and trim(item.kw or '') ~= '' then
+                    f:write(string.format(
+                        '      { kw = %s, count = %d, learned = true, last_at = %d },\n',
+                        luaQuoteUtf8(item.kw), tonumber(item.count) or 1, tonumber(item.last_at) or 0
+                    ))
+                end
+            end
+            f:write('    },\n')
+        end
+    end
+    f:write('  },\n')
+    local st = scenarioLearnData.stats or {}
+    f:write('  stats = {\n')
+    f:write(string.format('    total_records = %d,\n', tonumber(st.total_records) or 0))
+    f:write('  },\n')
+    f:write('}\n')
+    f:close()
+    dirtyScenarioLearn = false
+    return true
+end
+
+-- Init Scenario Learn
+function initScenarioLearn()
+    scenarioLearnSessionKeywords = 0
+    pcall(loadScenarioLearnData)
+end
+
+pcall(initScenarioLearn)
+
 --[[ Модуль: auto-rules, scenarios, processChatLineIngest. ]]
 function cloneBuiltinAutoRule(tpl, payload)
     local kw = {}
@@ -23009,6 +23452,8 @@ function main()
             deskApplyInputPolicy()
             if showWindow[0] then updateDeskInputCapture() end
         end,
+        restoreSpectateCamera = deskRestoreSpectateCamera,
+        updateInputPassthrough = updateMimguiGameInputPassthrough,
         enableSpectateCursor = deskEnableUiCursorForSamp,
         rememberSpectateCursor = deskRememberSpectateCursorMode,
         setSpectateUiMode = function(on)
@@ -23017,7 +23462,6 @@ function main()
         getSpectateUiModeActive = function()
             return deskInputState.spectateUiModeActive == true
         end,
-        updateInputPassthrough = updateMimguiGameInputPassthrough,
         onAnsBarClosed = function()
             if deskSpectatingNow() and not showWindow[0] and not deskSpectateCameraBlocked() then
                 deskRestoreSpectateCamera()
@@ -23284,6 +23728,629 @@ end
     setfenv(chunkFn, __desk_bundle_env)
 
     chunkFn()
+
+end
+
+
+
+do
+
+    local okChunk, errChunk = pcall(function()
+
+        local chunkFn, chunkErr = loadstring([=[
+
+--[[ Модуль «Дальний чат»: bubble/me/do → SAMP-чат [Bubble]. ]]
+
+REMOTE_CHAT_BUBBLE_LOG = false
+REMOTE_CHAT_FILTER_AUTO = true
+
+remoteChatState = type(remoteChatState) == 'table' and remoteChatState or {
+    ingestWindow = { t0 = 0, n = 0 },
+    colorLogFile = nil,
+}
+
+local REMOTE_CHAT_SOURCES = {
+    bubble = true,
+    me = true,
+    do_cmd = true,
+}
+
+if type(deskCache.remoteChatDedup) ~= 'table' then
+    deskCache.remoteChatDedup = {}
+end
+if type(deskCache.remoteChatDedupOrd) ~= 'table' then
+    deskCache.remoteChatDedupOrd = {}
+end
+if type(deskCache.remoteChatQueue) ~= 'table' then
+    deskCache.remoteChatQueue = {}
+end
+
+local RC_QUEUE_MAX = 32
+
+function ensureRemoteChatSettings()
+    if settings.remote_chat_samp_mirror == nil then settings.remote_chat_samp_mirror = true end
+end
+
+local function remoteChatNormalizeBody(body)
+    body = trim(stripTags(body or ''))
+    if body == '' then return '' end
+    if isUtf8Text and isUtf8Text(body) then
+        body = utf8ToCp1251(body) or body
+    end
+    return body
+end
+
+local function remoteChatNormalizeSource(source)
+    source = tostring(source or '')
+    if source == 'do' then return 'do_cmd' end
+    return source
+end
+
+function remoteChatNormalizeBubbleColor(c)
+    if type(normColor) == 'function' then
+        return normColor(c)
+    end
+    c = tonumber(c) or 0
+    if c < 0 then c = c + 4294967296 end
+    return c
+end
+
+-- SetPlayerChatBubble / ChatBubble RPC: 0xRRGGBBAA (не AARRGGBB, не low24).
+function remoteChatSampColorBytes(c)
+    c = remoteChatNormalizeBubbleColor(c)
+    if bit then
+        return {
+            raw = c,
+            rr = bit.band(bit.rshift(c, 24), 0xFF),
+            gg = bit.band(bit.rshift(c, 16), 0xFF),
+            bb = bit.band(bit.rshift(c, 8), 0xFF),
+            aa = bit.band(c, 0xFF),
+            low24 = bit.band(c, 0xFFFFFF),
+        }
+    end
+    return {
+        raw = c,
+        rr = math.floor(c / 16777216) % 256,
+        gg = math.floor(c / 65536) % 256,
+        bb = math.floor(c / 256) % 256,
+        aa = c % 256,
+        low24 = c % 16777216,
+    }
+end
+
+function remoteChatSampColorToEmbedHex(c)
+    local b = remoteChatSampColorBytes(c)
+    if not b or b.raw == 0 then return nil end
+    return string.format('%02X%02X%02X', b.rr, b.gg, b.bb)
+end
+
+local function remoteChatSampColorToEmbedHexLow24(c)
+    local b = remoteChatSampColorBytes(c)
+    if not b or b.raw == 0 then return nil end
+    local v = b.low24
+    local rr = math.floor(v / 65536) % 256
+    local gg = math.floor(v / 256) % 256
+    local bb = v % 256
+    return string.format('%02X%02X%02X', rr, gg, bb)
+end
+
+local function remoteChatColorLogPath()
+    local wd = type(getWorkingDirectory) == 'function' and getWorkingDirectory() or ''
+    return wd .. '\\config\\bubble_colors_log.txt'
+end
+
+local function remoteChatEnsureColorLogFile()
+    if remoteChatState.colorLogFile then return remoteChatState.colorLogFile end
+    local path = remoteChatColorLogPath()
+    local f, err = io.open(path, 'a')
+    if not f then
+        print('[Report Desk] bubble color log open failed: ' .. tostring(err))
+        return nil
+    end
+    remoteChatState.colorLogFile = f
+    return f
+end
+
+function remoteChatLogBubble()
+end
+
+function logBubbleColor(playerId, message, bubbleColor)
+    if REMOTE_CHAT_BUBBLE_LOG == false then return end
+    playerId = tonumber(playerId) or -1
+    message = tostring(message or '')
+    local nick = '???'
+    if type(sampGetPlayerNickname) == 'function' then
+        local ok, n = pcall(sampGetPlayerNickname, playerId)
+        if ok and n and n ~= '' then nick = n end
+    end
+    local preview = message
+    if #preview > 40 then preview = preview:sub(1, 40) end
+    local b = remoteChatSampColorBytes(bubbleColor)
+    local embedHex = remoteChatSampColorToEmbedHex(bubbleColor) or ''
+    local embedLow24 = remoteChatSampColorToEmbedHexLow24(bubbleColor) or ''
+    local mlHex = ''
+    if type(sampColorToChatHex) == 'function' then
+        mlHex = sampColorToChatHex(bubbleColor) or ''
+    end
+    local msgEmbed
+    if type(remoteChatExtractLeadingEmbed) == 'function' then
+        msgEmbed = select(1, remoteChatExtractLeadingEmbed(message))
+    end
+    local clistRaw, clistEmbed = '', ''
+    if type(sampPlayerColorChatHex) == 'function' and playerId >= 0 then
+        clistEmbed = sampPlayerColorChatHex(playerId) or ''
+        local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[playerId]
+        if cached then
+            clistRaw = string.format('0x%08X', remoteChatNormalizeBubbleColor(cached))
+        end
+    end
+    local byteLine = string.format(
+        'RAW=%08X R=%02X G=%02X B=%02X A=%02X LOW24=%06X',
+        b.raw, b.rr, b.gg, b.bb, b.aa, b.low24
+    )
+    local line = string.format(
+        '[%s] %s[%d]: %s | %s | EMBED_RRGGBBAA={%s} EMBED_LOW24={%s} ML_HEX={%s} MSG_EMBED=%s | CLIST=%s {%s}\n',
+        os.date('%H:%M:%S'),
+        nick,
+        playerId,
+        preview,
+        byteLine,
+        embedHex,
+        embedLow24,
+        mlHex,
+        tostring(msgEmbed or ''),
+        clistRaw,
+        clistEmbed
+    )
+    print('[BubbleColor] ' .. line:gsub('\n', ''))
+    local f = remoteChatEnsureColorLogFile()
+    if f then
+        f:write(line)
+        f:flush()
+    end
+end
+
+-- CP1251 lower (Lua string.lower не работает с кириллицей в MoonLoader).
+local function remoteChatLower(s)
+    s = s or ''
+    local out = {}
+    for i = 1, #s do
+        local b = s:byte(i)
+        if b >= 0xC0 and b <= 0xDF then
+            out[#out + 1] = string.char(b + 0x20)
+        elseif b == 0xA8 then
+            out[#out + 1] = '\xB8'
+        else
+            out[#out + 1] = string.char(b)
+        end
+    end
+    return table.concat(out)
+end
+
+local function remoteChatContains(body, fragment)
+    if body == '' or fragment == '' then return false end
+    if body:find(fragment, 1, true) then return true end
+    local lowBody = remoteChatLower(body)
+    if lowBody:find(fragment, 1, true) then return true end
+    if lowBody:find(remoteChatLower(fragment), 1, true) then return true end
+    return false
+end
+
+-- CP1251 stems (bubble text is CP1251; UTF-8 literals never matched).
+local RC_PAUSE = '\xED\xE0 \xEF\xE0\xF3\xE7\xE5'
+local RC_RATING = '\xF0\xE5\xE9\xF2\xE8\xED\xE3:'
+
+local REMOTE_CHAT_JUNK_STEMS = {
+    "\xee\xf2\xf0\xe5\xec\xee\xed\xf2\xe8\xf0\xee\xe2",
+    "\xee\xf2\xef\xf0\xe0\xe2\xeb\xff\xe5\xf2\x20\xee\xe1\xfa\xff\xe2\xeb\xe5\xed",
+    "\xee\xf2\xef\xf0\xe0\xe2\xeb\xff\xe5\xf2\x20\xf1\xee\xee\xe1\xf9\xe5\xed\xe8\xe5",
+    "\xef\xf0\xe5\xe4\xeb\xe0\xe3\xe0\xe5\xf2",
+    "\xef\xf0\xee\xe2\xe5\xf0\xff\xe5\xf2",
+    "\xf7\xe8\xf2\xe0\xe5\xf2\x20\xe3\xe0\xe7\xe5\xf2",
+    "\xf0\xe0\xf1\xef\xe8\xf1\xe0\xeb",
+    "\xe2\xe5\xf0\xed\xf3\xeb\xf1\xff",
+    "\xe7\xe0\xea\xf0\xfb\xe2\xe0\xe5\xf2\x20\xf8\xeb\xe0\xe3\xe1\xe0\xf3\xec",
+    "\xee\xf2\xea\xf0\xfb\xe2\xe0\xe5\xf2\x20\xf8\xeb\xe0\xe3\xe1\xe0\xf3\xec",
+    "\xe8\xe3\xf0\xe0\xe5\xf2\x20\xf0\xe8\xed\xe3\xf2\xee\xed",
+    "\xe7\xe2\xee\xed\xe8\xf2\x20\xe2\x20\xf1\xeb\xf3\xe6\xe1\xf3",
+    "\xe0\xef\xef\xe0\xf0\xe0\xf2\xf3\xf0\xe0\x20\xe2\xea\xeb\xfe\xf7",
+    "\xe2\xe7\xe3\xeb\xff\xed\xf3\xeb\x20\xed\xe0\x20\xf7\xe0\xf1\xfb",
+    "\xe2\xe7\xff\xeb\x20\xed\xe0\xf3\xf8\xed\xe8\xea",
+    "\xed\xe0\xe4\xe5\xeb\x20\xed\xe0\xf3\xf8\xed\xe8\xea",
+    "\xe2\xea\xeb\xfe\xf7\xe8\xeb\x20\xe0\xef\xef\xe0\xf0\xe0\xf2\xf3\xf0\xf3",
+    "\x6e\x6f\x6e\x2d\x72\x70",
+    "\xf1\xee\xee\xe1\xf9\xe5\xed\xe8\xe5\x20\xef\xee\x20\xf0\xe0\xf6\xe8\xe8",
+    "\xe7\xe0\xef\xf0\xe0\xe2\xeb",
+    "\x72\x65\x66\x75\x65\x6c",
+    "\xed\xe0\x20\xec\xe0\xf8\xe8\xed\xfb",
+    "\xed\xe0\xe6\xec\xe8\x20\x6e",
+    "\x2f\x73\x74\x61\x6e\x64",
+    "\xe1\xe0\xed\xea\xee\xec\xe0\xf2",
+    "\xf2\xf0\xe0\xed\xe7\xe0\xea\xf6",
+    "\xef\xf0\xee\xe4\xe0\xe5\xf2\x20\xe3\xe0\xe7\xe5\xf2",
+    "\xef\xf0\xee\xe4\xe0\xb8\xf2\x20\xe3\xe0\xe7\xe5\xf2",
+    "\xef\xf0\xee\xe4\xe0\xe5\xf2\x20\xf1\xe5\xec",
+    "\xef\xf0\xee\xe4\xe0\xb8\xf2\x20\xf1\xe5\xec",
+    "\xea\xf3\xef\xe8\xf2\xfc\x20\xe3\xe0\xe7\xe5\xf2",
+    "\xea\xf3\xef\xe8\xf2\xfc\x20\xf8\xe0\xf3\xf0\xec",
+    "\xea\xf3\xef\xe8\xf2\xfc\x20\xff\xf9\xe8\xea",
+    "\xf1\xf2\xee\xe8\xf2\x20\xed\xe0",
+    "\xf1\xf2\xee\xe8\xf2\x20\xf3",
+    "\xf2\xee\xf7\xed\xee\xe3\xee\x20\xe2\xf0\xe5\xec\xe5\xed",
+    "\xf1\xeb\xf3\xe6\xe1\xf3\x20\xf2\xee\xf7\xed",
+    "\xef\xe5\xf0\xe5\xee\xe4\xe5\xe2\xe0",
+    "\xf1\xe0\xe4\xe8\xf2\xf1\xff",
+    "\xf1\xe0\xe4\xe8\xf2\xf1\xff\x20\xe2",
+    "\xeb\xe5\xe6\xe8\xf2",
+    "\xe7\xe0\xf1\xfb\xef\xe0",
+    "\xf0\xfb\xe1\xe0\xf7",
+    "\xee\xf5\xee\xf2",
+    "\xf2\xf0\xe5\xed\xe8\xf0",
+    "\xef\xeb\xe0\xe2\xe0",
+    "\xf0\xe0\xe7\xe3\xee\xe2\xe0\xf0\xe8\xe2\xe0",
+    RC_PAUSE,
+    "\x70\x61\x75\x73\x65",
+    "\x61\x66\x6b",
+    "\x72\x65\x70\x61\x69\x72",
+    "\x73\x6d\x73",
+    "\xf0\xe0\xf6\xe8\xe8",
+}
+
+local REMOTE_CHAT_RP_KEEP = {
+    "\xf1\xec\xe5\xb8\xf2\xf1\xff",
+    "\xf1\xec\xe5\xe5\xf2\xf1\xff",
+    "\xf3\xeb\xfb\xe1\xe0\xe5\xf2\xf1\xff",
+    "\xf5\xe8\xf5\xe8\xea\xe0\xe5\xf2",
+    "\xf0\xfb\xe4\xe0\xe5\xf2",
+    "\xef\xeb\xe0\xf7\xe5\xf2",
+    "\xef\xeb\xe0\xf7\xb8\xf2",
+    "\xea\xe8\xe2\xed\xf3\xeb",
+    "\xea\xe8\xe2\xed\xf3\xeb\xe0",
+    "\xec\xe0\xf8\xe5\xf2",
+    "\xef\xf0\xe8\xf1\xe5\xeb",
+    "\xef\xeb\xfe\xed\xf3\xeb\xe0",
+    "\xef\xeb\xfe\xed\xf3\xeb",
+    "\xef\xf0\xe8\xf1\xe5\xe4\xe0\xe5\xf2",
+    "\xee\xe1\xed\xff\xeb",
+    "\xee\xe1\xed\xff\xeb\xe0",
+    "\xef\xee\xe6\xe0\xeb \xef\xeb\xe5\xf7\xe0\xec\xe8",
+    "\xf2\xe0\xed\xf6\xf3\xe5\xf2",
+    "\xef\xee\xe4\xec\xe8\xe3\xe8\xe2\xe0\xe5\xf2",
+    "\xf0\xe0\xe7\xe2\xee\xe4\xe8\xf2 \xf0\xf3\xea\xe0\xec\xe8",
+    "\x73\x68\x72\x75\x67",
+    "\x6c\x61\x75\x67\x68",
+    "\x73\x6d\x69\x6c\x65",
+}
+
+local function remoteChatIsRpEmotion(body)
+    local low = remoteChatLower(body)
+    for _, keep in ipairs(REMOTE_CHAT_RP_KEEP) do
+        if remoteChatContains(body, keep) then return true end
+    end
+    if body:find('[?!]', 1) or body:find('"', 1, true) or body:find('\xAB', 1, true) then
+        return true
+    end
+    return false
+end
+
+function remoteChatLooksLikeAutoAction(body)
+    body = remoteChatNormalizeBody(body)
+    if body == '' then return true end
+
+    local low = remoteChatLower(body)
+    if remoteChatIsRpEmotion(body) then return false end
+
+    if remoteChatContains(body, RC_PAUSE) then return true end
+    if remoteChatContains(body, 'pause') or remoteChatContains(body, 'afk') then return true end
+    if low == 'repair' or low == 'refuel' or low == 'hunger' or low == 'thirst' then return true end
+
+    if low:match('^sms') or remoteChatContains(body, 'sms>>>') or remoteChatContains(body, 'sms<<<') then
+        return true
+    end
+    if body:find('<<<', 1, true) or body:find('>>>', 1, true) then
+        if remoteChatContains(body, 'sms') then return true end
+    end
+
+    if body:match('^[%+%-]%d') then return true end
+    if body:match('^[%+%-]%d+[$]') then return true end
+    if remoteChatContains(body, RC_RATING) and remoteChatContains(body, 'hp') then return true end
+    if body:match('^%+%d+%s*[Hh][Pp]') then return true end
+    if #body <= 2 and body:match('^[%+%-%?!%.]$') then return true end
+
+    for _, stem in ipairs(REMOTE_CHAT_JUNK_STEMS) do
+        if remoteChatContains(body, stem) then return true end
+    end
+
+    if body:match('^[%a_]+$') and #body <= 28 then
+        if low == 'repair' or low == 'refuel' or low == 'smoke' or low == 'drink'
+                or low == 'eat' or low == 'sleep' or low == 'wash' or low == 'fuel' then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function remoteChatShouldSkipBody(body, source)
+    body = remoteChatNormalizeBody(body)
+    if body == '' then return true, 'empty' end
+    if bodyLooksLikeSystemChat and bodyLooksLikeSystemChat(body) then return true, 'system' end
+    if deskIngest and deskIngest.looksLikePlayerStatusBody then
+        if deskIngest.looksLikePlayerStatusBody(body) then return true, 'status' end
+    end
+    if REMOTE_CHAT_FILTER_AUTO and remoteChatLooksLikeAutoAction(body) then
+        return true, 'auto_action'
+    end
+    return false, ''
+end
+
+local function remoteChatAllowsSource(source)
+    return REMOTE_CHAT_SOURCES[remoteChatNormalizeSource(source)] == true
+end
+
+local function remoteChatBodyDedupToken(body)
+    body = normalizeMatchText(remoteChatNormalizeBody(body))
+    if body == '' then return '' end
+    if remoteChatContains(body, RC_PAUSE) or remoteChatContains(body, 'pause')
+            or remoteChatContains(body, 'afk') then
+        return 'status'
+    end
+    return body
+end
+
+local function remoteChatDedupKey(nick, id, body)
+    return nickKey(nick) .. '|' .. tostring(tonumber(id) or 0) .. '|' .. remoteChatBodyDedupToken(body)
+end
+
+local function remoteChatDedupWindow(body)
+    local token = remoteChatBodyDedupToken(body)
+    if token == 'status' then return RC.STATUS_DEDUP_SEC or 180 end
+    return RC.DEDUP_SEC or 12
+end
+
+local function remoteChatIsDup(key, body)
+    if key == '' then return false end
+    local prev = deskCache.remoteChatDedup[key]
+    if prev and (os.clock() - prev) < remoteChatDedupWindow(body) then
+        return true
+    end
+    return false
+end
+
+local function remoteChatMarkDup(key)
+    if key == '' then return end
+    deskCache.remoteChatDedup[key] = os.clock()
+    if touchTimedMap then
+        touchTimedMap(deskCache.remoteChatDedup, deskCache.remoteChatDedupOrd, key)
+    end
+end
+
+local function remoteChatRateOk()
+    local now = os.clock()
+    local w = remoteChatState.ingestWindow
+    if not w or now - (w.t0 or 0) > 1.0 then
+        remoteChatState.ingestWindow = { t0 = now, n = 0 }
+        w = remoteChatState.ingestWindow
+    end
+    if (w.n or 0) >= (RC.INGEST_MAX_PER_SEC or 4) then return false end
+    w.n = (w.n or 0) + 1
+    return true
+end
+
+function remoteChatExtractLeadingEmbed(body)
+    body = tostring(body or '')
+    local hex, rest = body:match('^{([0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])}(.*)$')
+    if hex then
+        return string.upper(hex), rest
+    end
+    return nil, body
+end
+
+local RC_SAMP_TAG = '{9E7BEF}[B]{FFFFFF} '
+local RC_SAMP_TAG_ME = '{9E7BEF}[Me]{FFFFFF} '
+local RC_SAMP_TAG_DO = '{9E7BEF}[Do]{FFFFFF} '
+local RC_SAMP_NICK = 'FFFFFF'
+local RC_SAMP_BODY_FALLBACK = 'E8E8E8'
+local RC_SAMP_MAX = 220
+local RC_SAMP_BODY_SPEECH = 'CECECE'
+local RC_SAMP_BODY_DISTANT = '999999'
+local RC_SAMP_BODY_ACTION = 'DD90FF'
+local RC_BUBBLE_SKIP_HEX = {
+    ['FF0000'] = true,
+}
+
+local function remoteChatResolveBodyHex(source, colorHex, bubbleColor)
+    source = remoteChatNormalizeSource(source)
+    colorHex = colorHex or remoteChatBubbleToChatHex(bubbleColor, nil) or RC_SAMP_BODY_FALLBACK
+    colorHex = string.upper(colorHex)
+
+    if source == 'me' or source == 'do_cmd' then
+        return colorHex
+    end
+
+    if RC_BUBBLE_SKIP_HEX[colorHex] then
+        return RC_SAMP_BODY_FALLBACK
+    end
+    if colorHex == RC_SAMP_BODY_DISTANT then
+        return RC_SAMP_BODY_DISTANT
+    end
+    if colorHex == RC_SAMP_BODY_ACTION then
+        return RC_SAMP_BODY_ACTION
+    end
+    -- ARP: RPC 00CCFF — цвет bubble над головой; в SAMP-чате речь = CECECE.
+    return RC_SAMP_BODY_SPEECH
+end
+
+local function remoteChatTrimBody(body, nick, id, source)
+    body = trim(body or '')
+    nick = trim(nick or '')
+    id = tonumber(id) or 0
+    source = remoteChatNormalizeSource(source)
+    local overhead = 72 + #nick + (id > 0 and 10 or 0)
+    if source == 'do_cmd' then overhead = overhead + 16 end
+    local maxBody = RC_SAMP_MAX - overhead
+    if maxBody < 32 then maxBody = 32 end
+    if #body > maxBody then
+        body = body:sub(1, maxBody - 3) .. '...'
+    end
+    return body
+end
+
+function remoteChatBubbleToChatHex(bubbleColor, embedHex)
+    if type(embedHex) == 'string' and #embedHex == 6 then
+        return string.upper(embedHex)
+    end
+    local hex = remoteChatSampColorToEmbedHex(bubbleColor)
+    if hex and hex ~= '' then return hex end
+    return RC_SAMP_BODY_FALLBACK
+end
+
+local function remoteChatSampTag(source)
+    source = remoteChatNormalizeSource(source)
+    if source == 'me' then return RC_SAMP_TAG_ME end
+    if source == 'do_cmd' then return RC_SAMP_TAG_DO end
+    return RC_SAMP_TAG
+end
+
+local function remoteChatFormatNickId(clistHex, nick, id)
+    clistHex = clistHex or RC_SAMP_NICK
+    id = tonumber(id) or 0
+    if id > 0 then
+        return string.format('{%s}%s[%d]', clistHex, nick, id)
+    end
+    return string.format('{%s}%s', clistHex, nick)
+end
+
+function remoteChatTryAppend(nick, id, body, source, lineKey, profanity, bubbleColor, embedHex)
+    if settings.remote_chat_samp_mirror == false then return false end
+    if not remoteChatAllowsSource(source) then return false end
+    nick = trim(nick or '')
+    if not embedHex then
+        embedHex, body = remoteChatExtractLeadingEmbed(body)
+    end
+    body = remoteChatNormalizeBody(body)
+    if nick == '' or body == '' then return false end
+    local skip, _ = remoteChatShouldSkipBody(body, source)
+    if skip then return false end
+    if not remoteChatRateOk() then return false end
+
+    local dkey = remoteChatDedupKey(nick, id, body)
+    if remoteChatIsDup(dkey, body) then return false end
+    remoteChatMarkDup(dkey)
+
+    bubbleColor = remoteChatNormalizeBubbleColor(bubbleColor)
+    local colorHex = remoteChatBubbleToChatHex(bubbleColor, embedHex)
+    if RC_BUBBLE_SKIP_HEX[colorHex] then return false end
+
+    local clistHex = RC_SAMP_NICK
+    local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[tonumber(id) or -1]
+    if cached and type(sampColorToChatHex) == 'function' then
+        clistHex = sampColorToChatHex(cached) or clistHex
+    end
+    clistHex = string.upper(clistHex)
+
+    local q = deskCache.remoteChatQueue
+    if #q >= RC_QUEUE_MAX then
+        table.remove(q, 1)
+    end
+    q[#q + 1] = {
+        nick = nick,
+        id = tonumber(id) or 0,
+        body = body,
+        source = source,
+        profanity = profanity == true,
+        bubbleColor = bubbleColor,
+        embedHex = embedHex,
+        colorHex = colorHex,
+        clistHex = clistHex,
+    }
+    return true
+end
+
+function remoteChatFlushSampQueue()
+    local q = deskCache.remoteChatQueue
+    if type(q) ~= 'table' or #q == 0 then return end
+    local batch = q
+    deskCache.remoteChatQueue = {}
+    for i = 1, #batch do
+        local it = batch[i]
+        if it and it.body and it.body ~= '' then
+            pcall(remoteChatPrintSampLine, it.nick, it.id, it.body, it.source, it.profanity,
+                it.bubbleColor, it.colorHex, it.clistHex)
+        end
+    end
+end
+
+function remoteChatClearQueue()
+    if type(deskCache.remoteChatQueue) == 'table' then
+        deskCache.remoteChatQueue = {}
+    end
+end
+
+function remoteChatSetMirrorEnabled(enabled)
+    ensureRemoteChatSettings()
+    settings.remote_chat_samp_mirror = enabled ~= false
+    if settings.remote_chat_samp_mirror == false then
+        remoteChatClearQueue()
+    end
+end
+
+function remoteChatPrintSampLine(nick, id, body, source, profanity, bubbleColor, colorHex, clistHex)
+    if type(isSampAvailable) ~= 'function' or not isSampAvailable() then return false end
+    if type(sampAddChatMessage) ~= 'function' then return false end
+    nick = trim(nick or '?')
+    nick = nick:gsub('[{}]', '')
+    id = tonumber(id) or 0
+    source = remoteChatNormalizeSource(source)
+    body = remoteChatTrimBody(body, nick, id, source)
+    if body == '' then return false end
+
+    clistHex = string.upper(tostring(clistHex or RC_SAMP_NICK))
+    if clistHex == RC_SAMP_NICK then
+        local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[id]
+        if cached and type(sampColorToChatHex) == 'function' then
+            clistHex = string.upper(sampColorToChatHex(cached) or RC_SAMP_NICK)
+        end
+    end
+    local bodyHex = remoteChatResolveBodyHex(source, colorHex, bubbleColor)
+    if profanity then bodyHex = 'FF6666' end
+
+    local tag = remoteChatSampTag(source)
+    local nickPart = remoteChatFormatNickId(clistHex, nick, id)
+    local line
+    if source == 'do_cmd' then
+        line = string.format(
+            '%s{%s}%s{FFFFFF} (( %s ))',
+            tag, bodyHex, body, nickPart)
+    elseif source == 'me' then
+        line = string.format(
+            '%s%s {%s}%s',
+            tag, nickPart, bodyHex, body)
+    else
+        line = string.format(
+            '%s%s: {%s}%s',
+            tag, nickPart, bodyHex, body)
+    end
+    local ok = pcall(sampAddChatMessage, line, -1)
+    return ok == true
+end
+
+
+]=], '@report_desk_remote_chat.lua')
+
+        if not chunkFn then error('[Report Desk] bundle chunk report_desk_remote_chat.lua: ' .. tostring(chunkErr)) end
+
+        setfenv(chunkFn, __desk_bundle_env)
+
+        chunkFn()
+
+    end)
+
+    if not okChunk then
+
+        print('[Report Desk] remote chat disabled: ' .. tostring(errChunk))
+
+    end
 
 end
 

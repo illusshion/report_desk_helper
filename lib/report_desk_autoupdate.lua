@@ -250,6 +250,12 @@ function M.check(corePath)
     end
     notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. remoteVer .. '...')
     local ok, derr = M.downloadCore(coreUrl, corePath)
+    if not ok and manifest.core_url_fallback and tostring(manifest.core_url_fallback) ~= '' then
+        local fb = tostring(manifest.core_url_fallback)
+        log('core primary failed, fallback: ' .. fb)
+        corePath = M.corePathFromUrl(fb, corePath)
+        ok, derr = M.downloadCore(fb, corePath)
+    end
     if not ok then
         local dir = M.coreDir()
         local hadCore = doesFileExist(corePath)
@@ -282,7 +288,12 @@ function M.forceDownload(corePath)
         return false, 'no manifest'
     end
     corePath = M.corePathFromUrl(manifest.core_url, corePath)
-    return M.downloadCore(manifest.core_url, corePath)
+    local ok, err = M.downloadCore(manifest.core_url, corePath)
+    if not ok and manifest.core_url_fallback and tostring(manifest.core_url_fallback) ~= '' then
+        corePath = M.corePathFromUrl(tostring(manifest.core_url_fallback), corePath)
+        ok, err = M.downloadCore(manifest.core_url_fallback, corePath)
+    end
+    return ok, err
 end
 
 return M

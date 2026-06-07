@@ -275,19 +275,12 @@ end
 -- Публичный API модуля.
 function M.onToggleSpectating(toggle)
     if toggle then
-        session.markAwaitingSpectate(false)
-        pcall(menu.resetMenuState)
+        if not (session.isActive and session.isActive()) then
+            pcall(menu.resetMenuState)
+        end
         if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
         session.setSpectating(true)
-        local id = M.getTargetId()
-        if id >= 0 then
-            local nick = ''
-            if deps.getTargetNick then
-                local ok, nk = pcall(deps.getTargetNick)
-                if ok and nk then nick = nk end
-            end
-            session.beginSession(id, nick, { source = 'toggle' })
-        end
+        -- Цель и session.beginSession — только после onSpectatePlayer / [SP] (server confirm).
         if deps.onSpectatingOn then pcall(deps.onSpectatingOn) end
         return
     end

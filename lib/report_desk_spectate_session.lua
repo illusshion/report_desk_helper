@@ -49,6 +49,9 @@ local cbOnBegin, cbOnEnd, cbResetMenuState, cbResetMenuSelection, cbEnsureSampev
 
 local playerHandler, hookPrevPlayer
 local showTdHook, setStrHook, hookPrevShowTd, hookPrevSetStr
+local lastBeginSessionId = nil
+local lastBeginSessionAt = 0
+local BEGIN_SESSION_DEDUPE_SEC = 0.6
 
 local function trim(s)
     if trimFn then return trimFn(s) end
@@ -203,10 +206,17 @@ end
 -- Публичный API модуля.
 function M.shouldSuppressServerSpMenu()
     if not uiEnabled() then return false end
+    -- Подтверждённая цель: кастомное меню вместо серверного TD.
     if M.getTargetId() >= 0 then return true end
-    if session.spectating == true or playerSpectatingNow() then return true end
+    -- Handshake: pending есть, кастомное меню показывает pending id через stats getTargetId.
     if session.awaitingSpectate == true then return true end
+    -- Без цели и без pending — серверное меню не трогаем (нет «пустого» экрана).
     return false
+end
+
+-- Публичный API модуля.
+function M.isAwaitingSpectate()
+    return session.awaitingSpectate == true
 end
 
 -- Публичный API модуля.
@@ -434,7 +444,16 @@ function M.parseSpLine(text)
     if nick then nick = trim(nick) end
     M.setSpectating(true)
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-    return M.beginSession(id, nick, { source = 'sp_line', ping = ping and tonumber(ping) or nil })
+    return M.beginSession(id, nick, {
+        source = 'sp_line',
+        ping = ping and tonumber(ping) or nil,
+        forceSync = true,
+    })
+end
+
+-- Server-confirmed spectate target (authoritative).
+local function isServerConfirmedSource(src)
+    return src == 'sp_line' or src == 'spectate_player'
 end
 
 -- Публичный API модуля.
@@ -444,6 +463,19 @@ function M.beginSession(id, nick, opts)
     opts = opts or {}
     nick = trim(nick or '')
     local changed = session.targetId ~= id
+    local forceSync = opts.forceSync == true or isServerConfirmedSource(opts.source)
+    local now = os.clock()
+    if not changed and id == lastBeginSessionId
+            and (now - lastBeginSessionAt) < BEGIN_SESSION_DEDUPE_SEC then
+        session.active = true
+        session.spectating = true
+        session.awaitingSpectate = false
+        session.targetId = id
+        if nick ~= '' then session.targetNick = nick end
+        return true
+    end
+    lastBeginSessionId = id
+    lastBeginSessionAt = now
     session.active = true
     session.spectating = true
     session.awaitingSpectate = false
@@ -456,7 +488,7 @@ function M.beginSession(id, nick, opts)
     end
     if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
     if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
-    if changed or opts.forceSync == true then
+    if changed or forceSync then
         if cbOnBegin then pcall(cbOnBegin, id, nick, opts) end
     end
     return true
@@ -559,7 +591,7 @@ function M.installSampevHooks(sampev)
             end)
             M.setSpectating(true)
             if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-            M.beginSession(id, nick, { source = 'spectate_player' })
+            M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
         end
         if type(hookPrevPlayer) == 'function' then
             return hookPrevPlayer(id)

@@ -95,6 +95,8 @@ function main()
             deskApplyInputPolicy()
             if showWindow[0] then updateDeskInputCapture() end
         end,
+        restoreSpectateCamera = deskRestoreSpectateCamera,
+        updateInputPassthrough = updateMimguiGameInputPassthrough,
         enableSpectateCursor = deskEnableUiCursorForSamp,
         rememberSpectateCursor = deskRememberSpectateCursorMode,
         setSpectateUiMode = function(on)
@@ -103,7 +105,6 @@ function main()
         getSpectateUiModeActive = function()
             return deskInputState.spectateUiModeActive == true
         end,
-        updateInputPassthrough = updateMimguiGameInputPassthrough,
         onAnsBarClosed = function()
             if deskSpectatingNow() and not showWindow[0] and not deskSpectateCameraBlocked() then
                 deskRestoreSpectateCamera()

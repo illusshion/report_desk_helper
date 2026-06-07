@@ -39,7 +39,8 @@ if ($Changelog -eq '') {
 }
 $versionJson = @{
     version   = $Version
-    core_url  = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
+    core_url  = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
+    core_url_fallback = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
     changelog = $Changelog
 } | ConvertTo-Json -Depth 3
 
@@ -47,6 +48,12 @@ $releaseDir = Join-Path $MoonloaderRoot 'release'
 $versionPath = Join-Path $releaseDir 'version.json'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($versionPath, $versionJson + "`n", $Utf8NoBom)
+
+# Синхронизация ядра в repo (raw fallback + git)
+$repoCoreDir = Join-Path $MoonloaderRoot 'report_desk'
+New-Item -ItemType Directory -Force -Path $repoCoreDir | Out-Null
+Copy-Item $coreLua (Join-Path $repoCoreDir 'admin_report_desk_core.lua') -Force
+Write-Host "Synced report_desk\admin_report_desk_core.lua for git"
 
 $manifestUrl = "https://raw.githubusercontent.com/$owner/$repoName/main/release/version.json"
 $updaterSrc = Join-Path $MoonloaderRoot 'lib\report_desk_autoupdate.lua'

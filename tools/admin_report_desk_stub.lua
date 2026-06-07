@@ -6,7 +6,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.7')
+script_version('1.0.8')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 -- mimgui ставится через report_desk_deps (не в script_dependencies — иначе ML не запустит main)
 script_dependencies('SAMP', 'SAMPFUNCS')

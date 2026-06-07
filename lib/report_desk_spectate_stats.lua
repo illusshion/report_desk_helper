@@ -32,6 +32,7 @@ local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
 local lastSpecStepAt = 0
 local lastSpectateHealthAt = 0
+local expectSpectateOff = false
 
 local trim, stripTags, sendChat, sendMenuOutbound, uiText, toU32
 local col_accent, col_accent_dim, col_muted, col_muted2, col_label, col_warn
@@ -62,18 +63,24 @@ local state = {
     pendingSpId = nil,
     pendingSpNick = '',
     pendingSpAt = 0,
+    lastSpOutboundAt = 0,
 }
 
 -- ID цели на handshake /sp: pending → session → локальный state.
 local function resolveSpectateHandshakeId()
     local pid = tonumber(state.pendingSpId)
     if pid and pid >= 0 then return pid end
+    if specSession.isAwaitingSpectate and specSession.isAwaitingSpectate() then
+        return -1
+    end
     if specSession.getTargetId then
         pid = specSession.getTargetId()
         if pid and pid >= 0 then return pid end
     end
-    pid = tonumber(state.targetId)
-    if pid and pid >= 0 then return pid end
+    if specPlayerActive() then
+        pid = tonumber(state.targetId)
+        if pid and pid >= 0 then return pid end
+    end
     return -1
 end
 
@@ -700,9 +707,10 @@ function M.getTargetId()
     if specPlayerActive() then
         local pending = tonumber(state.pendingSpId)
         if pending and pending >= 0 then return pending end
-        local tid = tonumber(state.targetId)
-        if tid and tid >= 0 then return tid end
+        return -1
     end
+    local tid = tonumber(state.targetId)
+    if tid and tid >= 0 then return tid end
     return -1
 end
 
@@ -805,6 +813,26 @@ function M.hasStats(id)
     return false
 end
 
+-- Запрос /st после подтверждённого SP (не в том же тике, что server confirm).
+local function scheduleAutoStats(id, force)
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    if state.pendingStId == id and (os.clock() - (state.pendingStAt or 0)) < 1.0 then
+        return
+    end
+    if lua_thread and lua_thread.create then
+        lua_thread.create(function()
+            wait(0.18)
+            if not specSession.isActive or not specSession.isActive() then return end
+            if M.getTargetId() ~= id then return end
+            if not specPlayerActive() then return end
+            M.requestStats(id, { force = force == true })
+        end)
+        return
+    end
+    M.requestStats(id, { force = force == true })
+end
+
 -- Публичный API модуля.
 function M.syncFromSession(id, nick, settings, syncOpts)
     syncOpts = syncOpts or {}
@@ -821,6 +849,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
         clearPendingSt()
     end
     M.cancelPendingSp()
+    expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
     lastValidTargetAt = os.clock()
@@ -849,7 +878,11 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     end
     if mustForce then
         M.refreshLivePing(id)
-        M.requestStats(id, { force = true })
+        if syncOpts.deferAutoSt then
+            scheduleAutoStats(id, true)
+        else
+            M.requestStats(id, { force = true })
+        end
         return
     end
     M.maybeAutoRequest(id, s, false)
@@ -870,6 +903,7 @@ function M.markPendingSpCommand(id, nick)
     state.pendingSpId = id
     state.pendingSpNick = nick
     state.pendingSpAt = os.clock()
+    state.lastSpOutboundAt = state.pendingSpAt
     local cur = M.getTargetId()
     if cur ~= id then
         if cur >= 0 then clearPendingSt() end
@@ -939,6 +973,14 @@ function M.tickPendingSp()
     if not id then return end
     local at = tonumber(state.pendingSpAt) or 0
     if at > 0 and os.clock() - at > PENDING_SP_SEC then
+        local confirmed = specSession.isActive and specSession.isActive()
+        if specPlayerActive() and not confirmed then
+            pcall(specSession.tryRecoverFromChat)
+            if specSession.isActive and specSession.isActive() then
+                M.cancelPendingSp()
+            end
+            return
+        end
         M.cancelPendingSp()
     end
 end
@@ -951,6 +993,7 @@ function M.forceExitSpectate(opts)
         return false
     end
     lastForceExitAt = now
+    expectSpectateOff = true
     if opts.reason == 'orphan' then
         orphanLocalCleared = true
     end
@@ -994,6 +1037,16 @@ function M.tickSpectateHealth()
         targetOfflineSinceAt = nil
         return
     end
+    local sessionConfirmed = specSession.isActive and specSession.isActive()
+    if specPlayerActive() and not sessionConfirmed then
+        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+        if outboundAt > 0 and (now - outboundAt) < PENDING_SP_SEC + 2.0 then
+            orphanSinceAt = nil
+            orphanRecoveryTried = false
+            targetOfflineSinceAt = nil
+            return
+        end
+    end
     local id = M.getTargetId()
     if id < 0 then
         targetOfflineSinceAt = nil
@@ -1029,9 +1082,9 @@ function M.tickSpectateHealth()
     orphanRecoveryTried = false
     orphanLocalCleared = false
     lastValidTargetAt = now
-    if sampIsPlayerConnected and not sampIsPlayerConnected(id) then
+    if sessionConfirmed and id >= 0 and sampIsPlayerConnected and not sampIsPlayerConnected(id) then
         targetOfflineSinceAt = targetOfflineSinceAt or now
-        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC then
+        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC + 1.5 then
             return
         end
         targetOfflineSinceAt = nil
@@ -1059,8 +1112,6 @@ function M.setSpectateTarget(id, nick, settings)
     state.targetNick = trim(nick or '')
     lastValidTargetAt = os.clock()
     orphanLocalCleared = false
-    pcall(specSession.markAwaitingSpectate, false)
-    pcall(specSession.beginSession, id, state.targetNick, { source = 'cmd' })
     local e = ensureEntry(id)
     if e then
         if prevId ~= id then
@@ -2070,6 +2121,7 @@ local function buildSpUiDeps(deps)
         sampIsPlayerConnected = sampIsPlayerConnected,
         sampGetPlayerNickname = sampGetPlayerNickname,
         onSpLocalExit = function()
+            expectSpectateOff = true
             M.clearSpectateTarget(true)
             M.onSpCommandOff()
         end,
@@ -2077,12 +2129,14 @@ local function buildSpUiDeps(deps)
             meta = meta or {}
             local syncOpts = {}
             local src = meta.source
-            if src == 'cmd' or src == 'toggle' or src == 'sp_line' then
+            if src == 'sp_line' or src == 'spectate_player' then
                 syncOpts.forceAutoSt = true
-            elseif src == 'spectate_player' then
-                if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
-                        and M.hasStats(id) then
-                    syncOpts.skipAutoSt = true
+                syncOpts.deferAutoSt = true
+                if src == 'spectate_player' then
+                    if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
+                            and M.hasStats(id) then
+                        syncOpts.skipAutoSt = true
+                    end
                 end
             end
             M.syncFromSession(id, nick, getSettings and getSettings(), syncOpts)
@@ -2279,38 +2333,49 @@ end
 function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
-        local hadPending = state.pendingSpId ~= nil
-        local pid = resolveSpectateHandshakeId()
-        if pid >= 0 then
-            local sessionActive = false
-            if type(specSession.isActive) == 'function' then
-                local okActive, active = pcall(specSession.isActive)
-                sessionActive = okActive and active == true
-            end
-            if hadPending or M.getTargetId() ~= pid or not sessionActive or not specPlayerActive() then
-                local nick = resolveSpectateTargetNick(pid)
-                local settings = getSettings and getSettings()
-                local okSet, setErr = pcall(M.setSpectateTarget, pid, nick, settings)
-                if not okSet then
-                    print('[Report Desk] sp target: ' .. tostring(setErr))
-                end
-            end
+        if inputDeps.setPlayerSpectating then
+            pcall(inputDeps.setPlayerSpectating, true)
         end
-        M.cancelPendingSp()
+        pcall(specSession.setSpectating, true)
         pcall(specCamera.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
-    -- ADV: toggle(false) during /sp handshake -- keep pending and session.
-    if specPlayerActive() then return end
     if state.pendingSpId then return end
-    if M.getTargetId() >= 0 then return end
+    if not expectSpectateOff then
+        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+        local handshakeRecent = outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0)
+        if handshakeRecent and not (specSession.isActive and specSession.isActive()) then
+            if inputDeps.setPlayerSpectating then
+                pcall(inputDeps.setPlayerSpectating, true)
+            end
+            pcall(specSession.setSpectating, true)
+            return
+        end
+    end
+    -- ADV: ложный toggle(false) после server confirm — prev hook уже сбросил spectate в игре.
+    if not expectSpectateOff and specSession.isActive and specSession.isActive() then
+        if inputDeps.setPlayerSpectating then
+            pcall(inputDeps.setPlayerSpectating, true)
+        end
+        pcall(specSession.setSpectating, true)
+        if inputDeps.restoreSpectateCamera then
+            pcall(inputDeps.restoreSpectateCamera)
+        end
+        if inputDeps.updateInputPassthrough then
+            pcall(inputDeps.updateInputPassthrough)
+        end
+        return
+    end
+    expectSpectateOff = false
+    if specPlayerActive() then return end
     pcall(specCamera.onSpectateEnd)
     spUi.onToggleSpectating(false)
 end
 
 -- Публичный API модуля.
 function M.onSpCommandOff()
+    expectSpectateOff = true
     M.snapshotPersistHud()
     spUi.onSpCommandOff()
 end

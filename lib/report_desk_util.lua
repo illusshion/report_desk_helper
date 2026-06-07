@@ -720,6 +720,11 @@ end
 function sendMenuOutbound(line)
     line = trim(line)
     if line == '' then return false end
+    local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    local spId = cmdBody:match('^sp%s+(%d+)%s*$')
+    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+        pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+    end
     local cache = rawget(_G, 'deskCache')
     if type(cache) == 'table' then
         cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1

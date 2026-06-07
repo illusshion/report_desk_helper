@@ -112,11 +112,13 @@ end
 
 
 
-function Wrap-AppChunkSafe($name, $content) {
+function Wrap-AppChunkSafe($name, $content, $failLabel) {
 
     $open, $close = Get-LuaLongBracket $content
 
     $chunkTag = '@' + $name
+
+    if (-not $failLabel) { $failLabel = 'module disabled' }
 
     return @"
 
@@ -140,7 +142,7 @@ $close, '$chunkTag')
 
     if not okChunk then
 
-        print('[Report Desk] checker disabled: ' .. tostring(errChunk))
+        print('[Report Desk] ${failLabel}: ' .. tostring(errChunk))
 
     end
 
@@ -189,8 +191,6 @@ end
 
 
 $libDir = Join-Path $MoonloaderRoot 'lib'
-
-
 
 $libModules = @(
 
@@ -254,6 +254,8 @@ $appChunks = @(
 
     'report_desk_ingest_runtime.lua',
 
+    'report_desk_scenario_learn.lua',
+
     'report_desk_rules.lua',
 
     'report_desk_ui.lua',
@@ -265,6 +267,36 @@ $appChunks = @(
     'report_desk_main.lua'
 
 )
+
+$allBundleInputs = @(
+    'report_desk_catalog_grid.lua',
+    'report_desk_tex_loader.lua',
+    'report_desk_texcache.lua',
+    'report_desk_tex_pipeline.lua',
+    'report_desk_ingest.lua',
+    'report_desk_sp_theme.lua',
+    'report_desk_sp_vehicle_hud.lua',
+    'report_desk_sp_keys_hud.lua',
+    'report_desk_spectate_camera.lua',
+    'report_desk_spectate_session.lua',
+    'report_desk_spectate_ans.lua',
+    'report_desk_spectate_menu.lua',
+    'report_desk_sp_ui.lua',
+    'report_desk_spectate_stats.lua',
+    'report_desk_checker_parser.lua',
+    'report_desk_checker_catalog.lua',
+    'report_desk_vehicles.lua',
+    'report_desk_profanity_words.lua',
+    'report_desk_remote_chat.lua',
+    'report_desk_checker.lua'
+) + $appChunks
+foreach ($rel in $allBundleInputs) {
+    $p = Join-Path $libDir $rel
+    if (-not (Test-Path $p)) { throw "Bundle input missing: $p" }
+    $len = (Get-Item $p).Length
+    if ($len -lt 8) { throw "Bundle input empty or too small ($len bytes): $p" }
+}
+Write-Host "Bundle inputs OK ($($allBundleInputs.Count) files)"
 
 
 
@@ -349,9 +381,13 @@ foreach ($chunk in $appChunks) {
 }
 [void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_core' $appParts.ToArray()))
 
+$remoteChatPath = Join-Path $libDir 'report_desk_remote_chat.lua'
+$remoteChatText = Read-ModuleText $remoteChatPath
+[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_remote_chat.lua' $remoteChatText 'remote chat disabled'))
+
 $checkerPath = Join-Path $libDir 'report_desk_checker.lua'
 $checkerText = Read-ModuleText $checkerPath
-[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_checker.lua' $checkerText))
+[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_checker.lua' $checkerText 'checker disabled'))
 
 [void]$sb.Append($footer)
 
@@ -362,6 +398,21 @@ $coreLua = Join-Path $reportDeskDir 'admin_report_desk_core.lua'
 [System.IO.File]::WriteAllText($coreLua, $sb.ToString(), $Utf8NoBom)
 
 Write-Host "Wrote $coreLua ($(([System.IO.FileInfo]$coreLua).Length) bytes)"
+
+$coreText = [System.IO.File]::ReadAllText($coreLua, $Utf8NoBom)
+$mustHave = @(
+    'expectSpectateOff',
+    'isAwaitingSpectate',
+    'function scenarioLearnOnReply',
+    'function remoteChatFlushSampQueue',
+    'report_desk_spectate_camera',
+    'report_desk_sp_keys_hud'
+)
+$missing = @($mustHave | Where-Object { $coreText -notmatch [regex]::Escape($_) })
+if ($missing.Count -gt 0) {
+    throw "Bundle verification failed - missing in core: $($missing -join ', ')"
+}
+Write-Host 'Bundle verification OK'
 
 
 
