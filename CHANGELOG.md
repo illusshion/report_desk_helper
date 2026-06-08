@@ -1,5 +1,15 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.14
+
+- **Autoupdate v2 (критично):** manifest v2 с SHA256 каждого файла — обновление по хешам, не по версии launcher.
+- **Атомарная установка:** staging → verify SHA256 → commit; 3 retry на каждый download.
+- **Единый state:** `report_desk/_install_state.json` (+ миграция с `_core_version.txt`).
+- **Self-heal:** при core error или `/deskrepair` — полная переустановка всех компонентов из manifest.
+- **Диагностика:** `/deskupdate` — что установлено vs remote; `/deskrepair` — принудительный repair.
+- **Publish:** `publish_release.ps1 -Publish -Push` — автоматический `gh release create/upload` всех 7 артефактов.
+- **Pending:** launcher и autoupdate обновляются через `.pending` (Windows file lock).
+
 ## 1.0.13
 
 - **Fix (критично):** `report_desk_deps.lua` / `report_desk_autoupdate.lua` перенесены в `lib/` — MoonLoader больше не грузит их как отдельные скрипты из корня.
