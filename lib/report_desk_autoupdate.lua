@@ -20,9 +20,23 @@ end)
 
 local M = {}
 
-local deskSha256 = require 'report_desk_sha256'
-local deskZip = require 'report_desk_zip'
-local deskFs = require 'report_desk_fs'
+local deskSha256
+local deskZip
+local deskFs
+
+local function reloadDeskSupportModules()
+    package.loaded['report_desk_sha256'] = nil
+    package.loaded['lib.report_desk_sha256'] = nil
+    package.loaded['report_desk_zip'] = nil
+    package.loaded['lib.report_desk_zip'] = nil
+    package.loaded['report_desk_fs'] = nil
+    package.loaded['lib.report_desk_fs'] = nil
+    deskSha256 = require 'report_desk_sha256'
+    deskZip = require 'report_desk_zip'
+    deskFs = require 'report_desk_fs'
+end
+
+reloadDeskSupportModules()
 
 local UPDATE_PHASE = {
     IDLE = 'idle',
@@ -495,6 +509,7 @@ function M.canRequireMimgui()
 end
 
 function M.installMimguiZip(zipPath)
+    reloadDeskSupportModules()
     local root = M.root()
     local tmp = root .. '\\report_desk\\_deps_mimgui_tmp'
     deskFs.removeTree(tmp)
@@ -519,6 +534,7 @@ end
 
 -- Публичный API модуля.
 function M.installRuntimeLibsZip(zipPath)
+    reloadDeskSupportModules()
     local root = M.root()
     local tmp = root .. '\\report_desk\\_deps_runtime_tmp'
     deskFs.removeTree(tmp)
@@ -792,6 +808,8 @@ local function commitPlan(downloaded, manifest, allFiles)
         }
     end
 
+    reloadDeskSupportModules()
+
     if downloaded.runtime then
         if not M.installRuntimeLibsZip(downloaded.runtime) then
             return false, 'runtime unpack failed'
@@ -843,7 +861,19 @@ local function commitPlan(downloaded, manifest, allFiles)
     package.loaded['lib.report_desk_deps'] = nil
     package.loaded['report_desk_autoupdate'] = nil
     package.loaded['lib.report_desk_autoupdate'] = nil
+    disableLegacyLauncher()
     return true
+end
+
+local function disableLegacyLauncher()
+    local legacy = M.path('admin_report_desk.lua')
+    local off = legacy .. '.off'
+    if doesFileExist(M.path('AdminDesk.luac')) and doesFileExist(legacy) then
+        pcall(os.remove, off)
+        if os.rename(legacy, off) then
+            log('disabled legacy launcher: ' .. legacy)
+        end
+    end
 end
 
 --[[ returns: needsReload, status ]]
@@ -1203,6 +1233,7 @@ function M.needsAssets(manifest)
 end
 
 local function extractAssetsZip(zipPath)
+    reloadDeskSupportModules()
     zipPath = tostring(zipPath or '')
     if zipPath == '' or not doesFileExist(zipPath) then
         return false, 'zip missing'
