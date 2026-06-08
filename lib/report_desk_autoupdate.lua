@@ -776,6 +776,17 @@ local function downloadPlan(plan, manifest, opts)
     return downloaded
 end
 
+local function disableLegacyLauncher()
+    local legacy = M.path('admin_report_desk.lua')
+    local off = legacy .. '.off'
+    if doesFileExist(M.path('AdminDesk.luac')) and doesFileExist(legacy) then
+        pcall(os.remove, off)
+        if os.rename(legacy, off) then
+            log('disabled legacy launcher: ' .. legacy)
+        end
+    end
+end
+
 local function commitPlan(downloaded, manifest, allFiles)
     local stateFiles = {}
     for _, item in ipairs(downloaded) do
@@ -844,17 +855,6 @@ local function commitPlan(downloaded, manifest, allFiles)
     package.loaded['lib.report_desk_autoupdate'] = nil
     disableLegacyLauncher()
     return true
-end
-
-local function disableLegacyLauncher()
-    local legacy = M.path('admin_report_desk.lua')
-    local off = legacy .. '.off'
-    if doesFileExist(M.path('AdminDesk.luac')) and doesFileExist(legacy) then
-        pcall(os.remove, off)
-        if os.rename(legacy, off) then
-            log('disabled legacy launcher: ' .. legacy)
-        end
-    end
 end
 
 --[[ returns: needsReload, status ]]
