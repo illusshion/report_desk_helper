@@ -9,6 +9,7 @@ local spTheme = require 'report_desk_sp_theme'
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
 local keysHud = require 'report_desk_sp_keys_hud'
 local specCamera = require 'report_desk_spectate_camera'
+local spRefresh = require 'report_desk_sp_refresh'
 
 local SP_MSG_COLOR = 1728027135
 local PENDING_ST_SEC = 12.0
@@ -24,9 +25,6 @@ local WM_ACTIVATEAPP = 0x001c
 local lastForceExitAt = 0
 local orphanSinceAt = nil
 local orphanRecoveryTried = false
-local orphanLocalCleared = false
-local lastValidTargetAt = 0
-local SPECTATE_ADV_REFRESH_GRACE_SEC = 8.0
 local targetOfflineSinceAt = nil
 local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
@@ -54,6 +52,8 @@ local state = {
     pendingStAt = 0,
     stShowNative = false,
     lastAutoStAt = 0,
+    lastAutoStScheduleAt = 0,
+    lastSyncFromSessionAt = 0,
     cache = {},
     cacheOrder = {},
     hudDrag = { active = false, offX = 0, offY = 0 },
@@ -791,7 +791,7 @@ function M.stepSpectate(delta)
     M.markPendingSpCommand(nextId, '')
     local cmd = 'sp ' .. tostring(nextId)
     if sendMenuOutbound then
-        sendMenuOutbound(cmd)
+        sendMenuOutbound(cmd, { skipPendingMark = true })
     elseif sendChat then
         sendChat(cmd)
     end
@@ -817,19 +817,16 @@ end
 local function scheduleAutoStats(id, force)
     id = tonumber(id)
     if not id or id < 0 then return end
-    if state.pendingStId == id and (os.clock() - (state.pendingStAt or 0)) < 1.0 then
+    local now = os.clock()
+    if state.pendingStId == id and (now - (state.pendingStAt or 0)) < 1.0 then
         return
     end
-    if lua_thread and lua_thread.create then
-        lua_thread.create(function()
-            wait(0.18)
-            if not specSession.isActive or not specSession.isActive() then return end
-            if M.getTargetId() ~= id then return end
-            if not specPlayerActive() then return end
-            M.requestStats(id, { force = force == true })
-        end)
+    if now - (state.lastAutoStScheduleAt or 0) < 0.45 then
         return
     end
+    if M.getTargetId() ~= id then return end
+    if specSession.isActive and not specSession.isActive() then return end
+    state.lastAutoStScheduleAt = now
     M.requestStats(id, { force = force == true })
 end
 
@@ -842,6 +839,13 @@ function M.syncFromSession(id, nick, settings, syncOpts)
         state.targetNick = ''
         return
     end
+    local nowSync = os.clock()
+    if state.targetId == id and state.lastSyncFromSessionAt
+            and (nowSync - state.lastSyncFromSessionAt) < 0.35 then
+        return
+    end
+    state.lastSyncFromSessionAt = nowSync
+
     local prevId = state.targetId
     if prevId ~= id then
         state.hudPlaced = false
@@ -852,10 +856,15 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
-    lastValidTargetAt = os.clock()
-    orphanLocalCleared = false
+    pcall(spRefresh.onTargetConfirmed, id, { fullBaseline = prevId ~= id })
     if inputDeps and inputDeps.setPlayerSpectating then
         inputDeps.setPlayerSpectating(true)
+    end
+    if inputDeps and inputDeps.rememberSpectateCursor then
+        pcall(inputDeps.rememberSpectateCursor)
+    end
+    if inputDeps and inputDeps.updateInputPassthrough then
+        pcall(inputDeps.updateInputPassthrough)
     end
     local e = ensureEntry(id)
     if e then
@@ -878,11 +887,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     end
     if mustForce then
         M.refreshLivePing(id)
-        if syncOpts.deferAutoSt then
-            scheduleAutoStats(id, true)
-        else
-            M.requestStats(id, { force = true })
-        end
+        scheduleAutoStats(id, true)
         return
     end
     M.maybeAutoRequest(id, s, false)
@@ -904,13 +909,24 @@ function M.markPendingSpCommand(id, nick)
     state.pendingSpNick = nick
     state.pendingSpAt = os.clock()
     state.lastSpOutboundAt = state.pendingSpAt
+    state.spChatRecoveryTried = false
     local cur = M.getTargetId()
     if cur ~= id then
         if cur >= 0 then clearPendingSt() end
         pcall(vehicleHud.reset)
         pcall(keysHud.reset)
+        pcall(spRefresh.resetContext)
     end
     pcall(specSession.markAwaitingSpectate, true)
+    if spUi.ensureSpectateSampevHooks then
+        local sampev = inputDeps and inputDeps.sampev
+        local specSessionMod = package.loaded['report_desk_spectate_session']
+        local hooksOk = sampev and specSessionMod and specSessionMod.areSampevHooksActive
+            and specSessionMod.areSampevHooksActive(sampev)
+        if not hooksOk then
+            pcall(spUi.ensureSpectateSampevHooks)
+        end
+    end
 end
 
 -- Публичный API модуля.
@@ -967,24 +983,31 @@ end
 
 -- Публичный API модуля.
 function M.tickPendingSp()
-    M.tickSpectateHealth()
-    M.tickStatsDialogWatchdog()
+    if state.pendingSpId or specPlayerActive() then
+        M.tickSpectateHealth()
+    end
+    if M.hasPendingSt() then
+        M.tickStatsDialogWatchdog()
+    end
     local id = state.pendingSpId
     if not id then return end
     local at = tonumber(state.pendingSpAt) or 0
-    if at > 0 and os.clock() - at > PENDING_SP_SEC then
-        local confirmed = specSession.isActive and specSession.isActive()
-        if specPlayerActive() and not confirmed then
+    local elapsed = at > 0 and (os.clock() - at) or 0
+    local confirmed = specSession.isActive and specSession.isActive()
+    if not confirmed and specPlayerActive() and elapsed >= 1.0 and elapsed <= PENDING_SP_SEC then
+        if not state.spChatRecoveryTried then
+            state.spChatRecoveryTried = true
             pcall(specSession.tryRecoverFromChat)
             if specSession.isActive and specSession.isActive() then
                 M.cancelPendingSp()
+                return
             end
-            return
         end
+    end
+    if at > 0 and elapsed > PENDING_SP_SEC then
         M.cancelPendingSp()
     end
 end
-
 -- Публичный API модуля.
 function M.forceExitSpectate(opts)
     opts = opts or {}
@@ -994,9 +1017,6 @@ function M.forceExitSpectate(opts)
     end
     lastForceExitAt = now
     expectSpectateOff = true
-    if opts.reason == 'orphan' then
-        orphanLocalCleared = true
-    end
     M.clearSpectateTarget(true)
     M.onSpCommandOff()
     if opts.sendServer ~= false then
@@ -1012,6 +1032,9 @@ end
 -- Публичный API модуля.
 -- === Spectate health: orphan/offline detection ===
 function M.tickSpectateHealth()
+    if specPlayerActive() and spRefresh.needsTick and spRefresh.needsTick() then
+        pcall(spRefresh.tick)
+    end
     local now = os.clock()
     if now - lastSpectateHealthAt < SPECTATE_HEALTH_INTERVAL then
         return
@@ -1027,8 +1050,7 @@ function M.tickSpectateHealth()
     if not specPlayerActive() then
         orphanSinceAt = nil
         orphanRecoveryTried = false
-        orphanLocalCleared = false
-        targetOfflineSinceAt = nil
+            targetOfflineSinceAt = nil
         return
     end
     if M.hasPendingSp() then
@@ -1050,22 +1072,12 @@ function M.tickSpectateHealth()
     local id = M.getTargetId()
     if id < 0 then
         targetOfflineSinceAt = nil
-        if orphanLocalCleared then
-            return
-        end
-        if lastValidTargetAt > 0
-            and (now - lastValidTargetAt) < SPECTATE_ADV_REFRESH_GRACE_SEC then
-            orphanSinceAt = nil
-            orphanRecoveryTried = false
-            return
-        end
         orphanSinceAt = orphanSinceAt or now
         local elapsed = now - orphanSinceAt
         if elapsed >= 1.0 and not orphanRecoveryTried then
             orphanRecoveryTried = true
             if specSession.tryRecoverFromChat and specSession.tryRecoverFromChat() then
                 orphanSinceAt = nil
-                orphanRecoveryTried = false
                 return
             end
         end
@@ -1080,8 +1092,6 @@ function M.tickSpectateHealth()
     end
     orphanSinceAt = nil
     orphanRecoveryTried = false
-    orphanLocalCleared = false
-    lastValidTargetAt = now
     if sessionConfirmed and id >= 0 and sampIsPlayerConnected and not sampIsPlayerConnected(id) then
         targetOfflineSinceAt = targetOfflineSinceAt or now
         if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC + 1.5 then
@@ -1110,8 +1120,6 @@ function M.setSpectateTarget(id, nick, settings)
     end
     state.targetId = id
     state.targetNick = trim(nick or '')
-    lastValidTargetAt = os.clock()
-    orphanLocalCleared = false
     local e = ensureEntry(id)
     if e then
         if prevId ~= id then
@@ -1165,6 +1173,7 @@ function M.clearSpectateTarget(force)
     state.targetId = -1
     state.targetNick = ''
     state.persistHudId = -1
+    pcall(spRefresh.resetContext)
     M.cancelPendingSp()
     pcall(specMenuMod.resetMenuSelection)
     pcall(specCamera.onSpectateEnd)
@@ -1840,8 +1849,9 @@ end
 local function clampHudPos(hx, hy, winW, winH, sw, sh, pivotX)
     winW = math.max(HUD_PANEL_W, tonumber(winW) or HUD_PANEL_W)
     winH = math.max(48, tonumber(winH) or 120)
+    -- pivotX=1: hx = screen X of right edge (after hx = sw + rawX); pivotX=0: left edge.
     if pivotX == 1 then
-        hx = math.max(-sw + 8, math.min(hx, -winW - 8))
+        hx = math.max(winW + 8, math.min(hx, sw - 8))
     else
         hx = math.max(8, math.min(hx, sw - winW - 8))
     end
@@ -1899,6 +1909,9 @@ function M.drawOverlayImpl(settings)
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
+    end
 
     imgui.SetNextWindowSize(imgui.ImVec2(HUD_PANEL_W, 0), imgui.Cond.Always)
     if imgui.SetNextWindowBgAlpha then
@@ -1917,53 +1930,7 @@ function M.drawOverlayImpl(settings)
         end
         if not nick or nick == '' then nick = 'ID:' .. id end
         local nickCol = M.nickColorFor(id, e)
-        local headerY = imgui.GetCursorPosY()
         spTheme.drawPlayerHeader(nick, id, nickCol, uiText, { accentCol = col_accent, scale = 1.04 })
-        local headerH = imgui.GetCursorPosY() - headerY
-        imgui.SetCursorPos(imgui.ImVec2(0, headerY))
-        imgui.InvisibleButton('##spec_stats_hud_drag', imgui.ImVec2(-1, math.max(22, headerH)))
-        state.hudHovered = imgui.IsItemHovered() or imgui.IsItemActive() or drag.active
-        M.updateHudHoverRect()
-        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
-            local delta = imgui.GetMouseDragDelta(0)
-            local wp = imgui.GetWindowPos()
-            if not drag.active then
-                drag.active = true
-                drag.offX = wp.x
-                drag.offY = wp.y
-                drag.pivotX = pivotX
-                drag.sw = sw
-                imgui.ResetMouseDragDelta(0)
-                delta = imgui.GetMouseDragDelta(0)
-            end
-            local nx = drag.offX + delta.x
-            local ny = drag.offY + delta.y
-            nx, ny = clampHudPos(nx, ny, HUD_PANEL_W, imgui.GetWindowHeight(), sw, sh, 0)
-            drag.offX = nx
-            drag.offY = ny
-            if drag.pivotX == 1 then
-                settings.spectate_hud_x = nx - sw
-            else
-                settings.spectate_hud_x = nx
-            end
-            settings.spectate_hud_y = ny
-            if markDirtySettings then markDirtySettings() end
-        elseif drag.active and not imgui.IsMouseDown(0) then
-            drag.active = false
-            local wp = imgui.GetWindowPos()
-            local ww = imgui.GetWindowWidth()
-            local wh = imgui.GetWindowHeight()
-            local nx, ny = clampHudPos(wp.x, wp.y, ww, wh, sw, sh, drag.pivotX or 0)
-            if (drag.pivotX or 0) == 1 then
-                settings.spectate_hud_x = nx - sw
-            else
-                settings.spectate_hud_x = nx
-            end
-            settings.spectate_hud_y = ny
-            if markDirtySettings then markDirtySettings() end
-            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
-        end
-        imgui.SetCursorPosY(headerY + math.max(22, headerH))
 
         local pendingSt = state.pendingStId == id
             and (os.clock() - (state.pendingStAt or 0)) < PENDING_ST_SEC
@@ -2012,6 +1979,41 @@ function M.drawOverlayImpl(settings)
         end
 
         if imgui.PopItemWidth then imgui.PopItemWidth() end
+
+        M.updateHudHoverRect()
+        local wp = imgui.GetWindowPos()
+        local ww = imgui.GetWindowWidth()
+        local wh = imgui.GetWindowHeight()
+        imgui.SetCursorPos(imgui.ImVec2(0, 0))
+        imgui.InvisibleButton('##spec_stats_hud_drag', imgui.ImVec2(-1, -1))
+        state.hudHovered = imgui.IsItemHovered() or imgui.IsItemActive() or drag.active
+        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
+            local delta = imgui.GetMouseDragDelta(0)
+            if not drag.active then
+                drag.active = true
+                drag.startX = wp.x
+                drag.startY = wp.y
+                drag.pivotX = pivotX
+                drag.sw = sw
+                imgui.ResetMouseDragDelta(0)
+                delta = imgui.GetMouseDragDelta(0)
+            end
+            drag.offX = drag.startX + delta.x
+            drag.offY = drag.startY + delta.y
+            drag.offX, drag.offY = clampHudPos(drag.offX, drag.offY, ww, wh, sw, sh, 0)
+        elseif drag.active and not imgui.IsMouseDown(0) then
+            drag.active = false
+            local nx, ny = clampHudPos(wp.x, wp.y, ww, wh, sw, sh, 0)
+            if nx + ww > sw * 0.55 then
+                settings.spectate_hud_x = math.floor(nx + ww - sw + 0.5)
+            else
+                settings.spectate_hud_x = math.floor(nx + 0.5)
+            end
+            settings.spectate_hud_y = math.floor(ny + 0.5)
+            if markDirtySettings then markDirtySettings() end
+            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+        end
+
         imgui.End()
     end
     spTheme.popHudChrome()
@@ -2028,6 +2030,13 @@ function M.resetHudDrag()
     state.hudHovered = false
 end
 
+function M.resetSpHudPointers()
+    M.resetHudDrag()
+    if specMenuMod.clearPointerHover then pcall(specMenuMod.clearPointerHover) end
+    if vehicleHud.clearPointerHover then pcall(vehicleHud.clearPointerHover) end
+    if keysHud.clearPointerHover then pcall(keysHud.clearPointerHover) end
+end
+
 -- Публичный API модуля.
 function M.isHudDragActive()
     return state.hudDrag.active
@@ -2035,11 +2044,22 @@ end
 
 -- Публичный API модуля.
 function M.wantsHudInput()
+    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then
+        return state.hudDrag.active == true
+    end
+    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+        return state.hudDrag.active == true
+    end
     if state.hudDrag.active then return true end
     if state.hudHovered then return true end
     local r = state.hudRect
     if not r then return false end
-    local mp = imgui.GetIO().MousePos
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin then return pin(r) end
+    local ok, io = pcall(imgui.GetIO)
+    if not ok or not io or not io.MousePos then return false end
+    local mp = io.MousePos
     return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
 end
 
@@ -2129,9 +2149,10 @@ local function buildSpUiDeps(deps)
             meta = meta or {}
             local syncOpts = {}
             local src = meta.source
-            if src == 'sp_line' or src == 'spectate_player' then
+            if spRefresh.shouldSkipAutoSt and spRefresh.shouldSkipAutoSt(id) then
+                syncOpts.skipAutoSt = true
+            elseif src == 'sp_line' or src == 'spectate_player' then
                 syncOpts.forceAutoSt = true
-                syncOpts.deferAutoSt = true
                 if src == 'spectate_player' then
                     if lastSpecStepAt and (os.clock() - lastSpecStepAt) < SPEC_STEP_AUTO_ST_DELAY
                             and M.hasStats(id) then
@@ -2323,48 +2344,38 @@ function M.consumeSpectateMenuKey(msg, wparam)
     return false
 end
 
--- Публичный API модуля.
-function M.pollSpectateArrowKeys()
-    -- Стрелки обрабатываются только через onWindowMessage (handleSpectateWindowMessage).
-    -- Poll здесь давал двойной /sp на одно нажатие и antiflood «не флудите».
-end
 
 -- Публичный API модуля.
+function M.shouldBlockSpectateOff()
+    if state.pendingSpId then return true end
+    if expectSpectateOff then return false end
+    if specSession.isActive and specSession.isActive() then return true end
+    local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+    if outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0) then
+        return true
+    end
+    return false
+end
+
+local function reassertSpectateInputState()
+    if inputDeps.setPlayerSpectating then
+        pcall(inputDeps.setPlayerSpectating, true)
+    end
+    pcall(specSession.setSpectating, true)
+    if inputDeps.updateInputPassthrough then
+        pcall(inputDeps.updateInputPassthrough)
+    end
+end
+
 function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
-        if inputDeps.setPlayerSpectating then
-            pcall(inputDeps.setPlayerSpectating, true)
-        end
-        pcall(specSession.setSpectating, true)
         pcall(specCamera.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
-    if state.pendingSpId then return end
-    if not expectSpectateOff then
-        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
-        local handshakeRecent = outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0)
-        if handshakeRecent and not (specSession.isActive and specSession.isActive()) then
-            if inputDeps.setPlayerSpectating then
-                pcall(inputDeps.setPlayerSpectating, true)
-            end
-            pcall(specSession.setSpectating, true)
-            return
-        end
-    end
-    -- ADV: ложный toggle(false) после server confirm — prev hook уже сбросил spectate в игре.
-    if not expectSpectateOff and specSession.isActive and specSession.isActive() then
-        if inputDeps.setPlayerSpectating then
-            pcall(inputDeps.setPlayerSpectating, true)
-        end
-        pcall(specSession.setSpectating, true)
-        if inputDeps.restoreSpectateCamera then
-            pcall(inputDeps.restoreSpectateCamera)
-        end
-        if inputDeps.updateInputPassthrough then
-            pcall(inputDeps.updateInputPassthrough)
-        end
+    if M.shouldBlockSpectateOff() then
+        reassertSpectateInputState()
         return
     end
     expectSpectateOff = false
@@ -2415,12 +2426,40 @@ function M.uninstallSpSpectateOverlayFrame()
 end
 
 -- Публичный API модуля.
+
+local function configureSpRefresh()
+    spRefresh.configure({
+        getTargetId = function() return M.getTargetId() end,
+        getSettings = getSettings,
+        isSpectating = specPlayerActive,
+        sessionActive = function() return specSession.isActive() end,
+        hasPendingSp = M.hasPendingSp,
+        sendMenuOutbound = sendMenuOutbound,
+        sendChat = sendChat,
+        getTargetPed = function()
+            local id = M.getTargetId()
+            if id < 0 or not sampGetCharHandleBySampPlayerId then return nil end
+            local ok, ped = sampGetCharHandleBySampPlayerId(id)
+            if ok and ped and doesCharExist and doesCharExist(ped) then return ped end
+            return nil
+        end,
+        getLocalInterior = function()
+            if PLAYER_PED and getCharInterior then
+                local ok, v = pcall(getCharInterior, PLAYER_PED)
+                if ok and v ~= nil then return tonumber(v) or 0 end
+            end
+            return 0
+        end,
+    })
+end
+
 function M.installInputHooks(deps)
     inputDeps = deps
     flushDirtyConfigNow = deps.flushDirtyConfigNow or flushDirtyConfigNow
     local uiDeps = buildSpUiDeps(deps)
     spUi.install(uiDeps)
     spUi.installInputHooks(uiDeps)
+    configureSpRefresh()
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
     pcall(keysHud.installSampev, deps.sampev)
@@ -2500,6 +2539,10 @@ function M.wantsKeysHudInput()
 end
 
 -- Публичный API модуля.
+-- Публичный API модуля.
+function M.wantsSpMenuInput()
+    return specMenuMod.wantsInput and specMenuMod.wantsInput() or false
+end
 function M.wantsVehicleHudInput()
     return vehicleHud.wantsInput and vehicleHud.wantsInput() or false
 end
@@ -2578,6 +2621,7 @@ end
 -- Публичный API модуля.
 function M.install(deps)
     M.configure(deps)
+    configureSpRefresh()
     markDirtySettings = deps.markDirtySettings
     flushDirtyConfigNow = deps.flushDirtyConfigNow
     vehicleHud.configure({
@@ -2613,6 +2657,46 @@ function M.install(deps)
             return specSession.isSpectatingMode()
         end,
     })
+end
+
+
+function M.onSpRefreshEnterVehicle(playerId, vehicleId)
+    spRefresh.onTargetEnterVehicle(playerId, vehicleId)
+end
+
+function M.onSpRefreshExitVehicle(playerId, vehicleId)
+    spRefresh.onTargetExitVehicle(playerId, vehicleId)
+end
+
+function M.onSpRefreshSetInterior(interior)
+    spRefresh.onLocalSetInterior(interior)
+end
+
+function M.onSpRefreshVehicleSync(playerId)
+    spRefresh.onTargetVehicleSync(playerId)
+end
+
+function M.onSpRefreshPassengerSync(playerId)
+    spRefresh.onTargetPassengerSync(playerId)
+end
+
+function M.onSpRefreshPlayerSync(playerId, data)
+    spRefresh.onTargetPlayerSync(playerId)
+end
+
+function M.onSpRefreshSpectatePlayer(playerId)
+    spRefresh.onServerSpectatePlayer(playerId)
+end
+
+function M.onSpRefreshSpectateVehicle(vehicleId)
+    spRefresh.onServerSpectateVehicle(vehicleId)
+    if inputDeps and inputDeps.rememberSpectateCursor then
+        pcall(inputDeps.rememberSpectateCursor)
+    end
+end
+
+function M.onSpRefreshStreamIn(playerId)
+    spRefresh.onTargetStreamIn(playerId)
 end
 
 return M

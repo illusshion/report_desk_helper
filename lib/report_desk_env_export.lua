@@ -35,10 +35,16 @@ do
     if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
     if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
     if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+    if deskEnsureAllHooks then _G.deskEnsureAllHooks = deskEnsureAllHooks end
     if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
     if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
     if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
     if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
     if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
+    if deskSpectateCameraBlocked then _G.deskSpectateCameraBlocked = deskSpectateCameraBlocked end
+    if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
+    if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
+    if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
+    if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
     if deskCache then _G.deskCache = deskCache end
 end

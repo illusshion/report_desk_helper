@@ -16,13 +16,10 @@ end
 
 function cp1251ToUtf8(text)
     if not text or text == '' then return '' end
-    if isUtf8Text(text) and not text:find('\239\191\189', 1, true) then return text end
+    if text:find('\239\191\189', 1, true) then return text end
+    if isUtf8Text(text) then return text end
     local ok, r = pcall(function() return u8(text) end)
-    if ok and r and r ~= '' then
-        if r:find('\239\191\189', 1, true) then
-            local okDec, decoded = pcall(function() return u8:decode(text) end)
-            if okDec and decoded and decoded ~= '' then return text end
-        end
+    if ok and r and r ~= '' and not r:find('\239\191\189', 1, true) then
         return r
     end
     return text
@@ -67,7 +64,10 @@ end
 
 function configStoreText(s)
     if not s or s == '' then return '' end
-    return cp1251ToUtf8(s)
+    if looksCorruptedConfigText(s) then return '' end
+    local u = cp1251ToUtf8(s)
+    if looksCorruptedConfigText(u) then return s end
+    return u
 end
 
 function luaQuoteUtf8(s)
@@ -717,16 +717,48 @@ function sendChat(line)
 end
 
 -- Меню /sp: sampSendChat идёт через onSendCommand — skipSpHookLocal не дублирует локальный /sp.
-function sendMenuOutbound(line)
+local function sampTextInputBusy()
+    return (type(sampIsChatInputActive) == 'function' and sampIsChatInputActive())
+        or (type(sampIsDialogActive) == 'function' and sampIsDialogActive())
+end
+
+function sendMenuOutbound(line, opts)
     line = trim(line)
     if line == '' then return false end
+    opts = type(opts) == 'table' and opts or {}
+    local quietSp = opts.quietSp == true
+    local skipPendingMark = opts.skipPendingMark == true or quietSp
     local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    local cache = rawget(_G, 'deskCache')
+    if quietSp and type(cache) == 'table' then
+        cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+    end
+    local function skipPendingSp()
+        if skipPendingMark then return true end
+        return type(cache) == 'table' and tonumber(cache.skipSpHookLocal) and cache.skipSpHookLocal > 0
+    end
+    if sampTextInputBusy() then
+        local spId = cmdBody:match('^sp%s+(%d+)%s*$')
+        if spId and not skipPendingSp() and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+            pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+        end
+        pcall(function()
+            local specSession = require 'report_desk_spectate_session'
+            if specSession and specSession.queueOutbound then
+                specSession.queueOutbound(cmdBody)
+            end
+        end)
+        if quietSp and type(cache) == 'table' then
+            local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
+            cache.skipSpHookLocal = n > 0 and n or nil
+        end
+        return true
+    end
     local spId = cmdBody:match('^sp%s+(%d+)%s*$')
-    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+    if spId and not skipPendingSp() and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
         pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
     end
-    local cache = rawget(_G, 'deskCache')
-    if type(cache) == 'table' then
+    if type(cache) == 'table' and not quietSp then
         cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
     end
     local ok = sendChat(line)

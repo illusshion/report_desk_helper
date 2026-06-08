@@ -427,7 +427,18 @@ function M.isDragActive()
 end
 
 -- Публичный API модуля.
+function M.clearPointerHover()
+    hovered = false
+end
+
+-- Публичный API модуля.
 function M.wantsInput()
+    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
+        return drag.active == true
+    end
+    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+        return drag.active == true
+    end
     if drag.active then return true end
     if hovered then return true end
     local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect

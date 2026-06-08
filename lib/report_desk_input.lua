@@ -9,10 +9,8 @@ function drawCheatsTab()
         panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##cheats_panel', imgui.ImVec2(-1, -1), false, panelFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(12, 10))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
-    drawDeskBindCaptureBanner()
-
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     drawCheatFeatureCard('Godmode', 'GM', 'gm', 'gm',
         cheatState.godmode, uiCheatGm, uiCheatGmStart, 'gm_on_start', cheatsApplyGodmode)
 
@@ -81,21 +79,20 @@ function drawCheatsTab()
     deskFormPanelEnd()
 
     imgui.PopStyleVar(2)
-    imgui.Dummy(imgui.ImVec2(0, 8))
-    local btnW = math.min(150, math.max(120, (imgui.GetContentRegionAvail().x - 12) * 0.5))
-    local totalW = btnW * 2 + 10
-    imgui.SetCursorPosX(math.max(0, (imgui.GetContentRegionAvail().x - totalW) * 0.5))
-    if imgui.Button(uiText('\xC2\xFB\xEA\xEB \xE2\xF1\xE5') .. '##cheats_off', imgui.ImVec2(btnW, DESK_FORM_ROW_H)) then
-        cheatsCleanup()
-    end
-    imgui.SameLine()
-    if imgui.Button(uiText('\xD1\xE1\xF0\xEE\xF1 \xE1\xE8\xED\xE4\xEE\xE2') .. '##cheats_rst', imgui.ImVec2(btnW, DESK_FORM_ROW_H)) then
+    imgui.Dummy(imgui.ImVec2(0, 10))
+    local btnW = math.min(200, math.max(140, imgui.GetContentRegionAvail().x - 8))
+    imgui.SetCursorPosX(math.max(0, (imgui.GetContentRegionAvail().x - btnW) * 0.5))
+    deskFormPushBindButtonStyle()
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    if imgui.Button(uiText('\xD1\xE1\xF0\xEE\xF1 \xE1\xE8\xED\xE4\xEE\xE2') .. '##cheats_rst', imgui.ImVec2(btnW, DESK_BIND_ROW_H or DESK_FORM_ROW_H)) then
         settings.cheats = defaultCheatsSettings()
         ensureCheatsSettings()
         syncCheatsUiFromSettings()
         markDirtySettings()
         flushDirtyConfigNow()
     end
+    imgui.PopStyleVar()
+    deskFormPopBindButtonStyle()
 
     imgui.EndChild()
     popPanelStyle()
@@ -156,6 +153,20 @@ function deskSpectatingNow()
     return deskInputState.playerSpectating == true
 end
 
+-- /sp без UI скрипта: камерой управляет SAMP, imgui/SP-HUD мышь не трогают.
+function deskSpectateCameraOwnsInput()
+    if not deskSpectatingNow() then return false end
+    if showWindow[0] then return false end
+    if type(deskSpectateStats) == 'table'
+            and type(deskSpectateStats.isAnsBarOpen) == 'function'
+            and deskSpectateStats.isAnsBarOpen() then
+        return false
+    end
+    return true
+end
+
+_G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput
+
 -- Desk hook/helper.
 function deskSyncSpectateState(force)
     if force == false then
@@ -180,6 +191,16 @@ function deskImguiNeedsInput()
     if showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then
         return true
     end
+    if deskSpectateCameraOwnsInput() then
+        return false
+    end
+    if type(deskSpectateStats) == 'table' then
+        local sp = deskSpectateStats
+        if sp.isAnsBarOpen and sp.isAnsBarOpen() then
+            if sp.isAnsLayoutSwitch and sp.isAnsLayoutSwitch() then return false end
+            return true
+        end
+    end
     if cheatState.marker.active then return true end
     if not sessionLive then return false end
     if type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput() then
@@ -195,20 +216,12 @@ function deskImguiNeedsInput()
         return true
     end
     if type(deskSpectateStats) == 'table' then
-        local function spWants(fn)
-            if type(fn) ~= 'function' then return false end
-            local ok, v = pcall(fn)
-            return ok and v == true
-        end
-        if spWants(deskSpectateStats.isHudDragActive) then return true end
-        if spWants(deskSpectateStats.wantsHudInput) then return true end
-        if spWants(deskSpectateStats.wantsSpMenuInput) then return true end
-        if spWants(deskSpectateStats.wantsVehicleHudInput) then return true end
-        if spWants(deskSpectateStats.wantsKeysHudInput) then return true end
-        if spWants(deskSpectateStats.isAnsBarOpen) then
-            if spWants(deskSpectateStats.isAnsLayoutSwitch) then return false end
-            return true
-        end
+        local sp = deskSpectateStats
+        if sp.isHudDragActive and sp.isHudDragActive() then return true end
+        if sp.wantsHudInput and sp.wantsHudInput() then return true end
+        if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
+        if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
+        if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
     end
     return false
 end
@@ -239,12 +252,13 @@ end
 function deskRememberSpectateCursorMode()
     if not sampGetCursorMode then return end
     local cm = sampGetCursorMode()
-    if CMODE_DISABLED ~= nil and cm == CMODE_DISABLED then
-        if deskIsSpectateCameraMode(deskInputState.spectateWantCursorMode) then return end
-        if CMODE_LOCKCAM ~= nil then deskInputState.spectateWantCursorMode = CMODE_LOCKCAM end
+    if deskIsSpectateCameraMode(cm) then
+        deskInputState.spectateWantCursorMode = cm
         return
     end
-    deskInputState.spectateWantCursorMode = cm
+    if CMODE_DISABLED ~= nil and cm == CMODE_DISABLED then
+        return
+    end
 end
 
 -- Desk hook/helper.
@@ -271,21 +285,20 @@ function deskSpectateCameraBlocked()
     return false
 end
 
--- Desk hook/helper.
 function deskRestoreSpectateCamera()
     deskInputState.spectateUiModeActive = false
     setDeskPlayerLock(false)
     if not deskSpectatingNow() then return end
-    -- В /sp SAMP сам держит LOCKCAM для камеры наблюдателя. Не трогаем режим на open;
-    -- на close — только если мы (или чат) его сбили с spectate-режима.
-    if sampGetCursorMode and sampSetCursorMode then
-        local cm = sampGetCursorMode()
-        if not deskIsSpectateCameraMode(cm) then
-            local want = deskSpectateCameraMode()
-            if want then pcall(sampSetCursorMode, want) end
-        end
+    if sampSetCursorMode then
+        local want = deskSpectateCameraMode()
+        if want then pcall(sampSetCursorMode, want) end
     end
-    if sampToggleCursor then pcall(sampToggleCursor, false) end
+    pcall(function()
+        if sampToggleCursor then sampToggleCursor(false) end
+        if showCursor then showCursor(false) end
+        local io = imgui and imgui.GetIO and imgui.GetIO()
+        if io then io.MouseDrawCursor = false end
+    end)
 end
 
 -- Desk hook/helper.
@@ -307,32 +320,44 @@ function deskLeaveSpectateMode()
     updateMimguiGameInputPassthrough()
 end
 
--- Desk hook/helper.
+local function deskResetSpHudPointers()
+    if type(deskSpectateStats) ~= 'table' then return end
+    if deskSpectateStats.resetSpHudPointers then
+        pcall(deskSpectateStats.resetSpHudPointers)
+    elseif deskSpectateStats.resetHudDrag then
+        pcall(deskSpectateStats.resetHudDrag)
+    end
+end
+
 function deskEnsureCameraAfterPanelClose()
     deskClearImguiCaptureAfterPanel()
     setDeskPlayerLock(false)
     deskInputState.spectateUiModeActive = false
     deskInputState.keyboardStickyUntil = 0
     deskWantsKeyboard = false
-    if deskCache.mainPanelFrame then
-        deskCache.mainPanelFrame.HideCursor = true
-        deskCache.mainPanelFrame.LockPlayer = false
-    end
+    deskResetSpHudPointers()
     if deskSpectatingNow() then
         deskRestoreSpectateCamera()
-        if type(deskSpectateStats) == 'table' and deskSpectateStats.maintainCamera then
-            pcall(deskSpectateStats.maintainCamera)
-        end
     elseif not deskSpectateCameraBlocked() then
         deskRestoreNormalGameCamera()
+    end
+    if imgui and imgui.DisableInput ~= nil and deskSpectateCameraOwnsInput() then
+        imgui.DisableInput = true
     end
     updateMimguiGameInputPassthrough()
 end
 
+-- mimgui HideCursor: курсор только у открытого desk / ans / hover HUD вне /sp.
+function deskMimguiHideCursor(wantsHudCursor)
+    if showWindow[0] then return false end
+    -- Ans bar — только клавиатура; курсор не нужен и дергает SP HUD при движении мыши.
+    if deskAnsBarBlocksSampChat() then return true end
+    if wantsHudCursor and not deskSpectatingNow() then return false end
+    return true
+end
+
 -- Desk hook/helper.
 function deskEnableUiCursorForSamp()
-    -- В /sp камера наблюдателя = SAMP LOCKCAM; mimgui рисует курсор через HideCursor.
-    if deskSpectatingNow() then return end
     if CMODE_DISABLED == nil or not sampSetCursorMode then return end
     if sampGetCursorMode and sampGetCursorMode() == CMODE_DISABLED then return end
     pcall(sampSetCursorMode, CMODE_DISABLED)
@@ -340,14 +365,10 @@ end
 
 -- Desk hook/helper.
 function deskEnsureUiCursorForOpenPanel()
-    if deskSpectatingNow() then return end
     if not showWindow[0] then return end
     if deskImguiTypingActive() or deskInputState.replyFocused then return end
     if deskSpectateCameraBlocked() then return end
-    if not sampGetCursorMode or CMODE_DISABLED == nil then return end
-    if deskIsSpectateCameraMode(sampGetCursorMode()) then
-        deskEnableUiCursorForSamp()
-    end
+    deskEnableUiCursorForSamp()
 end
 
 -- Desk hook/helper.
@@ -361,13 +382,16 @@ end
 
 -- Desk hook/helper.
 function deskOnPanelOpened()
-    if deskCache.mainPanelFrame then
-        deskCache.mainPanelFrame.HideCursor = false
-        deskCache.mainPanelFrame.LockPlayer = false
-    end
     if deskSpectatingNow() then
+        deskRememberSpectateCursorMode()
         deskInputState.spectateUiModeActive = true
     end
+    local winFrame = deskCache.deskWindowFrame or deskCache.mainPanelFrame
+    if winFrame then
+        winFrame.HideCursor = false
+        winFrame.LockPlayer = false
+    end
+    deskEnableUiCursorForSamp()
     updateMimguiGameInputPassthrough()
 end
 
@@ -441,8 +465,6 @@ function deskApplyInputPolicy()
             setDeskPlayerLock(false)
         end
         updateMimguiGameInputPassthrough()
-    else
-        deskSteadyPanelHidden()
     end
 
     deskInputState.panelOpenPrev = panelOpen
@@ -463,6 +485,8 @@ function deskAnsBarBlocksSampChat()
         and deskSpectateStats.isAnsBarOpen()
 end
 
+_G.deskAnsBarBlocksSampChat = deskAnsBarBlocksSampChat
+
 -- Desk hook/helper.
 function deskDeskOrAnsUiOpen()
     return showWindow[0] or deskAnsBarBlocksSampChat()
@@ -479,17 +503,6 @@ local deskSampTextMsgs = {
     [0x0109] = true, -- WM_UNICHAR
     [0x0286] = true, -- WM_IME_CHAR
 }
-
-local function deskSpectateDeskMouseMsg(msg)
-    if not showWindow[0] or not deskSpectatingNow() then return false end
-    if not deskCache or not deskCache.wm then return false end
-    local wm = deskCache.wm
-    return msg == wm.MOUSEMOVE or msg == wm.LBUTTONDOWN or msg == wm.LBUTTONUP
-        or msg == wm.RBUTTONDOWN or msg == wm.RBUTTONUP
-        or msg == wm.MBUTTONDOWN or msg == wm.MBUTTONUP
-        or msg == wm.MOUSEWHEEL or msg == wm.MOUSEHWHEEL
-        or msg == wm.XBUTTONDOWN
-end
 
 local function deskEnsureSampInputFfi()
     if deskSampInputFfiReady then return true end
@@ -600,7 +613,13 @@ local function deskInstallSampInputEnableHook()
     local hookObj
     local function detour(this)
         if this ~= nil then deskSampCInputThis = this end
-        if deskDeskOrAnsUiOpen() then return end
+        if deskDeskOrAnsUiOpen() then
+            if (sampIsChatInputActive and sampIsChatInputActive())
+                    or (sampIsDialogActive and sampIsDialogActive()) then
+                hookObj(this)
+            end
+            return
+        end
         if type(isSampfuncsConsoleActive) == 'function' and isSampfuncsConsoleActive() then return end
         hookObj(this)
     end
@@ -643,6 +662,8 @@ end
 
 function deskSampChatGuardFrame()
     if not deskDeskOrAnsUiOpen() then return end
+    if sampIsChatInputActive and sampIsChatInputActive() then return end
+    if sampIsDialogActive and sampIsDialogActive() then return end
     pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
@@ -652,12 +673,18 @@ end
 -- Запасной слой: consumeWindowMessage для лаунчеров, которые обходят sampSetChatInputEnabled.
 function deskShouldBlockSampChatKey(msg, wparam)
     if not deskDeskOrAnsUiOpen() then return false end
+    if sampIsChatInputActive and sampIsChatInputActive() then return false end
+    if sampIsDialogActive and sampIsDialogActive() then return false end
     if not deskCache or not deskCache.wm then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
     msg = tonumber(msg) or 0
     wparam = tonumber(wparam) or 0
-    if deskSpectateDeskMouseMsg(msg) then return true end
+    local vkReturn = (vkeys and vkeys.VK_RETURN) or 0x0D
+    if wparam == vkReturn or wparam == 0x0D then return false end
     if deskSampTextMsgs[msg] then
+        if showWindow[0] then return true end
+        -- ans bar: WM_CHAR нужен mimgui для InputText; SAMP чат уже держим через hook.
+        if deskAnsBarBlocksSampChat() then return false end
         return true
     end
     local wm = deskCache.wm
@@ -665,7 +692,7 @@ function deskShouldBlockSampChatKey(msg, wparam)
         if type(deskPassesGameKey) == 'function' and deskPassesGameKey(wparam) then return false end
         if wm.CHAT_KEYS[wparam] then return true end
         if showWindow[0] then return true end
-        if deskAnsBarBlocksSampChat() then return true end
+        -- ans bar: печать идёт в imgui; блокируем только SAMP chat hotkeys (CHAT_KEYS выше).
     end
     return false
 end
@@ -673,10 +700,6 @@ end
 -- Desk hook/helper.
 function deskConsumeSampChatKey(msg)
     msg = tonumber(msg) or 0
-    if deskSpectateDeskMouseMsg(msg) then
-        consumeWindowMessage(true, false)
-        return
-    end
     if deskSampTextMsgs[msg] then
         consumeWindowMessage(true, false)
     else
@@ -731,8 +754,15 @@ installDeskChatWmHandler()
 -- Update Mimgui Game Input Passthrough
 function updateMimguiGameInputPassthrough()
     if not imgui or imgui.DisableInput == nil then return end
+
+    if deskSpectateCameraOwnsInput() then
+        imgui.DisableInput = true
+        return
+    end
+
+    local needsInput = deskImguiNeedsInput() == true
     if deskDeskOrAnsUiOpen() then
-        imgui.DisableInput = not (deskImguiNeedsInput() == true)
+        imgui.DisableInput = not needsInput
         return
     end
     if sampIsDialogActive and sampIsDialogActive() then
@@ -743,11 +773,7 @@ function updateMimguiGameInputPassthrough()
         imgui.DisableInput = true
         return
     end
-    if deskSpectatingNow() and not deskImguiNeedsInput() then
-        imgui.DisableInput = true
-        return
-    end
-    imgui.DisableInput = not (deskImguiNeedsInput() == true)
+    imgui.DisableInput = not needsInput
 end
 
 -- Desk hook/helper.
@@ -819,26 +845,13 @@ function flushDirtyConfigNow()
     end
 end
 
--- Hide Desk Window For Capture
-function hideDeskWindowForCapture()
-    if showWindow[0] then
-        showWindow[0] = false
-        deskInputState.replyFocused = false
-        deskInputState.keyboardStickyUntil = 0
-        deskInputState.windowOpenSince = 0
-        deskApplyInputPolicy()
-    end
-end
-
 -- Close Desk Window
 function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
     if not wasOpen then return end
     deskResetHotkeyDebounce(settings.hotkey or vkeys.VK_F7)
-    deskCache.hotkeyCapture = false
-    deskCache.cheatCapture = nil
-    deskCache.cheatCaptureSlot = 'main'
+    finishDeskBindCapture()
     deskInputState.replyFocused = false
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0

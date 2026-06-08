@@ -84,9 +84,13 @@ function main()
         utf8ToCp1251 = utf8ToCp1251,
         readInputBuf = readInputBuf,
         onSpectatingOn = function()
-            deskInputState.spectateUiModeActive = false
+            deskRememberSpectateCursorMode()
+            deskReleaseImguiCapture()
             if showWindow[0] then
                 deskInputState.spectateUiModeActive = true
+                deskEnableUiCursorForSamp()
+            else
+                deskInputState.spectateUiModeActive = false
             end
             updateMimguiGameInputPassthrough()
         end,
@@ -106,7 +110,8 @@ function main()
             return deskInputState.spectateUiModeActive == true
         end,
         onAnsBarClosed = function()
-            if deskSpectatingNow() and not showWindow[0] and not deskSpectateCameraBlocked() then
+            deskReleaseImguiCapture()
+            if deskSpectatingNow() and not showWindow[0] then
                 deskRestoreSpectateCamera()
             end
             updateMimguiGameInputPassthrough()
@@ -167,6 +172,7 @@ function main()
     installDeskPlayerJoinHook()
     installDeskPlayerStreamInHook()
     installDeskPlayerColorHook()
+    installDeskSpRefreshHooks()
     pcall(sampSyncAllPlayerColors)
     deskVeh.bind({
         settings = settings,
@@ -189,10 +195,11 @@ function main()
     local lastHookCheck = 0
     local lastCheckerTickAt = 0
     local CHECKER_TICK_SP_INTERVAL = 0.5
+    local deskWasSampInGame = type(deskSampInGame) == 'function' and deskSampInGame() or false
 
     local function resolveIngestPollInterval()
         if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
-            return showWindow[0] and POLL_INTERVAL_HOOK or POLL_INTERVAL_CLOSED_HOOK
+            return POLL_INTERVAL_SAFETY
         end
         return showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
     end
@@ -205,6 +212,7 @@ function main()
         if cheatState.marker.active then return 0 end
         if cheatState.hudDrag.active then return 0 end
         if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 0 end
+        if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return 0 end
         if deskCache.hotkeyCapture or deskCache.cheatCapture then return 0 end
         return 50
     end
@@ -224,6 +232,17 @@ function main()
 
         if not sessionLive then
             sessionLive = true
+        end
+
+        if type(deskSampInGame) == 'function' then
+            local inGame = deskSampInGame()
+            if inGame and not deskWasSampInGame then
+                cheatState.hudPlaced = false
+                if type(checkerState) == 'table' then
+                    checkerState.hudPlaced = false
+                end
+            end
+            deskWasSampInGame = inGame
         end
 
         deskSampChatGuardFrame()
@@ -257,43 +276,7 @@ function main()
         end
 
         if os.clock() - lastHookCheck >= HOOK_HEALTH_CHECK_INTERVAL then
-            if not deskCache.serverMsgHandler or sampev.onServerMessage ~= deskCache.serverMsgHandler then
-                pcall(installDeskServerMessageHook)
-            end
-            if not deskCache.specDialogHandler or sampev.onShowDialog ~= deskCache.specDialogHandler then
-                pcall(installDeskSpectateDialogHook)
-            end
-            if not deskCache.specToggleHandler or sampev.onTogglePlayerSpectating ~= deskCache.specToggleHandler then
-                pcall(installDeskSpectateToggleHook)
-            end
-            if not deskCache.sendChatHandler or sampev.onSendChat ~= deskCache.sendChatHandler then
-                pcall(installDeskSendChatHook)
-            end
-            if not deskCache.sendCommandHandler or sampev.onSendCommand ~= deskCache.sendCommandHandler then
-                pcall(installDeskSendCommandHook)
-            end
-            if not deskCache.playerQuitHandler or sampev.onPlayerQuit ~= deskCache.playerQuitHandler then
-                pcall(installDeskPlayerQuitHook)
-            end
-            if not deskCache.playerJoinHandler or sampev.onPlayerJoin ~= deskCache.playerJoinHandler then
-                pcall(installDeskPlayerJoinHook)
-            end
-            if not deskCache.playerStreamInHandler or sampev.onPlayerStreamIn ~= deskCache.playerStreamInHandler then
-                pcall(installDeskPlayerStreamInHook)
-            end
-            if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
-                pcall(installDeskPlayerColorHook)
-            end
-            if not deskCache.profHooksInstalled
-                or (deskCache.profChatHandler and sampev.onChatMessage ~= deskCache.profChatHandler)
-                or (deskCache.profBubbleHandler and sampev.onPlayerChatBubble ~= deskCache.profBubbleHandler) then
-                deskCache.profHooksInstalled = false
-                pcall(installProfanityHooks)
-            end
-            pcall(deskSpectateStats.ensureInputHooks)
-            pcall(deskReinstallSpMenuHooks)
-            pcall(installDeskSpMenuRpcBlock)
-    pcall(installDeskCheckerRpcProbe)
+            pcall(deskEnsureAllHooks)
             lastHookCheck = os.clock()
         end
 
@@ -313,9 +296,6 @@ function main()
         end
         pcall(deskSpectateStats.tickPendingSp)
         pcall(cheatsTickMarker)
-        if deskIsSpectating() and deskSpectateStats.maintainCamera then
-            pcall(deskSpectateStats.maintainCamera)
-        end
 
         local nowSave = os.clock()
         if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
@@ -334,10 +314,6 @@ function main()
             lastThreadsSave = nowSave
             lastSettingsSave = nowSave
         end
-        if dirtyScenarioLearn and nowSave - lastScenarioLearnSave >= 60 then
-            pcall(saveScenarioLearnData)
-            lastScenarioLearnSave = nowSave
-        end
     end
 end
 
@@ -352,10 +328,8 @@ function onScriptTerminate(scr)
         pcall(cheatsCleanup)
         pcall(deskTexLoad.clearAll)
         if deskConfigReady then
+            pcall(flushDirtyConfigNow)
             saveConfig()
-            if type(saveScenarioLearnData) == 'function' then
-                pcall(saveScenarioLearnData)
-            end
         end
         local app = package.loaded['report_desk_app']
         if app and app.unload then pcall(app.unload) end

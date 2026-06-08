@@ -8,20 +8,19 @@ local spTheme = require 'report_desk_sp_theme'
 local deps = {}
 local ANS_BUF_SIZE = 384
 local ansBuf = imgui.new.char[ANS_BUF_SIZE]()
+
+-- Полный цикл KEYDOWN/KEYUP для C и Enter; без os.clock/debounce/grace.
 local state = {
     open = false,
     focusPending = false,
-    openedAt = 0,
-    hovered = false,
+    waitChatRelease = false,
+    waitEnterRelease = false,
 }
 
 local BAR_W = 460
 local BAR_H = 92
 local BAR_BOTTOM_INSET = 28
-local CHAT_KEY_DEBOUNCE_SEC = 0.22
-local OPEN_CLICK_GRACE_SEC = 0.18
-local OPEN_INPUT_GRACE_SEC = 0.28
-local lastChatKeyAt = 0
+
 local WM_KEYDOWN = 0x0100
 local WM_SYSKEYDOWN = 0x0104
 local WM_KEYUP = 0x0101
@@ -34,22 +33,37 @@ local SAMP_CHAT_KEYS = {
     [0x75] = true, [0x7A] = true,
 }
 
--- Block Samp Chat Key
-local function blockSampChatKey(msg, wparam)
-    if not state.open then return false end
-    msg = tonumber(msg) or 0
-    if msg == WM_CHAR or msg == 0x0106 or msg == 0x0109 or msg == 0x0286 then
-        return true
-    end
-    if msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN or msg == WM_KEYUP or msg == WM_SYSKEYUP then
-        if SAMP_CHAT_KEYS[tonumber(wparam) or 0] then
-            return true
-        end
-    end
-    return false
+local function resetKeyLatch()
+    state.waitChatRelease = false
+    state.waitEnterRelease = false
+    state.focusPending = false
 end
 
--- Is Key Repeat
+-- Только SAMP chat hotkeys (T/I/Y/…); WM_CHAR не трогаем — его нужен mimgui InputText.
+local function blockSampChatHotkey(msg, wparam)
+    if not state.open then return false end
+    msg = tonumber(msg) or 0
+    if msg ~= WM_KEYDOWN and msg ~= WM_SYSKEYDOWN then return false end
+    return SAMP_CHAT_KEYS[tonumber(wparam) or 0] == true
+end
+
+-- Пока C не отпущена после открытия — не пускаем WM_CHAR в ImGui (остаток от клавиши C).
+local function blockOpeningKeyLeak(msg)
+    if not state.open or not state.waitChatRelease then return false end
+    msg = tonumber(msg) or 0
+    return msg == WM_CHAR
+end
+
+local function isKeyDownMsg(msg)
+    msg = tonumber(msg) or 0
+    return msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN
+end
+
+local function isKeyUpMsg(msg)
+    msg = tonumber(msg) or 0
+    return msg == WM_KEYUP or msg == WM_SYSKEYUP
+end
+
 local function isKeyRepeat(lparam)
     lparam = tonumber(lparam) or 0
     if bit and bit.band then
@@ -58,48 +72,27 @@ local function isKeyRepeat(lparam)
     return false
 end
 
--- Chat Key Vk
 local function chatKeyVk()
     local vkeys = deps.vkeys or {}
     return vkeys.VK_C or 0x43
 end
 
--- Chat Key Down
-local function chatKeyDown()
-    if not deps.isVkDown then return false end
-    return deps.isVkDown(chatKeyVk()) == true
-end
-
--- Is Chat Key
 local function isChatKey(wparam)
-    wparam = tonumber(wparam) or 0
-    return wparam == chatKeyVk()
+    return (tonumber(wparam) or 0) == chatKeyVk()
 end
 
--- Modifier Blocks Chat
+local function isEnterKey(wparam)
+    wparam = tonumber(wparam) or 0
+    local vkeys = deps.vkeys or {}
+    return wparam == (vkeys.VK_RETURN or 0x0D) or wparam == 0x0D
+end
+
 local function modifierBlocksChat()
     if not deps.isVkDown or not deps.vkeys then return false end
     local v = deps.vkeys
     if deps.isVkDown(v.VK_CONTROL or 0x11) then return true end
     if deps.isVkDown(v.VK_LCONTROL or 0xA2) then return true end
     if deps.isVkDown(v.VK_RCONTROL or 0xA3) then return true end
-    return false
-end
-
--- Open Grace Active
-local function openGraceActive()
-    return (os.clock() - (state.openedAt or 0)) < OPEN_INPUT_GRACE_SEC
-end
-
--- Open Chat Debounced
-local function openChatDebounced()
-    local now = os.clock()
-    if state.open then return false end
-    if now - lastChatKeyAt < CHAT_KEY_DEBOUNCE_SEC then return false end
-    if M.open() then
-        lastChatKeyAt = now
-        return true
-    end
     return false
 end
 
@@ -113,7 +106,6 @@ local function uiText(s)
     return s or ''
 end
 
--- Screen Size
 local function screenSize()
     local sw, sh = 1280, 720
     if imgui.GetIO then
@@ -131,7 +123,6 @@ local function screenSize()
     return sw, sh
 end
 
--- Spectating With Target
 local function spectatingWithTarget()
     local id = deps.getTargetId and tonumber(deps.getTargetId()) or -1
     if id < 0 then return false end
@@ -146,7 +137,6 @@ local function spectatingWithTarget()
     return true
 end
 
--- Input Blocked
 local function inputBlocked()
     if deps.isGameTextInputActive and deps.isGameTextInputActive() then return true end
     if deps.isDeskTypingActive and deps.getShowWindow and deps.getShowWindow()
@@ -156,12 +146,10 @@ local function inputBlocked()
     return false
 end
 
--- Notify Input Changed
 local function notifyInputChanged()
     if deps.onInputChanged then pcall(deps.onInputChanged) end
 end
 
--- Release Input Capture
 local function releaseInputCapture()
     if type(deskReleaseImguiCapture) == 'function' then
         pcall(deskReleaseImguiCapture)
@@ -172,33 +160,39 @@ local function releaseInputCapture()
     if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
 end
 
--- Sync Input Capture
 local function syncInputCapture()
     if not state.open then return end
-    local io = imgui.GetIO and imgui.GetIO()
-    if not io then return end
-    local wantKb = io.WantCaptureKeyboard or io.WantTextInput
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then wantKb = true end
-    if imgui.CaptureKeyboardFromApp then imgui.CaptureKeyboardFromApp(wantKb) end
-    if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(true) end
+    if imgui.CaptureKeyboardFromApp then imgui.CaptureKeyboardFromApp(true) end
+    if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
 end
 
--- Публичный API модуля.
+-- KEYUP C иногда не доходит до lua-хендлера; дублируем через isVkDown в draw.
+local function chatKeyReleased()
+    if not deps.isVkDown then return true end
+    local ok, down = pcall(deps.isVkDown, chatKeyVk())
+    if not ok then return true end
+    return down ~= true
+end
+
+local function armInputFocus()
+    state.waitChatRelease = false
+    state.focusPending = true
+    if deps.markTypingActive then pcall(deps.markTypingActive) end
+end
+
 function M.isOpen()
     return state.open == true
 end
 
--- Публичный API модуля.
 function M.wantsInput()
     return state.open == true
 end
 
--- Публичный API модуля.
 function M.close()
     if not state.open then return end
     state.open = false
     state.focusPending = false
-    state.hovered = false
+    state.waitChatRelease = false
     if type(deskInputState) == 'table' then
         deskInputState.keyboardStickyUntil = 0
     end
@@ -206,28 +200,26 @@ function M.close()
     notifyInputChanged()
 end
 
--- Публичный API модуля.
 function M.reset()
+    resetKeyLatch()
     M.close()
     ansBuf[0] = 0
 end
 
--- Публичный API модуля.
 function M.open()
     if not spectatingWithTarget() or inputBlocked() then return false end
     state.open = true
-    state.openedAt = os.clock()
-    state.focusPending = true
+    state.focusPending = false
+    state.waitChatRelease = true
     if type(deskHoldSampChatInput) == 'function' then
         pcall(deskHoldSampChatInput)
     end
     if deps.markTypingActive then pcall(deps.markTypingActive) end
     notifyInputChanged()
-    if deps.enableSpectateCursor then pcall(deps.enableSpectateCursor) end
+    syncInputCapture()
     return true
 end
 
--- Read Ans Buf
 local function readAnsBuf()
     if deps.readInputBuf then
         local ok, s = pcall(deps.readInputBuf, ansBuf)
@@ -244,7 +236,6 @@ local function readAnsBuf()
     return s
 end
 
--- Отправка команды/сообщения на сервер.
 local function sendAns(text)
     if text == nil or text == '' then
         text = readAnsBuf()
@@ -275,42 +266,81 @@ local function sendAns(text)
     return true
 end
 
--- Публичный API модуля.
 function M.handleWindowMessage(msg, wparam, lparam)
     if not spectatingWithTarget() or inputBlocked() then return false end
-    if blockSampChatKey(msg, wparam) then return true end
-    if msg ~= WM_KEYDOWN and msg ~= WM_SYSKEYDOWN then return false end
-    if isKeyRepeat(lparam) then return false end
+
+    msg = tonumber(msg) or 0
+    wparam = tonumber(wparam) or 0
+
+    if blockSampChatHotkey(msg, wparam) then return true end
+    if blockOpeningKeyLeak(msg) then return true end
+
+    local keyDown = isKeyDownMsg(msg)
+    local keyUp = isKeyUpMsg(msg)
+    if not keyDown and not keyUp then return false end
+    if keyDown and isKeyRepeat(lparam) then return false end
 
     local vkeys = deps.vkeys
     if not vkeys then return false end
-    wparam = tonumber(wparam) or 0
-    local vkEnter = vkeys.VK_RETURN or 0x0D
+    local vkEsc = vkeys.VK_ESCAPE or 0x1B
 
-    if state.open then
-        if wparam == (vkeys.VK_ESCAPE or 0x1B) then
-            M.close()
-            return true
-        end
-        if wparam == vkEnter and openGraceActive() then
+    -- Enter KEYUP: сброс latch после отправки/закрытия.
+    if keyUp and isEnterKey(wparam) then
+        if state.waitEnterRelease then
+            state.waitEnterRelease = false
             return true
         end
         return false
     end
 
-    if not isChatKey(wparam) or modifierBlocksChat() then return false end
-    if openChatDebounced() then
+    -- C KEYUP: отпускание клавиши открытия → можно ставить фокус в поле.
+    if keyUp and isChatKey(wparam) then
+        if state.waitChatRelease and state.open then
+            armInputFocus()
+            return true
+        end
+        return false
+    end
+
+    if not keyDown then return false end
+
+    -- Открытие на C KEYDOWN (только чистое нажатие, без залипшего Enter).
+    if not state.open then
+        if not isChatKey(wparam) or modifierBlocksChat() then return false end
+        if state.waitChatRelease or state.waitEnterRelease then return true end
+        if M.open() then return true end
+        return false
+    end
+
+    -- Панель открыта.
+    if wparam == vkEsc then
+        M.close()
         return true
     end
+
+    if isChatKey(wparam) then
+        return true
+    end
+
+    if isEnterKey(wparam) then
+        if state.waitChatRelease or state.waitEnterRelease then return true end
+        sendAns()
+        state.waitEnterRelease = true
+        return true
+    end
+
     return false
 end
 
--- Публичный API модуля.
 function M.draw(settings)
     if not state.open or not spectatingWithTarget() then
-        state.hovered = false
         return
     end
+    if imgui and imgui.DisableInput ~= nil then
+        imgui.DisableInput = false
+    end
+    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
+
     settings = settings or (deps.getSettings and deps.getSettings()) or {}
     if settings.spectate_sp_ans == false then
         M.close()
@@ -356,15 +386,6 @@ function M.draw(settings)
     spTheme.pushOverlayChrome(0.96)
     local began = imgui.Begin('###desk_sp_ans_bar', nil, flags)
     if began then
-        state.hovered = false
-        pcall(function()
-            local wp = imgui.GetWindowPos()
-            local ww = imgui.GetWindowWidth()
-            local wh = imgui.GetWindowHeight()
-            local mp = imgui.GetIO().MousePos
-            state.hovered = mp.x >= wp.x and mp.x < wp.x + ww and mp.y >= wp.y and mp.y < wp.y + wh
-        end)
-
         spTheme.drawHeaderAccent(col_accent)
 
         local who = nick ~= '' and nick or ('ID ' .. tostring(targetId))
@@ -378,14 +399,8 @@ function M.draw(settings)
 
         imgui.Dummy(imgui.ImVec2(0, 6))
 
-        if state.focusPending and imgui.SetKeyboardFocusHere then
-            imgui.SetKeyboardFocusHere(0)
-            state.focusPending = false
-        end
-
-        local inputFlags = 0
-        if imgui.InputTextFlags and imgui.InputTextFlags.EnterReturnsTrue then
-            inputFlags = imgui.InputTextFlags.EnterReturnsTrue
+        if state.waitChatRelease and chatKeyReleased() then
+            armInputFocus()
         end
 
         local sendW = 84
@@ -398,23 +413,24 @@ function M.draw(settings)
         imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.48, 0.36, 0.72, 0.55))
         imgui.PushStyleColor(imgui.Col.Text, col_label)
 
+        if state.focusPending and imgui.SetKeyboardFocusHere then
+            imgui.SetKeyboardFocusHere(0)
+        end
+
         imgui.PushItemWidth(inputW)
-        local submitted = false
         local hint = uiText('\xD1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xE4\xEB\xFF /ans...')
         if imgui.InputTextWithHint then
-            submitted = imgui.InputTextWithHint(
-                '##sp_ans_input',
-                hint,
-                ansBuf,
-                ANS_BUF_SIZE,
-                inputFlags)
+            imgui.InputTextWithHint('##sp_ans_input', hint, ansBuf, ANS_BUF_SIZE)
         else
-            submitted = imgui.InputText('##sp_ans_input', ansBuf, ANS_BUF_SIZE, inputFlags)
+            imgui.InputText('##sp_ans_input', ansBuf, ANS_BUF_SIZE)
         end
         imgui.PopItemWidth()
 
-        if imgui.IsItemActive and imgui.IsItemActive() then
-            state.hovered = true
+        if type(deskKeepInputOnActiveItem) == 'function' then
+            pcall(deskKeepInputOnActiveItem)
+        end
+        if state.focusPending and imgui.IsItemFocused and imgui.IsItemFocused() then
+            state.focusPending = false
         end
 
         imgui.PopStyleColor(3)
@@ -425,18 +441,13 @@ function M.draw(settings)
         imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
         imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.44, 0.30, 0.66, 1.0))
         imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+        if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
         local clicked = imgui.Button(uiText('\xCE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC'), imgui.ImVec2(sendW, 0))
+        if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
         imgui.PopStyleColor(4)
 
-        local inputGraceOver = not openGraceActive()
-        if inputGraceOver and (submitted or clicked) then
+        if clicked and not state.waitChatRelease then
             sendAns()
-        end
-
-        local graceOver = (os.clock() - (state.openedAt or 0)) >= OPEN_CLICK_GRACE_SEC
-        if graceOver and imgui.IsMouseClicked and imgui.IsMouseClicked(0)
-                and not state.hovered and not (imgui.IsAnyItemActive and imgui.IsAnyItemActive()) then
-            M.close()
         end
 
         syncInputCapture()
@@ -445,7 +456,6 @@ function M.draw(settings)
     spTheme.popOverlayChrome()
 end
 
--- Публичный API модуля.
 function M.install(installDeps)
     if type(installDeps) == 'table' then
         for k, v in pairs(installDeps) do

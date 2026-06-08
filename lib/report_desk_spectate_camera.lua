@@ -128,7 +128,10 @@ end
 
 -- Публичный API модуля.
 function M.onSpectateStart()
-    -- Не трогаем CCamera до первого wheel — иначе ломается поворот камеры в /sp на машине.
+    -- Сброс wheel-zoom от прошлой сессии; activate distance только после колёсика.
+    if cam.customized then
+        restoreDefaultCameraDistance()
+    end
 end
 
 -- Публичный API модуля.

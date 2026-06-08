@@ -484,6 +484,18 @@ function M.isEnabledForSpectate(settings)
     return not settings or settings.spectate_sp_ui ~= false
 end
 
+-- Без side-effect reset (для baseline auto /sp).
+function M.peekActive()
+    if not hud.active or not hud.inVehicle then return false end
+    if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then return false end
+    if hud.speed ~= nil or hud.fuel ~= nil or hud.health ~= nil then return true end
+    if hud.door or hud.driveMode then return true end
+    for _, key in ipairs(INDICATOR_ORDER) do
+        if hud.indicators[key] ~= nil then return true end
+    end
+    return false
+end
+
 -- Публичный API модуля.
 function M.isActive()
     if not hud.active or not hud.inVehicle then return false end
@@ -505,7 +517,18 @@ function M.isDragActive()
 end
 
 -- Публичный API модуля.
+function M.clearPointerHover()
+    hovered = false
+end
+
+-- Публичный API модуля.
 function M.wantsInput()
+    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
+        return drag.active == true
+    end
+    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+        return drag.active == true
+    end
     if drag.active then return true end
     if hovered then return true end
     local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
@@ -695,16 +718,6 @@ local function applyServerTdField(text, data, tdId)
         if modeText then storeField('mode', nil, modeText) end
     elseif role == 'indicators' then
         storeIndicators(raw, plain:gsub('%s+', ''))
-    end
-end
-
--- Публичный API модуля.
--- /sp: состояние «в машине» только из server TD. Свой ped: сброс при выходе из ТС.
-function M.tickGame(spectating)
-    if spectating then return end
-    if M.isLocalInVehicle() then return end
-    if hud.active or hud.inVehicle then
-        M.reset()
     end
 end
 

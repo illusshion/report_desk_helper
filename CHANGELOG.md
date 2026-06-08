@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.9
+
+- **Сценарии v2:** 81 переработанный сценарий в `admin_report_desk_user.default.lua`; авто-merge новых сценариев у существующих юзеров (`scenarios_pack_version`, без перезаписи своих).
+- **SP /ans (C):** state machine KEYDOWN/KEYUP — нет фантомной отправки, стабильный фокус при повторном открытии.
+- **SP input:** ans bar не дергает SP HUD; корректный захват клавиатуры без блокировки WM_CHAR.
+- **HUD:** persistence позиций checker/cheats/stats после `/reload`; drag без прыжков; checker read-only.
+- **Bundle:** добавлен `report_desk_sp_refresh`; в core вшит pack сценариев для миграции.
+
 ## 1.0.8
 
 - **Release pipeline:** verify SHA256 (dist = git = zip), `build_manifest.json`, снятие `assume-unchanged`, правильный git commit, `zip_url` в manifest.

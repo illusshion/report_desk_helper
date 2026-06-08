@@ -16,6 +16,11 @@ config/mimgui/
 # Сборка релиза (артефакты — в GitHub Releases, не в git)
 dist/
 
+# Dev-копии и восстановленные дубликаты (не участвуют в runtime)
+_desk_dev_stash/
+_desk_dev_backup_*/
+_recovered/
+
 # Dev-заглушки
 admin_report_desk_stub.lua.off
 admin_report_desk.lua.bak

@@ -472,6 +472,25 @@ function M.isPlayerChannelMessage(rawOrText)
     return false
 end
 
+-- Normalize Report Channel
+function M.normalizeReportChannel(tag)
+    tag = trim(tostring(tag or '')):upper()
+    if tag == 'PC' or tag == 'S' or tag == 'M' then return tag end
+    return nil
+end
+
+-- Extract Report Channel
+function M.extractReportChannel(rawOrTag)
+    local ch = M.normalizeReportChannel(rawOrTag)
+    if ch then return ch end
+    local t = tostring(rawOrTag or '')
+    if t == '' then return nil end
+    for _, tag in ipairs(REPORT_CHANNEL_ORDER) do
+        if t:find('%[' .. tag .. '%]', 1, true) then return tag end
+    end
+    return nil
+end
+
 -- Публичный API модуля.
 function M.ingestDedupKey(id, body, rawLine, normalizeBody)
     local raw = rawLine or ''

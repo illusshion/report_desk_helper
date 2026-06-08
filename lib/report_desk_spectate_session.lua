@@ -444,6 +444,11 @@ function M.parseSpLine(text)
     if nick then nick = trim(nick) end
     M.setSpectating(true)
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
+    -- RPC onSpectatePlayer уже подтвердил сессию — [SP] только дополняет nick.
+    if M.isActive() and M.getTargetId() == id then
+        if nick ~= '' then session.targetNick = nick end
+        return true
+    end
     return M.beginSession(id, nick, {
         source = 'sp_line',
         ping = ping and tonumber(ping) or nil,
@@ -556,6 +561,8 @@ end
 -- Публичный API модуля.
 function M.flushOutbound()
     if #session.outbound == 0 then return end
+    if type(sampIsChatInputActive) == 'function' and sampIsChatInputActive() then return end
+    if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then return end
     if not sendChatFn then
         session.outbound = {}
         return
@@ -569,10 +576,13 @@ function M.flushOutbound()
     pcall(sendChatFn, cmd)
 end
 
+local vehicleHandler, hookPrevVehicle
+
 -- Публичный API модуля.
 function M.installSampevHooks(sampev)
     if not sampev then return end
-    if playerHandler and sampev.onSpectatePlayer == playerHandler then
+    if playerHandler and sampev.onSpectatePlayer == playerHandler
+            and vehicleHandler and sampev.onSpectateVehicle == vehicleHandler then
         return
     end
 
@@ -592,12 +602,34 @@ function M.installSampevHooks(sampev)
             M.setSpectating(true)
             if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
             M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
+            pcall(function()
+                local stats = package.loaded['report_desk_spectate_stats']
+                if stats and stats.onSpRefreshSpectatePlayer then
+                    stats.onSpRefreshSpectatePlayer(id)
+                end
+            end)
         end
         if type(hookPrevPlayer) == 'function' then
             return hookPrevPlayer(id)
         end
     end
     sampev.onSpectatePlayer = playerHandler
+
+    local prevVeh = sampev.onSpectateVehicle
+    if prevVeh == vehicleHandler then prevVeh = hookPrevVehicle end
+    hookPrevVehicle = prevVeh
+    vehicleHandler = function(vehicleId)
+        pcall(function()
+            local stats = package.loaded['report_desk_spectate_stats']
+            if stats and stats.onSpRefreshSpectateVehicle then
+                stats.onSpRefreshSpectateVehicle(vehicleId)
+            end
+        end)
+        if type(hookPrevVehicle) == 'function' then
+            return hookPrevVehicle(vehicleId)
+        end
+    end
+    sampev.onSpectateVehicle = vehicleHandler
 end
 
 -- Публичный API модуля.
@@ -614,6 +646,7 @@ end
 function M.areSampevHooksActive(sampev)
     if not sampev then return false end
     return playerHandler and sampev.onSpectatePlayer == playerHandler
+        and vehicleHandler and sampev.onSpectateVehicle == vehicleHandler
 end
 
 -- Публичный API модуля.
@@ -696,9 +729,6 @@ end
 -- Публичный API модуля.
 function M.install(cfg)
     M.configure(cfg)
-    if playerSpectatingNow() then
-        M.scheduleRecoveryScan()
-    end
 end
 
 -- Sam Menu Item Plain

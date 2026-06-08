@@ -116,6 +116,7 @@ if (-not (Test-Path $userDefault)) { Write-Error "Missing $userDefault" }
 if (-not (Test-Path $mainDefault)) { Write-Error "Missing $mainDefault" }
 Copy-Item $mainDefault (Join-Path $configDir 'admin_report_desk.lua')
 Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.lua')
+Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.default.lua')
 
 function Copy-PreviewAssets($srcSub, $dstSub) {
     $src = Join-Path $MoonloaderRoot $srcSub

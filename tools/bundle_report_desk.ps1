@@ -212,6 +212,7 @@ $libModules = @(
     @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
     @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },
     @{ Name = 'report_desk_sp_ui'; File = 'report_desk_sp_ui.lua' },
+    @{ Name = 'report_desk_sp_refresh'; File = 'report_desk_sp_refresh.lua' },
     @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
     @{ Name = 'report_desk_checker_parser'; File = 'report_desk_checker_parser.lua' },
     @{ Name = 'report_desk_checker_catalog'; File = 'report_desk_checker_catalog.lua' },
@@ -254,8 +255,6 @@ $appChunks = @(
 
     'report_desk_ingest_runtime.lua',
 
-    'report_desk_scenario_learn.lua',
-
     'report_desk_rules.lua',
 
     'report_desk_ui.lua',
@@ -282,6 +281,7 @@ $allBundleInputs = @(
     'report_desk_spectate_ans.lua',
     'report_desk_spectate_menu.lua',
     'report_desk_sp_ui.lua',
+    'report_desk_sp_refresh.lua',
     'report_desk_spectate_stats.lua',
     'report_desk_checker_parser.lua',
     'report_desk_checker_catalog.lua',
@@ -403,10 +403,13 @@ $coreText = [System.IO.File]::ReadAllText($coreLua, $Utf8NoBom)
 $mustHave = @(
     'expectSpectateOff',
     'isAwaitingSpectate',
-    'function scenarioLearnOnReply',
     'function remoteChatFlushSampQueue',
     'report_desk_spectate_camera',
-    'report_desk_sp_keys_hud'
+    'report_desk_sp_keys_hud',
+    'report_desk_sp_refresh',
+    'report_desk_user_defaults',
+    'migrateScenariosPackIfNeeded',
+    'SCENARIOS_PACK_VERSION'
 )
 $missing = @($mustHave | Where-Object { $coreText -notmatch [regex]::Escape($_) })
 if ($missing.Count -gt 0) {

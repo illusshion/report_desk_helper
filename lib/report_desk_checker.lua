@@ -113,8 +113,10 @@ do
     local s = checkerState
     s.hudPlaced = s.hudPlaced == true
     s.hudPosValidated = s.hudPosValidated == true
-    s.hudDrag = type(s.hudDrag) == 'table' and s.hudDrag or { active = false, offX = 0, offY = 0 }
+    s.hudDrag = type(s.hudDrag) == 'table' and s.hudDrag or { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
     if s.hudDrag.active == nil then s.hudDrag.active = false end
+    if s.hudDrag.startX == nil then s.hudDrag.startX = 0 end
+    if s.hudDrag.startY == nil then s.hudDrag.startY = 0 end
     if s.hudDrag.offX == nil then s.hudDrag.offX = 0 end
     if s.hudDrag.offY == nil then s.hudDrag.offY = 0 end
     s.hudHovered = s.hudHovered == true
@@ -2771,7 +2773,6 @@ end
 function checkerHudVisible()
     ensureCheckerSettings()
     if settings.checker_hud == false then return false end
-    if type(showWindow) == 'table' and showWindow[0] then return false end
     if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
     if type(isSampAvailable) == 'function' and not isSampAvailable() then return false end
     if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then
@@ -2816,18 +2817,16 @@ function installCheckerHudFrame()
             return checkerHudVisible()
         end,
         function(self)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
             local ok, err = pcall(drawCheckerHudOverlay)
             if not ok then
                 print('[Report Desk] checker HUD draw: ' .. tostring(err))
             end
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
-            self.HideCursor = true
+            self.HideCursor = deskMimguiHideCursor(
+                type(checkerHudWantsInput) == 'function' and checkerHudWantsInput())
             self.LockPlayer = false
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                updateMimguiGameInputPassthrough()
+            end
         end
     )
     if frame then
@@ -2914,33 +2913,41 @@ function checkerHudWantsInput()
     if checkerState.hudDrag and checkerState.hudDrag.active then return true end
     if checkerState.hudHovered then return true end
     local r = checkerState.hudRect
-    if r and imgui and type(imgui.GetIO) == 'function' then
-        local ok, io = pcall(imgui.GetIO)
-        if ok and io and io.MousePos then
-            local mp = io.MousePos
-            return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+    if r then
+        local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+            or type(deskPointerInRect) == 'function' and deskPointerInRect
+        if pin and pin(r) then return true end
+        if imgui and type(imgui.GetIO) == 'function' then
+            local ok, io = pcall(imgui.GetIO)
+            if ok and io and io.MousePos then
+                local mp = io.MousePos
+                if mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1 then
+                    return true
+                end
+            end
         end
     end
     local hx = tonumber(settings.checker_hud_x) or 8
     local hy = tonumber(settings.checker_hud_y) or 8
-    local hudH = checkerHudSavedHeight(160)
+    local estW = tonumber(checkerState.hudLastW) or (CHECKER_HUD_W + 80)
+    local estH = tonumber(checkerState.hudLastH) or checkerHudSavedHeight(160)
+    local est = { x0 = hx, y0 = hy, x1 = hx + estW, y1 = hy + estH }
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin and pin(est) then return true end
     if imgui and type(imgui.GetIO) == 'function' then
         local ok, io = pcall(imgui.GetIO)
         if ok and io and io.MousePos then
             local mp = io.MousePos
-            return mp.x >= hx and mp.x < hx + CHECKER_HUD_W + 80
-                and mp.y >= hy and mp.y < hy + hudH + 20
+            return mp.x >= est.x0 and mp.x < est.x1 and mp.y >= est.y0 and mp.y < est.y1
         end
     end
     return false
 end
 
--- HUD-строка: текст без подсветки hover, клик = действие.
-local function drawCheckerHudClickRow(label, col, onClick)
+-- HUD-строка: только текст, без hover и кликов.
+local function drawCheckerHudRow(label, col)
     imgui.TextColored(col, uiText(label))
-    if type(onClick) == 'function' and imgui.IsItemHovered() and imgui.IsMouseClicked(0) then
-        onClick()
-    end
 end
 
 -- Checker (admin HUD/catalog).
@@ -2961,9 +2968,7 @@ function drawCheckerAdminRow(e, index, idSuffix, indent)
         label = label .. '  ' .. lvlText
     end
     label = label .. checkerOnlineTags(e)
-    drawCheckerHudClickRow(label, col, function()
-        if type(sendChat) == 'function' then SafeCall('sendChat', sendChat, '/sp ' .. e.id) end
-    end)
+    drawCheckerHudRow(label, col)
 end
 
 -- Отрисовка checker UI.
@@ -3006,9 +3011,7 @@ function drawCheckerColorListBlock(list, emptyText, idPrefix)
         shown = shown + 1
         local col = checkerSafePlayerColor(e.id) or col_accent
         local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
-        drawCheckerHudClickRow(label, col, function()
-            pcall(sendChat, '/sp ' .. e.id)
-        end)
+        drawCheckerHudRow(label, col)
     end
 end
 
@@ -3034,9 +3037,7 @@ function drawCheckerLeadersBlock()
             if role ~= '' then
                 label = label .. '  \xB7  ' .. role
             end
-            drawCheckerHudClickRow(label, col, function()
-                if type(sendChat) == 'function' then SafeCall('sendChat', sendChat, '/sp ' .. e.id) end
-            end)
+            drawCheckerHudRow(label, col)
         end
     end
 end
@@ -3197,21 +3198,29 @@ function drawCheckerHudOverlay()
         end
     end
 
-    checkerState.hudHovered = false
-    local hx = tonumber(settings.checker_hud_x) or 8
-    local hy = tonumber(settings.checker_hud_y) or 8
-    if not checkerState.hudPlaced and not (checkerState.hudDrag and checkerState.hudDrag.active) then
-        hx, hy = checkerGuardHudOffScreen(hx, hy, CHECKER_HUD_W, checkerHudSavedHeight(120))
+    local hudH = checkerHudSavedHeight(120)
+    local rawHx = tonumber(settings.checker_hud_x) or 8
+    local rawHy = tonumber(settings.checker_hud_y) or 8
+    local hx, hy = checkerClampHudPos(rawHx, rawHy, CHECKER_HUD_W, hudH)
+    if not checkerState.hudDrag then
+        checkerState.hudDrag = { active = false, offX = 0, offY = 0 }
+    end
+    local drag = checkerState.hudDrag
+    if drag.active then
+        hx = drag.offX
+        hy = drag.offY
+    elseif math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
+            or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5) then
+        checkerPersistHudPos(hx, hy, CHECKER_HUD_W, hudH)
     end
 
-    local wantInput = checkerHudWantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
         + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar
-    if not wantInput and imgui.WindowFlags.NoInputs then
-        flags = flags + imgui.WindowFlags.NoInputs
-    end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
+    end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
     end
 
     imgui.SetNextWindowSizeConstraints(
@@ -3219,25 +3228,17 @@ function drawCheckerHudOverlay()
     if imgui.SetNextWindowBgAlpha then
         imgui.SetNextWindowBgAlpha(checkerSpTheme.HUD_OVERLAY_ALPHA or 0.80)
     end
-    if not checkerState.hudPlaced then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
-        checkerState.hudPlaced = true
-    elseif checkerState.hudDrag and checkerState.hudDrag.active then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
-    end
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
 
     checkerSpTheme.pushHudChrome()
-    local headerBottomY = nil
     if imgui.Begin('###desk_checker_hud', nil, flags) then
+        checkerState.hudHovered = false
         checkerSpTheme.drawPanelFrame()
         local hudAdmins, hudLeaders, hudFriends = checkerHudLists()
         checkerSpTheme.drawPanelTitle(
             '\xD7\xE5\xEA\xE5\xF0',
             string.format('(%i/%i/%i)', #hudAdmins, #hudLeaders, #hudFriends),
             col_accent, col_muted2, uiText)
-        if imgui.GetCursorScreenPos then
-            headerBottomY = imgui.GetCursorScreenPos().y + 2
-        end
 
         if settings.checker_show_admins ~= false then
             checkerSpTheme.drawSectionLabel(
@@ -3264,37 +3265,27 @@ function drawCheckerHudOverlay()
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
-        local mp = imgui.GetIO().MousePos
-        checkerState.hudHovered = mp.x >= wp.x and mp.x < wp.x + ww
-            and mp.y >= wp.y and mp.y < wp.y + wh
+        checkerState.hudLastW = ww
+        checkerState.hudLastH = wh
         checkerState.hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
 
-        local headerBottom = headerBottomY or (wp.y + 36)
-        local onHeader = mp.x >= wp.x and mp.x < wp.x + ww
-            and mp.y >= wp.y and mp.y < headerBottom
-        if not checkerState.hudDrag then
-            checkerState.hudDrag = { active = false, offX = 0, offY = 0 }
+        imgui.SetCursorPos(imgui.ImVec2(0, 0))
+        imgui.InvisibleButton('##checker_hud_drag', imgui.ImVec2(-1, -1))
+        if imgui.IsItemHovered() or imgui.IsItemActive() or drag.active then
+            checkerState.hudHovered = true
         end
-        local drag = checkerState.hudDrag
-
-        if onHeader and imgui.IsMouseDragging(0) and not imgui.IsAnyItemActive() then
+        if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
             local delta = imgui.GetMouseDragDelta(0)
             if not drag.active then
                 drag.active = true
-                drag.offX = wp.x
-                drag.offY = wp.y
+                drag.startX = wp.x
+                drag.startY = wp.y
                 imgui.ResetMouseDragDelta(0)
                 delta = imgui.GetMouseDragDelta(0)
             end
-            local nx = drag.offX + delta.x
-            local ny = drag.offY + delta.y
-            nx, ny = checkerClampHudPos(nx, ny, ww, wh)
-            settings.checker_hud_x = nx
-            settings.checker_hud_y = ny
-            if type(markDirtySettings) == 'function' then markDirtySettings() end
-            if imgui.SetWindowPos then
-                imgui.SetWindowPos(imgui.ImVec2(nx, ny))
-            end
+            drag.offX = drag.startX + delta.x
+            drag.offY = drag.startY + delta.y
+            drag.offX, drag.offY = checkerClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
             checkerPersistHudPos(wp.x, wp.y, ww, wh)

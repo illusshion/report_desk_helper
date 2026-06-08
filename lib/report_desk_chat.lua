@@ -383,14 +383,17 @@ function threadApplyOutgoing(t, threadKey, body, opts)
     end
     touchTimedMap(RECENT.out, RECENT.outOrd, fp)
 
-    addMessageToKey(threadKey, {
+    local outMsg = {
         dir = 'out',
         kind = opts.self ~= false and 'reply_self' or 'reply',
         text = body,
         ts = os.time(),
         self = opts.self ~= false,
-        adminNick = opts.adminNick,
-    })
+    }
+    if opts.self == false and trim(opts.adminNick or '') ~= '' then
+        outMsg.adminNick = opts.adminNick
+    end
+    addMessageToKey(threadKey, outMsg)
     markThreadAnswered(t)
     return true
 end
@@ -524,20 +527,6 @@ function sendOutgoingAns(t, text, opts)
         threadKey = threadKey,
         markEcho = split,
     })
-    if type(scenarioLearnOnReply) == 'function' then
-        local q = trim(opts.scenarioQuestion or '')
-        if q == '' and scenarioLearnLastPlayerQuestion then
-            q = scenarioLearnLastPlayerQuestion(t) or ''
-        end
-        if trim(opts.scenarioLabel or '') ~= '' then
-            pcall(scenarioLearnOnReply, q, text, {
-                scenarioLabel = opts.scenarioLabel,
-                source = 'scenario',
-            })
-        else
-            pcall(scenarioLearnOnReply, q, text, { source = 'manual' })
-        end
-    end
     if split then
         return true, '/ans ' .. ansId .. ' (2 \xF7\xE0\xF1\xF2\xE8)'
     end

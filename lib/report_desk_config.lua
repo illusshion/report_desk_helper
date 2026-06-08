@@ -1,4 +1,67 @@
 --[[ Модуль: load/save config Lua files. ]]
+function scenarioLabelKey(label)
+    label = trim(tostring(label or ''))
+    if label == '' then return '' end
+    if type(normalizeMatchText) == 'function' then
+        return normalizeMatchText(label)
+    end
+    return string.lower(label)
+end
+
+function loadDefaultScenarioPack()
+    if package and package.preload and package.preload['report_desk_user_defaults'] then
+        local ok, data = pcall(require, 'report_desk_user_defaults')
+        if ok and type(data) == 'table' then return data end
+    end
+    if doesFileExist(USER_DEFAULT_CONFIG_PATH) then
+        local chunk, err = loadfile(USER_DEFAULT_CONFIG_PATH)
+        if chunk then
+            local ok, data = pcall(chunk)
+            if ok and type(data) == 'table' then return data end
+        elseif err then
+            print('[Report Desk] default scenarios: ' .. tostring(err))
+        end
+    end
+    return nil
+end
+
+function mergeScenarioPack(userList, defaultList)
+    local seen = {}
+    for _, sc in ipairs(userList or {}) do
+        local key = scenarioLabelKey(sc.label)
+        if key ~= '' then seen[key] = true end
+    end
+    local merged = cloneQuickScenarios(userList or {}, true)
+    local added = 0
+    for _, sc in ipairs(defaultList or {}) do
+        local key = scenarioLabelKey(sc.label)
+        if key ~= '' and not seen[key] then
+            merged[#merged + 1] = cloneQuickScenarios({ sc }, true)[1]
+            seen[key] = true
+            added = added + 1
+        end
+    end
+    return merged, added
+end
+
+function migrateScenariosPackIfNeeded()
+    local userVer = tonumber(settings.scenarios_pack_version) or 0
+    if userVer >= SCENARIOS_PACK_VERSION then return end
+    local pack = loadDefaultScenarioPack()
+    if not pack then return end
+    local defaultList = pack.quick_scenarios
+    if not scenariosHasContent(defaultList) then return end
+    local merged, added = mergeScenarioPack(quickScenarios, defaultList)
+    if added > 0 then
+        quickScenarios = merged
+        bumpScenariosGen()
+        scenariosUiSynced = false
+        print(string.format('[Report Desk] scenarios: +%d new (pack v%d)', added, SCENARIOS_PACK_VERSION))
+    end
+    settings.scenarios_pack_version = SCENARIOS_PACK_VERSION
+    markDirtySettings()
+end
+
 function migrateLegacyAutoRules(src)
     if type(src) ~= 'table' then return end
     for _, r in ipairs(src) do
@@ -91,7 +154,6 @@ function loadConfig()
     if settings.auto_rules_enabled == nil then settings.auto_rules_enabled = true end
     if settings.auto_time_enabled == nil then settings.auto_time_enabled = true end
     if settings.auto_gg_enabled == nil then settings.auto_gg_enabled = true end
-    if settings.scenario_learn_enabled == nil then settings.scenario_learn_enabled = true end
     local al = tonumber(settings.admin_level)
     if al == nil or al < 1 then
         settings.admin_level = 3
@@ -157,12 +219,13 @@ function loadConfig()
                             local entry = {
                                 dir = m.dir or 'in',
                                 kind = m.kind,
-                                text = m.text or '',
+                                text = normalizeStoredText(m.text or '', isUtf8Text(m.text or '')),
                                 ts = tonumber(m.ts) or os.time(),
                                 self = m.self,
-                                adminNick = m.adminNick,
-                                note = m.note,
+                                note = normalizeStoredText(m.note or '', isUtf8Text(m.note or '')),
                             }
+                            local adm = normalizeStoredText(m.adminNick or '', isUtf8Text(m.adminNick or ''))
+                            if trim(adm) ~= '' then entry.adminNick = adm end
                             normalizeStoredMessage(entry)
                             msgs[#msgs + 1] = entry
                         end
@@ -205,6 +268,7 @@ function loadConfig()
             print('[Report Desk] user config empty/broken — keeping defaults')
         end
     end
+    migrateScenariosPackIfNeeded()
     deskConfigReady = true
 end
 
@@ -261,6 +325,9 @@ function saveUserConfig()
         f:write('    },\n')
     end
     f:write('  },\n')
+
+    f:write(string.format('  scenarios_pack_version = %d,\n',
+        tonumber(settings.scenarios_pack_version) or SCENARIOS_PACK_VERSION))
 
     f:write('  quick_scenarios = {\n')
     for _, sc in ipairs(quickScenarios) do
@@ -336,6 +403,9 @@ function loadUserConfig()
     end
     ensureComposerQuickButtons()
     syncLegacyGgTechFromComposerButtons()
+    if data.scenarios_pack_version ~= nil then
+        settings.scenarios_pack_version = tonumber(data.scenarios_pack_version) or 0
+    end
     if scenariosHasContent(data.quick_scenarios) then
         quickScenarios = cloneQuickScenarios(data.quick_scenarios, true)
         bumpScenariosGen()
@@ -391,7 +461,6 @@ function saveConfig()
     f:write(string.format('    profanity_filter_sound = %s,\n', settings.profanity_filter_sound ~= false and 'true' or 'false'))
     f:write(string.format('    profanity_filter_chat = %s,\n', settings.profanity_filter_chat and 'true' or 'false'))
     f:write(string.format('    remote_chat_samp_mirror = %s,\n', settings.remote_chat_samp_mirror ~= false and 'true' or 'false'))
-    f:write(string.format('    scenario_learn_enabled = %s,\n', settings.scenario_learn_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    admin_level = %d,\n', getLocalAdminLevel()))
     f:write(string.format('    skin_radius = %d,\n', tonumber(settings.skin_radius) or 20))
     f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 1200))
@@ -402,6 +471,7 @@ function saveConfig()
     f:write(string.format('    veh_color2 = %d,\n', tonumber(settings.veh_color2) or 0))
     f:write(string.format('    spectate_hud = %s,\n', settings.spectate_hud ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_auto_st = %s,\n', settings.spectate_auto_st ~= false and 'true' or 'false'))
+    f:write(string.format('    spectate_auto_refresh = %s,\n', settings.spectate_auto_refresh ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_hud_persist = %s,\n', settings.spectate_hud_persist ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_sp_menu_sound = %s,\n', settings.spectate_sp_menu_sound == true and 'true' or 'false'))
     f:write(string.format('    spectate_hud_x = %d,\n', math.floor(tonumber(settings.spectate_hud_x) or 14)))
@@ -515,8 +585,8 @@ function saveConfig()
         f:write('      messages = {\n')
         for _, m in ipairs(t.messages or {}) do
             f:write(string.format(
-                '        { dir = %q, text = %q, ts = %d',
-                m.dir or 'in', m.text or '', m.ts or 0
+                '        { dir = %q, text = %s, ts = %d',
+                m.dir or 'in', luaQuoteUtf8(m.text or ''), m.ts or 0
             ))
             if m.kind then
                 f:write(string.format(', kind = %q', m.kind))
@@ -525,10 +595,10 @@ function saveConfig()
                 f:write(string.format(', self = %s', m.self and 'true' or 'false'))
             end
             if m.adminNick then
-                f:write(string.format(', adminNick = %q', m.adminNick))
+                f:write(string.format(', adminNick = %s', luaQuoteUtf8(m.adminNick)))
             end
             if m.note then
-                f:write(string.format(', note = %q', m.note))
+                f:write(string.format(', note = %s', luaQuoteUtf8(m.note)))
             end
             f:write(' },\n')
         end

@@ -228,13 +228,6 @@ end
 -- Quick Scenario Matches
 function quickScenarioMatches(sc, body)
     local keywords = sc.keywords or {}
-    local learned = scenarioLearnGetKeywordsForScenario and scenarioLearnGetKeywordsForScenario(sc.label or '')
-    if type(learned) == 'table' and #learned > 0 then
-        local merged = {}
-        for i = 1, #keywords do merged[i] = keywords[i] end
-        for i = 1, #learned do merged[#keywords + i] = learned[i] end
-        keywords = merged
-    end
     return keywordMatches({
         match = sc.match or 'contains',
         keywords = keywords,
@@ -398,12 +391,7 @@ end
 -- Message Shows Scenario Buttons
 function messageShowsScenarioButtons(m)
     if not m then return false end
-    local k = messageKind(m)
-    if k == 'player' then return true end
-    if m.dir == 'in' and k ~= 'action' and k ~= 'punish' and k ~= 'reply' and k ~= 'reply_self' then
-        return true
-    end
-    return false
+    return messageKind(m) == 'player'
 end
 
 -- Preview Quick Scenario Text
@@ -645,8 +633,6 @@ function executeQuickScenario(sc, reporter, messageText)
     local tk = threadStorageKey(reporter)
     local ok, res = sendOutgoingAns(reporter, text, {
         threadKey = tk,
-        scenarioLabel = sc.label or '',
-        scenarioQuestion = messageText or '',
     })
     if ok then
         clearThreadRuleCooldowns(tk)
@@ -679,10 +665,18 @@ function executeWatchSuspect(reporter, suspectId, notifyOverride)
     end
 end
 
+-- Сообщение привязано к админу (пустая строка в Lua — truthy, не считать).
+function messageHasAdminNick(m)
+    return type(m) == 'table' and trim(m.adminNick or '') ~= ''
+end
+
 -- Normalize Stored Message
 function normalizeStoredMessage(m)
     if type(m) ~= 'table' then return end
-    if m.adminNick and m.dir ~= 'system' and m.dir ~= 'out' and m.dir ~= 'event' then
+    if trim(m.adminNick or '') == '' then
+        m.adminNick = nil
+    end
+    if messageHasAdminNick(m) and m.dir ~= 'system' and m.dir ~= 'out' and m.dir ~= 'event' then
         m.dir = 'out'
         m.self = false
     end
@@ -690,6 +684,9 @@ function normalizeStoredMessage(m)
     if m.kind then return end
     local txt = trim(m.text or '')
     if m.dir == 'in' and txt ~= '' then
+        if not m.channel then
+            m.channel = deskIngest.extractReportChannel(m.raw)
+        end
         if deskIngest.isPlayerChannelMessage(m.raw or m.channel or '') then
             m.kind = 'player'
             return
@@ -714,6 +711,11 @@ function normalizeStoredMessage(m)
     if m.dir == 'in' then
         m.kind = 'player'
     end
+    -- Починка: раньше adminNick='' (truthy в Lua) превращал репорт игрока в «ответ админа».
+    if m.dir == 'out' and m.self ~= true and not messageHasAdminNick(m) and m.kind == 'reply' then
+        m.dir = 'in'
+        m.kind = 'player'
+    end
 end
 
 -- Message Kind
@@ -732,7 +734,7 @@ function messageDisplayDir(m)
     if k == 'action' or k == 'punish' then return 'event' end
     if k == 'reply' or k == 'reply_self' then return 'out' end
     if k == 'system' then return 'system' end
-    if m.adminNick and m.dir == 'in' then return 'out' end
+    if messageHasAdminNick(m) and m.dir == 'in' then return 'out' end
     return m.dir or 'in'
 end
 

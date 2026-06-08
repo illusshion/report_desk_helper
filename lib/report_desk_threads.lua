@@ -85,6 +85,28 @@ function getThreadByKey(key)
     return threads[key]
 end
 
+-- Resolve Thread Report Channel
+function resolveThreadReportChannel(t)
+    if not t then return nil end
+    local ch = deskIngest.normalizeReportChannel(t.reportChannel)
+    if ch then return ch end
+    if type(t.messages) ~= 'table' then return nil end
+    for i = #t.messages, 1, -1 do
+        local m = t.messages[i]
+        if m and m.dir == 'in' then
+            local kind = m.kind
+            if kind == 'player' or kind == nil then
+                ch = deskIngest.extractReportChannel(m.channel) or deskIngest.extractReportChannel(m.raw)
+                if ch then
+                    t.reportChannel = ch
+                    return ch
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Get Selected Thread
 function getSelectedThread()
     if selectedKey and threads[selectedKey] then
@@ -239,7 +261,7 @@ end
 function requestChatScrollBottom()
     if deskInputState.chatFollowBottom == false then return end
     chatScrollToBottom = true
-    deskInputState.chatScrollFrames = 3
+    deskInputState.chatScrollFrames = 5
 end
 
 -- Request Chat Snap Bottom
@@ -261,6 +283,9 @@ end
 function addMessageToKey(key, msg)
     local t = threads[key]
     if not t then return end
+    if type(normalizeStoredMessage) == 'function' then
+        normalizeStoredMessage(msg)
+    end
     t.messages[#t.messages + 1] = msg
     trimMessages(t.messages)
     t.lastAt = msg.ts or os.time()

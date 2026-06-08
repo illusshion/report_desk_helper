@@ -18,7 +18,6 @@ local CORE_CHUNK_FILES = {
     'report_desk_threads.lua',
     'report_desk_config.lua',
     'report_desk_ingest_runtime.lua',
-    'report_desk_scenario_learn.lua',
     'report_desk_rules.lua',
     'report_desk_ui.lua',
     'report_desk_hooks.lua',

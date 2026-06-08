@@ -56,7 +56,6 @@ local menuState = {
 }
 local serverLayout = nil
 local keyLatchAt = {}
-local keyDownPrev = {}
 local NAV_VKS = nil
 local pendingAction = nil
 local pendingDragSave = nil
@@ -130,7 +129,6 @@ function M.resetMenuState()
     menuState.drag.active = false
     menuState.hovered = false
     keyLatchAt = {}
-    keyDownPrev = {}
     pendingAction = nil
     pendingDragSave = nil
     flushScheduled = false
@@ -297,7 +295,18 @@ function M.isHovered()
 end
 
 -- Публичный API модуля.
+function M.clearPointerHover()
+    menuState.hovered = false
+end
+
+-- Публичный API модуля.
 function M.wantsInput()
+    if deps.isAnsBarOpen and deps.isAnsBarOpen() then
+        return menuState.drag.active == true
+    end
+    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+        return menuState.drag.active == true
+    end
     if menuState.drag.active then return true end
     if menuState.hovered then return true end
     local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
@@ -583,28 +592,6 @@ local function keyDebounced(vk)
     return true
 end
 
--- Poll/опрос.
-local function pollKeyHit(vk)
-    vk = tonumber(vk) or 0
-    if vk <= 0 then return false end
-    if wasKeyPressed then
-        local ok, hit = pcall(wasKeyPressed, vk)
-        if ok and hit then return true end
-    end
-    local down = false
-    if isKeyDown then
-        local ok, v = pcall(isKeyDown, vk)
-        down = ok and v
-    end
-    if not down and deps.isVkDown then
-        local ok, v = pcall(deps.isVkDown, vk)
-        down = ok and v
-    end
-    local prev = keyDownPrev[vk] == true
-    keyDownPrev[vk] = down
-    return down and not prev
-end
-
 -- Is Activate Key
 local function isActivateKey(vk, vkeys)
     return vk == vkeys.VK_SPACE
@@ -651,36 +638,6 @@ function M.handleMenuKey(vk)
     return false
 end
 
--- Публичный API модуля.
-function M.tryMenuKey(vk, source)
-    vk = tonumber(vk)
-    if not vk or vk <= 0 then return false end
-    if not M.shouldShowMenu() then return false end
-    if menuKeyboardBlocked() then return false end
-    if source == 'wm' then
-        if not keyDebounced(vk) then return false end
-        return M.handleMenuKey(vk)
-    end
-    if not pollKeyHit(vk) then return false end
-    if not keyDebounced(vk) then return false end
-    return M.handleMenuKey(vk)
-end
-
--- Публичный API модуля.
-function M.pollKeyboard()
-    if not M.shouldShowMenu() then
-        keyDownPrev = {}
-        keyLatchAt = {}
-        return false
-    end
-    local keys = ensureNavVks()
-    if not keys then return false end
-    for _, vk in ipairs(keys) do
-        if M.tryMenuKey(vk, 'poll') then return true end
-    end
-    return false
-end
-
 -- Header Color U32
 local function headerColorU32(col)
     if imgui.ColorConvertFloat4ToU32 then
@@ -723,7 +680,6 @@ function M.drawMenu(settings, force)
     if not displayActions then displayActions = SP_ACTIONS end
     if not force and not M.shouldShowMenu(settings) then
         menuState.menuRect = nil
-        keyDownPrev = {}
         keyLatchAt = {}
         if deps.setMenuHovered then pcall(deps.setMenuHovered, false) end
         return
@@ -746,6 +702,7 @@ function M.drawMenu(settings, force)
         hy = math.max(8, math.min(hy, sh - estH - 8))
     end
 
+    local wantInput = M.wantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
         + imgui.WindowFlags.NoScrollbar
     if imgui.WindowFlags.NoNav then
@@ -753,6 +710,9 @@ function M.drawMenu(settings, force)
     end
     if imgui.WindowFlags.NoCollapse then
         flags = flags + imgui.WindowFlags.NoCollapse
+    end
+    if not wantInput and imgui.WindowFlags.NoInputs then
+        flags = flags + imgui.WindowFlags.NoInputs
     end
 
     imgui.SetNextWindowBgAlpha(spTheme.HUD_OVERLAY_ALPHA or 0.80)
@@ -781,7 +741,8 @@ function M.drawMenu(settings, force)
         menuState.menuRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
         menuState.hovered = false
 
-        do
+        if not (deps.isAnsBarOpen and deps.isAnsBarOpen())
+                and not (type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput()) then
             local posFn = type(_G.deskWin32MousePos) == 'function' and _G.deskWin32MousePos
                 or type(deskWin32MousePos) == 'function' and deskWin32MousePos
             local mx, my = posFn and posFn()

@@ -45,6 +45,7 @@ function deskSyncInputFocusState()
         or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
     if typing then
         deskInputState.replyFocused = true
+        deskInputState.keyboardStickyUntil = os.clock() + 0.35
     elseif deskInputState.replyFocused and deskInputState.keyboardStickyUntil <= os.clock() then
         deskInputState.replyFocused = false
     end
@@ -56,7 +57,7 @@ function deskKeepInputOnActiveItem()
     if imgui.IsItemActive then active = imgui.IsItemActive() end
     if not active and imgui.IsItemFocused then active = imgui.IsItemFocused() end
     if active or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
-        deskInputState.keyboardStickyUntil = os.clock() + 0.12
+        deskInputState.keyboardStickyUntil = os.clock() + 0.35
         deskInputState.replyFocused = true
     end
 end
@@ -70,9 +71,6 @@ function deskWindowWantsKeyboard()
     local io = imgui.GetIO and imgui.GetIO()
     if io and (io.WantTextInput or io.WantCaptureKeyboard) then return true end
     if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return true end
-    if imgui.IsWindowHovered and imgui.HoveredFlags and imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow) then
-        return true
-    end
     return false
 end
 
@@ -516,6 +514,7 @@ end
 
 -- Cheats Process Keybinds
 function cheatsProcessKeybinds()
+    if deskCache.hotkeyCapture or deskCache.cheatCapture then return end
     if deskInputState.playerSpectating and deskModifierKeysDown() then return end
     ensureCheatsSettings()
     local c = settings.cheats
@@ -575,12 +574,11 @@ end
 
 -- Marker Set Cursor
 function markerSetCursor(on)
+    if deskSpectatingNow() then return end
     if on then
         if sampSetCursorMode and CMODE_LOCKCAM then
             sampSetCursorMode(CMODE_LOCKCAM)
         end
-    elseif deskSpectatingNow() then
-        deskRestoreSpectateCamera()
     else
         deskRestoreNormalGameCamera()
     end
@@ -1091,7 +1089,6 @@ end
 -- Draw Cheats Hud Overlay
 function drawCheatsHudOverlay()
     ensureCheatsSettings()
-    cheatState.hudHovered = false
     if settings.cheats.show_hud == false then return end
     if type(deskSampInGame) == 'function' and not deskSampInGame() then return end
     if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then
@@ -1101,40 +1098,38 @@ function drawCheatsHudOverlay()
 
     local spTheme = cheatsOverlayTheme()
     local drag = cheatState.hudDrag
-    local hx = tonumber(settings.cheats.hud_x) or 12
-    local hy = tonumber(settings.cheats.hud_y) or 80
-
-    if not cheatState.hudPosValidated then
-        cheatState.hudPosValidated = true
+    local rawHx = tonumber(settings.cheats.hud_x) or 12
+    local rawHy = tonumber(settings.cheats.hud_y) or 80
+    local hx, hy = cheatsClampHudPos(rawHx, rawHy, CHEATS_HUD_W, CHEATS_HUD_H)
+    if not drag.active and not cheatState.hudPlaced
+            and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5) or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
         hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H)
-        cheatState.hudPlaced = false
+    end
+    if drag.active then
+        hx = drag.offX
+        hy = drag.offY
     end
 
-    local wantInput = cheatsHudWantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
         + imgui.WindowFlags.NoScrollbar
-    if not wantInput and imgui.WindowFlags.NoInputs then
-        flags = flags + imgui.WindowFlags.NoInputs
-    end
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
+    end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
     end
 
     imgui.SetNextWindowSize(imgui.ImVec2(CHEATS_HUD_W, CHEATS_HUD_H), imgui.Cond.Always)
     if imgui.SetNextWindowBgAlpha then
         imgui.SetNextWindowBgAlpha(spTheme and spTheme.HUD_OVERLAY_ALPHA or 0.80)
     end
-    if not cheatState.hudPlaced then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
-        cheatState.hudPlaced = true
-    elseif drag.active then
-        imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
-    end
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
 
     if spTheme then spTheme.pushHudChrome() end
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
     if imgui.Begin('###desk_cheats_hud', nil, flags) then
+        cheatState.hudHovered = false
         local wp = imgui.GetWindowPos()
         local ww = imgui.GetWindowWidth()
         local wh = imgui.GetWindowHeight()
@@ -1156,20 +1151,14 @@ function drawCheatsHudOverlay()
             local delta = imgui.GetMouseDragDelta(0)
             if not drag.active then
                 drag.active = true
-                drag.offX = wp.x
-                drag.offY = wp.y
+                drag.startX = wp.x
+                drag.startY = wp.y
                 imgui.ResetMouseDragDelta(0)
                 delta = imgui.GetMouseDragDelta(0)
             end
-            local nx = drag.offX + delta.x
-            local ny = drag.offY + delta.y
-            nx, ny = cheatsClampHudPos(nx, ny, ww, wh)
-            settings.cheats.hud_x = nx
-            settings.cheats.hud_y = ny
-            if markDirtySettings then markDirtySettings() end
-            if imgui.SetWindowPos then
-                imgui.SetWindowPos(imgui.ImVec2(nx, ny))
-            end
+            drag.offX = drag.startX + delta.x
+            drag.offY = drag.startY + delta.y
+            drag.offX, drag.offY = cheatsClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
             cheatsPersistHudPos(wp.x, wp.y, ww, wh)
@@ -1327,7 +1316,7 @@ CHEAT_BIND_LABEL_W = 120
 CHEAT_BIND_BTN_H = 28
 DESK_BIND_PREVIEW_W = 168
 DESK_BIND_CHANGE_BTN_W = 88
-DESK_BIND_MENU_BTN_W = 32
+DESK_BIND_ROW_H = 36
 DESK_FORM_INPUT_W = 160
 
 AB_SPEED_STEP = 0.04
@@ -1347,41 +1336,101 @@ function cheatClearBind(prefix)
     markDirtySettings()
 end
 
+-- Cheat Bind Is Modifier
+function cheatBindIsModifier(vk)
+    vk = tonumber(vk) or 0
+    return vk == vkeys.VK_CONTROL or vk == vkeys.VK_SHIFT or vk == vkeys.VK_MENU
+        or vk == vkeys.VK_LCONTROL or vk == vkeys.VK_RCONTROL
+        or vk == vkeys.VK_LSHIFT or vk == vkeys.VK_RSHIFT
+        or vk == vkeys.VK_LMENU or vk == vkeys.VK_RMENU
+end
+
 -- Cheat Live Bind Preview
 function cheatLiveBindPreview()
     local parts = {}
     if cheatModDown(vkeys.VK_CONTROL) then parts[#parts + 1] = 'Ctrl' end
     if cheatModDown(vkeys.VK_SHIFT) then parts[#parts + 1] = 'Shift' end
     if cheatModDown(vkeys.VK_MENU) then parts[#parts + 1] = 'Alt' end
-    for vk in pairs(MOUSE_BIND_VKS) do
-        if isVkDown(vk) then parts[#parts + 1] = vkToLabel(vk) end
+    local capVk = tonumber(deskCache.bindCapVk) or 0
+    if capVk > 0 and not cheatBindIsModifier(capVk) then
+        parts[#parts + 1] = vkToLabel(capVk)
+    else
+        for vk in pairs(MOUSE_BIND_VKS) do
+            if isVkDown(vk) then parts[#parts + 1] = vkToLabel(vk) end
+        end
     end
     if #parts == 0 then
-        return uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEA\xEB\xE0\xE2\xE8\xF8\xF3 \xE8\xEB\xE8 \xEC\xFB\xF8\xFC')
+        return uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEA\xEB\xE0\xE2\xE8\xF8\xF3...')
     end
-    return uiText(table.concat(parts, '+') .. '+...')
+    return uiText(table.concat(parts, '+'))
+end
+
+-- Finish Desk Bind Capture
+function finishDeskBindCapture()
+    deskCache.hotkeyCapture = false
+    deskCache.cheatCapture = nil
+    deskCache.cheatCaptureSlot = 'main'
+    deskCache.bindCapVk = nil
+    deskCache.bindCapIgnoreMouseUntil = 0
+end
+
+-- Desk Bind Mouse Ui Click Vk
+function deskBindMouseUiClickVk(vk)
+    vk = tonumber(vk) or 0
+    return vk == vkeys.VK_LBUTTON or vk == vkeys.VK_RBUTTON
+end
+
+-- Desk Bind Mouse Commits On Down
+function deskBindMouseCommitsOnDown(vk)
+    vk = tonumber(vk) or 0
+    return vk == vkeys.VK_XBUTTON1 or vk == vkeys.VK_XBUTTON2 or vk == vkeys.VK_MBUTTON
+end
+
+-- Begin Desk Bind Capture Session
+local function beginDeskBindCaptureSession()
+    deskCache.bindCapVk = nil
+    deskCache.bindCapIgnoreMouseUntil = os.clock() + 0.35
+end
+
+-- Commit Cheat Bind Capture
+function commitCheatBindCapture(prefix)
+    prefix = prefix or (deskCache.cheatCapture and CHEAT_BIND_PREFIX[deskCache.cheatCapture])
+    if not prefix then return false end
+    local mainVk = tonumber(deskCache.bindCapVk) or 0
+    if mainVk <= 0 or cheatBindIsModifier(mainVk) then return false end
+    ensureCheatsSettings()
+    local c = settings.cheats
+    if deskCache.cheatCaptureSlot == 'key2' then
+        c[prefix .. '_key2'] = mainVk
+    else
+        c[prefix .. '_key1'] = mainVk
+        c[prefix .. '_key2'] = 0
+        c[prefix .. '_ctrl'] = cheatModDown(vkeys.VK_CONTROL)
+        c[prefix .. '_shift'] = cheatModDown(vkeys.VK_SHIFT)
+        c[prefix .. '_alt'] = cheatModDown(vkeys.VK_MENU)
+    end
+    markDirtySettings()
+    return true
 end
 
 -- Begin Cheat Bind Capture
 function beginCheatBindCapture(captureId, slot)
-    hideDeskWindowForCapture()
     deskCache.cheatCapture = captureId
     deskCache.cheatCaptureSlot = slot or 'main'
     deskCache.cheatCaptureAt = os.clock()
+    beginDeskBindCaptureSession()
 end
 
 -- Begin Hotkey Capture
 function beginHotkeyCapture()
-    hideDeskWindowForCapture()
     deskCache.hotkeyCapture = true
     deskCache.hotkeyCaptureAt = os.clock()
+    beginDeskBindCaptureSession()
 end
 
 -- Cancel Desk Bind Capture
 function cancelDeskBindCapture()
-    deskCache.hotkeyCapture = false
-    deskCache.cheatCapture = nil
-    deskCache.cheatCaptureSlot = 'main'
+    finishDeskBindCapture()
 end
 
 -- Draw Desk Bind Preset Chips
@@ -1403,32 +1452,17 @@ function drawDeskBindPresetChips(presets, onPick, chipPrefix)
     imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
--- Draw Desk Bind Capture Banner
-function drawDeskBindCaptureBanner()
-    if not deskCache.hotkeyCapture and not deskCache.cheatCapture then return end
-    local dl = imgui.GetWindowDrawList()
-    if not dl then return end
-    local p = imgui.GetCursorScreenPos()
-    local w = imgui.GetContentRegionAvail().x
-    if w < 40 then return end
-    local h = 28
-    dl:AddRectFilled(imgui.ImVec2(p.x, p.y), imgui.ImVec2(p.x + w, p.y + h),
-        toU32(imgui.ImVec4(0.45, 0.32, 0.08, 0.92)), 6)
-    profanityDlText(dl, p.x + 10, p.y + 6, col_warn,
-        uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEA\xEB\xE0\xE2\xE8\xF8\xF3 \xE8\xEB\xE8 \xEC\xFB\xF8\xFC (Esc \x97 \xEE\xF2\xEC\xE5\xED\xE0)'), 1)
-    imgui.Dummy(imgui.ImVec2(0, h + 4))
-end
-
 -- Desk hook/helper.
 function deskFormPushBindButtonStyle()
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.11, 0.11, 0.14, 1.0))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.16, 0.24, 1.0))
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.12, 0.12, 0.16, 1.0))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.18, 0.28, 1.0))
     imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.28, 0.24, 0.36, 0.55))
 end
 
 -- Desk hook/helper.
 function deskFormPopBindButtonStyle()
-    imgui.PopStyleColor(3)
+    imgui.PopStyleColor(4)
 end
 
 -- Desk hook/helper.
@@ -1496,57 +1530,72 @@ function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     return true
 end
 
--- Draw Desk Bind Key Cap
-function drawDeskBindKeyCap(previewText, capturing, btnId, onClick)
-    local menuW = DESK_BIND_MENU_BTN_W + 8
-    local capW = math.max(72, imgui.GetContentRegionAvail().x - menuW)
-    local shown = ellipsizeToWidth(uiText(previewText or ''), capW - 16)
+-- Draw Desk Bind Field
+function drawDeskBindField(opts)
+    opts = opts or {}
+    local capW = math.max(140, imgui.GetContentRegionAvail().x)
+    local capturing = opts.capturing == true
+    local idleText = opts.idleText or '\xCD\xE0\xE6\xE0\xF2\xE5 \xE4\xEB\xFF \xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE8\xFF'
+    local preview = opts.previewText or ''
+    local emptyMark = uiText('\xCD\xE5 \xE7\xE0\xE4\xE0\xED\xEE')
+    local shown = preview
     if capturing then
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.45, 0.32, 0.08, 0.95))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.52, 0.38, 0.10, 1.0))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.48, 0.34, 0.09, 1.0))
-        imgui.PushStyleColor(imgui.Col.Text, col_warn)
+        if shown == '' then shown = uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEA\xEB\xE0\xE2\xE8\xF8\xF3...') end
+    elseif shown == '' or shown == emptyMark then
+        shown = uiText(idleText)
+    end
+    shown = ellipsizeToWidth(shown, capW - 24)
+    if capturing then
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.28, 0.18, 0.44, 1.0))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.34, 0.22, 0.52, 1.0))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.30, 0.20, 0.48, 1.0))
+        imgui.PushStyleColor(imgui.Col.Border, col_accent)
+        imgui.PushStyleColor(imgui.Col.Text, col_label)
     else
-        deskFormPushBindButtonStyle()
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.14, 0.13, 0.20, 1.0))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.22, 0.18, 0.32, 1.0))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.55))
         imgui.PushStyleColor(imgui.Col.Text, col_label)
     end
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
-    local clicked = imgui.Button(shown .. btnId, imgui.ImVec2(capW, DESK_FORM_ROW_H))
-    imgui.PopStyleVar()
-    imgui.PopStyleColor(4)
-    if clicked and onClick then onClick() end
-end
-
--- Draw Desk Bind Menu Button
-function drawDeskBindMenuButton(popupId, drawPopupBody, btnId)
-    imgui.SameLine(0, 8)
-    deskFormPushBindButtonStyle()
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
-    if imgui.Button('...' .. btnId, imgui.ImVec2(DESK_BIND_MENU_BTN_W, DESK_FORM_ROW_H)) and imgui.OpenPopup then
-        imgui.OpenPopup(popupId)
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
     end
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
+    local clicked = imgui.Button(shown .. (opts.keyCapId or '##bind_field'), imgui.ImVec2(capW, DESK_BIND_ROW_H))
     imgui.PopStyleVar()
-    deskFormPopBindButtonStyle()
-    if drawPopupBody and imgui.BeginPopup and imgui.BeginPopup(popupId) then
-        drawPopupBody()
-        imgui.EndPopup()
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PopStyleVar()
+    end
+    imgui.PopStyleColor(5)
+    if clicked and opts.onCapture then opts.onCapture() end
+    if opts.onClear and imgui.IsItemClicked and imgui.IsItemClicked(1) then
+        opts.onClear()
+    end
+    if imgui.IsItemHovered() and imgui.SetTooltip then
+        if capturing then
+            imgui.SetTooltip(uiText('\xCE\xF2\xEF\xF3\xF1\xF2\xE8\xF2\xE5 \xEA\xEB\xE0\xE2\xE8\xF8\xF3 \xE4\xEB\xFF \xF1\xEE\xF5\xF0\xE0\xED\xE5\xED\xE8\xFF \xB7 Esc \xEE\xF2\xEC\xE5\xED\xE0 \xB7 \xCF\xCA\xCC \xF1\xE1\xF0\xEE\xF1'))
+        else
+            imgui.SetTooltip(uiText('\xCD\xE0\xE6\xE0\xF2\xE5 \xE4\xEB\xFF \xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE8\xFF \xB7 \xCF\xCA\xCC \xF1\xE1\xF0\xEE\xF1'))
+        end
     end
 end
 
 -- Draw Desk Bind Row
 function drawDeskBindRow(opts)
     opts = opts or {}
-    if opts.label and opts.label ~= '' then
+    local inline = opts.inline ~= false and opts.label and opts.label ~= ''
+    if inline then
         deskFormRowLabel(opts.label)
+        drawDeskBindField(opts)
+    else
+        if opts.label and opts.label ~= '' then
+            imgui.TextColored(col_muted2, uiText(opts.label))
+            imgui.Dummy(imgui.ImVec2(0, 4))
+        end
+        drawDeskBindField(opts)
     end
-    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
-    drawDeskBindKeyCap(opts.previewText, opts.capturing, opts.keyCapId or '##bind_cap', opts.onCapture)
-    drawDeskBindMenuButton(opts.popupId or '##bind_popup', opts.drawPopup, opts.menuBtnId or '##bind_menu')
-    if opts.presets and #opts.presets > 0 then
-        imgui.Dummy(imgui.ImVec2(0, 4))
-        drawDeskBindPresetChips(opts.presets, opts.onPresetPick, opts.chipPrefix or 'bp')
-    end
-    imgui.Dummy(imgui.ImVec2(0, 2))
+    imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
 -- Draw Desk Bind Change Button
@@ -1562,15 +1611,11 @@ function drawDeskBindChangeButton(btnId, popupId)
 end
 
 -- Draw Desk Bind Value Row
-function drawDeskBindValueRow(previewText, capturing, btnId, popupId, drawPopupBody)
+function drawDeskBindValueRow(previewText, capturing, btnId, _popupId, _drawPopupBody)
     drawDeskBindRow({
         previewText = previewText,
         capturing = capturing,
         keyCapId = btnId,
-        onCapture = nil,
-        popupId = popupId,
-        drawPopup = drawPopupBody,
-        menuBtnId = btnId .. '_menu',
     })
 end
 
@@ -1646,62 +1691,18 @@ end
 
 -- Draw Cheat Bind Row
 function drawCheatBindRow(prefix, captureId, rowLabel)
-    rowLabel = rowLabel or '\xC1\xE8\xED\xE4'
+    rowLabel = rowLabel or ''
     ensureCheatsSettings()
     local capturing = deskCache.cheatCapture == captureId
     local preview = capturing and cheatLiveBindPreview() or cheatBindLabel(settings.cheats, prefix)
-    local popup = '##cheat_bp_' .. prefix .. '_' .. captureId
-    local chipPresets = {
-        { 'M4', vkeys.VK_XBUTTON1 },
-        { 'M5', vkeys.VK_XBUTTON2 },
-        { uiText('\xCF\xCA\xCC'), vkeys.VK_RBUTTON },
-        { uiText('\xD1\xCA\xCC'), vkeys.VK_MBUTTON },
-    }
     drawDeskBindRow({
         label = rowLabel,
+        inline = rowLabel ~= '',
         previewText = preview,
         capturing = capturing,
         keyCapId = '##cap_' .. captureId,
         onCapture = function() beginCheatBindCapture(captureId, 'main') end,
-        popupId = popup,
-        menuBtnId = '##menu_' .. captureId,
-        chipPrefix = 'ch_' .. captureId,
-        drawPopup = function()
-            ensureCheatsSettings()
-            local c = settings.cheats
-            local function closePopup()
-                if imgui.CloseCurrentPopup then imgui.CloseCurrentPopup() end
-            end
-            if imgui.Selectable(uiText('\xCD\xE0\xE7\xED\xE0\xF7\xE8\xF2\xFC \xE2\xF0\xF3\xF7\xED\xF3\xFE') .. '##ch_man_' .. captureId) then
-                beginCheatBindCapture(captureId, 'main')
-                closePopup()
-            end
-            if imgui.Selectable(uiText('\xC2\xF2\xEE\xF0\xE0\xFF \xEA\xEB\xE0\xE2\xE8\xF8\xE0') .. '##ch_k2_' .. captureId) then
-                beginCheatBindCapture(captureId, 'key2')
-                closePopup()
-            end
-            if (tonumber(c[prefix .. '_key2']) or 0) > 0
-                    and imgui.Selectable(uiText('\xD3\xE1\xF0\xE0\xF2\xFC 2-\xFE \xEA\xEB\xE0\xE2\xE8\xF8\xF3') .. '##ch_clr2_' .. captureId) then
-                c[prefix .. '_key2'] = 0
-                markDirtySettings()
-                closePopup()
-            end
-            if imgui.Selectable(uiText('\xD1\xE1\xF0\xEE\xF1\xE8\xF2\xFC \xE1\xE8\xED\xE4') .. '##ch_rst_' .. captureId) then
-                cheatClearBind(prefix)
-                closePopup()
-            end
-        end,
-        presets = chipPresets,
-        onPresetPick = function(vk)
-            ensureCheatsSettings()
-            local c = settings.cheats
-            c[prefix .. '_key1'] = vk
-            c[prefix .. '_key2'] = 0
-            c[prefix .. '_ctrl'] = false
-            c[prefix .. '_shift'] = false
-            c[prefix .. '_alt'] = false
-            markDirtySettings()
-        end,
+        onClear = function() cheatClearBind(prefix) end,
     })
 end
 
@@ -1722,21 +1723,18 @@ DESK_EDITOR_LIST_W = 248
 
 -- Desk hook/helper.
 function deskFormSection(title)
-    imgui.Dummy(imgui.ImVec2(0, 10))
-    imgui.TextColored(col_accent, uiText(title))
-    imgui.Dummy(imgui.ImVec2(0, 4))
+    imgui.Dummy(imgui.ImVec2(0, 8))
     local dl = imgui.GetWindowDrawList()
-    if dl then
-        local p = imgui.GetCursorScreenPos()
-        local w = imgui.GetContentRegionAvail().x
-        if w > 20 then
-            dl:AddLine(
-                imgui.ImVec2(p.x, p.y),
-                imgui.ImVec2(p.x + w, p.y),
-                toU32(imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.4)),
-                1.0)
-        end
+    local p = imgui.GetCursorScreenPos()
+    local w = math.max(40, imgui.GetContentRegionAvail().x)
+    if dl and w > 20 then
+        dl:AddRectFilled(
+            imgui.ImVec2(p.x, p.y),
+            imgui.ImVec2(p.x + 3, p.y + 18),
+            toU32(col_accent_dim), 2)
     end
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + 10)
+    imgui.TextColored(col_label, uiText(title or ''))
     imgui.Dummy(imgui.ImVec2(0, 8))
 end
 
@@ -1744,24 +1742,26 @@ end
 function deskFormPanelBegin(id)
     id = tostring(id or 'panel')
     deskCache.ui.panelStack[#deskCache.ui.panelStack + 1] = id
-    imgui.Dummy(imgui.ImVec2(0, 6))
-    imgui.Indent(8)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    imgui.Dummy(imgui.ImVec2(0, 4))
+    imgui.Indent(6)
 end
 
 -- Desk hook/helper.
 function deskFormPanelEnd()
+    imgui.Unindent(6)
+    imgui.PopStyleVar()
     if #deskCache.ui.panelStack > 0 then
         table.remove(deskCache.ui.panelStack)
     end
-    imgui.Unindent(8)
     local dl = imgui.GetWindowDrawList()
     if dl then
         local p = imgui.GetCursorScreenPos()
         local w = math.max(40, imgui.GetContentRegionAvail().x)
         dl:AddLine(
-            imgui.ImVec2(p.x, p.y + 2),
-            imgui.ImVec2(p.x + w, p.y + 2),
-            toU32(imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.35)),
+            imgui.ImVec2(p.x, p.y + 3),
+            imgui.ImVec2(p.x + w, p.y + 3),
+            toU32(imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.28)),
             1.0)
     end
     imgui.Dummy(imgui.ImVec2(0, 10))

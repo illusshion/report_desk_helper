@@ -178,6 +178,9 @@ function installDeskPlayerStreamInHook()
             sampStorePlayerColor(playerId, color)
         end
         pcall(checkerOnPlayerStreamIn, playerId)
+        if deskSpectateStats and deskSpectateStats.onSpRefreshStreamIn then
+            pcall(deskSpectateStats.onSpRefreshStreamIn, playerId)
+        end
         if type(prev) == 'function' then
             return prev(playerId, team, model, position, rotation, color, fightingStyle)
         end
@@ -202,6 +205,108 @@ function installDeskPlayerColorHook()
         end
     end
     sampev.onSetPlayerColor = deskCache.playerColorHandler
+end
+
+-- /sp auto-refresh: RPC enter/exit/interior + sync + onSpectatePlayer/Vehicle.
+function installDeskSpRefreshHooks()
+    if not sampev then return end
+    local enterOk = deskCache.spEnterHandler and sampev.onPlayerEnterVehicle == deskCache.spEnterHandler
+    local exitOk = deskCache.spExitHandler and sampev.onPlayerExitVehicle == deskCache.spExitHandler
+    local interiorOk = deskCache.spInteriorHandler and sampev.onSetInterior == deskCache.spInteriorHandler
+    local vehicleOk = deskCache.spVehicleSyncHandler and sampev.onVehicleSync == deskCache.spVehicleSyncHandler
+    local passengerOk = deskCache.spPassengerSyncHandler and sampev.onPassengerSync == deskCache.spPassengerSyncHandler
+    local playerOk = deskCache.spPlayerSyncHandler and sampev.onPlayerSync == deskCache.spPlayerSyncHandler
+    if enterOk and exitOk and interiorOk and vehicleOk and passengerOk and playerOk then return end
+
+    if not enterOk then
+        local prevEnter = sampev.onPlayerEnterVehicle
+        if prevEnter == deskCache.spEnterHandler then prevEnter = deskCache.hookPrevSpEnter end
+        if deskCache.hookPrevSpEnter == nil then deskCache.hookPrevSpEnter = prevEnter end
+        deskCache.spEnterHandler = function(playerId, vehicleId, passenger)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshEnterVehicle then
+                pcall(deskSpectateStats.onSpRefreshEnterVehicle, playerId, vehicleId)
+            end
+            if type(prevEnter) == 'function' then
+                return prevEnter(playerId, vehicleId, passenger)
+            end
+        end
+        sampev.onPlayerEnterVehicle = deskCache.spEnterHandler
+    end
+
+    if not exitOk then
+        local prevExit = sampev.onPlayerExitVehicle
+        if prevExit == deskCache.spExitHandler then prevExit = deskCache.hookPrevSpExit end
+        if deskCache.hookPrevSpExit == nil then deskCache.hookPrevSpExit = prevExit end
+        deskCache.spExitHandler = function(playerId, vehicleId)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshExitVehicle then
+                pcall(deskSpectateStats.onSpRefreshExitVehicle, playerId, vehicleId)
+            end
+            if type(prevExit) == 'function' then
+                return prevExit(playerId, vehicleId)
+            end
+        end
+        sampev.onPlayerExitVehicle = deskCache.spExitHandler
+    end
+
+    if not interiorOk then
+        local prevInterior = sampev.onSetInterior
+        if prevInterior == deskCache.spInteriorHandler then prevInterior = deskCache.hookPrevSpInterior end
+        if deskCache.hookPrevSpInterior == nil then deskCache.hookPrevSpInterior = prevInterior end
+        deskCache.spInteriorHandler = function(interior)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshSetInterior then
+                pcall(deskSpectateStats.onSpRefreshSetInterior, interior)
+            end
+            if type(prevInterior) == 'function' then
+                return prevInterior(interior)
+            end
+        end
+        sampev.onSetInterior = deskCache.spInteriorHandler
+    end
+
+    if not vehicleOk then
+        local prevVehicle = sampev.onVehicleSync
+        if prevVehicle == deskCache.spVehicleSyncHandler then prevVehicle = deskCache.hookPrevSpVehicleSync end
+        if deskCache.hookPrevSpVehicleSync == nil then deskCache.hookPrevSpVehicleSync = prevVehicle end
+        deskCache.spVehicleSyncHandler = function(playerId, vehicleId, data)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshVehicleSync then
+                pcall(deskSpectateStats.onSpRefreshVehicleSync, playerId)
+            end
+            if type(prevVehicle) == 'function' then
+                return prevVehicle(playerId, vehicleId, data)
+            end
+        end
+        sampev.onVehicleSync = deskCache.spVehicleSyncHandler
+    end
+
+    if not passengerOk then
+        local prevPassenger = sampev.onPassengerSync
+        if prevPassenger == deskCache.spPassengerSyncHandler then prevPassenger = deskCache.hookPrevSpPassengerSync end
+        if deskCache.hookPrevSpPassengerSync == nil then deskCache.hookPrevSpPassengerSync = prevPassenger end
+        deskCache.spPassengerSyncHandler = function(playerId, vehicleId, data)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshPassengerSync then
+                pcall(deskSpectateStats.onSpRefreshPassengerSync, playerId)
+            end
+            if type(prevPassenger) == 'function' then
+                return prevPassenger(playerId, vehicleId, data)
+            end
+        end
+        sampev.onPassengerSync = deskCache.spPassengerSyncHandler
+    end
+
+    if not playerOk then
+        local prevPlayer = sampev.onPlayerSync
+        if prevPlayer == deskCache.spPlayerSyncHandler then prevPlayer = deskCache.hookPrevSpPlayerSync end
+        if deskCache.hookPrevSpPlayerSync == nil then deskCache.hookPrevSpPlayerSync = prevPlayer end
+        deskCache.spPlayerSyncHandler = function(playerId, data)
+            if deskSpectateStats and deskSpectateStats.onSpRefreshPlayerSync then
+                pcall(deskSpectateStats.onSpRefreshPlayerSync, playerId)
+            end
+            if type(prevPlayer) == 'function' then
+                return prevPlayer(playerId, data)
+            end
+        end
+        sampev.onPlayerSync = deskCache.spPlayerSyncHandler
+    end
 end
 
 -- Перехват исходящего чата (profanity, auto-rules).
@@ -324,12 +429,23 @@ function installDeskSpectateToggleHook()
     if prev == deskCache.specToggleHandler then prev = nil end
     if deskCache.hookPrevSpecToggle == nil then deskCache.hookPrevSpecToggle = prev end
     deskCache.specToggleHandler = function(toggle)
-        local r
+        if toggle then
+            if type(prev) == 'function' then
+                prev(toggle)
+            end
+            pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+            return
+        end
+        -- ADV: ложный toggle(false) — prev hook сбрасывает spectate в игре; не вызываем его.
+        if deskSpectateStats.shouldBlockSpectateOff
+                and deskSpectateStats.shouldBlockSpectateOff() then
+            pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+            return
+        end
         if type(prev) == 'function' then
-            r = prev(toggle)
+            prev(toggle)
         end
         pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
-        return r
     end
     sampev.onTogglePlayerSpectating = deskCache.specToggleHandler
 end
@@ -445,6 +561,58 @@ end
 -- Переустановка SP menu hooks если слетели.
 function deskReinstallSpMenuHooks()
     installDeskSpMenuHooks()
+end
+
+-- Health-check: переустановка SAMP hooks если слетели.
+function deskEnsureAllHooks()
+    if not sampev then return end
+    if not deskCache.serverMsgHandler or sampev.onServerMessage ~= deskCache.serverMsgHandler then
+        installDeskServerMessageHook()
+    end
+    if not deskCache.specDialogHandler or sampev.onShowDialog ~= deskCache.specDialogHandler then
+        installDeskSpectateDialogHook()
+    end
+    if not deskCache.specToggleHandler or sampev.onTogglePlayerSpectating ~= deskCache.specToggleHandler then
+        installDeskSpectateToggleHook()
+    end
+    if not deskCache.sendChatHandler or sampev.onSendChat ~= deskCache.sendChatHandler then
+        installDeskSendChatHook()
+    end
+    if not deskCache.sendCommandHandler or sampev.onSendCommand ~= deskCache.sendCommandHandler then
+        installDeskSendCommandHook()
+    end
+    if not deskCache.playerQuitHandler or sampev.onPlayerQuit ~= deskCache.playerQuitHandler then
+        installDeskPlayerQuitHook()
+    end
+    if not deskCache.playerJoinHandler or sampev.onPlayerJoin ~= deskCache.playerJoinHandler then
+        installDeskPlayerJoinHook()
+    end
+    if not deskCache.playerStreamInHandler or sampev.onPlayerStreamIn ~= deskCache.playerStreamInHandler then
+        installDeskPlayerStreamInHook()
+    end
+    if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
+        installDeskPlayerColorHook()
+    end
+    if not deskCache.spEnterHandler or sampev.onPlayerEnterVehicle ~= deskCache.spEnterHandler
+            or not deskCache.spExitHandler or sampev.onPlayerExitVehicle ~= deskCache.spExitHandler
+            or not deskCache.spInteriorHandler or sampev.onSetInterior ~= deskCache.spInteriorHandler
+            or not deskCache.spVehicleSyncHandler or sampev.onVehicleSync ~= deskCache.spVehicleSyncHandler
+            or not deskCache.spPassengerSyncHandler or sampev.onPassengerSync ~= deskCache.spPassengerSyncHandler
+            or not deskCache.spPlayerSyncHandler or sampev.onPlayerSync ~= deskCache.spPlayerSyncHandler then
+        installDeskSpRefreshHooks()
+    end
+    if not deskCache.profHooksInstalled
+            or (deskCache.profChatHandler and sampev.onChatMessage ~= deskCache.profChatHandler)
+            or (deskCache.profBubbleHandler and sampev.onPlayerChatBubble ~= deskCache.profBubbleHandler) then
+        deskCache.profHooksInstalled = false
+        installProfanityHooks()
+    end
+    if deskSpectateStats and deskSpectateStats.ensureInputHooks then
+        deskSpectateStats.ensureInputHooks()
+    end
+    deskReinstallSpMenuHooks()
+    installDeskSpMenuRpcBlock()
+    installDeskCheckerRpcProbe()
 end
 
 -- Desk hook/helper.
@@ -579,6 +747,24 @@ function deskUninstall()
     end
     if deskCache.playerColorHandler and sampev.onSetPlayerColor == deskCache.playerColorHandler then
         sampev.onSetPlayerColor = deskCache.hookPrevPlayerColor
+    end
+    if deskCache.spEnterHandler and sampev.onPlayerEnterVehicle == deskCache.spEnterHandler then
+        sampev.onPlayerEnterVehicle = deskCache.hookPrevSpEnter
+    end
+    if deskCache.spExitHandler and sampev.onPlayerExitVehicle == deskCache.spExitHandler then
+        sampev.onPlayerExitVehicle = deskCache.hookPrevSpExit
+    end
+    if deskCache.spInteriorHandler and sampev.onSetInterior == deskCache.spInteriorHandler then
+        sampev.onSetInterior = deskCache.hookPrevSpInterior
+    end
+    if deskCache.spVehicleSyncHandler and sampev.onVehicleSync == deskCache.spVehicleSyncHandler then
+        sampev.onVehicleSync = deskCache.hookPrevSpVehicleSync
+    end
+    if deskCache.spPassengerSyncHandler and sampev.onPassengerSync == deskCache.spPassengerSyncHandler then
+        sampev.onPassengerSync = deskCache.hookPrevSpPassengerSync
+    end
+    if deskCache.spPlayerSyncHandler and sampev.onPlayerSync == deskCache.spPlayerSyncHandler then
+        sampev.onPlayerSync = deskCache.hookPrevSpPlayerSync
     end
     if deskCache.profBubbleHandler and sampev.onPlayerChatBubble == deskCache.profBubbleHandler then
         sampev.onPlayerChatBubble = deskCache.hookPrevProfBubble

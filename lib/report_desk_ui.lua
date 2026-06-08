@@ -29,44 +29,24 @@ end
 
 -- Draw Settings Subsection
 function drawSettingsSubsection(title)
+    imgui.Dummy(imgui.ImVec2(0, 8))
+    imgui.TextColored(col_muted2, uiText(title))
     imgui.Dummy(imgui.ImVec2(0, 6))
-    imgui.TextColored(col_muted, uiText(title))
-    imgui.Dummy(imgui.ImVec2(0, 4))
 end
 
 -- Draw Settings Hotkey Bind
 function drawSettingsHotkeyBind()
     local hkPreview = deskCache.hotkeyCapture and cheatLiveBindPreview() or vkToLabel(settings.hotkey or vkeys.VK_F7)
-    local hkPresets = {
-        { 'F7', vkeys.VK_F7 },
-        { 'F8', vkeys.VK_F8 },
-        { 'M4', vkeys.VK_XBUTTON1 },
-        { 'M5', vkeys.VK_XBUTTON2 },
-        { uiText('\xCF\xCA\xCC'), vkeys.VK_RBUTTON },
-    }
     drawDeskBindRow({
         label = '\xCE\xF2\xEA\xF0\xFB\xF2\xFC \xEE\xEA\xED\xEE',
+        inline = true,
         previewText = hkPreview,
+        idleText = 'F7, M4, M5...',
         capturing = deskCache.hotkeyCapture,
         keyCapId = '##hk_cap',
         onCapture = beginHotkeyCapture,
-        popupId = '##desk_hk_presets',
-        menuBtnId = '##hk_menu',
-        chipPrefix = 'hk',
-        drawPopup = function()
-            if imgui.Selectable(uiText('\xCD\xE0\xE7\xED\xE0\xF7\xE8\xF2\xFC \xE2\xF0\xF3\xF7\xED\xF3\xFE') .. '##hk_man') then
-                beginHotkeyCapture()
-                if imgui.CloseCurrentPopup then imgui.CloseCurrentPopup() end
-            end
-            if imgui.Selectable(uiText('\xD1\xE1\xF0\xEE\xF1\xE8\xF2\xFC \xED\xE0 F7') .. '##hk_rst') then
-                settings.hotkey = vkeys.VK_F7
-                markDirtySettings()
-                if imgui.CloseCurrentPopup then imgui.CloseCurrentPopup() end
-            end
-        end,
-        presets = hkPresets,
-        onPresetPick = function(vk)
-            settings.hotkey = vk
+        onClear = function()
+            settings.hotkey = vkeys.VK_F7
             markDirtySettings()
         end,
     })
@@ -457,6 +437,110 @@ function chatHeaderNickColor(pid, online)
     return imgui.ImVec4(0.82, 0.42, 0.42, 1.0)
 end
 
+-- Report Channel Chip Style
+local function reportChannelChipStyle(tag)
+    if tag == 'PC' then
+        return {
+            label = 'SA-MP',
+            tip = '\xCA\xEB\xE8\xE5\xED\xF2 SA-MP (\xCF\xCA)',
+            bg = imgui.ImVec4(0.14, 0.22, 0.34, 0.95),
+            bgHover = imgui.ImVec4(0.18, 0.28, 0.42, 1.0),
+            fg = imgui.ImVec4(0.72, 0.86, 1.0, 1.0),
+        }
+    end
+    if tag == 'S' then
+        return {
+            label = '\xCB\xE0\xF3\xED\xF7\xE5\xF0',
+            tip = '\xCB\xE0\xF3\xED\xF7\xE5\xF0 ARP',
+            bg = imgui.ImVec4(0.30, 0.18, 0.42, 0.95),
+            bgHover = imgui.ImVec4(0.36, 0.22, 0.50, 1.0),
+            fg = imgui.ImVec4(0.92, 0.78, 1.0, 1.0),
+        }
+    end
+    if tag == 'M' then
+        return {
+            label = '\xCC\xEE\xE1\xE0\xE9\xEB',
+            tip = '\xCC\xEE\xE1\xE8\xEB\xFC\xED\xEE\xE5 \xEF\xF0\xE8\xEB\xEE\xE6\xE5\xED\xE8\xE5',
+            bg = imgui.ImVec4(0.12, 0.30, 0.24, 0.95),
+            bgHover = imgui.ImVec4(0.16, 0.38, 0.30, 1.0),
+            fg = imgui.ImVec4(0.72, 0.96, 0.82, 1.0),
+        }
+    end
+    return nil
+end
+
+-- Draw Report Channel Chip
+function drawReportChannelChip(channelTag, online)
+    channelTag = deskIngest.normalizeReportChannel(channelTag)
+    if not channelTag then return end
+    local style = reportChannelChipStyle(channelTag)
+    if not style then return end
+    local label = uiText(style.label)
+    local ts = imgui.CalcTextSize(label)
+    local padX, padY = 8, 2
+    local chipH = math.max(18, ts.y + padY * 2)
+    local chipW = ts.x + padX * 2
+    local alpha = online == false and 0.72 or 1.0
+    imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, alpha)
+    imgui.PushStyleColor(imgui.Col.Button, style.bg)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, style.bgHover)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, style.bg)
+    imgui.PushStyleColor(imgui.Col.Text, style.fg)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, chipH * 0.5)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(padX, padY))
+    if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
+    imgui.Button(label .. '##rpt_ch_' .. channelTag, imgui.ImVec2(chipW, chipH))
+    if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
+    if imgui.IsItemHovered() and imgui.SetTooltip and style.tip then
+        imgui.SetTooltip(uiText(style.tip))
+    end
+    imgui.PopStyleVar(2)
+    imgui.PopStyleColor(4)
+    imgui.PopStyleVar()
+end
+
+-- Draw Chat Header Spectate Btn
+function drawChatHeaderSpectateBtn(pid, online)
+    pid = tonumber(pid) or -1
+    if pid < 0 then return end
+    local specLbl = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
+    local btnH = 30
+    local btnW = math.max(88, headerActionBtnWidth(specLbl) + 4)
+    local canSpec = online == true
+    if not canSpec then
+        imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, 0.42)
+    end
+    imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.45, 0.22, 0.72, 1.0))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(12, 5))
+    if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
+    local clicked = false
+    if canSpec then
+        clicked = imgui.Button(uiText(specLbl) .. '##hdr_sp', imgui.ImVec2(btnW, btnH))
+    else
+        imgui.Button(uiText(specLbl) .. '##hdr_sp_off', imgui.ImVec2(btnW, btnH))
+    end
+    if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
+    if imgui.IsItemHovered() and imgui.SetTooltip then
+        if canSpec then
+            imgui.SetTooltip(uiText('/sp ' .. pid))
+        else
+            imgui.SetTooltip(uiText('\xC8\xE3\xF0\xEE\xEA \xED\xE5 \xE2 \xF1\xE5\xF2\xE8'))
+        end
+    end
+    if canSpec and clicked then
+        sendGameCmd('sp ' .. pid)
+    end
+    imgui.PopStyleVar(2)
+    imgui.PopStyleColor(4)
+    if not canSpec then
+        imgui.PopStyleVar()
+    end
+end
+
 -- Draw Chat Header
 function drawChatHeader(t)
     local liveId = findPlayerIdByNick(t.nick)
@@ -470,75 +554,37 @@ function drawChatHeader(t)
     local nickCol = chatHeaderNickColor(pid, online)
 
     local padL = 12
-    local btnH = 28
-    local gap = 6
+    local padR = 12
     local lineH = imgui.GetTextLineHeight()
+    local specBtnH = 30
     local specLbl = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
-    local modTargetId = threadActionTargetId(t)
-
-    local hdrBtns = {}
-    if pid >= 0 then
-        hdrBtns[#hdrBtns + 1] = {
-            lbl = specLbl,
-            id = 'sp',
-            w = headerActionBtnWidth(specLbl),
-            tip = '/sp ' .. pid,
-            fn = function()
-                sendGameCmd('sp ' .. pid)
-            end,
-        }
-    end
-    if modTargetId then
-        hdrBtns[#hdrBtns + 1] = {
-            lbl = LBL_ACT_SLAP,
-            id = 'slap',
-            w = headerActionBtnWidth(LBL_ACT_SLAP),
-            tip = '/slap ' .. modTargetId,
-            fn = function() sendSlapPlayer(modTargetId) end,
-        }
-        local trTip = getLocalAdminLevel() <= 2
-            and ('/a /tr ' .. modTargetId)
-            or ('/tr ' .. modTargetId)
-        hdrBtns[#hdrBtns + 1] = {
-            lbl = LBL_ACT_TR,
-            id = 'tr',
-            w = headerActionBtnWidth(LBL_ACT_TR),
-            tip = trTip,
-            fn = function() sendTrPlayer(modTargetId) end,
-        }
-    end
-    local btnsTotalW = 0
-    for i, b in ipairs(hdrBtns) do
-        btnsTotalW = btnsTotalW + b.w + (i > 1 and gap or 0)
-    end
+    local specBtnW = pid >= 0 and math.max(88, headerActionBtnWidth(specLbl) + 4) or 0
 
     imgui.PushStyleColor(imgui.Col.ChildBg, col_header)
     imgui.BeginChild('##chat_hdr', imgui.ImVec2(-1, CHAT_HEADER_H), false)
 
     local rowY = math.floor((CHAT_HEADER_H - lineH) * 0.5 + 0.5)
-    local btnY = math.floor((CHAT_HEADER_H - btnH) * 0.5 + 0.5)
+    local btnY = math.floor((CHAT_HEADER_H - specBtnH) * 0.5 + 0.5)
     imgui.SetCursorPos(imgui.ImVec2(padL, rowY))
     imgui.TextColored(nickCol, uiText(t.nick or '?'))
     imgui.SameLine(0, 8)
     imgui.TextColored(col_muted2, uiText('[' .. tostring(pid >= 0 and pid or '?') .. ']'))
 
-    local rmax = imgui.GetWindowContentRegionMax()
-    local btnX = rmax.x - btnsTotalW
-    if btnX < padL + 80 then btnX = padL + 80 end
-    imgui.SetCursorPos(imgui.ImVec2(btnX, btnY))
-    if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
-    for i, b in ipairs(hdrBtns) do
-        if i > 1 then imgui.SameLine(0, gap) end
-        pushPlayerActionBtnStyle()
-        if imgui.Button(uiText(b.lbl) .. '##hdr_' .. b.id, imgui.ImVec2(b.w, btnH)) then
-            b.fn()
-        end
-        if imgui.IsItemHovered() and imgui.SetTooltip and b.tip then
-            imgui.SetTooltip(uiText(b.tip))
-        end
-        popPlayerActionBtnStyle()
+    local reportChannel = resolveThreadReportChannel(t)
+    if reportChannel then
+        imgui.SameLine(0, 10)
+        drawReportChannelChip(reportChannel, online)
     end
-    if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
+    if not online then
+        imgui.SameLine(0, 8)
+        imgui.TextColored(col_muted2, uiText('\xED\xE5 \xE2 \xF1\xE5\xF2\xE8'))
+    end
+
+    if specBtnW > 0 then
+        local rmax = imgui.GetWindowContentRegionMax()
+        imgui.SetCursorPos(imgui.ImVec2(rmax.x - padR - specBtnW, btnY))
+        drawChatHeaderSpectateBtn(pid, online)
+    end
 
     imgui.EndChild()
     imgui.PopStyleColor()
@@ -694,7 +740,8 @@ function drawComposer(composerH, quickItems)
 
     if focusReplyNext and imgui.SetKeyboardFocusHere then
         imgui.SetKeyboardFocusHere(0)
-        deskInputState.keyboardStickyUntil = os.clock() + 0.15
+        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.replyFocused = true
         focusReplyNext = false
     end
 
@@ -722,14 +769,7 @@ function drawComposer(composerH, quickItems)
     else
         sent = imgui.InputText('##reply', replyBuf, sizeof(replyBuf), flags)
     end
-    do
-        local replyActive = false
-        if imgui.IsItemActive then replyActive = imgui.IsItemActive() end
-        if not replyActive and imgui.IsItemFocused then replyActive = imgui.IsItemFocused() end
-        if replyActive or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
-            deskInputState.replyFocused = true
-        end
-    end
+    deskKeepInputOnActiveItem()
     imgui.PopItemWidth()
     imgui.PopStyleColor(2)
 
@@ -1263,27 +1303,6 @@ end
 
 -- Draw Scenarios Tab Inner
 function drawScenariosTabInner()
-    settingsScenarioLearn[0] = settings.scenario_learn_enabled ~= false
-    if deskFormToggleRow(
-        '\xD3\xF7\xE8\xF2\xFC \xED\xE0 \xF5\xEE\xE4\xF3 (\xEA\xEB\xFE\xF7\xE8 \xE8\xE7 \xF0\xE5\xEF\xEE\xF0\xF2\xEE\xE2)',
-        settingsScenarioLearn,
-        function()
-            settings.scenario_learn_enabled = settingsScenarioLearn[0]
-            markDirtySettings()
-        end,
-        'sc_learn'
-    ) then end
-    do
-        local st = (type(scenarioLearnData) == 'table' and scenarioLearnData.stats) or {}
-        local sess = tonumber(st.session_records) or 0
-        local kwNew = tonumber(st.session_keywords) or 0
-        local kwAll = (type(scenarioLearnCountKeywords) == 'function' and scenarioLearnCountKeywords()) or 0
-        imgui.TextColored(col_muted, string.format(
-            uiText('\xD1\xE5\xF1\xF1\xE8\xFF: %d \xEE\xF2\xE2\xE5\xF2\xEE\xE2, +%d \xEA\xEB\xFE\xF7\xE5\xE9. \xC2\xF1\xE5\xE3\xEE \xEA\xEB\xFE\xF7\xE5\xE9: %d'),
-            sess, kwNew, kwAll
-        ))
-    end
-    imgui.Dummy(imgui.ImVec2(0, 6))
     pushPanelStyle()
     imgui.BeginChild('##sc_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
     if imgui.Button(uiText('+ \xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9'), imgui.ImVec2(-1, 28)) then
@@ -1577,7 +1596,7 @@ function updateChatFollowBottom()
         deskInputState.chatFollowBottom = true
     elseif imgui.IsWindowHovered and imgui.IsWindowHovered() then
         local io = imgui.GetIO()
-        if io and io.MouseWheel and io.MouseWheel < 0 then
+        if io and io.MouseWheel and io.MouseWheel > 0 then
             deskInputState.chatFollowBottom = false
         end
         local lastY = deskInputState.chatLastScrollY
@@ -1647,6 +1666,7 @@ function drawChatPanel()
             imgui.Dummy(imgui.ImVec2(0, 4))
         end
         local lastDay = nil
+        local scenarioBtnIdx = findLastPlayerScenarioMsgIdx(msgs, renderFrom)
         imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
         for i = renderFrom, #msgs do
             local m = msgs[i]
@@ -1660,6 +1680,7 @@ function drawChatPanel()
             drawBubbleMessage(m, fullW, i, t, {
                 showAuthor = not groupedWithPrev,
                 compactSpacing = groupedWithPrev,
+                noQuickButtons = scenarioBtnIdx ~= i,
             })
         end
         imgui.PopStyleVar()
@@ -1866,6 +1887,7 @@ function syncSettingsUiFromSettings()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiSpecHud[0] = settings.spectate_hud ~= false
     uiSpecAutoSt[0] = settings.spectate_auto_st ~= false
+    uiSpecAutoRefresh[0] = settings.spectate_auto_refresh ~= false
     uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
     uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
     uiSpecVehicleHud[0] = settings.spectate_vehicle_hud ~= false
@@ -1889,9 +1911,8 @@ function drawSettingsTab()
         childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##settings_panel', imgui.ImVec2(-1, -1), false, childFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
-    drawDeskBindCaptureBanner()
-
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     deskFormPanelBegin('##set_main')
     drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5',
         '\xC3\xEE\xF0\xFF\xF7\xE0\xFF \xEA\xEB\xE0\xE2\xE8\xF8\xE0 \xE8 \xF3\xE2\xE5\xE4\xEE\xEC\xEB\xE5\xED\xE8\xFF')
@@ -1992,6 +2013,10 @@ function drawSettingsTab()
         settings.spectate_auto_st = v
         markDirtySettings()
     end, 'spec_st') then end
+    if deskFormCheckboxRow('\xCE\xE1\xED\xEE\xE2\xEB\xFF\xF2\xFC /sp \xEF\xF0\xE8 \xF2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xE5 \xE8 \xE8\xED\xF2\xE5\xF0\xFC\xE5\xF0\xE5', uiSpecAutoRefresh, function(v)
+        settings.spectate_auto_refresh = v
+        markDirtySettings()
+    end, 'spec_refresh') then end
     if deskFormCheckboxRow('\xCE\xF1\xF2\xE0\xE2\xEB\xFF\xF2\xFC HUD \xEF\xEE\xF1\xEB\xE5 /sp', uiSpecHudPersist, function(v)
         settings.spectate_hud_persist = v
         markDirtySettings()
@@ -2040,7 +2065,7 @@ function drawSettingsTab()
     imgui.PopStyleColor(3)
     deskFormPanelEnd()
 
-    imgui.PopStyleVar()
+    imgui.PopStyleVar(2)
     imgui.Dummy(imgui.ImVec2(0, 12))
     imgui.EndChild()
     popPanelStyle()
@@ -2057,12 +2082,17 @@ function toggleWindow()
     releaseDeskInputCapture(true)
     clearDeskImguiInputState(true)
     showWindow[0] = true
-    deskInputState.openWarmupUntil = os.clock() + DESK_OPEN_WARMUP_SEC
-    deskInputState.openPollHoldUntil = os.clock() + 0.08
+    if deskCache.deskWindowFrame then
+        deskCache.deskWindowFrame.HideCursor = false
+    end
+    if deskSpectatingNow() then
+        deskRememberSpectateCursorMode()
+        deskEnableUiCursorForSamp()
+    end
     rulesUiSynced = false
     settingsUiSynced = false
     scenariosUiSynced = false
-    focusReplyNext = false
+    focusReplyNext = getSelectedThread() ~= nil
     deskInputState.windowOpenSince = os.clock()
     deskInputState.keyboardStickyUntil = 0
     deskInputState.chatFollowBottom = true
@@ -2190,8 +2220,6 @@ function drawMainWindow()
     end
 
 
-    drawDeskBindCaptureBanner()
-
     imgui.End()
     if not showWindow[0] then
         closeDeskWindow()
@@ -2291,14 +2319,14 @@ do
         end
     ), true, false)
 
-    deskCache.mainPanelFrame =     setupDeskFrame(imgui.OnFrame(
+    deskCache.catalogFlushFrame = setupDeskFrame(imgui.OnFrame(
         function() return deskCache.catalogTexFlushPending == true end,
         function()
             pcall(deskFlushCatalogTexPending)
         end
     ), true, false)
 
-    setupDeskFrame(imgui.OnFrame(
+    deskCache.deskWindowFrame = setupDeskFrame(imgui.OnFrame(
         function()
             if not sessionLive then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
@@ -2323,16 +2351,9 @@ do
             return settings.cheats.show_hud ~= false
         end,
         function(self)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
             pcall(drawCheatsHudOverlay)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
-            local wantCursor = showWindow[0]
-                or (type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput())
-            self.HideCursor = not wantCursor
+            local hudWants = type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput()
+            self.HideCursor = deskMimguiHideCursor(hudWants)
             self.LockPlayer = false
         end
     ), true, false)
@@ -2346,16 +2367,10 @@ do
             return deskSpectateStats.shouldShowVehicleHud and deskSpectateStats.shouldShowVehicleHud(settings)
         end,
         function(self)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
             if deskSpectateStats.drawVehicleHud then
                 pcall(deskSpectateStats.drawVehicleHud, settings)
             end
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
-            self.HideCursor = true
+            self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
         end
     ), true, false)
@@ -2369,16 +2384,10 @@ do
             return deskSpectateStats.shouldShowKeysHud and deskSpectateStats.shouldShowKeysHud(settings)
         end,
         function(self)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
             if deskSpectateStats.drawKeysHud then
                 pcall(deskSpectateStats.drawKeysHud, settings)
             end
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
-            self.HideCursor = true
+            self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
         end
     ), true, false)
@@ -2390,14 +2399,8 @@ do
             return deskSpSpectateOverlayVisible()
         end,
         function(self)
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
             drawDeskSpSpectateOverlay()
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                pcall(updateMimguiGameInputPassthrough)
-            end
-            self.HideCursor = true
+            self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
         end
     ), true, false)
@@ -2407,12 +2410,11 @@ do
             return deskSpectateStats.isAnsBarOpen and deskSpectateStats.isAnsBarOpen()
         end,
         function(self)
-            self.HideCursor = false
+            self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
             if deskSpectateStats.drawSpAns then
                 pcall(deskSpectateStats.drawSpAns, settings)
             end
-            pcall(updateMimguiGameInputPassthrough)
         end
     ), false, false)
 
@@ -2424,50 +2426,79 @@ do
             pcall(drawMarkerHudOverlay)
         end
     ), true, false)
+
+    -- Один раз за кадр, после всех HUD (hover уже известен).
+    setupDeskFrame(imgui.OnFrame(
+        function()
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return true
+        end,
+        function(self)
+            self.HideCursor = deskMimguiHideCursor()
+            self.LockPlayer = false
+            if type(updateMimguiGameInputPassthrough) == 'function' then
+                updateMimguiGameInputPassthrough()
+            end
+        end
+    ), true, false)
 end
 
 -- Apply Cheat Key Capture
-function applyCheatKeyCapture(msg, wparam)
+function applyCheatKeyCapture(msg, wparam, lparam)
     if not deskCache.cheatCapture then return false end
     if os.clock() - deskCache.cheatCaptureAt < PF.HOTKEY_CAPTURE_GRACE then return true end
     local prefix = CHEAT_BIND_PREFIX[deskCache.cheatCapture]
     if not prefix then
-        deskCache.cheatCapture = nil
+        finishDeskBindCapture()
         return true
     end
+    wparam = tonumber(wparam) or 0
     if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
         if wparam == vkeys.VK_ESCAPE then
-            deskCache.cheatCapture = nil
-        elseif wparam and wparam > 0 and wparam < 256 then
-            ensureCheatsSettings()
-            local c = settings.cheats
-            if deskCache.cheatCaptureSlot == 'key2' then
-                c[prefix .. '_key2'] = wparam
-            elseif wparam ~= vkeys.VK_CONTROL and wparam ~= vkeys.VK_SHIFT and wparam ~= vkeys.VK_MENU then
-                c[prefix .. '_key1'] = wparam
-                c[prefix .. '_ctrl'] = cheatModDown(vkeys.VK_CONTROL)
-                c[prefix .. '_shift'] = cheatModDown(vkeys.VK_SHIFT)
-                c[prefix .. '_alt'] = cheatModDown(vkeys.VK_MENU)
-            end
-            markDirtySettings()
-            deskCache.cheatCapture = nil
+            finishDeskBindCapture()
+        elseif wparam == vkeys.VK_DELETE or wparam == vkeys.VK_BACK then
+            cheatClearBind(prefix)
+            finishDeskBindCapture()
+        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam) then
+            deskCache.bindCapVk = wparam
+        end
+        return true
+    end
+    if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+        local capVk = tonumber(deskCache.bindCapVk) or 0
+        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam) then
+            commitCheatBindCapture(prefix)
+            finishDeskBindCapture()
         end
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
     if mvk then
-        ensureCheatsSettings()
-        local c = settings.cheats
-        if deskCache.cheatCaptureSlot == 'key2' then
-            c[prefix .. '_key2'] = mvk
-        else
-            c[prefix .. '_key1'] = mvk
-            c[prefix .. '_ctrl'] = cheatModDown(vkeys.VK_CONTROL)
-            c[prefix .. '_shift'] = cheatModDown(vkeys.VK_SHIFT)
-            c[prefix .. '_alt'] = cheatModDown(vkeys.VK_MENU)
+        if deskBindMouseUiClickVk(mvk)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
         end
-        markDirtySettings()
-        deskCache.cheatCapture = nil
+        deskCache.bindCapVk = mvk
+        if deskBindMouseCommitsOnDown(mvk) then
+            commitCheatBindCapture(prefix)
+            finishDeskBindCapture()
+        end
+        return true
+    end
+    local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
+    if relMv then
+        if deskBindMouseUiClickVk(relMv)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
+        end
+        if not deskBindMouseCommitsOnDown(relMv) then
+            local capVk = tonumber(deskCache.bindCapVk) or 0
+            if capVk > 0 and relMv == capVk then
+                commitCheatBindCapture(prefix)
+                finishDeskBindCapture()
+            end
+        end
         return true
     end
     return true
@@ -2505,24 +2536,57 @@ function applyHotkeyCapture(msg, wparam, lparam)
     if os.clock() - deskCache.hotkeyCaptureAt < PF.HOTKEY_CAPTURE_GRACE then
         return true
     end
+    wparam = tonumber(wparam) or 0
     if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
         if wparam == vkeys.VK_ESCAPE then
-            deskCache.hotkeyCapture = false
-        elseif wparam and wparam > 0 and wparam < 256 then
-            if not deskHotkeyBlockedByMarkerWheel(wparam) then
-                settings.hotkey = wparam
-                deskCache.hotkeyCapture = false
-                markDirtySettings()
-            end
+            finishDeskBindCapture()
+        elseif wparam == vkeys.VK_DELETE or wparam == vkeys.VK_BACK then
+            settings.hotkey = vkeys.VK_F7
+            markDirtySettings()
+            finishDeskBindCapture()
+        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam)
+                and not deskHotkeyBlockedByMarkerWheel(wparam) then
+            deskCache.bindCapVk = wparam
+        end
+        return true
+    end
+    if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+        local capVk = tonumber(deskCache.bindCapVk) or 0
+        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam)
+                and not deskHotkeyBlockedByMarkerWheel(wparam) then
+            settings.hotkey = capVk
+            markDirtySettings()
+            finishDeskBindCapture()
         end
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
-    if mvk then
-        if not deskHotkeyBlockedByMarkerWheel(mvk) then
+    if mvk and not deskHotkeyBlockedByMarkerWheel(mvk) then
+        if deskBindMouseUiClickVk(mvk)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
+        end
+        deskCache.bindCapVk = mvk
+        if deskBindMouseCommitsOnDown(mvk) then
             settings.hotkey = mvk
-            deskCache.hotkeyCapture = false
             markDirtySettings()
+            finishDeskBindCapture()
+        end
+        return true
+    end
+    local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
+    if relMv and not deskHotkeyBlockedByMarkerWheel(relMv) then
+        if deskBindMouseUiClickVk(relMv)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
+        end
+        if not deskBindMouseCommitsOnDown(relMv) then
+            local capVk = tonumber(deskCache.bindCapVk) or 0
+            if capVk > 0 and relMv == capVk then
+                settings.hotkey = capVk
+                markDirtySettings()
+                finishDeskBindCapture()
+            end
         end
         return true
     end
@@ -2714,14 +2778,9 @@ function handleOutgoingAnsCommand(message)
     end
 end
 
--- Fallback poll sampGetChatString когда hook пропустил строку.
--- === Fallback poll ingest чата (sampGetChatString) ===
+-- Poll sampGetChatString: safety reconcile (hook активен) или полный fallback.
 function pollReportIngest()
     if not sampGetChatString then return end
-    if showWindow[0] and deskInputState.openPollHoldUntil then
-        if os.clock() < deskInputState.openPollHoldUntil then return end
-        deskInputState.openPollHoldUntil = nil
-    end
     if not chatLogReady then
         seedSeenChatLines()
         return
@@ -2729,18 +2788,9 @@ function pollReportIngest()
     local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
     local maxLines
     if hookActive then
-        maxLines = showWindow[0] and CHAT_POLL_LINES_HOOK or CHAT_POLL_LINES_CLOSED_HOOK
+        maxLines = CHAT_POLL_SAFETY_LINES
     else
         maxLines = showWindow[0] and CHAT_POLL_LINES_OPEN or CHAT_POLL_LINES_CLOSED
-    end
-    if showWindow[0] and deskInputState.openWarmupUntil then
-        if os.clock() < deskInputState.openWarmupUntil then
-            if maxLines > DESK_OPEN_POLL_LINES then
-                maxLines = DESK_OPEN_POLL_LINES
-            end
-        else
-            deskInputState.openWarmupUntil = nil
-        end
     end
     local maxLine = maxLines - 1
     for i = 0, maxLine do
@@ -2769,10 +2819,12 @@ function pollReportIngest()
         if settings.profanity_filter_enabled then
             pcall(checkProfanityFromChatLine, plain, key)
         end
-        local pollDelay = showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
-        if processChatLineIngest(plain, 0, 'chat', true, line, { delay = pollDelay }) then
+        local source = hookActive and 'srv' or 'chat'
+        if processChatLineIngest(plain, 0, source, true, line, { delay = 0 }) then
             markChatLineSeen(key)
             chatSeen.deferred[key] = nil
+        else
+            markChatLineSeen(key)
         end
         ::continue::
     end

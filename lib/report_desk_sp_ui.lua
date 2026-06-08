@@ -75,6 +75,18 @@ local function ensureTdHooks()
     end
 end
 
+-- Ensure Spectate Player Sampev Hook
+local function ensureSpectateSampevHook()
+    if deps.sampev then
+        pcall(session.installSampevHooks, deps.sampev)
+    end
+end
+
+-- Публичный API модуля.
+function M.ensureSpectateSampevHooks()
+    ensureSpectateSampevHook()
+end
+
 -- Reinstall Sampev Input Hooks
 local function reinstallSampevInputHooks()
     local sampev = deps.sampev
@@ -108,7 +120,6 @@ end
 local function onAnsInputChanged()
     if specAns.isOpen() then
         if deps.rememberSpectateCursor then pcall(deps.rememberSpectateCursor) end
-        if deps.enableSpectateCursor then pcall(deps.enableSpectateCursor) end
         if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, true) end
     else
         if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, false) end
@@ -376,6 +387,7 @@ function M.installInputHooks(cfg)
     wireAnsDeps()
     wireMenuDeps()
     ensureTdHooks()
+    ensureSpectateSampevHook()
     reinstallSampevInputHooks()
     installWmHandler()
 end
@@ -384,6 +396,7 @@ end
 function M.ensureInputHooks()
     if not deps.sampev then return end
     ensureTdHooks()
+    ensureSpectateSampevHook()
     reinstallSampevInputHooks()
 end
 

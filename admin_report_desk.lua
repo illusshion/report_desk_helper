@@ -57,12 +57,12 @@ end
 -- Cleanup при выгрузке скрипта.
 function onScriptTerminate(scr)
     if scr ~= thisScript() then return end
-    pcall(function()
-        local app = package.loaded['report_desk_app']
-        if app and app.unload then app.unload() end
-    end)
     local bundleTerminate = deskEnv and rawget(deskEnv, 'onScriptTerminate')
     if type(bundleTerminate) == 'function' then
         bundleTerminate(scr)
     end
+    pcall(function()
+        local app = package.loaded['report_desk_app']
+        if app and app.unload then app.unload() end
+    end)
 end

@@ -272,8 +272,6 @@ end
 
 -- Process Chat Line Ingest
 function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta)
-    if tryIngestAdminReplyLine(plain) then return true end
-
     local parseOpts = {}
     if source == 'chat' or source == 'srv' then
         parseOpts.chatStrictReports = true
@@ -305,6 +303,10 @@ end
 function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     local key, t = resolveThread(nick, id)
     t.status = 'open'
+    local reportChannel = deskIngest.extractReportChannel(channel) or deskIngest.extractReportChannel(raw)
+    if reportChannel then
+        t.reportChannel = reportChannel
+    end
     local hadUnread = false
     if isLive then
         hadUnread = (t.unread or 0) > 0
