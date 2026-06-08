@@ -1,37 +1,37 @@
 {
-    "tag":  "v1.0.11",
-    "version":  "1.0.11",
-    "built_at":  "2026-06-08T19:23:50.2601098+03:00",
+    "tag":  "v1.0.12",
+    "version":  "1.0.12",
+    "built_at":  "2026-06-08T19:37:02.7117286+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
-                      "version":  "1.0.11",
+                      "version":  "1.0.12",
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "b8497793f54d0103c1716d1b4f30d2a679d641383a96daeda88e6414aa511c85",
-                                         "bytes":  18385
+                                         "sha256":  "dd492b6caa95357be5c5e1dedfb41fd6b5cf885f4ee2626dbdc321965e437704",
+                                         "bytes":  18756
                                      },
                       "core":  {
                                    "repo_path":  "report_desk\\admin_report_desk_core.lua",
-                                   "sha256":  "c75316c87af84c627d16db4d88e3044f464201ad18da7e991903b10ed0520b46",
+                                   "sha256":  "c3f99c0e726f442a77a7d296363d605ef9d7937af6da59e0c1c938aeb724d1ae",
                                    "dist_path":  "dist\\report_desk\\admin_report_desk_core.lua",
-                                   "bytes":  1111986
+                                   "bytes":  1112171
                                },
                       "verified":  true,
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "10fe5d0de4f6bc8ddcfec1b65dcf2e65c802f650dc0989ab66d276943be5bf7c",
-                                  "bytes":  49700518
+                                  "sha256":  "727a942c6331187aecd41e2b2779b7dfa08d9be3e28047bd4a3227a071d71847",
+                                  "bytes":  49700782
                               },
                       "core_asset":  "admin_report_desk_core.lua",
                       "deps":  {
                                    "path":  "dist\\report_desk_deps.lua",
-                                   "sha256":  "d90c78f70b55e0a76049468e499b80c7b219c0f96e989d139eaef7e64a08a436",
-                                   "bytes":  6414
+                                   "sha256":  "eb74efc3d7848cb45e4eddf8ea9ee113c28f78ad7537b35404affa9237c34f45",
+                                   "bytes":  6454
                                },
                       "launcher":  {
                                        "path":  "dist\\admin_report_desk.lua",
-                                       "sha256":  "20ed8ee7df02acae7ef27c332f6767d4b0f7f77f6271d1456b8bc28b873be1d1",
-                                       "bytes":  6846
+                                       "sha256":  "2775ccef1e3b0ce64e6ca7b6f989fa7a34fc53c7d3acbd88456399a3dc5854af",
+                                       "bytes":  7500
                                    }
                   },
     "verified":  true,

@@ -6,7 +6,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.11')
+script_version('1.0.12')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 -- mimgui ставится через report_desk_deps (не в script_dependencies — иначе ML не запустит main)
 script_dependencies('SAMP', 'SAMPFUNCS')
@@ -55,14 +55,27 @@ local function loadCore()
     return fn
 end
 
+local function applyPendingLauncher()
+    local root = getWorkingDirectory()
+    local pending = root .. '\\admin_report_desk.lua.pending'
+    local launcher = root .. '\\admin_report_desk.lua'
+    if doesFileExist(pending) then
+        pcall(os.remove, launcher)
+        if os.rename(pending, launcher) then
+            print('[Report Desk] launcher updated from pending')
+            if thisScript and thisScript().reload then
+                thisScript():reload()
+            end
+        end
+    end
+end
+
 function main()
     if fullDeskSourcePresent() then
         return
     end
+    applyPendingLauncher()
     while not isSampfuncsLoaded() or not isSampLoaded() do
-        wait(100)
-    end
-    while not isSampAvailable() do
         wait(100)
     end
 
@@ -119,6 +132,12 @@ function main()
         if willReload then
             return
         end
+    end
+
+    if autoupdate and manifest and autoupdate.ensureIconvDll then
+        pcall(function()
+            autoupdate.ensureIconvDll(manifest, { say = chatSay })
+        end)
     end
 
     if not doesFileExist(CORE_PATH) and not doesFileExist(CORE_PATH_LUA) then

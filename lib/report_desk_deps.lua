@@ -192,7 +192,7 @@ function M.ensureBootstrapDeps(opts)
         return false, true
     end
     if status == 'libs_fail' or status == 'iconv_fail' then
-        return false, false
+        print('[Report Desk] bootstrap warn: ' .. tostring(status))
     end
     return true, false
 end

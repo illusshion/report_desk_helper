@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.12
+
+- **Fix (критично):** убран блокирующий `wait(isSampAvailable)` в launcher — после `/reload` при подключении к серверу скрипт больше не зависает и доходит до ядра.
+- **Fix:** `iconv.dll` качается до загрузки core; bootstrap не валит скрипт при временном сбое lib/iconv.
+- **Fix:** shim `sampfuncs` для bundled `samp.raknet`; launcher обновляется через `.pending` (Windows file lock).
+- **Log:** все сообщения autoupdate дублируются в `moonloader.log`.
+
 ## 1.0.11
 
 - **Autoupdate bootstrap:** `/reload` сам качает `lib/`, `iconv.dll`, launcher, deps, autoupdate и core — без переустановки zip.

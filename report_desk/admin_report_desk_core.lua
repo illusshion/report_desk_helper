@@ -11114,7 +11114,7 @@ local MODULE =
 		version = 1
 	}
 }
-require 'sampfuncs'
+require 'lib.sampfuncs'
 
 MODULE.RPC = {
 	CLICKPLAYER                   = RPC_CLICKPLAYER,
@@ -13409,6 +13409,12 @@ do
 --[[ Модуль: bootstrap — require зависимостей, imgui compat, encoding CP1251. ]]
 require 'lib.moonloader'
 require 'lib.sampfuncs'
+
+pcall(function()
+    if package.loaded['lib.sampfuncs'] and not package.loaded['sampfuncs'] then
+        package.loaded['sampfuncs'] = package.loaded['lib.sampfuncs']
+    end
+end)
 
 local function ensureIconvDll()
     local iconvPath = getWorkingDirectory() .. '\\lib\\iconv.dll'

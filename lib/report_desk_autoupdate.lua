@@ -20,6 +20,7 @@ end
 function M.chatSay(text)
     text = tostring(text or '')
     if text == '' then return end
+    print('[Report Desk] ' .. text)
     if not isSampAvailable or not isSampAvailable() or not sampAddChatMessage then return end
     pcall(sampAddChatMessage, M.CHAT_PREFIX .. text, M.CHAT_COLOR)
 end
@@ -407,8 +408,14 @@ function M.refreshAuxiliaryScripts(manifest, opts)
     local files = {
         { 'report_desk_deps.lua', 'report_desk_deps.lua' },
         { 'report_desk_autoupdate.lua', 'report_desk_autoupdate.lua' },
-        { 'admin_report_desk.lua', 'admin_report_desk.lua' },
     }
+    if M.parseVersion(remoteVer) > M.parseVersion(localVer) then
+        local launcherPending = M.path('admin_report_desk.lua.pending')
+        if M.installAuxFile(base .. '/admin_report_desk.lua', 'admin_report_desk.lua.pending') then
+            changed = true
+            log('launcher pending: ' .. launcherPending)
+        end
+    end
     for _, spec in ipairs(files) do
         local url = base .. '/' .. spec[1]
         if M.installAuxFile(url, spec[2]) then
@@ -435,18 +442,16 @@ function M.ensureBootstrap(manifest, opts)
         changed = true
     end
     local libsOk, libsInstalled = M.ensureRuntimeLibs(manifest, opts)
-    if not libsOk then
-        return false, 'libs_fail'
-    end
     if libsInstalled then
         changed = true
+    elseif not libsOk then
+        log('runtime libs install skipped (bundled core fallback)')
     end
     local iconvOk, iconvInstalled = M.ensureIconvDll(manifest, opts)
-    if not iconvOk then
-        return false, 'iconv_fail'
-    end
     if iconvInstalled then
         changed = true
+    elseif not iconvOk then
+        log('iconv install pending (core bootstrap will retry)')
     end
     if auxChanged and thisScript and thisScript().reload then
         notify('bootstrap ' .. tostring(manifest.version) .. '...', opts)
