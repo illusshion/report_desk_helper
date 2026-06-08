@@ -1,9 +1,9 @@
 {
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/AdminDeskCore.luac",
-    "version":  "1.0.19",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/AdminDeskCore.luac",
+    "version":  "1.0.20",
     "manifest_version":  3,
     "runtime_libs":  {
-                         "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_runtime_libs.zip",
+                         "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_runtime_libs.zip",
                          "sha256":  "a52c937eaa683cb3ee5593345fd5237ac3d6c85493c67306be91c37ac2001e52",
                          "asset":  "report_desk_runtime_libs.zip",
                          "bytes":  1084437
@@ -12,73 +12,73 @@
                   "AdminDesk.luac":  {
                                          "dest":  "AdminDesk.luac",
                                          "pending":  true,
-                                         "sha256":  "452a838d1c9748c1a6ce44bd73749ba28e80bd73a87bfbdbc56c80416973cfb4",
+                                         "sha256":  "2076f589e38634305529d490ca15836edfb644a56aaf8a72e638177726a05c16",
                                          "bytes":  7739,
-                                         "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/AdminDesk.luac"
+                                         "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/AdminDesk.luac"
                                      },
                   "report_desk_sha256.lua":  {
                                                  "dest":  "lib/report_desk_sha256.lua",
                                                  "pending":  false,
-                                                 "sha256":  "cb25378a541a9b8e88f6e532aa2853b586ca377fc4525c7d7e8c999288d23887",
-                                                 "bytes":  7023,
-                                                 "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_sha256.lua"
+                                                 "sha256":  "e9c28200da06cf57f79380c1cf885f1ebd67ea54a93e9be254cc5ab558282ff2",
+                                                 "bytes":  6218,
+                                                 "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_sha256.lua"
                                              },
                   "AdminDeskCore.luac":  {
                                              "dest":  "report_desk/AdminDeskCore.luac",
                                              "pending":  false,
                                              "sha256":  "e12f9060fb0541b67311fd6f05f3d6875f0fa03af4efe76c49bad6c6584cfe99",
                                              "bytes":  1122496,
-                                             "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/AdminDeskCore.luac"
+                                             "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/AdminDeskCore.luac"
                                          },
                   "report_desk_zip.lua":  {
                                               "dest":  "lib/report_desk_zip.lua",
                                               "pending":  false,
                                               "sha256":  "dabca71688b6a1e1454c57afe5fc82fb2f031858de2d14b4e1475d6591130462",
                                               "bytes":  4353,
-                                              "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_zip.lua"
+                                              "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_zip.lua"
                                           },
                   "admin_report_desk.lua":  {
                                                 "dest":  "admin_report_desk.lua",
                                                 "pending":  true,
-                                                "sha256":  "db0bbb5d5061bb841c4436076d2fe4c62efb7529f6b455d657edfc0d0a96917d",
+                                                "sha256":  "d67aa9697add001fb70df17d87764322370734211fd7238816410783ca18fe12",
                                                 "bytes":  309,
-                                                "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/admin_report_desk.lua"
+                                                "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/admin_report_desk.lua"
                                             },
                   "report_desk_fs.lua":  {
                                              "dest":  "lib/report_desk_fs.lua",
                                              "pending":  false,
                                              "sha256":  "6a083977685587aa3885cf1c9108d79c38cb40f88a0994482a5af3af8c91685c",
                                              "bytes":  4031,
-                                             "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_fs.lua"
+                                             "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_fs.lua"
                                          },
                   "report_desk_deps.lua":  {
                                                "dest":  "lib/report_desk_deps.lua",
                                                "pending":  false,
                                                "sha256":  "d5332cef4e6cb2a3d447b40eb61363e257fc5d81c1f169474beff6116fba5527",
                                                "bytes":  2638,
-                                               "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_deps.lua"
+                                               "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_deps.lua"
                                            },
                   "iconv.dll":  {
                                     "dest":  "lib/iconv.dll",
                                     "pending":  false,
                                     "sha256":  "bb4cc421b7606055d1d517775b15ce77a27ad97b14de2fc31c9d9e3cf788b98f",
                                     "bytes":  1000960,
-                                    "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/iconv.dll"
+                                    "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/iconv.dll"
                                 },
                   "report_desk_autoupdate.lua":  {
                                                      "dest":  "lib/report_desk_autoupdate.lua",
                                                      "pending":  true,
-                                                     "sha256":  "8b35ae3e28e11e23abe4473df8d104492398a91e8f407caa74d712dbc150ba7c",
-                                                     "bytes":  47497,
-                                                     "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_autoupdate.lua"
+                                                     "sha256":  "279088649a787ad41bf92035356190a08b1a9613daa391c90f5ff117a4c6b1f5",
+                                                     "bytes":  47483,
+                                                     "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_autoupdate.lua"
                                                  }
               },
-    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_helper_main.zip",
-    "runtime_libs_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_runtime_libs.zip",
-    "release_base":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19",
+    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_helper_main.zip",
+    "runtime_libs_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_runtime_libs.zip",
+    "release_base":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20",
     "core_url_fallback":  "https://raw.githubusercontent.com/illusshion/report_desk_helper/main/report_desk/AdminDeskCore.lua",
     "assets":  {
-                   "version":  "1.0.19",
+                   "version":  "1.0.20",
                    "bytes":  50998745,
                    "dest_dirs":  [
                                      "config/AdminDesk/assets/res/report_desk_skins",
@@ -86,16 +86,16 @@
                                  ],
                    "sha256":  "ef38c5df12e9125021555ffc92965ab6f6f78906a490990401fb5513011e6d0a",
                    "asset":  "report_desk_assets.zip",
-                   "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/report_desk_assets.zip"
+                   "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/report_desk_assets.zip"
                },
     "manifest_url":  "https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json",
     "mimgui":  {
-                   "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/mimgui-v1.7.1.zip",
+                   "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/mimgui-v1.7.1.zip",
                    "sha256":  "31d1fdba4be01572b61c0ac547d168d627c830a29cdb0b21960148b958a7e9d6",
                    "asset":  "mimgui-v1.7.1.zip",
                    "version":  "1.7.1",
                    "bytes":  789982
                },
-    "changelog":  "Fix first-run bootstrap: no reload after seed, sync reload only on pending files, inline install pipeline",
-    "iconv_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.19/iconv.dll"
+    "changelog":  "Fix SHA256 verification on LuaJIT (broken autoupdate hash checks), fix download minBytes, remove stray mimgui require from reload_all",
+    "iconv_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.20/iconv.dll"
 }

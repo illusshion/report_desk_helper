@@ -709,7 +709,7 @@ local function downloadPlan(plan, manifest, opts)
     for _, spec in ipairs(plan) do
         local tmp = staging .. '\\' .. spec.asset:gsub('[\\/]', '_')
         notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset .. '...', opts)
-        local minBytes = math.min(32, spec.bytes > 0 and spec.bytes or 32)
+        local minBytes = spec.bytes > 0 and spec.bytes or 32
         local ok, err = downloadWithRetry(spec.url, tmp, 180, minBytes)
         if not ok then
             return nil, 'download ' .. spec.asset .. ': ' .. tostring(err)
