@@ -6,7 +6,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.12')
+script_version('1.0.13')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 -- mimgui ставится через report_desk_deps (не в script_dependencies — иначе ML не запустит main)
 script_dependencies('SAMP', 'SAMPFUNCS')
@@ -14,6 +14,20 @@ script_moonloader(26)
 
 require 'lib.moonloader'
 require 'lib.sampfuncs'
+
+-- Старые zip клали deps/autoupdate в корень moonloader — ML грузит их как отдельные скрипты.
+-- Отключаем ДО загрузки остальных .lua (admin_report_desk грузится первым по алфавиту).
+do
+    local root = getWorkingDirectory()
+    for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
+        local path = root .. '\\' .. name
+        local off = path .. '.off'
+        if doesFileExist(path) then
+            pcall(os.remove, off)
+            pcall(os.rename, path, off)
+        end
+    end
+end
 
 -- Полный исходник admin_report_desk.lua в moonloader — не грузить ядро повторно (двойные хуки /sp).
 local function fullDeskSourcePresent()
@@ -55,6 +69,31 @@ local function loadCore()
     return fn
 end
 
+local function clearDeskModuleCache()
+    package.loaded['lib.report_desk_autoupdate'] = nil
+    package.loaded['lib.report_desk_deps'] = nil
+    package.loaded['report_desk_autoupdate'] = nil
+    package.loaded['report_desk_deps'] = nil
+end
+
+local function requireAutoupdate()
+    clearDeskModuleCache()
+    local ok, mod = pcall(require, 'lib.report_desk_autoupdate')
+    if ok then return mod end
+    ok, mod = pcall(require, 'report_desk_autoupdate')
+    if ok then return mod end
+    return nil
+end
+
+local function requireDeps()
+    clearDeskModuleCache()
+    local ok, mod = pcall(require, 'lib.report_desk_deps')
+    if ok then return mod end
+    ok, mod = pcall(require, 'report_desk_deps')
+    if ok then return mod end
+    return nil
+end
+
 local function applyPendingLauncher()
     local root = getWorkingDirectory()
     local pending = root .. '\\admin_report_desk.lua.pending'
@@ -79,10 +118,7 @@ function main()
         wait(100)
     end
 
-    local autoupdate = nil
-    pcall(function()
-        autoupdate = require('report_desk_autoupdate')
-    end)
+    local autoupdate = requireAutoupdate()
     local chatSay = autoupdate and autoupdate.chatSay or nil
 
     local manifest = nil
@@ -93,19 +129,13 @@ function main()
             if bootstrapReload then
                 return
             end
-            package.loaded['report_desk_autoupdate'] = nil
-            package.loaded['report_desk_deps'] = nil
-            pcall(function()
-                autoupdate = require('report_desk_autoupdate')
-            end)
+            clearDeskModuleCache()
+            autoupdate = requireAutoupdate()
             chatSay = autoupdate and autoupdate.chatSay or chatSay
         end
     end
 
-    local deps = nil
-    pcall(function()
-        deps = require('report_desk_deps')
-    end)
+    local deps = requireDeps()
     if deps then
         local depsOk, installed = deps.ensureAll({ say = chatSay, manifest = manifest })
         if not depsOk then

@@ -44,11 +44,14 @@ if ($Changelog -eq '') {
 }
 
 $zipName = 'report_desk_helper_main.zip'
+$runtimeLibsName = 'report_desk_runtime_libs.zip'
 $versionJson = @{
     version           = $Version
     core_url          = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
     core_url_fallback = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
     zip_url           = "https://github.com/$owner/$repoName/releases/download/$tag/$zipName"
+    runtime_libs_url  = "https://github.com/$owner/$repoName/releases/download/$tag/$runtimeLibsName"
+    iconv_url         = "https://github.com/$owner/$repoName/releases/download/$tag/iconv.dll"
     changelog         = $Changelog
 } | ConvertTo-Json -Depth 3
 
@@ -96,14 +99,17 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 Copy-Item (Join-Path $distDir 'admin_report_desk.lua') $stage
-Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') $stage
 Copy-Item (Join-Path $distDir 'report_desk') (Join-Path $stage 'report_desk') -Recurse
+$libStage = Join-Path $stage 'lib'
+New-Item -ItemType Directory -Path $libStage -Force | Out-Null
+Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') (Join-Path $libStage 'report_desk_autoupdate.lua') -Force
 $depsSrc = Join-Path $MoonloaderRoot 'lib\report_desk_deps.lua'
 if (-not (Test-Path $depsSrc)) {
     $depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
 }
 if (Test-Path $depsSrc) {
-    Copy-Item $depsSrc (Join-Path $stage 'report_desk_deps.lua') -Force
+    Copy-Item $depsSrc (Join-Path $libStage 'report_desk_deps.lua') -Force
+    Copy-Item $depsSrc (Join-Path $distDir 'report_desk_deps.lua') -Force
 } else {
     Write-Error 'Missing lib\report_desk_deps.lua'
 }
@@ -140,16 +146,63 @@ function Copy-PreviewAssets($srcSub, $dstSub) {
     return $n
 }
 
+function Copy-RuntimeLib($rel) {
+    $src = Join-Path $MoonloaderRoot ($rel -replace '/', '\')
+    if (-not (Test-Path $src)) {
+        Write-Error "Missing runtime lib for zip: $rel"
+    }
+    $dst = Join-Path $stage ($rel -replace '/', '\')
+    $parent = Split-Path $dst -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if ((Get-Item $src).PSIsContainer) {
+        Copy-Item $src $dst -Recurse -Force
+    } else {
+        Copy-Item $src $dst -Force
+    }
+}
+
+$runtimeLibs = @(
+    'lib\samp',
+    'lib\vkeys.lua',
+    'lib\encoding.lua',
+    'lib\iconv.dll',
+    'lib\vector3d.lua'
+)
+foreach ($rel in $runtimeLibs) { Copy-RuntimeLib $rel }
+
 $skinN = Copy-PreviewAssets 'res\report_desk_skins' 'res\report_desk_skins'
 $vehN = Copy-PreviewAssets 'res\report_desk_vehicles' 'res\report_desk_vehicles'
 $mimguiN = Copy-PreviewAssets 'lib\mimgui' 'lib\mimgui'
-Write-Host "Zip assets: skins=$skinN veh=$vehN mimgui=$mimguiN"
+Write-Host "Zip assets: skins=$skinN veh=$vehN mimgui=$mimguiN runtime=$($runtimeLibs.Count)"
 
 $items = Get-ChildItem $stage | ForEach-Object { $_.FullName }
 Compress-Archive -Path $items -DestinationPath $zipPath -Force
 Remove-Item $stage -Recurse -Force
 $zipMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "Release zip: $zipPath ($zipMb MB)"
+
+# Малый runtime pack для autoupdate (lib/samp, encoding, vkeys, iconv, vector3d)
+$runtimeStage = Join-Path $distDir '_runtime_stage'
+if (Test-Path $runtimeStage) { Remove-Item $runtimeStage -Recurse -Force }
+New-Item -ItemType Directory -Path (Join-Path $runtimeStage 'lib') -Force | Out-Null
+foreach ($rel in $runtimeLibs) {
+    $src = Join-Path $MoonloaderRoot ($rel -replace '/', '\')
+    $dst = Join-Path $runtimeStage ($rel -replace '/', '\')
+    $parent = Split-Path $dst -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if ((Get-Item $src).PSIsContainer) {
+        Copy-Item $src $dst -Recurse -Force
+    } else {
+        Copy-Item $src $dst -Force
+    }
+}
+$runtimeZipPath = Join-Path $distDir $runtimeLibsName
+if (Test-Path $runtimeZipPath) { Remove-Item $runtimeZipPath -Force }
+Compress-Archive -Path (Join-Path $runtimeStage 'lib') -DestinationPath $runtimeZipPath -Force
+Remove-Item $runtimeStage -Recurse -Force
+Copy-Item (Join-Path $MoonloaderRoot 'lib\iconv.dll') (Join-Path $distDir 'iconv.dll') -Force
+$runtimeKb = [math]::Round((Get-Item $runtimeZipPath).Length / 1KB, 1)
+Write-Host "Runtime libs zip: $runtimeZipPath ($runtimeKb KB)"
 
 # Проверка: dist core = repo core = zip core; версии совпадают
 $artifacts = Test-DeskReleaseArtifacts -MoonloaderRoot $MoonloaderRoot -Version $Version -CoreAssetName $coreAsset -ZipName $zipName

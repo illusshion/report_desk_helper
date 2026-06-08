@@ -1,14 +1,14 @@
 {
-    "tag":  "v1.0.12",
-    "version":  "1.0.12",
-    "built_at":  "2026-06-08T19:37:02.7117286+03:00",
+    "tag":  "v1.0.13",
+    "version":  "1.0.13",
+    "built_at":  "2026-06-08T19:43:04.3739101+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
-                      "version":  "1.0.12",
+                      "version":  "1.0.13",
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "dd492b6caa95357be5c5e1dedfb41fd6b5cf885f4ee2626dbdc321965e437704",
-                                         "bytes":  18756
+                                         "sha256":  "cd4d97c9f8721e9be54a3cb6009d21931a632f29b4082e9b35adaad81892236c",
+                                         "bytes":  19800
                                      },
                       "core":  {
                                    "repo_path":  "report_desk\\admin_report_desk_core.lua",
@@ -19,19 +19,19 @@
                       "verified":  true,
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "727a942c6331187aecd41e2b2779b7dfa08d9be3e28047bd4a3227a071d71847",
-                                  "bytes":  49700782
+                                  "sha256":  "2730810d70cbc2b5910edf82ff8d41deddba86e711ee0c909fdecbdb75720970",
+                                  "bytes":  49701279
                               },
                       "core_asset":  "admin_report_desk_core.lua",
                       "deps":  {
                                    "path":  "dist\\report_desk_deps.lua",
-                                   "sha256":  "eb74efc3d7848cb45e4eddf8ea9ee113c28f78ad7537b35404affa9237c34f45",
-                                   "bytes":  6454
+                                   "sha256":  "e61879ff1fed783f2bde5b245ea4f765ec28c37289ec7b0c79605551255cefb7",
+                                   "bytes":  6466
                                },
                       "launcher":  {
                                        "path":  "dist\\admin_report_desk.lua",
-                                       "sha256":  "2775ccef1e3b0ce64e6ca7b6f989fa7a34fc53c7d3acbd88456399a3dc5854af",
-                                       "bytes":  7500
+                                       "sha256":  "1b79d22f69fecaa27ef67074f19f9c54fda9b0e44431479e4baffcc7b380b749",
+                                       "bytes":  8599
                                    }
                   },
     "verified":  true,

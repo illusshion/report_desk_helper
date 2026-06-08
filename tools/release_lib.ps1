@@ -47,6 +47,19 @@ function Test-DeskStubHasVersion([string]$Path, [string]$Version) {
     return $text.Contains($needle)
 }
 
+function Test-DeskZipHasEntry([string]$ZipPath, [string]$EntryName) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipFull = (Resolve-Path $ZipPath).Path
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipFull)
+    try {
+        $normalized = $EntryName -replace '/', '\'
+        $entry = $zip.Entries | Where-Object { ($_.FullName -replace '/', '\') -eq $normalized } | Select-Object -First 1
+        return [bool]$entry
+    } finally {
+        $zip.Dispose()
+    }
+}
+
 function Get-DeskZipEntrySha256([string]$ZipPath, [string]$EntryName) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipFull = (Resolve-Path $ZipPath).Path
@@ -101,6 +114,51 @@ function Test-DeskReleaseArtifacts {
     $zipCoreHash = Get-DeskZipEntrySha256 $zipPath $zipCoreEntry
     if ($zipCoreHash -ne $distHash) {
         throw "Release verify failed: zip core hash != dist core hash"
+    }
+
+    $requiredZipEntries = @(
+        'lib\mimgui\init.lua',
+        'lib\samp\events.lua',
+        'lib\vkeys.lua',
+        'lib\encoding.lua',
+        'lib\iconv.dll',
+        'lib\vector3d.lua',
+        'lib\report_desk_deps.lua',
+        'lib\report_desk_autoupdate.lua',
+        'config\admin_report_desk_user.lua'
+    )
+    $runtimeZipPath = Join-Path $MoonloaderRoot 'dist\report_desk_runtime_libs.zip'
+    $iconvDistPath = Join-Path $MoonloaderRoot 'dist\iconv.dll'
+    $depsDistPath = Join-Path $MoonloaderRoot 'dist\report_desk_deps.lua'
+    foreach ($p in @($runtimeZipPath, $iconvDistPath, $depsDistPath)) {
+        if (-not (Test-Path $p)) {
+            throw "Release verify failed: missing dist artifact $p"
+        }
+    }
+    foreach ($entry in $requiredZipEntries) {
+        if (-not (Test-DeskZipHasEntry $zipPath $entry)) {
+            throw "Release verify failed: zip missing entry $entry"
+        }
+    }
+
+    $coreText = [System.IO.File]::ReadAllText($repoCore, (Get-DeskUtf8NoBom))
+    $embedNeedle = "package.preload['report_desk_user_defaults'] = function"
+    if (-not $coreText.Contains($embedNeedle)) {
+        throw 'Release verify failed: core missing embedded report_desk_user_defaults preload'
+    }
+    if (-not $coreText.Contains("package.preload['lib.samp.events']")) {
+        throw 'Release verify failed: core missing embedded lib.samp.events preload'
+    }
+    if ($coreText -notlike '*ensureIconvDll*') {
+        throw 'Release verify failed: core missing ensureIconvDll bootstrap'
+    }
+
+    $manifest = Get-Content $versionPath -Raw | ConvertFrom-Json
+    if (-not $manifest.runtime_libs_url) {
+        throw 'Release verify failed: version.json missing runtime_libs_url'
+    }
+    if (-not $manifest.iconv_url) {
+        throw 'Release verify failed: version.json missing iconv_url'
     }
 
     $manifest = Get-Content $versionPath -Raw | ConvertFrom-Json
@@ -188,6 +246,8 @@ function Add-DeskReleaseGitFiles([string]$MoonloaderRoot) {
         'report_desk/admin_report_desk_core.lua',
         'tools/admin_report_desk_stub.lua',
         'lib/report_desk_autoupdate.lua',
+        'lib/report_desk_deps.lua',
+        'lib/report_desk_bootstrap.lua',
         'CHANGELOG.md'
     )
     Clear-DeskGitIndexFlags $MoonloaderRoot $paths

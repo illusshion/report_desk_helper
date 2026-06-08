@@ -1,5 +1,11 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.13
+
+- **Fix (критично):** `report_desk_deps.lua` / `report_desk_autoupdate.lua` перенесены в `lib/` — MoonLoader больше не грузит их как отдельные скрипты из корня.
+- **Fix:** синтаксис PowerShell-строк (`[[...]]`) — устранена ошибка `'}' expected near 'mimgui'`.
+- **Fix:** launcher отключает старые копии в корне (`.off`) и грузит модули из `lib/`.
+
 ## 1.0.12
 
 - **Fix (критично):** убран блокирующий `wait(isSampAvailable)` в launcher — после `/reload` при подключении к серверу скрипт больше не зависает и доходит до ядра.

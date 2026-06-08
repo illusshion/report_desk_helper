@@ -77,10 +77,10 @@ function M.installMimguiZip(zipPath)
         '$dest=' .. psLiteral(dest) .. ';',
         'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue;',
         'Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force;',
-        "if (-not (Test-Path (Join-Path $tmp 'mimgui'))) { exit 2 };",
+        [[if (-not (Test-Path (Join-Path $tmp 'mimgui'))) { exit 2 };]],
         'New-Item -ItemType Directory -Path $lib -Force | Out-Null;',
         'Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue;',
-        "Copy-Item -LiteralPath (Join-Path $tmp 'mimgui') -Destination $dest -Recurse -Force;",
+        [[Copy-Item -LiteralPath (Join-Path $tmp 'mimgui') -Destination $dest -Recurse -Force;]],
         'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue',
         '}"',
     }, ' ')
@@ -173,9 +173,9 @@ end
 function M.ensureBootstrapDeps(opts)
     opts = opts or {}
     local manifest = opts.manifest
-    local autoupdate = package.loaded['report_desk_autoupdate']
+    local autoupdate = package.loaded['lib.report_desk_autoupdate']
     if type(autoupdate) ~= 'table' then
-        local ok, mod = pcall(require, 'report_desk_autoupdate')
+        local ok, mod = pcall(require, 'lib.report_desk_autoupdate')
         if ok then autoupdate = mod end
     end
     if type(autoupdate) ~= 'table' or type(autoupdate.ensureBootstrap) ~= 'function' then

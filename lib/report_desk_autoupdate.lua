@@ -2,6 +2,19 @@
     GitHub auto-update для Admin Report Desk (тонкий launcher → core.luac).
     Перед публикацией укажите URL в release/repo.config.json и пересоберите release/version.json.
 ]]
+pcall(function()
+    if not getWorkingDirectory or not doesFileExist then return end
+    local root = getWorkingDirectory()
+    for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
+        local path = root .. '\\' .. name
+        local off = path .. '.off'
+        if doesFileExist(path) then
+            pcall(os.remove, off)
+            pcall(os.rename, path, off)
+        end
+    end
+end)
+
 local M = {}
 
 M.VERSION_JSON_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
@@ -268,6 +281,19 @@ function M.downloadCore(url, corePath)
 end
 
 -- Публичный API модуля.
+function M.writeLegacyRootStub(relName)
+    relName = tostring(relName or '')
+    if relName == '' then return false end
+    local path = M.path(relName)
+    local f = io.open(path, 'w')
+    if not f then return false end
+    f:write('do return end\n')
+    f:close()
+    log('legacy root stub: ' .. relName)
+    return true
+end
+
+-- Публичный API модуля.
 function M.installAuxFile(url, relName)
     relName = tostring(relName or '')
     if relName == '' then return false end
@@ -325,9 +351,9 @@ function M.installRuntimeLibsZip(zipPath)
         '$lib=' .. psLiteral(libDir) .. ';',
         'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue;',
         'Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force;',
-        "if (-not (Test-Path (Join-Path $tmp 'lib'))) { exit 2 };",
+        [[if (-not (Test-Path (Join-Path $tmp 'lib'))) { exit 2 };]],
         'New-Item -ItemType Directory -Path $lib -Force | Out-Null;',
-        "Get-ChildItem -LiteralPath (Join-Path $tmp 'lib') | ForEach-Object {",
+        [[Get-ChildItem -LiteralPath (Join-Path $tmp 'lib') | ForEach-Object {]],
         '  $dest = Join-Path $lib $_.Name;',
         '  if ($_.PSIsContainer) { Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force }',
         '  else { Copy-Item -LiteralPath $_.FullName -Destination $dest -Force }',
@@ -406,8 +432,8 @@ function M.refreshAuxiliaryScripts(manifest, opts)
     if not base then return false end
     local changed = false
     local files = {
-        { 'report_desk_deps.lua', 'report_desk_deps.lua' },
-        { 'report_desk_autoupdate.lua', 'report_desk_autoupdate.lua' },
+        { 'report_desk_deps.lua', 'lib\\report_desk_deps.lua' },
+        { 'report_desk_autoupdate.lua', 'lib\\report_desk_autoupdate.lua' },
     }
     if M.parseVersion(remoteVer) > M.parseVersion(localVer) then
         local launcherPending = M.path('admin_report_desk.lua.pending')
@@ -437,6 +463,9 @@ function M.ensureBootstrap(manifest, opts)
         return false, 'offline'
     end
     local changed = false
+    if not doesFileExist(M.path('lib\\report_desk_deps.lua')) then
+        M.writeLegacyRootStub('report_desk_deps.lua')
+    end
     local auxChanged = M.refreshAuxiliaryScripts(manifest, opts)
     if auxChanged then
         changed = true
@@ -459,6 +488,8 @@ function M.ensureBootstrap(manifest, opts)
         return true, 'reload'
     end
     if changed then
+        package.loaded['lib.report_desk_deps'] = nil
+        package.loaded['report_desk_autoupdate'] = nil
         package.loaded['report_desk_deps'] = nil
     end
     return false, changed and 'updated' or 'ok'
