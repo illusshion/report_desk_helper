@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.10
+
+- **Fix (критично):** zip теперь включает `lib/samp`, `encoding`, `iconv`, `vkeys`, `vector3d` — чистая установка больше не падает на bootstrap.
+- **Fix:** launcher ждёт SAMP/SAMPFUNCS вместо мгновенного `return` (скрипт не «молчаливо» умирал при раннем старте).
+- **Fix:** в core вшит `report_desk_user_defaults` (миграция сценариев без файла на диске).
+- **Deps:** явная проверка runtime-библиотек + сообщение в чат/log при неполной установке.
+
 ## 1.0.9
 
 - **Сценарии v2:** 81 переработанный сценарий в `admin_report_desk_user.default.lua`; авто-merge новых сценариев у существующих юзеров (`scenarios_pack_version`, без перезаписи своих).

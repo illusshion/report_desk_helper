@@ -1,7 +1,7 @@
 {
-    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.9/report_desk_helper_main.zip",
+    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.10/report_desk_helper_main.zip",
     "core_url_fallback":  "https://raw.githubusercontent.com/illusshion/report_desk_helper/main/report_desk/admin_report_desk_core.lua",
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.9/admin_report_desk_core.lua",
-    "version":  "1.0.9",
-    "changelog":  "Сценарии v2 (81 шт, auto-merge), SP /ans C state machine, HUD persistence/drag, sp_refresh в bundle."
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.10/admin_report_desk_core.lua",
+    "version":  "1.0.10",
+    "changelog":  "Report Desk 1.0.10"
 }
