@@ -1,39 +1,45 @@
 {
-    "tag":  "v1.0.14",
-    "version":  "1.0.14",
-    "built_at":  "2026-06-08T19:59:57.8126221+03:00",
+    "tag":  "v1.0.17",
+    "version":  "1.0.17",
+    "built_at":  "2026-06-08T22:56:01.0733946+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
-                      "version":  "1.0.14",
-                      "autoupdate":  {
-                                         "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "b45285b0ef75a28d9f4ae27cf696521a733f62e9b34731a498dd3a708be7483d",
-                                         "bytes":  36712
-                                     },
-                      "core":  {
-                                   "repo_path":  "report_desk\\admin_report_desk_core.lua",
-                                   "sha256":  "c3f99c0e726f442a77a7d296363d605ef9d7937af6da59e0c1c938aeb724d1ae",
-                                   "dist_path":  "dist\\report_desk\\admin_report_desk_core.lua",
-                                   "bytes":  1112171
-                               },
-                      "verified":  true,
+                      "assets":  {
+                                     "path":  "dist\\report_desk_assets.zip",
+                                     "sha256":  "ef38c5df12e9125021555ffc92965ab6f6f78906a490990401fb5513011e6d0a",
+                                     "bytes":  50998745
+                                 },
+                      "bootstrap_file":  {
+                                             "path":  "dist\\AdminDesk.luac",
+                                             "sha256":  "2e64d6b1abd7f027e3c736c55abf430e31bc1384ae26782e0623bb2a52438ab2",
+                                             "bytes":  6545
+                                         },
+                      "version":  "1.0.17",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "449da9359be0b58eda7a2b4d796ba7afb8bbf8b20148e196111703840da7562e",
-                                  "bytes":  49704784
+                                  "sha256":  "279952f9c27d5b29be4e173c8da51eca54af503e35f92225b27ad4ed07e1e9f1",
+                                  "bytes":  57606302
                               },
-                      "core_asset":  "admin_report_desk_core.lua",
+                      "bootstrap":  "AdminDesk.luac",
+                      "core_asset":  "AdminDeskCore.luac",
+                      "core":  {
+                                   "repo_path":  "report_desk\\AdminDeskCore.lua",
+                                   "sha256":  "4d89bd8617bc89d889840d6b985016d78cec7a9f4ebb4be52af9db6d92eceacf",
+                                   "dist_path":  "dist\\report_desk\\AdminDeskCore.luac",
+                                   "bytes":  1141478
+                               },
+                      "verified":  true,
                       "deps":  {
                                    "path":  "dist\\report_desk_deps.lua",
-                                   "sha256":  "e61879ff1fed783f2bde5b245ea4f765ec28c37289ec7b0c79605551255cefb7",
-                                   "bytes":  6466
+                                   "sha256":  "d5332cef4e6cb2a3d447b40eb61363e257fc5d81c1f169474beff6116fba5527",
+                                   "bytes":  2638
                                },
-                      "launcher":  {
-                                       "path":  "dist\\admin_report_desk.lua",
-                                       "sha256":  "d3d923a97620e0894a4e158162cd5eafac71161efdf980c7cf78142df963365c",
-                                       "bytes":  10472
-                                   }
+                      "autoupdate":  {
+                                         "path":  "dist\\report_desk_autoupdate.lua",
+                                         "sha256":  "e132d88a7ffd5ca9750ebfcfd246482a38aae6925f5b3948d00adfe38a2cab4d",
+                                         "bytes":  46261
+                                     }
                   },
     "verified":  true,
-    "core_asset":  "admin_report_desk_core.lua"
+    "core_asset":  "AdminDeskCore.luac"
 }

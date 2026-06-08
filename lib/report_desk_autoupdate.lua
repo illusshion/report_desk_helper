@@ -20,10 +20,30 @@ end)
 
 local M = {}
 
+local deskSha256 = require 'report_desk_sha256'
+local deskZip = require 'report_desk_zip'
+local deskFs = require 'report_desk_fs'
+
+local UPDATE_PHASE = {
+    IDLE = 'idle',
+    FETCH = 'fetch',
+    STAGE = 'stage',
+    COMMIT = 'commit',
+}
+local updatePhase = UPDATE_PHASE.IDLE
+
+function M.getUpdatePhase()
+    return updatePhase
+end
+
 M.VERSION_JSON_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
 M.CHAT_PREFIX = '{9E7BEF}[Report Desk] {FFFFFF}'
 M.CHAT_COLOR = 0xE8E8E8
-M.MANIFEST_VERSION = 2
+M.MANIFEST_VERSION = 3
+M.ASSETS_ZIP = 'report_desk_assets.zip'
+M.ASSETS_CACHE_DIR = 'config\\AdminDesk\\assets'
+M.ASSETS_MANIFEST = 'config\\AdminDesk\\assets\\manifest.json'
+M.MIMGUI_ZIP = 'mimgui-v1.7.1.zip'
 M.STATE_FILE = 'report_desk\\_install_state.json'
 M.STAGING_DIR = 'report_desk\\_update_staging'
 M.LEGACY_CORE_VERSION = 'report_desk\\_core_version.txt'
@@ -60,11 +80,6 @@ end
 -- Публичный API модуля.
 function M.path(rel)
     return M.root() .. '\\' .. tostring(rel or ''):gsub('/', '\\')
-end
-
-local function psLiteral(s)
-    s = tostring(s or ''):gsub("'", "''")
-    return "'" .. s .. "'"
 end
 
 -- Публичный API модуля.
@@ -165,21 +180,7 @@ end
 
 -- Публичный API модуля.
 function M.sha256File(path)
-    path = tostring(path or '')
-    if path == '' or not doesFileExist(path) then
-        return nil
-    end
-    local ps = table.concat({
-        'powershell -NoProfile -ExecutionPolicy Bypass -Command',
-        '"& { (Get-FileHash -LiteralPath ' .. psLiteral(path) .. ' -Algorithm SHA256).Hash.ToLower() }"',
-    }, ' ')
-    local pipe = io.popen(ps)
-    if not pipe then
-        return nil
-    end
-    local out = pipe:read('*a') or ''
-    pipe:close()
-    return out:match('([a-f0-9]+)')
+    return deskSha256.hashFile(path)
 end
 
 local function fileBytes(path)
@@ -339,14 +340,18 @@ function M.releaseBaseUrl(manifest)
     return M.LATEST_RELEASE_BASE
 end
 
-local function manifestUsesV2(manifest)
+local function manifestUsesFilesMap(manifest)
     return type(manifest) == 'table'
-        and tonumber(manifest.manifest_version) == M.MANIFEST_VERSION
+        and tonumber(manifest.manifest_version) >= 2
         and type(manifest.files) == 'table'
 end
 
+local function manifestUsesV2(manifest)
+    return manifestUsesFilesMap(manifest)
+end
+
 local function normalizeManifestFiles(manifest)
-    if manifestUsesV2(manifest) then
+    if manifestUsesFilesMap(manifest) then
         local out = {}
         for asset, spec in pairs(manifest.files) do
             if type(spec) == 'table' and spec.dest then
@@ -363,45 +368,48 @@ local function normalizeManifestFiles(manifest)
         table.sort(out, function(a, b) return a.dest < b.dest end)
         return out
     end
+    return {}
+end
 
-    local base = M.releaseBaseUrl(manifest)
-    local coreUrl = tostring(manifest.core_url or '')
-    local coreName = coreUrl:match('/([^/%?]+)$') or 'admin_report_desk_core.lua'
-    local out = {
-        {
-            asset = 'report_desk_autoupdate.lua',
-            dest = 'lib\\report_desk_autoupdate.lua',
-            sha256 = '',
-            bytes = 0,
-            url = base .. '/report_desk_autoupdate.lua',
-            pending = true,
-        },
-        {
-            asset = 'report_desk_deps.lua',
-            dest = 'lib\\report_desk_deps.lua',
-            sha256 = '',
-            bytes = 0,
-            url = base .. '/report_desk_deps.lua',
-            pending = false,
-        },
-        {
-            asset = coreName,
-            dest = 'report_desk\\' .. coreName,
-            sha256 = '',
-            bytes = 0,
-            url = coreUrl,
-            pending = false,
-        },
-        {
-            asset = 'admin_report_desk.lua',
-            dest = 'admin_report_desk.lua',
-            sha256 = '',
-            bytes = 0,
-            url = base .. '/admin_report_desk.lua',
-            pending = true,
-        },
-    }
-    return out
+local CORE_FILE_NAMES = {
+    'AdminDeskCore.luac',
+    'AdminDeskCore.lua',
+    'admin_report_desk_core.luac',
+    'admin_report_desk_core.lua',
+}
+
+function M.resolveCorePath()
+    local dir = M.path('report_desk')
+    for _, name in ipairs(CORE_FILE_NAMES) do
+        local path = dir .. '\\' .. name
+        if doesFileExist(path) then
+            return path
+        end
+    end
+    return dir .. '\\AdminDeskCore.luac'
+end
+
+function M.corePresent()
+    return doesFileExist(M.resolveCorePath())
+        or doesFileExist(M.path('report_desk\\AdminDeskCore.lua'))
+        or doesFileExist(M.path('report_desk\\admin_report_desk_core.lua'))
+end
+
+local function removeStaleCoreLuac(installedLuaDest)
+    if not installedLuaDest or installedLuaDest == '' then return end
+    if not installedLuaDest:find('%.lua$', 1) then return end
+    local base = installedLuaDest:gsub('%.lua$', '')
+    local staleLuac = base .. '.luac'
+    if doesFileExist(staleLuac) then
+        pcall(os.remove, staleLuac)
+        log('removed stale core.luac: ' .. staleLuac)
+    end
+    if installedLuaDest:find('AdminDeskCore', 1, true) then
+        local legacy = M.path('report_desk\\admin_report_desk_core.luac')
+        if doesFileExist(legacy) then
+            pcall(os.remove, legacy)
+        end
+    end
 end
 
 local function verifyFile(path, spec)
@@ -437,6 +445,12 @@ local function localFileMatches(spec)
         if bytes ~= spec.bytes then
             return false, 'size'
         end
+        if spec.sha256 and spec.sha256 ~= '' then
+            local hash = M.sha256File(path)
+            if not hash or hash:lower() ~= spec.sha256:lower() then
+                return false, 'hash'
+            end
+        end
         return true
     end
     if spec.sha256 and spec.sha256 ~= '' then
@@ -470,32 +484,59 @@ function M.needsRuntimeLibs()
 end
 
 -- Публичный API модуля.
+function M.hasMimgui()
+    return doesFileExist(M.path('lib\\mimgui\\init.lua'))
+        and doesFileExist(M.path('lib\\mimgui\\cimguidx9.dll'))
+end
+
+function M.canRequireMimgui()
+    if package.loaded.mimgui then return true end
+    return pcall(require, 'mimgui') == true
+end
+
+function M.installMimguiZip(zipPath)
+    local root = M.root()
+    local tmp = root .. '\\report_desk\\_deps_mimgui_tmp'
+    deskFs.removeTree(tmp)
+    deskFs.ensureDir(tmp)
+    local ok, err = deskZip.extract(zipPath, tmp)
+    if not ok then
+        log('mimgui extract: ' .. tostring(err))
+        return false
+    end
+    local src = tmp .. '\\mimgui'
+    if not doesDirectoryExist(src) then
+        deskFs.removeTree(tmp)
+        return false
+    end
+    local dest = root .. '\\lib\\mimgui'
+    deskFs.removeTree(dest)
+    deskFs.ensureDir(root .. '\\lib')
+    deskFs.copyTree(src, dest)
+    deskFs.removeTree(tmp)
+    return M.hasMimgui()
+end
+
+-- Публичный API модуля.
 function M.installRuntimeLibsZip(zipPath)
     local root = M.root()
     local tmp = root .. '\\report_desk\\_deps_runtime_tmp'
-    local libDir = root .. '\\lib'
-    local ps = table.concat({
-        'powershell -NoProfile -ExecutionPolicy Bypass -Command "& {',
-        '$tmp=' .. psLiteral(tmp) .. ';',
-        '$zip=' .. psLiteral(zipPath) .. ';',
-        '$lib=' .. psLiteral(libDir) .. ';',
-        'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue;',
-        'Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force;',
-        [[if (-not (Test-Path (Join-Path $tmp 'lib'))) { exit 2 };]],
-        'New-Item -ItemType Directory -Path $lib -Force | Out-Null;',
-        [[Get-ChildItem -LiteralPath (Join-Path $tmp 'lib') | ForEach-Object {]],
-        '  $dest = Join-Path $lib $_.Name;',
-        '  if ($_.PSIsContainer) { Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force }',
-        '  else { Copy-Item -LiteralPath $_.FullName -Destination $dest -Force }',
-        '};',
-        'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue',
-        '}"',
-    }, ' ')
-    local ok = os.execute(ps)
-    if ok == 0 or ok == true then
-        return not needsRuntimeLibs()
+    deskFs.removeTree(tmp)
+    deskFs.ensureDir(tmp)
+    local ok, err = deskZip.extract(zipPath, tmp)
+    if not ok then
+        log('runtime extract: ' .. tostring(err))
+        return false
     end
-    return false
+    local libSrc = tmp .. '\\lib'
+    if not doesDirectoryExist(libSrc) then
+        deskFs.removeTree(tmp)
+        return false
+    end
+    deskFs.ensureDir(root .. '\\lib')
+    deskFs.copyTree(libSrc, root .. '\\lib')
+    deskFs.removeTree(tmp)
+    return not needsRuntimeLibs()
 end
 
 local function runtimeSpec(manifest)
@@ -519,6 +560,28 @@ local function runtimeSpec(manifest)
     return {
         asset = M.RUNTIME_LIBS_ZIP,
         url = url,
+        sha256 = '',
+        bytes = 0,
+    }
+end
+
+local function mimguiSpec(manifest)
+    if type(manifest.mimgui) == 'table' then
+        local spec = manifest.mimgui
+        local url = tostring(spec.url or '')
+        if url == '' then
+            url = M.releaseBaseUrl(manifest) .. '/' .. tostring(spec.asset or M.MIMGUI_ZIP)
+        end
+        return {
+            asset = tostring(spec.asset or M.MIMGUI_ZIP),
+            url = url,
+            sha256 = tostring(spec.sha256 or ''):lower(),
+            bytes = tonumber(spec.bytes) or 0,
+        }
+    end
+    return {
+        asset = M.MIMGUI_ZIP,
+        url = 'https://github.com/THE-FYP/mimgui/releases/download/v1.7.1/mimgui-v1.7.1.zip',
         sha256 = '',
         bytes = 0,
     }
@@ -548,15 +611,11 @@ end
 
 local function clearStaging()
     local dir = M.path(M.STAGING_DIR)
-    if doesDirectoryExist(dir) then
-        pcall(function()
-            os.execute('powershell -NoProfile -Command "Remove-Item -LiteralPath ' .. psLiteral(dir) .. ' -Recurse -Force -ErrorAction SilentlyContinue"')
-        end)
-    end
+    deskFs.removeTree(dir)
     if not doesDirectoryExist(M.path('report_desk')) then
         createDirectory(M.path('report_desk'))
     end
-    createDirectory(dir)
+    deskFs.ensureDir(dir)
 end
 
 local function copyFileAtomic(src, dest)
@@ -588,12 +647,9 @@ local function installToDest(src, spec)
     if not copyFileAtomic(src, finalDest) then
         return false, 'install failed: ' .. spec.dest
     end
-    if spec.dest:find('admin_report_desk_core%.lua$', 1) then
-        local staleLuac = M.path('report_desk\\admin_report_desk_core.luac')
-        if doesFileExist(staleLuac) then
-            pcall(os.remove, staleLuac)
-            log('removed stale core.luac')
-        end
+    if spec.dest:find('%.lua$', 1) and spec.dest:find('report_desk', 1, true)
+        and (spec.dest:find('AdminDeskCore', 1, true) or spec.dest:find('admin_report_desk_core', 1, true)) then
+        removeStaleCoreLuac(M.path(spec.dest))
     end
     return true
 end
@@ -630,6 +686,10 @@ local function buildUpdatePlan(manifest, opts)
     local needRuntime = force or needsRuntimeLibs()
     if needRuntime then
         plan.runtime = rt
+    end
+
+    if force or not M.hasMimgui() or not M.canRequireMimgui() then
+        plan.mimgui = mimguiSpec(manifest)
     end
 
     local iv = iconvSpec(manifest)
@@ -680,6 +740,24 @@ local function downloadPlan(plan, manifest, opts)
         downloaded.runtime = tmp
     end
 
+    if plan.mimgui then
+        local spec = plan.mimgui
+        local tmp = staging .. '\\' .. spec.asset
+        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
+        local ok, err = downloadWithRetry(spec.url, tmp, 120, 1024)
+        if not ok then
+            return nil, 'download mimgui: ' .. tostring(err)
+        end
+        if spec.sha256 ~= '' then
+            local verOk, verErr = verifyFile(tmp, spec)
+            if not verOk then
+                pcall(os.remove, tmp)
+                return nil, 'verify mimgui: ' .. tostring(verErr)
+            end
+        end
+        downloaded.mimgui = tmp
+    end
+
     if plan.iconv then
         local spec = plan.iconv
         local tmp = staging .. '\\iconv.dll'
@@ -719,6 +797,14 @@ local function commitPlan(downloaded, manifest, allFiles)
             return false, 'runtime unpack failed'
         end
         pcall(os.remove, downloaded.runtime)
+    end
+
+    if downloaded.mimgui then
+        if not M.installMimguiZip(downloaded.mimgui) then
+            return false, 'mimgui unpack failed'
+        end
+        package.loaded.mimgui = nil
+        pcall(os.remove, downloaded.mimgui)
     end
 
     if downloaded.iconv then
@@ -763,12 +849,14 @@ end
 --[[ returns: needsReload, status ]]
 function M.sync(manifest, opts)
     opts = opts or {}
+    updatePhase = UPDATE_PHASE.FETCH
     if not manifest then
+        updatePhase = UPDATE_PHASE.IDLE
         return false, 'offline'
     end
     local plan, state, allFiles = buildUpdatePlan(manifest, opts)
     local fileCount = #plan
-    local hasExtra = plan.runtime ~= nil or plan.iconv ~= nil
+    local hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil or plan.mimgui ~= nil
     if fileCount == 0 and not hasExtra then
         return false, 'uptodate'
     end
@@ -777,6 +865,7 @@ function M.sync(manifest, opts)
         local filtered = {}
         local keepRuntime = plan.runtime
         local keepIconv = plan.iconv
+        local keepMimgui = plan.mimgui
         for _, spec in ipairs(plan) do
             if spec.dest:find('admin_report_desk_core', 1, true) then
                 if opts.includeCore then
@@ -789,8 +878,9 @@ function M.sync(manifest, opts)
         plan = filtered
         plan.runtime = keepRuntime
         plan.iconv = keepIconv
+        plan.mimgui = keepMimgui
         fileCount = #plan
-        hasExtra = plan.runtime ~= nil or plan.iconv ~= nil
+        hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil
         if fileCount == 0 and not hasExtra then
             return false, 'uptodate'
         end
@@ -799,17 +889,22 @@ function M.sync(manifest, opts)
     local remoteVer = tostring(manifest.version or '')
     notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' \xF4\xE0\xE9\xEB\xEE\xE2)...', opts)
 
+    updatePhase = UPDATE_PHASE.STAGE
     local downloaded, dlErr = downloadPlan(plan, manifest, opts)
     if not downloaded then
+        updatePhase = UPDATE_PHASE.IDLE
         notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xE8\xEB\xEE\xF1\xFC: ' .. tostring(dlErr), opts)
         return false, 'fail'
     end
 
+    updatePhase = UPDATE_PHASE.COMMIT
     local ok, commitErr = commitPlan(downloaded, manifest, allFiles)
     if not ok then
+        updatePhase = UPDATE_PHASE.IDLE
         notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8: ' .. tostring(commitErr), opts)
         return false, 'fail'
     end
+    updatePhase = UPDATE_PHASE.IDLE
 
     notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer, opts)
     local needsPendingReload = false
@@ -841,16 +936,30 @@ end
 
 --[[ returns: needsReload, status ('uptodate'|'offline'|'fail'|'reload') ]]
 function M.check(corePath)
-    corePath = corePath or M.path('report_desk\\admin_report_desk_core.luac')
+    corePath = corePath or M.resolveCorePath()
     local manifest, err = M.fetchRemoteManifest()
     if not manifest then
         log('manifest skip: ' .. tostring(err))
-        if not doesFileExist(corePath) and not doesFileExist(M.path('report_desk\\admin_report_desk_core.lua')) then
+        if not M.corePresent() then
             notify('\xDF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE, \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
         end
         return false, 'offline'
     end
-    return M.sync(manifest, { quietChat = true, mode = 'full', includeCore = true })
+    local willReload, status = M.sync(manifest, { quietChat = true, mode = 'full', includeCore = true })
+    if willReload then
+        return true, status
+    end
+    if M.needsAssets(manifest) then
+        local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = true })
+        if not ok then
+            return false, 'assets_fail'
+        end
+        if assetsUpdated and thisScript and thisScript().reload then
+            thisScript():reload()
+            return true, 'reload'
+        end
+    end
+    return willReload, status
 end
 
 -- Публичный API модуля.
@@ -864,6 +973,12 @@ function M.forceDownload(corePath)
         return true
     end
     if status == 'uptodate' then
+        if M.needsAssets(manifest) then
+            local ok = M.ensureAssets(manifest, { quietChat = true })
+            if not ok then
+                return false, 'assets_fail'
+            end
+        end
         return true
     end
     return false, status
@@ -875,7 +990,21 @@ function M.repair()
     if not manifest then
         return false, err or 'no manifest'
     end
-    return M.sync(manifest, { mode = 'repair', force = true, includeCore = true })
+    local willReload, status = M.sync(manifest, { mode = 'repair', force = true, includeCore = true })
+    if willReload then
+        return true, status
+    end
+    if M.needsAssets(manifest) then
+        local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = false })
+        if not ok then
+            return false, 'assets_fail'
+        end
+        if assetsUpdated and thisScript and thisScript().reload then
+            thisScript():reload()
+            return true, 'reload'
+        end
+    end
+    return willReload, status
 end
 
 -- Публичный API модуля.
@@ -888,8 +1017,8 @@ function M.diagnose()
         state_path = M.path(M.STATE_FILE),
         files = {},
         runtime_libs_ok = not needsRuntimeLibs(),
-        core_present = doesFileExist(M.path('report_desk\\admin_report_desk_core.lua'))
-            or doesFileExist(M.path('report_desk\\admin_report_desk_core.luac')),
+        core_present = M.corePresent(),
+        assets_version = (M.readState() or {}).assets_version or '',
     }
     local manifest, err = M.fetchRemoteManifest()
     if not manifest then
@@ -899,6 +1028,11 @@ function M.diagnose()
     result.manifest_ok = true
     result.remote_version = tostring(manifest.version or '')
     result.manifest_v2 = manifestUsesV2(manifest)
+    if type(manifest.assets) == 'table' then
+        result.remote_assets_version = tostring(manifest.assets.version or '')
+        result.assets_ok = tostring(result.assets_version) == result.remote_assets_version
+            and assetMarkerOk()
+    end
 
     local files = normalizeManifestFiles(manifest)
     for _, spec in ipairs(files) do
@@ -970,6 +1104,8 @@ end
 function M.applyPendingFiles()
     local root = M.root()
     local pendingSpecs = {
+        { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac' },
+        { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua' },
         { pending = root .. '\\admin_report_desk.lua.pending', dest = root .. '\\admin_report_desk.lua' },
         { pending = root .. '\\lib\\report_desk_autoupdate.lua.pending', dest = root .. '\\lib\\report_desk_autoupdate.lua' },
     }
@@ -1021,7 +1157,120 @@ function M.corePathFromUrl(url, fallback)
     if name and name:find('%.luac?$', 1) then
         return M.coreDir() .. '\\' .. name
     end
-    return fallback or (M.coreDir() .. '\\admin_report_desk_core.luac')
+    return fallback or (M.coreDir() .. '\\AdminDeskCore.luac')
+end
+
+local function assetMarkerOk()
+    local newPath = M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png')
+    if doesFileExist(newPath) then
+        local sz = fileBytes(newPath)
+        return type(sz) == 'number' and sz > 256
+    end
+    local oldPath = M.path('res\\report_desk_skins\\skin-1.png')
+    if doesFileExist(oldPath) then
+        local sz = fileBytes(oldPath)
+        return type(sz) == 'number' and sz > 256
+    end
+    return false
+end
+
+function M.readLocalAssetsManifest()
+    return M.readJsonFile(M.path(M.ASSETS_MANIFEST))
+end
+
+function M.writeLocalAssetsManifest(data)
+    deskFs.ensureDirForFile(M.path(M.ASSETS_MANIFEST))
+    return writeJsonFile(M.path(M.ASSETS_MANIFEST), data)
+end
+
+function M.needsAssets(manifest)
+    manifest = manifest or {}
+    if not assetMarkerOk() then
+        return true
+    end
+    local assets = manifest.assets
+    if type(assets) ~= 'table' then return false end
+    local remoteVer = tostring(assets.version or '')
+    local remoteSha = tostring(assets.sha256 or ''):lower()
+    if remoteVer == '' then return false end
+    local localMan = M.readLocalAssetsManifest() or {}
+    if tostring(localMan.version or '') == remoteVer then
+        if remoteSha == '' or tostring(localMan.sha256 or ''):lower() == remoteSha then
+            return false
+        end
+    end
+    local state = M.readState() or {}
+    if tostring(state.assets_version or '') == remoteVer then
+        return false
+    end
+    return true
+end
+
+local function extractAssetsZip(zipPath)
+    zipPath = tostring(zipPath or '')
+    if zipPath == '' or not doesFileExist(zipPath) then
+        return false, 'zip missing'
+    end
+    local destRoot = M.path(M.ASSETS_CACHE_DIR)
+    deskFs.ensureDir(destRoot)
+    local ok, err = deskZip.extract(zipPath, destRoot)
+    if not ok then
+        return false, err or 'extract failed'
+    end
+    if assetMarkerOk() then
+        return true
+    end
+    return false, 'marker missing'
+end
+
+function M.ensureAssets(manifest, opts)
+    opts = opts or {}
+    manifest = manifest or {}
+    if not M.needsAssets(manifest) then
+        return true, false
+    end
+    local assets = manifest.assets
+    if type(assets) ~= 'table' or not assets.url or assets.url == '' then
+        if not assetMarkerOk() then
+            notify('\xCD\xE5\xF2 assets \xE2 manifest \xE8 \xED\xE5\xF2 skin-1.png', opts)
+            return false, false
+        end
+        return true, false
+    end
+    notify('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (assets)...', opts)
+    local zipPath = M.path(M.ASSETS_CACHE_DIR .. '\\' .. M.ASSETS_ZIP)
+    deskFs.ensureDirForFile(zipPath)
+    local ok, err = downloadWithRetry(assets.url, zipPath, 300, 65536)
+    if not ok then
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(err), opts)
+        return false, false
+    end
+    if assets.sha256 and assets.sha256 ~= '' then
+        local verOk, verErr = verifyFile(zipPath, {
+            sha256 = tostring(assets.sha256):lower(),
+            bytes = tonumber(assets.bytes) or 0,
+        })
+        if not verOk then
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(verErr), opts)
+            pcall(os.remove, zipPath)
+            return false, false
+        end
+    end
+    local extracted, extractErr = extractAssetsZip(zipPath)
+    if not extracted then
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 assets: ' .. tostring(extractErr), opts)
+        return false, false
+    end
+    local state = migrateLegacyState() or { files = {} }
+    state.assets_version = tostring(assets.version or manifest.version or '')
+    writeState(state)
+    M.writeLocalAssetsManifest({
+        version = state.assets_version,
+        sha256 = tostring(assets.sha256 or ''):lower(),
+        installed = true,
+    })
+    notify('assets OK', opts)
+    return true, true
 end
 
 function M.installCore(tmpPath, corePath)
@@ -1133,6 +1382,55 @@ function M.ensureRuntimeLibs(manifest, opts)
     end
     notify('lib OK', opts)
     return true, true
+end
+
+function M.ensureDependencies(manifest, opts)
+    opts = opts or {}
+    manifest = manifest or {}
+    local changed = false
+
+    if not doesFileExist(M.path(M.ICONV_DLL)) then
+        local ok = select(1, M.ensureIconvDll(manifest, opts))
+        if not ok then return false, false end
+        changed = true
+    end
+
+    if needsRuntimeLibs() then
+        local ok = select(1, M.ensureRuntimeLibs(manifest, opts))
+        if not ok then return false, false end
+        changed = true
+    end
+
+    if not M.hasMimgui() or not M.canRequireMimgui() then
+        local spec = mimguiSpec(manifest)
+        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
+        local zipPath = M.path('report_desk\\' .. spec.asset)
+        deskFs.ensureDirForFile(zipPath)
+        local ok, err = downloadWithRetry(spec.url, zipPath, 120, 1024)
+        if not ok then
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(err), opts)
+            return false, false
+        end
+        if spec.sha256 ~= '' then
+            local verOk, verErr = verifyFile(zipPath, spec)
+            if not verOk then
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(verErr), opts)
+                return false, false
+            end
+        end
+        if not M.installMimguiZip(zipPath) then
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 mimgui', opts)
+            return false, false
+        end
+        package.loaded.mimgui = nil
+        if not M.canRequireMimgui() then
+            notify('mimgui install failed (require)', opts)
+            return false, false
+        end
+        changed = true
+    end
+
+    return true, changed
 end
 
 function M.refreshAuxiliaryScripts(manifest, opts)
