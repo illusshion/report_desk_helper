@@ -1,7 +1,9 @@
 {
-    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.10/report_desk_helper_main.zip",
+    "changelog":  "Report Desk 1.0.11",
+    "version":  "1.0.11",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.11/admin_report_desk_core.lua",
+    "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.11/report_desk_helper_main.zip",
+    "runtime_libs_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.11/report_desk_runtime_libs.zip",
     "core_url_fallback":  "https://raw.githubusercontent.com/illusshion/report_desk_helper/main/report_desk/admin_report_desk_core.lua",
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.10/admin_report_desk_core.lua",
-    "version":  "1.0.10",
-    "changelog":  "Report Desk 1.0.10"
+    "iconv_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.11/iconv.dll"
 }

@@ -27,6 +27,10 @@ function M.canRequireMimgui()
     return ok == true
 end
 
+local function hasFile(rel)
+    return doesFileExist(M.path(rel))
+end
+
 -- Ps Literal
 local function psLiteral(s)
     s = tostring(s or ''):gsub("'", "''")
@@ -103,8 +107,12 @@ function M.checkRuntime(opts)
         problems[#problems + 1] = 'SAMP'
     end
 
-    if #problems > 0 and say then
-        say('need: ' .. table.concat(problems, ', '))
+    if #problems > 0 then
+        local msg = 'need: ' .. table.concat(problems, ', ')
+        print('[Report Desk] ' .. msg)
+        if say then
+            say(msg)
+        end
     end
     return #problems == 0, problems
 end
@@ -162,8 +170,44 @@ function M.ensureCoreDir(filePath)
 end
 
 -- Публичный API модуля.
+function M.ensureBootstrapDeps(opts)
+    opts = opts or {}
+    local manifest = opts.manifest
+    local autoupdate = package.loaded['report_desk_autoupdate']
+    if type(autoupdate) ~= 'table' then
+        local ok, mod = pcall(require, 'report_desk_autoupdate')
+        if ok then autoupdate = mod end
+    end
+    if type(autoupdate) ~= 'table' or type(autoupdate.ensureBootstrap) ~= 'function' then
+        return true, false
+    end
+    if not manifest then
+        manifest = select(1, autoupdate.fetchRemoteManifest())
+    end
+    if not manifest then
+        return true, false
+    end
+    local needsReload, status = autoupdate.ensureBootstrap(manifest, opts)
+    if needsReload then
+        return false, true
+    end
+    if status == 'libs_fail' or status == 'iconv_fail' then
+        return false, false
+    end
+    return true, false
+end
+
+-- Публичный API модуля.
 function M.ensureAll(opts)
     opts = opts or {}
+    local bootstrapOk, bootstrapReload = M.ensureBootstrapDeps(opts)
+    if bootstrapReload and thisScript and thisScript().reload then
+        thisScript():reload()
+        return false, true
+    end
+    if not bootstrapOk then
+        return false, false
+    end
     local runtimeOk = M.checkRuntime(opts)
     if not runtimeOk then
         return false, false

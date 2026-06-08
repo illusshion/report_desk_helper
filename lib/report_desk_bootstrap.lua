@@ -2,6 +2,45 @@
 require 'lib.moonloader'
 require 'lib.sampfuncs'
 
+local function ensureIconvDll()
+    local iconvPath = getWorkingDirectory() .. '\\lib\\iconv.dll'
+    if doesFileExist(iconvPath) then
+        return true
+    end
+    if not downloadUrlToFile then
+        return false
+    end
+    local libDir = getWorkingDirectory() .. '\\lib'
+    if not doesDirectoryExist(libDir) then
+        createDirectory(libDir)
+    end
+    local url = 'https://github.com/illusshion/report_desk_helper/releases/latest/download/iconv.dll'
+    local tmp = iconvPath .. '.download'
+    downloadUrlToFile(url, tmp)
+    local deadline = os.clock() + 30
+    while os.clock() < deadline do
+        if doesFileExist(tmp) then
+            local f = io.open(tmp, 'rb')
+            if f then
+                local n = f:seek('end') or 0
+                f:close()
+                if n > 4096 then
+                    if doesFileExist(iconvPath) then
+                        os.remove(iconvPath)
+                    end
+                    os.rename(tmp, iconvPath)
+                    if doesFileExist(iconvPath) then
+                        print('[Report Desk] iconv.dll installed')
+                        return true
+                    end
+                end
+            end
+        end
+        wait(50)
+    end
+    return doesFileExist(iconvPath)
+end
+
 local sampev = require 'lib.samp.events'
 local imgui = require 'mimgui'
 local deskVeh = require 'report_desk_vehicles'
@@ -18,6 +57,9 @@ pcall(function()
     ffi.cdef[[short GetAsyncKeyState(int vKey);]]
     cheat_user32 = ffi.load('user32')
 end)
+if not ensureIconvDll() then
+    error('[Report Desk] missing lib/iconv.dll (network required once)')
+end
 local encoding = require 'encoding'
 local vkeys = require 'lib.vkeys'
 encoding.default = 'CP1251'

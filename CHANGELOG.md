@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.11
+
+- **Autoupdate bootstrap:** `/reload` сам качает `lib/`, `iconv.dll`, launcher, deps, autoupdate и core — без переустановки zip.
+- **Core bundle:** `samp.events`, `vkeys`, `encoding`, `vector3d` вшиты в ядро — работает даже на старом launcher 1.0.9.
+- **iconv:** автоскачивание `iconv.dll` перед загрузкой encoding (autoupdate + bootstrap fallback).
+- **Runtime pack:** малый `report_desk_runtime_libs.zip` (~100 KB) на GitHub Release для bootstrap.
+
 ## 1.0.10
 
 - **Fix (критично):** zip теперь включает `lib/samp`, `encoding`, `iconv`, `vkeys`, `vector3d` — чистая установка больше не падает на bootstrap.

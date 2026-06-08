@@ -10854,6 +10854,2553 @@ end
 
 
 
+package.preload['lib.samp.events'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local raknet                                  = require 'samp.raknet'
+local events                                  = require 'samp.events.core'
+local utils                                   = require 'samp.events.utils'
+local handler                                 = require 'samp.events.handlers'
+                                                require 'samp.events.extra_types'
+local RPC                                     = raknet.RPC
+local PACKET                                  = raknet.PACKET
+local OUTCOMING_RPCS                          = events.INTERFACE.OUTCOMING_RPCS
+local OUTCOMING_PACKETS                       = events.INTERFACE.OUTCOMING_PACKETS
+local INCOMING_RPCS                           = events.INTERFACE.INCOMING_RPCS
+local INCOMING_PACKETS                        = events.INTERFACE.INCOMING_PACKETS
+
+-- Outgoing rpcs
+OUTCOMING_RPCS[RPC.ENTERVEHICLE]              = {'onSendEnterVehicle', {vehicleId = 'int16'}, {passenger = 'bool8'}}
+OUTCOMING_RPCS[RPC.CLICKPLAYER]               = {'onSendClickPlayer', {playerId = 'int16'}, {source = 'int8'}}
+OUTCOMING_RPCS[RPC.CLIENTJOIN]                = {'onSendClientJoin', {version = 'int32'}, {mod = 'int8'}, {nickname = 'string8'}, {challengeResponse = 'int32'}, {joinAuthKey = 'string8'}, {clientVer = 'string8'}, {unknown = 'int32'}}
+OUTCOMING_RPCS[RPC.ENTEREDITOBJECT]           = {'onSendEnterEditObject', {type = 'int32'}, {objectId = 'int16'}, {model = 'int32'}, {position = 'vector3d'}}
+OUTCOMING_RPCS[RPC.SERVERCOMMAND]             = {'onSendCommand', {command = 'string32'}}
+OUTCOMING_RPCS[RPC.SPAWN]                     = {'onSendSpawn'}
+OUTCOMING_RPCS[RPC.DEATH]                     = {'onSendDeathNotification', {reason = 'int8'}, {killerId = 'int16'}}
+OUTCOMING_RPCS[RPC.DIALOGRESPONSE]            = {'onSendDialogResponse', {dialogId = 'int16'}, {button = 'int8'}, {listboxId = 'int16'}, {input = 'string8'}}
+OUTCOMING_RPCS[RPC.CLICKTEXTDRAW]             = {'onSendClickTextDraw', {textdrawId = 'int16'}}
+OUTCOMING_RPCS[RPC.SCMEVENT]                  = {'onSendVehicleTuningNotification', {vehicleId = 'int32'}, {param1 = 'int32'}, {param2 = 'int32'}, {event = 'int32'}}
+OUTCOMING_RPCS[RPC.CHAT]                      = {'onSendChat', {message = 'string8'}}
+OUTCOMING_RPCS[RPC.CLIENTCHECK]               = {'onSendClientCheckResponse', {'int8'}, {'int32'}, {'int8'}}
+OUTCOMING_RPCS[RPC.DAMAGEVEHICLE]             = {'onSendVehicleDamaged', {vehicleId = 'int16'}, {panelDmg = 'int32'}, {doorDmg = 'int32'}, {lights = 'int8'}, {tires = 'int8'}}
+OUTCOMING_RPCS[RPC.EDITATTACHEDOBJECT]        = {'onSendEditAttachedObject', {response = 'int32'}, {index = 'int32'}, {model = 'int32'}, {bone = 'int32'}, {position = 'vector3d'}, {rotation = 'vector3d'}, {scale = 'vector3d'}, {color1 = 'int32'}, {color2 = 'int32'}}
+OUTCOMING_RPCS[RPC.EDITOBJECT]                = {'onSendEditObject', {playerObject = 'bool'}, {objectId = 'int16'}, {response = 'int32'}, {position = 'vector3d'}, {rotation = 'vector3d'}}
+OUTCOMING_RPCS[RPC.SETINTERIORID]             = {'onSendInteriorChangeNotification', {interior = 'int8'}}
+OUTCOMING_RPCS[RPC.MAPMARKER]                 = {'onSendMapMarker', {position = 'vector3d'}}
+OUTCOMING_RPCS[RPC.REQUESTCLASS]              = {'onSendRequestClass', {classId = 'int32'}}
+OUTCOMING_RPCS[RPC.REQUESTSPAWN]              = {'onSendRequestSpawn'}
+OUTCOMING_RPCS[RPC.PICKEDUPPICKUP]            = {'onSendPickedUpPickup', {pickupId = 'int32'}}
+OUTCOMING_RPCS[RPC.MENUSELECT]                = {'onSendMenuSelect', {row = 'int8'}}
+OUTCOMING_RPCS[RPC.VEHICLEDESTROYED]          = {'onSendVehicleDestroyed', {vehicleId = 'int16'}}
+OUTCOMING_RPCS[RPC.MENUQUIT]                  = {'onSendQuitMenu'}
+OUTCOMING_RPCS[RPC.EXITVEHICLE]               = {'onSendExitVehicle', {vehicleId = 'int16'}}
+OUTCOMING_RPCS[RPC.UPDATESCORESPINGSIPS]      = {'onSendUpdateScoresAndPings'}
+-- playerId = 'int16', damage = 'float', weapon = 'int32', bodypart ='int32'
+OUTCOMING_RPCS[RPC.GIVETAKEDAMAGE]            = {{'onSendGiveDamage', 'onSendTakeDamage'}, handler.on_send_give_take_damage_reader, handler.on_send_give_take_damage_writer}
+
+-- Incoming rpcs
+-- int playerId, string hostName, table settings, table vehicleModels, int unknown
+INCOMING_RPCS[RPC.INITGAME]                   = {'onInitGame', handler.on_init_game_reader, handler.on_init_game_writer}
+INCOMING_RPCS[RPC.SERVERJOIN]                 = {'onPlayerJoin', {playerId = 'int16'}, {color = 'int32'}, {isNpc = 'bool8'}, {nickname = 'string8'}}
+INCOMING_RPCS[RPC.SERVERQUIT]                 = {'onPlayerQuit', {playerId = 'int16'}, {reason = 'int8'}}
+INCOMING_RPCS[RPC.REQUESTCLASS]               = {'onRequestClassResponse', {canSpawn = 'bool8'}, {team = 'int8'}, {skin = 'int32'}, {unk = 'int8'}, {positon = 'vector3d'}, {rotation = 'float'}, {weapons = 'Int32Array3'}, {ammo = 'Int32Array3'}}
+INCOMING_RPCS[RPC.REQUESTSPAWN]               = {'onRequestSpawnResponse', {response = 'bool8'}}
+INCOMING_RPCS[RPC.SETPLAYERNAME]              = {'onSetPlayerName', {playerId = 'int16'}, {name = 'string8'}, {success = 'bool8'}}
+INCOMING_RPCS[RPC.SETPLAYERPOS]               = {'onSetPlayerPos', {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETPLAYERPOSFINDZ]          = {'onSetPlayerPosFindZ', {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETPLAYERHEALTH]            = {'onSetPlayerHealth', {health = 'float'}}
+INCOMING_RPCS[RPC.TOGGLEPLAYERCONTROLLABLE]   = {'onTogglePlayerControllable', {controllable = 'bool8'}}
+INCOMING_RPCS[RPC.PLAYSOUND]                  = {'onPlaySound', {soundId = 'int32'}, {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETPLAYERWORLDBOUNDS]       = {'onSetWorldBounds', {maxX = 'float'}, {minX = 'float'}, {maxY = 'float'}, {minY = 'float'}}
+INCOMING_RPCS[RPC.GIVEPLAYERMONEY]            = {'onGivePlayerMoney', {money = 'int32'}}
+INCOMING_RPCS[RPC.SETPLAYERFACINGANGLE]       = {'onSetPlayerFacingAngle', {angle = 'float'}}
+INCOMING_RPCS[RPC.RESETPLAYERMONEY]           = {'onResetPlayerMoney'}
+INCOMING_RPCS[RPC.RESETPLAYERWEAPONS]         = {'onResetPlayerWeapons'}
+INCOMING_RPCS[RPC.GIVEPLAYERWEAPON]           = {'onGivePlayerWeapon', {weaponId = 'int32'}, {ammo = 'int32'}}
+INCOMING_RPCS[RPC.CANCELEDIT]                 = {'onCancelEdit'}
+INCOMING_RPCS[RPC.SETPLAYERTIME]              = {'onSetPlayerTime', {hour = 'int8'}, {minute = 'int8'}}
+INCOMING_RPCS[RPC.TOGGLECLOCK]                = {'onSetToggleClock', {state = 'bool8'}}
+INCOMING_RPCS[RPC.WORLDPLAYERADD]             = {'onPlayerStreamIn', {playerId = 'int16'}, {team = 'int8'}, {model = 'int32'}, {position = 'vector3d'}, {rotation = 'float'}, {color = 'int32'}, {fightingStyle = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERSHOPNAME]          = {'onSetShopName', {name = 'string256'}}
+INCOMING_RPCS[RPC.SETPLAYERSKILLLEVEL]        = {'onSetPlayerSkillLevel', {playerId = 'int16'}, {skill = 'int32'}, {level = 'int16'}}
+INCOMING_RPCS[RPC.SETPLAYERDRUNKLEVEL]        = {'onSetPlayerDrunk', {drunkLevel = 'int32'}}
+INCOMING_RPCS[RPC.CREATE3DTEXTLABEL]          = {'onCreate3DText', {id = 'int16'}, {color = 'int32'}, {position = 'vector3d'}, {distance = 'float'}, {testLOS = 'bool8'}, {attachedPlayerId = 'int16'}, {attachedVehicleId = 'int16'}, {text = 'encodedString4096'}}
+INCOMING_RPCS[RPC.DISABLECHECKPOINT]          = {'onDisableCheckpoint'}
+INCOMING_RPCS[RPC.SETRACECHECKPOINT]          = {'onSetRaceCheckpoint', {type = 'int8'}, {position = 'vector3d'}, {nextPosition = 'vector3d'}, {size = 'float'}}
+INCOMING_RPCS[RPC.DISABLERACECHECKPOINT]      = {'onDisableRaceCheckpoint'}
+INCOMING_RPCS[RPC.GAMEMODERESTART]            = {'onGamemodeRestart'}
+INCOMING_RPCS[RPC.PLAYAUDIOSTREAM]            = {'onPlayAudioStream', {url = 'string8'}, {position = 'vector3d'}, {radius = 'float'}, {usePosition = 'bool8'}}
+INCOMING_RPCS[RPC.STOPAUDIOSTREAM]            = {'onStopAudioStream'}
+INCOMING_RPCS[RPC.REMOVEBUILDINGFORPLAYER]    = {'onRemoveBuilding', {modelId = 'int32'}, {position = 'vector3d'}, {radius = 'float'}}
+INCOMING_RPCS[RPC.CREATEOBJECT]               = {'onCreateObject', handler.on_create_object_reader, handler.on_create_object_writer}
+INCOMING_RPCS[RPC.SETOBJECTPOS]               = {'onSetObjectPosition', {objectId = 'int16'}, {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETOBJECTROT]               = {'onSetObjectRotation', {objectId = 'int16'}, {rotation = 'vector3d'}}
+INCOMING_RPCS[RPC.DESTROYOBJECT]              = {'onDestroyObject', {objectId = 'int16'}}
+INCOMING_RPCS[RPC.DEATHMESSAGE]               = {'onPlayerDeathNotification', {killerId = 'int16'}, {killedId = 'int16'}, {reason = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERMAPICON]           = {'onSetMapIcon', {iconId = 'int8'}, {position = 'vector3d'}, {type = 'int8'}, {color = 'int32'}, {style = 'int8'}}
+INCOMING_RPCS[RPC.REMOVEVEHICLECOMPONENT]     = {'onRemoveVehicleComponent', {vehicleId = 'int16'}, {componentId = 'int16'}}
+INCOMING_RPCS[RPC.UPDATE3DTEXTLABEL]          = {'onRemove3DTextLabel', {textLabelId = 'int16'}}
+INCOMING_RPCS[RPC.CHATBUBBLE]                 = {'onPlayerChatBubble', {playerId = 'int16'}, {color = 'int32'}, {distance = 'float'}, {duration = 'int32'}, {message = 'string8'}}
+INCOMING_RPCS[RPC.UPDATETIME]                 = {'onUpdateGlobalTimer', {time = 'int32'}}
+INCOMING_RPCS[RPC.SHOWDIALOG]                 = {'onShowDialog', {dialogId = 'int16'}, {style = 'int8'}, {title = 'string8'}, {button1 = 'string8'}, {button2 = 'string8'}, {text = 'encodedString4096'}}
+INCOMING_RPCS[RPC.DESTROYPICKUP]              = {'onDestroyPickup', {id = 'int32'}}
+INCOMING_RPCS[RPC.LINKVEHICLETOINTERIOR]      = {'onLinkVehicleToInterior', {vehicleId = 'int16'}, {interiorId = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERARMOUR]            = {'onSetPlayerArmour', {armour = 'float'}}
+INCOMING_RPCS[RPC.SETPLAYERARMEDWEAPON]       = {'onSetPlayerArmedWeapon', {weaponId = 'int32'}}
+INCOMING_RPCS[RPC.SETSPAWNINFO]               = {'onSetSpawnInfo', {team = 'int8'}, {skin = 'int32'}, {unk = 'int8'}, {position = 'vector3d'}, {rotation = 'float'}, {weapons = 'Int32Array3'}, {ammo = 'Int32Array3'}}
+INCOMING_RPCS[RPC.SETPLAYERTEAM]              = {'onSetPlayerTeam', {playerId = 'int16'}, {teamId = 'int8'}}
+INCOMING_RPCS[RPC.PUTPLAYERINVEHICLE]         = {'onPutPlayerInVehicle', {vehicleId = 'int16'}, {seatId = 'int8'}}
+INCOMING_RPCS[RPC.REMOVEPLAYERFROMVEHICLE]    = {'onRemovePlayerFromVehicle'}
+INCOMING_RPCS[RPC.SETPLAYERCOLOR]             = {'onSetPlayerColor', {playerId = 'int16'}, {color = 'int32'}}
+INCOMING_RPCS[RPC.DISPLAYGAMETEXT]            = {'onDisplayGameText', {style = 'int32'}, {time = 'int32'}, {text = 'string32'}}
+INCOMING_RPCS[RPC.FORCECLASSSELECTION]        = {'onForceClassSelection'}
+INCOMING_RPCS[RPC.ATTACHOBJECTTOPLAYER]       = {'onAttachObjectToPlayer', {objectId = 'int16'}, {playerId = 'int16'}, {offsets = 'vector3d'}, {rotation = 'vector3d'}}
+-- menuId = 'int8', menuTitle = 'string256', x = 'float', y = 'float', twoColumns = 'bool32', columns = 'table', rows = 'table', menu = 'bool32'
+INCOMING_RPCS[RPC.INITMENU]                   = {'onInitMenu', handler.on_init_menu_reader, handler.on_init_menu_writer}
+INCOMING_RPCS[RPC.SHOWMENU]                   = {'onShowMenu', {menuId = 'int8'}}
+INCOMING_RPCS[RPC.HIDEMENU]                   = {'onHideMenu', {menuId = 'int8'}}
+INCOMING_RPCS[RPC.CREATEEXPLOSION]            = {'onCreateExplosion', {position = 'vector3d'}, {style = 'int32'}, {radius = 'float'}}
+INCOMING_RPCS[RPC.SHOWPLAYERNAMETAGFORPLAYER] = {'onShowPlayerNameTag', {playerId = 'int16'}, {show = 'bool8'}}
+INCOMING_RPCS[RPC.ATTACHCAMERATOOBJECT]       = {'onAttachCameraToObject', {objectId = 'int16'}}
+INCOMING_RPCS[RPC.INTERPOLATECAMERA]          = {'onInterpolateCamera', {setPos = 'bool'}, {fromPos = 'vector3d'}, {destPos = 'vector3d'}, {time = 'int32'}, {mode = 'int8'}}
+INCOMING_RPCS[RPC.GANGZONESTOPFLASH]          = {'onGangZoneStopFlash', {zoneId = 'int16'}}
+INCOMING_RPCS[RPC.APPLYANIMATION]             = {'onApplyPlayerAnimation', {playerId = 'int16'}, {animLib = 'string8'}, {animName = 'string8'}, {loop = 'bool'}, {lockX = 'bool'}, {lockY = 'bool'}, {freeze = 'bool'}, {time = 'int32'}}
+INCOMING_RPCS[RPC.CLEARANIMATIONS]            = {'onClearPlayerAnimation', {playerId = 'int16'}}
+INCOMING_RPCS[RPC.SETPLAYERSPECIALACTION]     = {'onSetPlayerSpecialAction', {actionId = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERFIGHTINGSTYLE]     = {'onSetPlayerFightingStyle', {playerId = 'int16'}, {styleId = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERVELOCITY]          = {'onSetPlayerVelocity', {velocity = 'vector3d'}}
+INCOMING_RPCS[RPC.SETVEHICLEVELOCITY]         = {'onSetVehicleVelocity', {turn = 'bool8'}, {velocity = 'vector3d'}}
+INCOMING_RPCS[RPC.CLIENTMESSAGE]              = {'onServerMessage', {color = 'int32'}, {text = 'string32'}}
+INCOMING_RPCS[RPC.SETWORLDTIME]               = {'onSetWorldTime', {hour = 'int8'}}
+INCOMING_RPCS[RPC.CREATEPICKUP]               = {'onCreatePickup', {id = 'int32'}, {model = 'int32'}, {pickupType = 'int32'}, {position = 'vector3d'}}
+INCOMING_RPCS[RPC.MOVEOBJECT]                 = {'onMoveObject', {objectId = 'int16'}, {fromPos = 'vector3d'}, {destPos = 'vector3d'}, {speed = 'float'}, {rotation = 'vector3d'}}
+INCOMING_RPCS[RPC.ENABLESTUNTBONUSFORPLAYER]  = {'onEnableStuntBonus', {state = 'bool'}}
+INCOMING_RPCS[RPC.TEXTDRAWSETSTRING]          = {'onTextDrawSetString', {id = 'int16'}, {text = 'string16'}}
+INCOMING_RPCS[RPC.SETCHECKPOINT]              = {'onSetCheckpoint', {position = 'vector3d'}, {radius = 'float'}}
+INCOMING_RPCS[RPC.GANGZONECREATE]             = {'onCreateGangZone', {zoneId = 'int16'}, {squareStart = 'vector2d'}, {squareEnd = 'vector2d'}, {color = 'int32'}}
+INCOMING_RPCS[RPC.PLAYCRIMEREPORT]            = {'onPlayCrimeReport', {suspectId = 'int16'}, {'int32'}, {'int32'}, {'int32'}, {crime = 'int32'}, {coordinates = 'vector3d'}} -- TODO: find out unknown values
+INCOMING_RPCS[RPC.GANGZONEDESTROY]            = {'onGangZoneDestroy', {zoneId = 'int16'}}
+INCOMING_RPCS[RPC.GANGZONEFLASH]              = {'onGangZoneFlash', {zoneId = 'int16'}, {color = 'int32'}}
+INCOMING_RPCS[RPC.STOPOBJECT]                 = {'onStopObject', {objectId = 'int16'}}
+INCOMING_RPCS[RPC.SETNUMBERPLATE]             = {'onSetVehicleNumberPlate', {vehicleId = 'int16'}, {text = 'string8'}}
+INCOMING_RPCS[RPC.TOGGLEPLAYERSPECTATING]     = {'onTogglePlayerSpectating', {state = 'bool32'}}
+INCOMING_RPCS[RPC.PLAYERSPECTATEPLAYER]       = {'onSpectatePlayer', {playerId = 'int16'}, {camType = 'int8'}}
+INCOMING_RPCS[RPC.PLAYERSPECTATEVEHICLE]      = {'onSpectateVehicle', {vehicleId = 'int16'}, {camType = 'int8'}}
+INCOMING_RPCS[RPC.SHOWTEXTDRAW]               = {'onShowTextDraw', handler.on_show_textdraw_reader, handler.on_show_textdraw_writer}
+INCOMING_RPCS[RPC.SETPLAYERWANTEDLEVEL]       = {'onSetPlayerWantedLevel', {wantedLevel = 'int8'}}
+INCOMING_RPCS[RPC.TEXTDRAWHIDEFORPLAYER]      = {'onTextDrawHide', {textDrawId = 'int16'}}
+INCOMING_RPCS[RPC.REMOVEPLAYERMAPICON]        = {'onRemoveMapIcon', {iconId = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERAMMO]              = {'onSetWeaponAmmo', {weaponId = 'int8'}, {ammo = 'int16'}}
+INCOMING_RPCS[RPC.SETGRAVITY]                 = {'onSetGravity', {gravity = 'float'}}
+INCOMING_RPCS[RPC.SETVEHICLEHEALTH]           = {'onSetVehicleHealth', {vehicleId = 'int16'}, {health = 'float'}}
+INCOMING_RPCS[RPC.ATTACHTRAILERTOVEHICLE]     = {'onAttachTrailerToVehicle', {trailerId = 'int16'}, {vehicleId = 'int16'}}
+INCOMING_RPCS[RPC.DETACHTRAILERFROMVEHICLE]   = {'onDetachTrailerFromVehicle', {vehicleId = 'int16'}}
+INCOMING_RPCS[RPC.SETWEATHER]                 = {'onSetWeather', {weatherId = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERSKIN]              = {'onSetPlayerSkin', {playerId = 'int32'}, {skinId = 'int32'}}
+INCOMING_RPCS[RPC.SETPLAYERINTERIOR]          = {'onSetInterior', {interior = 'int8'}}
+INCOMING_RPCS[RPC.SETPLAYERCAMERAPOS]         = {'onSetCameraPosition', {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETPLAYERCAMERALOOKAT]      = {'onSetCameraLookAt', {lookAtPosition = 'vector3d'}, {cutType = 'int8'}}
+INCOMING_RPCS[RPC.SETVEHICLEPOS]              = {'onSetVehiclePosition', {vehicleId = 'int16'}, {position = 'vector3d'}}
+INCOMING_RPCS[RPC.SETVEHICLEZANGLE]           = {'onSetVehicleAngle', {vehicleId = 'int16'}, {angle = 'float'}}
+INCOMING_RPCS[RPC.SETVEHICLEPARAMSFORPLAYER]  = {'onSetVehicleParams', {vehicleId = 'int16'}, {objective = 'bool8'}, {doorsLocked = 'bool8'}}
+INCOMING_RPCS[RPC.SETCAMERABEHINDPLAYER]      = {'onSetCameraBehind'}
+INCOMING_RPCS[RPC.CHAT]                       = {'onChatMessage', {playerId = 'int16'}, {text = 'string8'}}
+INCOMING_RPCS[RPC.CONNECTIONREJECTED]         = {'onConnectionRejected', {reason = 'int8'}}
+INCOMING_RPCS[RPC.WORLDPLAYERREMOVE]          = {'onPlayerStreamOut', {playerId = 'int16'}}
+INCOMING_RPCS[RPC.WORLDVEHICLEADD]            = {'onVehicleStreamIn', handler.on_vehicle_stream_in_reader, handler.on_vehicle_stream_in_writer}
+INCOMING_RPCS[RPC.WORLDVEHICLEREMOVE]         = {'onVehicleStreamOut', {vehicleId = 'int16'}}
+INCOMING_RPCS[RPC.WORLDPLAYERDEATH]           = {'onPlayerDeath', {playerId = 'int16'}}
+INCOMING_RPCS[RPC.ENTERVEHICLE]               = {'onPlayerEnterVehicle', {playerId = 'int16'}, {vehicleId = 'int16'}, {passenger = 'bool8'}}
+INCOMING_RPCS[RPC.EXITVEHICLE]                = {'onPlayerExitVehicle', {playerId = 'int16'}, {vehicleId = 'int16'}}
+INCOMING_RPCS[RPC.UPDATESCORESPINGSIPS]       = {'onUpdateScoresAndPings', {playerList = 'PlayerScorePingMap'}}
+INCOMING_RPCS[RPC.SETOBJECTMATERIAL]          = {{'onSetObjectMaterial', 'onSetObjectMaterialText'}, handler.on_set_object_material_reader, handler.on_set_object_material_writer}
+INCOMING_RPCS[RPC.CREATEACTOR]                = {'onCreateActor', {actorId = 'int16'}, {skinId = 'int32'}, {position = 'vector3d'}, {rotation = 'float'}, {health = 'float'}}
+INCOMING_RPCS[RPC.CLICKTEXTDRAW]              = {'onToggleSelectTextDraw', {state = 'bool'}, {hovercolor = 'int32'}}
+INCOMING_RPCS[RPC.SETVEHICLEPARAMSEX]         = {'onSetVehicleParamsEx',
+  {vehicleId = 'int16'},
+  {params = {
+    {engine = 'int8'},
+    {lights = 'int8'},
+    {alarm = 'int8'},
+    {doors = 'int8'},
+    {bonnet = 'int8'},
+    {boot = 'int8'},
+    {objective = 'int8'},
+    {unknown = 'int8'}
+  }},
+  {doors = {
+    {driver = 'int8'},
+    {passenger = 'int8'},
+    {backleft = 'int8'},
+    {backright = 'int8'}
+  }},
+  {windows = {
+    {driver = 'int8'},
+    {passenger = 'int8'},
+    {backleft = 'int8'},
+    {backright = 'int8'}
+  }}
+}
+INCOMING_RPCS[RPC.SETPLAYERATTACHEDOBJECT]    = {'onSetPlayerAttachedObject',
+  {playerId = 'int16'},
+  {index = 'int32'},
+  {create = 'bool'},
+  {object = {
+    {modelId = 'int32'},
+    {bone = 'int32'},
+    {offset = 'vector3d'},
+    {rotation = 'vector3d'},
+    {scale = 'vector3d'},
+    {color1 = 'int32'},
+    {color2 = 'int32'}}
+  }
+}
+
+-- Outgoing packets
+OUTCOMING_PACKETS[PACKET.RCON_COMMAND]        = {'onSendRconCommand', {command = 'string32'}}
+OUTCOMING_PACKETS[PACKET.STATS_UPDATE]        = {'onSendStatsUpdate', {money = 'int32'}, {drunkLevel = 'int32'}}
+local function empty_writer() end
+OUTCOMING_PACKETS[PACKET.PLAYER_SYNC]         = {'onSendPlayerSync', function(bs) return utils.process_outcoming_sync_data(bs, 'PlayerSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.VEHICLE_SYNC]        = {'onSendVehicleSync', function(bs) return utils.process_outcoming_sync_data(bs, 'VehicleSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.PASSENGER_SYNC]      = {'onSendPassengerSync', function(bs) return utils.process_outcoming_sync_data(bs, 'PassengerSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.AIM_SYNC]            = {'onSendAimSync', function(bs) return utils.process_outcoming_sync_data(bs, 'AimSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.UNOCCUPIED_SYNC]     = {'onSendUnoccupiedSync', function(bs) return utils.process_outcoming_sync_data(bs, 'UnoccupiedSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.TRAILER_SYNC]        = {'onSendTrailerSync', function(bs) return utils.process_outcoming_sync_data(bs, 'TrailerSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.BULLET_SYNC]         = {'onSendBulletSync', function(bs) return utils.process_outcoming_sync_data(bs, 'BulletSyncData') end, empty_writer}
+OUTCOMING_PACKETS[PACKET.SPECTATOR_SYNC]      = {'onSendSpectatorSync', function(bs) return utils.process_outcoming_sync_data(bs, 'SpectatorSyncData') end, empty_writer}
+
+-- Incoming packets
+INCOMING_PACKETS[PACKET.PLAYER_SYNC]          = {'onPlayerSync', handler.on_player_sync_reader, handler.on_player_sync_writer}
+INCOMING_PACKETS[PACKET.VEHICLE_SYNC]         = {'onVehicleSync', handler.on_vehicle_sync_reader, handler.on_vehicle_sync_writer}
+INCOMING_PACKETS[PACKET.MARKERS_SYNC]         = {'onMarkersSync', handler.on_markers_sync_reader, handler.on_markers_sync_writer}
+INCOMING_PACKETS[PACKET.AIM_SYNC]             = {'onAimSync', {playerId = 'int16'}, {data = 'AimSyncData'}}
+INCOMING_PACKETS[PACKET.BULLET_SYNC]          = {'onBulletSync', {playerId = 'int16'}, {data = 'BulletSyncData'}}
+INCOMING_PACKETS[PACKET.UNOCCUPIED_SYNC]      = {'onUnoccupiedSync', {playerId = 'int16'}, {data = 'UnoccupiedSyncData'}}
+INCOMING_PACKETS[PACKET.TRAILER_SYNC]         = {'onTrailerSync', {playerId = 'int16'}, {data = 'TrailerSyncData'}}
+INCOMING_PACKETS[PACKET.PASSENGER_SYNC]       = {'onPassengerSync', {playerId = 'int16'}, {data = 'PassengerSyncData'}}
+
+return events
+
+
+]], '@lib.samp.events')
+
+    if not fn then error(err or 'bundle load failed: lib.samp.events') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.raknet'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local MODULE =
+{
+	MODULEINFO = {
+		name = 'samp.raknet',
+		version = 1
+	}
+}
+require 'sampfuncs'
+
+MODULE.RPC = {
+	CLICKPLAYER                   = RPC_CLICKPLAYER,
+	CLIENTJOIN                    = RPC_CLIENTJOIN,
+	ENTERVEHICLE                  = RPC_ENTERVEHICLE,
+	ENTEREDITOBJECT               = RPC_ENTEREDITOBJECT,
+	SCRIPTCASH                    = RPC_SCRIPTCASH,
+	SERVERCOMMAND                 = RPC_SERVERCOMMAND,
+	SPAWN                         = RPC_SPAWN,
+	DEATH                         = RPC_DEATH,
+	NPCJOIN                       = RPC_NPCJOIN,
+	DIALOGRESPONSE                = RPC_DIALOGRESPONSE,
+	CLICKTEXTDRAW                 = RPC_CLICKTEXTDRAW,
+	SCMEVENT                      = RPC_SCMEVENT,
+	WEAPONPICKUPDESTROY           = RPC_WEAPONPICKUPDESTROY,
+	CHAT                          = RPC_CHAT,
+	SRVNETSTATS                   = RPC_SRVNETSTATS,
+	CLIENTCHECK                   = RPC_CLIENTCHECK,
+	DAMAGEVEHICLE                 = RPC_DAMAGEVEHICLE,
+	GIVETAKEDAMAGE                = RPC_GIVETAKEDAMAGE,
+	EDITATTACHEDOBJECT            = RPC_EDITATTACHEDOBJECT,
+	EDITOBJECT                    = RPC_EDITOBJECT,
+	SETINTERIORID                 = RPC_SETINTERIORID,
+	MAPMARKER                     = RPC_MAPMARKER,
+	REQUESTCLASS                  = RPC_REQUESTCLASS,
+	REQUESTSPAWN                  = RPC_REQUESTSPAWN,
+	PICKEDUPPICKUP                = RPC_PICKEDUPPICKUP,
+	MENUSELECT                    = RPC_MENUSELECT,
+	VEHICLEDESTROYED              = RPC_VEHICLEDESTROYED,
+	MENUQUIT                      = RPC_MENUQUIT,
+	EXITVEHICLE                   = RPC_EXITVEHICLE,
+	UPDATESCORESPINGSIPS          = RPC_UPDATESCORESPINGSIPS,
+
+	CONNECTIONREJECTED            = 130,
+	SETPLAYERNAME                 = RPC_SCRSETPLAYERNAME,
+	SETPLAYERPOS                  = RPC_SCRSETPLAYERPOS,
+	SETPLAYERPOSFINDZ             = RPC_SCRSETPLAYERPOSFINDZ,
+	SETPLAYERHEALTH               = RPC_SCRSETPLAYERHEALTH,
+	TOGGLEPLAYERCONTROLLABLE      = RPC_SCRTOGGLEPLAYERCONTROLLABLE,
+	PLAYSOUND                     = RPC_SCRPLAYSOUND,
+	SETPLAYERWORLDBOUNDS          = RPC_SCRSETPLAYERWORLDBOUNDS,
+	GIVEPLAYERMONEY               = RPC_SCRGIVEPLAYERMONEY,
+	SETPLAYERFACINGANGLE          = RPC_SCRSETPLAYERFACINGANGLE,
+	RESETPLAYERMONEY              = RPC_SCRRESETPLAYERMONEY,
+	RESETPLAYERWEAPONS            = RPC_SCRRESETPLAYERWEAPONS,
+	GIVEPLAYERWEAPON              = RPC_SCRGIVEPLAYERWEAPON,
+	SETVEHICLEPARAMSEX            = RPC_SCRSETVEHICLEPARAMSEX,
+	CANCELEDIT                    = RPC_SCRCANCELEDIT,
+	SETPLAYERTIME                 = RPC_SCRSETPLAYERTIME,
+	TOGGLECLOCK                   = RPC_SCRTOGGLECLOCK,
+	WORLDPLAYERADD                = RPC_SCRWORLDPLAYERADD,
+	SETPLAYERSHOPNAME             = RPC_SCRSETPLAYERSHOPNAME,
+	SETPLAYERSKILLLEVEL           = RPC_SCRSETPLAYERSKILLLEVEL,
+	SETPLAYERDRUNKLEVEL           = RPC_SCRSETPLAYERDRUNKLEVEL,
+	CREATE3DTEXTLABEL             = RPC_SCRCREATE3DTEXTLABEL,
+	DISABLECHECKPOINT             = RPC_SCRDISABLECHECKPOINT,
+	SETRACECHECKPOINT             = RPC_SCRSETRACECHECKPOINT,
+	DISABLERACECHECKPOINT         = RPC_SCRDISABLERACECHECKPOINT,
+	GAMEMODERESTART               = RPC_SCRGAMEMODERESTART,
+	PLAYAUDIOSTREAM               = RPC_SCRPLAYAUDIOSTREAM,
+	STOPAUDIOSTREAM               = RPC_SCRSTOPAUDIOSTREAM,
+	REMOVEBUILDINGFORPLAYER       = RPC_SCRREMOVEBUILDINGFORPLAYER,
+	CREATEOBJECT                  = RPC_SCRCREATEOBJECT,
+	SETOBJECTPOS                  = RPC_SCRSETOBJECTPOS,
+	SETOBJECTROT                  = RPC_SCRSETOBJECTROT,
+	DESTROYOBJECT                 = RPC_SCRDESTROYOBJECT,
+	DEATHMESSAGE                  = RPC_SCRDEATHMESSAGE,
+	SETPLAYERMAPICON              = RPC_SCRSETPLAYERMAPICON,
+	REMOVEVEHICLECOMPONENT        = RPC_SCRREMOVEVEHICLECOMPONENT,
+	UPDATE3DTEXTLABEL             = RPC_SCRUPDATE3DTEXTLABEL,
+	CHATBUBBLE                    = RPC_SCRCHATBUBBLE,
+	UPDATETIME                    = RPC_SCRSOMEUPDATE,
+	SHOWDIALOG                    = RPC_SCRSHOWDIALOG,
+	DESTROYPICKUP                 = RPC_SCRDESTROYPICKUP,
+	LINKVEHICLETOINTERIOR         = RPC_SCRLINKVEHICLETOINTERIOR,
+	SETPLAYERARMOUR               = RPC_SCRSETPLAYERARMOUR,
+	SETPLAYERARMEDWEAPON          = RPC_SCRSETPLAYERARMEDWEAPON,
+	SETSPAWNINFO                  = RPC_SCRSETSPAWNINFO,
+	SETPLAYERTEAM                 = RPC_SCRSETPLAYERTEAM,
+	PUTPLAYERINVEHICLE            = RPC_SCRPUTPLAYERINVEHICLE,
+	REMOVEPLAYERFROMVEHICLE       = RPC_SCRREMOVEPLAYERFROMVEHICLE,
+	SETPLAYERCOLOR                = RPC_SCRSETPLAYERCOLOR,
+	DISPLAYGAMETEXT               = RPC_SCRDISPLAYGAMETEXT,
+	FORCECLASSSELECTION           = RPC_SCRFORCECLASSSELECTION,
+	ATTACHOBJECTTOPLAYER          = RPC_SCRATTACHOBJECTTOPLAYER,
+	INITMENU                      = RPC_SCRINITMENU,
+	SHOWMENU                      = RPC_SCRSHOWMENU,
+	HIDEMENU                      = RPC_SCRHIDEMENU,
+	CREATEEXPLOSION               = RPC_SCRCREATEEXPLOSION,
+	SHOWPLAYERNAMETAGFORPLAYER    = RPC_SCRSHOWPLAYERNAMETAGFORPLAYER,
+	ATTACHCAMERATOOBJECT          = RPC_SCRATTACHCAMERATOOBJECT,
+	INTERPOLATECAMERA             = RPC_SCRINTERPOLATECAMERA,
+	SETOBJECTMATERIAL             = RPC_SCRSETOBJECTMATERIAL,
+	GANGZONESTOPFLASH             = RPC_SCRGANGZONESTOPFLASH,
+	APPLYANIMATION                = RPC_SCRAPPLYANIMATION,
+	CLEARANIMATIONS               = RPC_SCRCLEARANIMATIONS,
+	SETPLAYERSPECIALACTION        = RPC_SCRSETPLAYERSPECIALACTION,
+	SETPLAYERFIGHTINGSTYLE        = RPC_SCRSETPLAYERFIGHTINGSTYLE,
+	SETPLAYERVELOCITY             = RPC_SCRSETPLAYERVELOCITY,
+	SETVEHICLEVELOCITY            = RPC_SCRSETVEHICLEVELOCITY,
+	CLIENTMESSAGE                 = RPC_SCRCLIENTMESSAGE,
+	SETWORLDTIME                  = RPC_SCRSETWORLDTIME,
+	CREATEPICKUP                  = RPC_SCRCREATEPICKUP,
+	MOVEOBJECT                    = RPC_SCRMOVEOBJECT,
+	ENABLESTUNTBONUSFORPLAYER     = RPC_SCRENABLESTUNTBONUSFORPLAYER,
+	TEXTDRAWSETSTRING             = RPC_SCRTEXTDRAWSETSTRING,
+	SETCHECKPOINT                 = RPC_SCRSETCHECKPOINT,
+	GANGZONECREATE                = RPC_SCRGANGZONECREATE,
+	PLAYCRIMEREPORT               = RPC_SCRPLAYCRIMEREPORT,
+	SETPLAYERATTACHEDOBJECT       = RPC_SCRSETPLAYERATTACHEDOBJECT,
+	GANGZONEDESTROY               = RPC_SCRGANGZONEDESTROY,
+	GANGZONEFLASH                 = RPC_SCRGANGZONEFLASH,
+	STOPOBJECT                    = RPC_SCRSTOPOBJECT,
+	SETNUMBERPLATE                = RPC_SCRSETNUMBERPLATE,
+	TOGGLEPLAYERSPECTATING        = RPC_SCRTOGGLEPLAYERSPECTATING,
+	PLAYERSPECTATEPLAYER          = RPC_SCRPLAYERSPECTATEPLAYER,
+	PLAYERSPECTATEVEHICLE         = RPC_SCRPLAYERSPECTATEVEHICLE,
+	SETPLAYERWANTEDLEVEL          = RPC_SCRSETPLAYERWANTEDLEVEL,
+	SHOWTEXTDRAW                  = RPC_SCRSHOWTEXTDRAW,
+	TEXTDRAWHIDEFORPLAYER         = RPC_SCRTEXTDRAWHIDEFORPLAYER,
+	SERVERJOIN                    = RPC_SCRSERVERJOIN,
+	SERVERQUIT                    = RPC_SCRSERVERQUIT,
+	INITGAME                      = RPC_SCRINITGAME,
+	REMOVEPLAYERMAPICON           = RPC_SCRREMOVEPLAYERMAPICON,
+	SETPLAYERAMMO                 = RPC_SCRSETPLAYERAMMO,
+	SETGRAVITY                    = RPC_SCRSETGRAVITY,
+	SETVEHICLEHEALTH              = RPC_SCRSETVEHICLEHEALTH,
+	ATTACHTRAILERTOVEHICLE        = RPC_SCRATTACHTRAILERTOVEHICLE,
+	DETACHTRAILERFROMVEHICLE      = RPC_SCRDETACHTRAILERFROMVEHICLE,
+	SETWEATHER                    = RPC_SCRSETWEATHER,
+	SETPLAYERSKIN                 = RPC_SCRSETPLAYERSKIN,
+	SETPLAYERINTERIOR             = RPC_SCRSETPLAYERINTERIOR,
+	SETPLAYERCAMERAPOS            = RPC_SCRSETPLAYERCAMERAPOS,
+	SETPLAYERCAMERALOOKAT         = RPC_SCRSETPLAYERCAMERALOOKAT,
+	SETVEHICLEPOS                 = RPC_SCRSETVEHICLEPOS,
+	SETVEHICLEZANGLE              = RPC_SCRSETVEHICLEZANGLE,
+	SETVEHICLEPARAMSFORPLAYER     = RPC_SCRSETVEHICLEPARAMSFORPLAYER,
+	SETCAMERABEHINDPLAYER         = RPC_SCRSETCAMERABEHINDPLAYER,
+	WORLDPLAYERREMOVE             = RPC_SCRWORLDPLAYERREMOVE,
+	WORLDVEHICLEADD               = RPC_SCRWORLDVEHICLEADD,
+	WORLDVEHICLEREMOVE            = RPC_SCRWORLDVEHICLEREMOVE,
+	WORLDPLAYERDEATH              = RPC_SCRWORLDPLAYERDEATH,
+	CREATEACTOR                   = 171,
+}
+
+MODULE.PACKET = {
+	VEHICLE_SYNC                      = PACKET_VEHICLE_SYNC,
+	RCON_COMMAND                      = PACKET_RCON_COMMAND,
+	RCON_RESPONCE                     = PACKET_RCON_RESPONCE,
+	AIM_SYNC                          = PACKET_AIM_SYNC,
+	WEAPONS_UPDATE                    = PACKET_WEAPONS_UPDATE,
+	STATS_UPDATE                      = PACKET_STATS_UPDATE,
+	BULLET_SYNC                       = PACKET_BULLET_SYNC,
+	PLAYER_SYNC                       = PACKET_PLAYER_SYNC,
+	MARKERS_SYNC                      = PACKET_MARKERS_SYNC,
+	UNOCCUPIED_SYNC                   = PACKET_UNOCCUPIED_SYNC,
+	TRAILER_SYNC                      = PACKET_TRAILER_SYNC,
+	PASSENGER_SYNC                    = PACKET_PASSENGER_SYNC,
+	SPECTATOR_SYNC                    = PACKET_SPECTATOR_SYNC,
+
+	INTERNAL_PING                     = PACKET_INTERNAL_PING,
+	PING                              = PACKET_PING,
+	PING_OPEN_CONNECTIONS             = PACKET_PING_OPEN_CONNECTIONS,
+	CONNECTED_PONG                    = PACKET_CONNECTED_PONG,
+	REQUEST_STATIC_DATA               = PACKET_REQUEST_STATIC_DATA,
+	CONNECTION_REQUEST                = PACKET_CONNECTION_REQUEST,
+	AUTH_KEY                          = PACKET_AUTH_KEY,
+	BROADCAST_PINGS                   = PACKET_BROADCAST_PINGS,
+	SECURED_CONNECTION_RESPONSE       = PACKET_SECURED_CONNECTION_RESPONSE,
+	SECURED_CONNECTION_CONFIRMATION   = PACKET_SECURED_CONNECTION_CONFIRMATION,
+	RPC_MAPPING                       = PACKET_RPC_MAPPING,
+	SET_RANDOM_NUMBER_SEED            = PACKET_SET_RANDOM_NUMBER_SEED,
+	RPC                               = PACKET_RPC,
+	RPC_REPLY                         = PACKET_RPC_REPLY,
+	DETECT_LOST_CONNECTIONS           = PACKET_DETECT_LOST_CONNECTIONS,
+	OPEN_CONNECTION_REQUEST           = PACKET_OPEN_CONNECTION_REQUEST,
+	OPEN_CONNECTION_REPLY             = PACKET_OPEN_CONNECTION_REPLY,
+	CONNECTION_COOKIE                 = PACKET_CONNECTION_COOKIE,
+	RSA_PUBLIC_KEY_MISMATCH           = PACKET_RSA_PUBLIC_KEY_MISMATCH,
+	CONNECTION_ATTEMPT_FAILED         = PACKET_CONNECTION_ATTEMPT_FAILED,
+	NEW_INCOMING_CONNECTION           = PACKET_NEW_INCOMING_CONNECTION,
+	NO_FREE_INCOMING_CONNECTIONS      = PACKET_NO_FREE_INCOMING_CONNECTIONS,
+	DISCONNECTION_NOTIFICATION        = PACKET_DISCONNECTION_NOTIFICATION,
+	CONNECTION_LOST                   = PACKET_CONNECTION_LOST,
+	CONNECTION_REQUEST_ACCEPTED       = PACKET_CONNECTION_REQUEST_ACCEPTED,
+	INITIALIZE_ENCRYPTION             = PACKET_INITIALIZE_ENCRYPTION,
+	CONNECTION_BANNED                 = PACKET_CONNECTION_BANNED,
+	INVALID_PASSWORD                  = PACKET_INVALID_PASSWORD,
+	MODIFIED_PACKET                   = PACKET_MODIFIED_PACKET,
+	PONG                              = PACKET_PONG,
+	TIMESTAMP                         = PACKET_TIMESTAMP,
+	RECEIVED_STATIC_DATA              = PACKET_RECEIVED_STATIC_DATA,
+	REMOTE_DISCONNECTION_NOTIFICATION = PACKET_REMOTE_DISCONNECTION_NOTIFICATION,
+	REMOTE_CONNECTION_LOST            = PACKET_REMOTE_CONNECTION_LOST,
+	REMOTE_NEW_INCOMING_CONNECTION    = PACKET_REMOTE_NEW_INCOMING_CONNECTION,
+	REMOTE_EXISTING_CONNECTION        = PACKET_REMOTE_EXISTING_CONNECTION,
+	REMOTE_STATIC_DATA                = PACKET_REMOTE_STATIC_DATA,
+	ADVERTISE_SYSTEM                  = PACKET_ADVERTISE_SYSTEM
+}
+
+return MODULE
+
+
+]], '@samp.raknet')
+
+    if not fn then error(err or 'bundle load failed: samp.raknet') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.synchronization'] = function()
+
+    local fn, err = loadstring([=[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local MODULE =
+{
+	MODULEINFO = {
+		name = 'samp.synchronization',
+		version = 1
+	}
+}
+local ffi = require 'ffi'
+
+ffi.cdef[[
+#pragma pack(push, 1)
+
+typedef struct VectorXYZ
+{
+	float x, y, z;
+} VectorXYZ;
+
+typedef struct SampKeys {
+	uint8_t	primaryFire : 1;
+	uint8_t	horn_crouch : 1;
+	uint8_t	secondaryFire_shoot : 1;
+	uint8_t	accel_zoomOut : 1;
+	uint8_t	enterExitCar : 1;
+	uint8_t	decel_jump : 1;
+	uint8_t	circleRight : 1;
+	uint8_t	aim : 1;
+	uint8_t	circleLeft : 1;
+	uint8_t	landingGear_lookback : 1;
+	uint8_t	unknown_walkSlow : 1;
+	uint8_t	specialCtrlUp : 1;
+	uint8_t	specialCtrlDown : 1;
+	uint8_t	specialCtrlLeft : 1;
+	uint8_t	specialCtrlRight : 1;
+	uint8_t	_unknown : 1;
+} SampKeys;
+
+typedef struct PlayerSyncData {
+	uint16_t          leftRightKeys;
+	uint16_t          upDownKeys;
+	union {
+		uint16_t        keysData;
+		struct SampKeys keys;
+	};
+	struct VectorXYZ  position;
+	float             quaternion[4];
+	uint8_t           health;
+	uint8_t           armor;
+	uint8_t           weapon;
+	uint8_t           specialAction;
+	struct VectorXYZ  moveSpeed;
+	struct VectorXYZ  surfingOffsets;
+	uint16_t          surfingVehicleId;
+	uint16_t          animationId;
+	uint16_t          animationFlags;
+} PlayerSyncData;
+
+typedef struct VehicleSyncData {
+	uint16_t	        vehicleId;
+	uint16_t          leftRightKeys;
+	uint16_t          upDownKeys;
+	union {
+		uint16_t        keysData;
+		struct SampKeys keys;
+	};
+	float		          quaternion[4];
+	struct VectorXYZ	position;
+	struct VectorXYZ	moveSpeed;
+	float		          vehicleHealth;
+	uint8_t		        playerHealth;
+	uint8_t		        armor;
+	uint8_t		        currentWeapon;
+	uint8_t		        siren;
+	uint8_t		        landingGearState;
+	uint16_t	        trailerId;
+	union {
+		float		        trainSpeed;
+		uint16_t				hydraThrustAngle[2];
+	};
+} VehicleSyncData;
+
+typedef struct PassengerSyncData
+{
+	uint16_t	        vehicleId;
+	uint8_t		        seatId;
+	uint8_t		        currentWeapon;
+	uint8_t		        health;
+	uint8_t		        armor;
+	uint16_t          leftRightKeys;
+	uint16_t          upDownKeys;
+	union {
+		uint16_t        keysData;
+		struct SampKeys keys;
+	};
+	struct VectorXYZ	position;
+} PassengerSyncData;
+
+typedef struct UnoccupiedSyncData
+{
+	uint16_t	       vehicleId;
+	uint8_t		       seatId;
+	struct VectorXYZ roll;
+	struct VectorXYZ direction;
+	struct VectorXYZ position;
+	struct VectorXYZ moveSpeed;
+	struct VectorXYZ turnSpeed;
+	float		         vehicleHealth;
+} UnoccupiedSyncData;
+
+typedef struct TrailerSyncData
+{
+	uint16_t	       trailerId;
+	struct VectorXYZ position;
+	struct VectorXYZ roll;
+	struct VectorXYZ direction;
+	struct VectorXYZ speed;
+	uint32_t	       unk;
+} TrailerSyncData;
+
+typedef struct SpectatorSyncData
+{
+	uint16_t          leftRightKeys;
+	uint16_t          upDownKeys;
+	union {
+		uint16_t        keysData;
+		struct SampKeys keys;
+	};
+	struct VectorXYZ  position;
+} SpectatorSyncData;
+
+typedef struct BulletSyncData
+{
+	uint8_t		       targetType;
+	uint16_t	       targetId;
+	struct VectorXYZ origin;
+	struct VectorXYZ target;
+	struct VectorXYZ center;
+	uint8_t		       weaponId;
+} BulletSyncData;
+
+typedef struct AimSyncData
+{
+	uint8_t	 	       camMode;
+	struct VectorXYZ camFront;
+	struct VectorXYZ camPos;
+	float		         aimZ;
+	uint8_t		       camExtZoom : 6;
+	uint8_t		       weaponState : 2;
+	uint8_t		       unknown;
+} AimSyncData;
+
+#pragma pack(pop)
+]]
+
+assert(ffi.sizeof('VectorXYZ') == 12)
+assert(ffi.sizeof('SampKeys') == 2)
+assert(ffi.sizeof('PlayerSyncData') == 68)
+assert(ffi.sizeof('VehicleSyncData') == 63)
+assert(ffi.sizeof('PassengerSyncData') == 24)
+assert(ffi.sizeof('UnoccupiedSyncData') == 67)
+assert(ffi.sizeof('TrailerSyncData') == 54)
+assert(ffi.sizeof('SpectatorSyncData') == 18)
+assert(ffi.sizeof('BulletSyncData') == 40)
+assert(ffi.sizeof('AimSyncData') == 31)
+
+return MODULE
+
+
+]=], '@samp.synchronization')
+
+    if not fn then error(err or 'bundle load failed: samp.synchronization') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.events.bitstream_io'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local Vector3D = require 'vector3d'
+local BitStreamIO = {}
+
+BitStreamIO.bool = {
+	read = function(bs) return raknetBitStreamReadBool(bs) end,
+	write = function(bs, value) return raknetBitStreamWriteBool(bs, value) end
+}
+
+BitStreamIO.int8 = {
+	read = function(bs) return raknetBitStreamReadInt8(bs) end,
+	write = function(bs, value) return raknetBitStreamWriteInt8(bs, value) end
+}
+
+BitStreamIO.int16 = {
+	read = function(bs) return raknetBitStreamReadInt16(bs) end,
+	write = function(bs, value) return raknetBitStreamWriteInt16(bs, value) end
+}
+
+BitStreamIO.int32 = {
+	read = function(bs) return raknetBitStreamReadInt32(bs) end,
+	write = function(bs, value) return raknetBitStreamWriteInt32(bs, value) end
+}
+
+BitStreamIO.float = {
+	read = function(bs) return raknetBitStreamReadFloat(bs) end,
+	write = function(bs, value) return raknetBitStreamWriteFloat(bs, value) end
+}
+
+BitStreamIO.string8 = {
+	read = function(bs)
+		local len = raknetBitStreamReadInt8(bs)
+		if len <= 0 then return '' end
+		return raknetBitStreamReadString(bs, len)
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteInt8(bs, #value)
+		raknetBitStreamWriteString(bs, value)
+	end
+}
+
+BitStreamIO.string16 = {
+	read = function(bs)
+		local len = raknetBitStreamReadInt16(bs)
+		if len <= 0 then return '' end
+		return raknetBitStreamReadString(bs, len)
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteInt16(bs, #value)
+		raknetBitStreamWriteString(bs, value)
+	end
+}
+
+BitStreamIO.string32 = {
+	read = function(bs)
+		local len = raknetBitStreamReadInt32(bs)
+		if len <= 0 then return '' end
+		return raknetBitStreamReadString(bs, len)
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteInt32(bs, #value)
+		raknetBitStreamWriteString(bs, value)
+	end
+}
+
+BitStreamIO.bool8 = {
+	read = function(bs)
+		return raknetBitStreamReadInt8(bs) ~= 0
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteInt8(bs, value == true and 1 or 0)
+	end
+}
+
+BitStreamIO.bool32 = {
+	read = function(bs)
+		return raknetBitStreamReadInt32(bs) ~= 0
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteInt32(bs, value == true and 1 or 0)
+	end
+}
+
+BitStreamIO.int1 = {
+	read = function(bs)
+		if raknetBitStreamReadBool(bs) == true then return 1 else return 0 end
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteBool(bs, value ~= 0 and true or false)
+	end
+}
+
+BitStreamIO.string256 = {
+	read = function(bs)
+		local str = raknetBitStreamReadString(bs, 32)
+		local zero = string.find(str, '\0', 1, true)
+		return zero and str:sub(1, zero - 1) or str
+	end,
+	write = function(bs, value)
+		if #value >= 32 then raknetBitStreamWriteString(bs, value:sub(1, 32))
+		else
+			raknetBitStreamWriteString(bs, value .. string.rep('\0', 32 - #value))
+		end
+	end
+}
+
+BitStreamIO.encodedString2048 = {
+	read = function(bs) return raknetBitStreamDecodeString(bs, 2048) end,
+	write = function(bs, value) raknetBitStreamEncodeString(bs, value) end
+}
+
+BitStreamIO.encodedString4096 = {
+	read = function(bs) return raknetBitStreamDecodeString(bs, 4096) end,
+	write = function(bs, value) raknetBitStreamEncodeString(bs, value) end
+}
+
+BitStreamIO.compressedFloat = {
+	read = function(bs)
+		return raknetBitStreamReadInt16(bs) / 32767.5 - 1
+	end,
+	write = function(bs, value)
+		if value < -1 then
+			value = -1
+		elseif value > 1 then
+			value = 1
+		end
+		raknetBitStreamWriteInt16(bs, (value + 1) * 32767.5)
+	end
+}
+
+BitStreamIO.compressedVector = {
+	read = function(bs)
+		local magnitude = raknetBitStreamReadFloat(bs)
+		if magnitude ~= 0 then
+			local readCf = BitStreamIO.compressedFloat.read
+			return Vector3D(readCf(bs) * magnitude, readCf(bs) * magnitude, readCf(bs) * magnitude)
+		else
+			return Vector3D(0, 0, 0)
+		end
+	end,
+	write = function(bs, data)
+		local x, y, z = data.x, data.y, data.z
+		local magnitude = math.sqrt(x * x + y * y + z * z)
+		raknetBitStreamWriteFloat(bs, magnitude)
+		if magnitude > 0 then
+			local writeCf = BitStreamIO.compressedFloat.write
+			writeCf(bs, x / magnitude)
+			writeCf(bs, y / magnitude)
+			writeCf(bs, z / magnitude)
+		end
+	end
+}
+
+BitStreamIO.normQuat = {
+	read = function(bs)
+		local readBool, readShort = raknetBitStreamReadBool, raknetBitStreamReadInt16
+		local cwNeg, cxNeg, cyNeg, czNeg = readBool(bs), readBool(bs), readBool(bs), readBool(bs)
+		local cx, cy, cz = readShort(bs), readShort(bs), readShort(bs)
+		local x = cx / 65535
+		local y = cy / 65535
+		local z = cz / 65535
+		if cxNeg then x = -x end
+		if cyNeg then y = -y end
+		if czNeg then z = -z end
+		local diff = 1 - x * x - y * y - z * z
+		if diff < 0 then diff = 0 end
+		local w = math.sqrt(diff)
+		if cwNeg then w = -w end
+		return {w, x, y, z}
+	end,
+	write = function(bs, value)
+		local w, x, y, z = value[1], value[2], value[3], value[4]
+		raknetBitStreamWriteBool(bs, w < 0)
+		raknetBitStreamWriteBool(bs, x < 0)
+		raknetBitStreamWriteBool(bs, y < 0)
+		raknetBitStreamWriteBool(bs, z < 0)
+		raknetBitStreamWriteInt16(bs, math.abs(x) * 65535)
+		raknetBitStreamWriteInt16(bs, math.abs(y) * 65535)
+		raknetBitStreamWriteInt16(bs, math.abs(z) * 65535)
+		-- w is calculates on the target
+	end
+}
+
+BitStreamIO.vector3d = {
+	read = function(bs)
+		local x, y, z =
+			raknetBitStreamReadFloat(bs),
+			raknetBitStreamReadFloat(bs),
+			raknetBitStreamReadFloat(bs)
+		return Vector3D(x, y, z)
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteFloat(bs, value.x)
+		raknetBitStreamWriteFloat(bs, value.y)
+		raknetBitStreamWriteFloat(bs, value.z)
+	end
+}
+
+BitStreamIO.vector2d = {
+	read = function(bs)
+		local x = raknetBitStreamReadFloat(bs)
+		local y = raknetBitStreamReadFloat(bs)
+		return {x = x, y = y}
+	end,
+	write = function(bs, value)
+		raknetBitStreamWriteFloat(bs, value.x)
+		raknetBitStreamWriteFloat(bs, value.y)
+	end
+}
+
+function bitstream_io_interface(field)
+	return setmetatable({}, {
+		__index = function(t, index)
+			return BitStreamIO[index][field]
+		end
+	})
+end
+
+BitStreamIO.bs_read = bitstream_io_interface('read')
+BitStreamIO.bs_write = bitstream_io_interface('write')
+
+return BitStreamIO
+
+
+]], '@samp.events.bitstream_io')
+
+    if not fn then error(err or 'bundle load failed: samp.events.bitstream_io') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.events.core'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local MODULE = {
+	MODULEINFO = {
+		name = 'samp.events',
+		version = 2
+	},
+	INTERFACE = {
+		OUTCOMING_RPCS    = {},
+		OUTCOMING_PACKETS = {},
+		INCOMING_RPCS     = {},
+		INCOMING_PACKETS  = {}
+	},
+	EXPORTS = {}
+}
+
+-- check dependencies
+assert(isSampLoaded(), 'SA-MP is not loaded')
+assert(isSampfuncsLoaded(), 'samp.events requires SAMPFUNCS')
+assert(getMoonloaderVersion() >= 20, 'samp.events requires MoonLoader v.020 or greater')
+
+local BitStreamIO            = require 'samp.events.bitstream_io'
+MODULE.INTERFACE.BitStreamIO = BitStreamIO
+
+
+local function read_data(bs, dataType)
+	if type(dataType) ~= 'table' then
+		return BitStreamIO[dataType].read(bs)
+	else -- process nested structures
+		local values = {}
+		for _, it in ipairs(dataType) do
+			local name, t = next(it)
+			values[name] = read_data(bs, t)
+		end
+		return values
+	end
+end
+
+local function write_data(bs, dataType, value)
+	if type(dataType) ~= 'table' then
+		BitStreamIO[dataType].write(bs, value)
+	else -- process nested structures
+		for _, it in ipairs(dataType) do
+			local name, t = next(it)
+			write_data(bs, t, value[name])
+		end
+	end
+end
+
+local function process_event(bs, callback, struct, ignorebits)
+	local args = {}
+	if bs ~= 0 then
+		if ignorebits then
+			raknetBitStreamIgnoreBits(bs, ignorebits)
+		end
+		if type(struct[2]) == 'function' then
+			local r1, r2 = struct[2](bs) -- call custom reading function
+			if type(callback) == 'table' and type(r1) == 'string' then
+				callback = callback[r1]
+				if callback then
+					args = r2
+				else
+					return
+				end
+			else
+				args = r1
+			end
+		else
+			-- skip event name
+			for i = 2, #struct do
+				local _, t = next(struct[i]) -- type
+				table.insert(args, read_data(bs, t))
+			end
+		end
+	end
+	local result = callback(unpack(args))
+	if result == false then
+		return false -- consume packet
+	end
+	if bs ~= 0 and type(result) == 'table' then
+		raknetBitStreamSetWriteOffset(bs, ignorebits or 0)
+		if type(struct[3]) == 'function' then
+			struct[3](bs, result) -- call custom writing function
+		else
+			assert(#struct - 1 == #result)
+			for i = 2, #struct do
+				local _, t = next(struct[i]) -- type
+				write_data(bs, t, result[i - 1])
+			end
+		end
+	end
+end
+
+local function process_packet(id, bs, event_table, ignorebits)
+	local entry = event_table[id]
+	if entry ~= nil then
+		local key = entry[1]
+		local callback = nil
+		if type(key) == 'table' then
+			for i, name in ipairs(key) do
+				if type(MODULE[name]) == 'function' then
+					if not callback then callback = {} end
+					callback[name] = MODULE[name]
+				end
+			end
+		elseif type(MODULE[key]) == 'function' then
+			callback = MODULE[key]
+		end
+		if callback then
+			return process_event(bs, callback, entry, ignorebits)
+		end
+	end
+end
+
+
+local interface = MODULE.INTERFACE
+local function samp_on_send_rpc(id, bitStream, priority, reliability, orderingChannel, shiftTs)
+	return process_packet(id, bitStream, interface.OUTCOMING_RPCS)
+end
+
+local function samp_on_send_packet(id, bitStream, priority, reliability, orderingChannel)
+	return process_packet(id, bitStream, interface.OUTCOMING_PACKETS, 8)
+end
+
+local function samp_on_receive_rpc(id, bitStream)
+	return process_packet(id, bitStream, interface.INCOMING_RPCS)
+end
+
+local function samp_on_receive_packet(id, bitStream)
+	return process_packet(id, bitStream, interface.INCOMING_PACKETS, 8)
+end
+
+addEventHandler('onSendRpc', samp_on_send_rpc)
+addEventHandler('onSendPacket', samp_on_send_packet)
+addEventHandler('onReceiveRpc', samp_on_receive_rpc)
+addEventHandler('onReceivePacket', samp_on_receive_packet)
+
+return MODULE
+
+
+]], '@samp.events.core')
+
+    if not fn then error(err or 'bundle load failed: samp.events.core') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.events.extra_types'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local BitStreamIO = require 'samp.events.bitstream_io'
+local utils = require 'samp.events.utils'
+
+BitStreamIO.PlayerScorePingMap = {
+	read = function(bs)
+		local data = {}
+		for i = 1, raknetBitStreamGetNumberOfBytesUsed(bs) / 10 do
+			local playerId = raknetBitStreamReadInt16(bs)
+			local playerScore = raknetBitStreamReadInt32(bs)
+			local playerPing = raknetBitStreamReadInt32(bs)
+			data[playerId] = {score = playerScore, ping = playerPing}
+		end
+		return data
+	end,
+	write = function(bs, value)
+		for id, data in pairs(value) do
+			raknetBitStreamWriteInt16(bs, id)
+			raknetBitStreamWriteInt32(bs, data.score)
+			raknetBitStreamWriteInt32(bs, data.ping)
+		end
+	end
+}
+
+BitStreamIO.Int32Array3 = {
+	read = function(bs)
+		local arr = {}
+		for i = 1, 3 do arr[i] = raknetBitStreamReadInt32(bs) end
+		return arr
+	end,
+	write = function(bs, value)
+		for i = 1, 3 do raknetBitStreamWriteInt32(bs, value[i]) end
+	end
+}
+
+BitStreamIO.AimSyncData = {
+	read = function(bs) return utils.read_sync_data(bs, 'AimSyncData')  end,
+	write = function(bs, value) utils.write_sync_data(bs, 'AimSyncData', value) end
+}
+
+BitStreamIO.UnoccupiedSyncData = {
+	read = function(bs) return utils.read_sync_data(bs, 'UnoccupiedSyncData')  end,
+	write = function(bs, value) utils.write_sync_data(bs, 'UnoccupiedSyncData', value) end
+}
+
+BitStreamIO.PassengerSyncData = {
+	read = function(bs) 	return utils.read_sync_data(bs, 'PassengerSyncData')  end,
+	write = function(bs, value) utils.write_sync_data(bs, 'PassengerSyncData', value) end
+}
+
+BitStreamIO.BulletSyncData = {
+	read = function(bs) return utils.read_sync_data(bs, 'BulletSyncData')  end,
+	write = function(bs, value) utils.write_sync_data(bs, 'BulletSyncData', value) end
+}
+
+BitStreamIO.TrailerSyncData = {
+	read = function(bs) return utils.read_sync_data(bs, 'TrailerSyncData')  end,
+	write = function(bs, value) utils.write_sync_data(bs, 'TrailerSyncData', value) end
+}
+
+return BitStreamIO
+
+
+]], '@samp.events.extra_types')
+
+    if not fn then error(err or 'bundle load failed: samp.events.extra_types') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.events.handlers'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local BitStreamIO = require 'samp.events.bitstream_io'
+local utils = require 'samp.events.utils'
+local handler = {}
+
+--- onSendGiveDamage, onSendTakeDamage
+function handler.on_send_give_take_damage_reader(bs)
+	local read = BitStreamIO.bs_read
+	local take = read.bool(bs) -- 'true' is take damage
+	local data = {
+		read.int16(bs), -- playerId
+		read.float(bs), -- damage
+		read.int32(bs), -- weapon
+		read.int32(bs), -- bodypart
+		take,
+	}
+	return (take and 'onSendTakeDamage' or 'onSendGiveDamage'), data
+end
+
+function handler.on_send_give_take_damage_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	write.bool(bs, data[5]) -- give or take
+	write.int16(bs, data[1]) -- playerId
+	write.float(bs, data[2]) -- damage
+	write.int32(bs, data[3]) -- weapon
+	write.int32(bs, data[4]) -- bodypart
+end
+
+
+--- onInitGame
+function handler.on_init_game_reader(bs)
+	local read                     = BitStreamIO.bs_read
+	local settings                 = {}
+	settings.zoneNames             = read.bool(bs)
+	settings.useCJWalk             = read.bool(bs)
+	settings.allowWeapons          = read.bool(bs)
+	settings.limitGlobalChatRadius = read.bool(bs)
+	settings.globalChatRadius      = read.float(bs)
+	settings.stuntBonus            = read.bool(bs)
+	settings.nametagDrawDist       = read.float(bs)
+	settings.disableEnterExits     = read.bool(bs)
+	settings.nametagLOS            = read.bool(bs)
+	settings.tirePopping           = read.bool(bs)
+	settings.classesAvailable      = read.int32(bs)
+	local playerId                 = read.int16(bs)
+	settings.showPlayerTags        = read.bool(bs)
+	settings.playerMarkersMode     = read.int32(bs)
+	settings.worldTime             = read.int8(bs)
+	settings.worldWeather          = read.int8(bs)
+	settings.gravity               = read.float(bs)
+	settings.lanMode               = read.bool(bs)
+	settings.deathMoneyDrop        = read.int32(bs)
+	settings.instagib              = read.bool(bs)
+	settings.normalOnfootSendrate  = read.int32(bs)
+	settings.normalIncarSendrate   = read.int32(bs)
+	settings.normalFiringSendrate  = read.int32(bs)
+	settings.sendMultiplier        = read.int32(bs)
+	settings.lagCompMode           = read.int32(bs)
+	local hostName                 = read.string8(bs)
+	local vehicleModels = {}
+	for i = 0, 212 - 1 do
+		vehicleModels[i] = read.int8(bs)
+	end
+	local unknown = read.int32(bs)
+	return {playerId, hostName, settings, vehicleModels, unknown}
+end
+
+function handler.on_init_game_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local settings = data[3]
+	local vehicleModels = data[4]
+	write.bool(bs, settings.zoneNames)
+	write.bool(bs, settings.useCJWalk)
+	write.bool(bs, settings.allowWeapons)
+	write.bool(bs, settings.limitGlobalChatRadius)
+	write.float(bs, settings.globalChatRadius)
+	write.bool(bs, settings.stuntBonus)
+	write.float(bs, settings.nametagDrawDist)
+	write.bool(bs, settings.disableEnterExits)
+	write.bool(bs, settings.nametagLOS)
+	write.bool(bs, settings.tirePopping)
+	write.int32(bs, settings.classesAvailable)
+	write.int16(bs, data[1]) -- playerId
+	write.bool(bs, settings.showPlayerTags)
+	write.int32(bs, settings.playerMarkersMode)
+	write.int8(bs, settings.worldTime)
+	write.int8(bs, settings.worldWeather)
+	write.float(bs, settings.gravity)
+	write.bool(bs, settings.lanMode)
+	write.int32(bs, settings.deathMoneyDrop)
+	write.bool(bs, settings.instagib)
+	write.int32(bs, settings.normalOnfootSendrate)
+	write.int32(bs, settings.normalIncarSendrate)
+	write.int32(bs, settings.normalFiringSendrate)
+	write.int32(bs, settings.sendMultiplier)
+	write.int32(bs, settings.lagCompMode)
+	write.string8(bs, data[2]) -- hostName
+	for i = 0, 212 - 1 do
+		write.int8(bs, vehicleModels[i])
+	end
+	write.int32(bs, data[5]) -- unknown
+end
+
+
+--- onInitMenu
+function handler.on_init_menu_reader(bs)
+	local read = BitStreamIO.bs_read
+	local colWidth2
+	local rows = {}
+	local columns = {}
+
+	local readColumn = function(width)
+		local title = read.string256(bs)
+		local rowCount = read.int8(bs)
+		local column = {title = title, width = width, text = {}}
+		for i = 1, rowCount do
+			column.text[i] = read.string256(bs)
+		end
+		return column
+	end
+
+	local menuId     = read.int8(bs)
+	local twoColumns = read.bool32(bs)
+	local menuTitle  = read.string256(bs)
+	local x          = read.float(bs)
+	local y          = read.float(bs)
+	local colWidth1  = read.float(bs)
+	if twoColumns then
+		colWidth2      = read.float(bs)
+	end
+	local menu       = read.bool32(bs)
+	for i = 1, 12 do
+		rows[i]        = read.int32(bs)
+	end
+	columns[1]       = readColumn(colWidth1)
+	if twoColumns then
+		columns[2]     = readColumn(colWidth2)
+	end
+
+	return {menuId, menuTitle, x, y, twoColumns, columns, rows, menu}
+end
+
+function handler.on_init_menu_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local columns = data[6]
+	write.int8(bs, data[1])      -- menuId
+	write.bool32(bs, data[5])    -- twoColumns
+	write.string256(bs, data[2]) -- title
+	write.float(bs, data[3])     -- x
+	write.float(bs, data[4])     -- y
+	-- columns width
+	write.float(bs, columns[1].width)
+	if data[5] then
+		write.float(bs, columns[2].width)
+	end
+	write.bool32(bs, data[8]) -- menu
+	 -- rows
+	for i = 1, 12 do
+		write.int32(bs, data[7][i])
+	end
+	-- columns
+	for i = 1, (data[5] and 2 or 1) do
+		write.string256(bs, columns[i].title)
+		write.int8(bs, #columns[i].text)
+		for r, t in ipairs(columns[i].text) do
+			write.string256(bs, t)
+		end
+	end
+end
+
+
+--- onMarkersSync
+function handler.on_markers_sync_reader(bs)
+	local read = BitStreamIO.bs_read
+	local markers = {}
+	local players = read.int32(bs)
+	for i = 1, players do
+		local playerId = read.int16(bs)
+		local active = read.bool(bs)
+		if active then
+			local Vector3D = require 'lib.vector3d'
+			local x, y, z = read.int16(bs), read.int16(bs), read.int16(bs)
+			table.insert(markers, {playerId = playerId, active = true, coords = Vector3D(x, y, z)})
+		else
+			table.insert(markers, {playerId = playerId, active = false})
+		end
+	end
+	return {markers}
+end
+
+function handler.on_markers_sync_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	write.int32(bs, #data)
+	for i = 1, #data do
+		local it = data[i]
+		write.int16(bs, it.playerId)
+		write.bool(bs, it.active)
+		if it.active then
+			write.int16(bs, it.coords.x)
+			write.int16(bs, it.coords.y)
+			write.int16(bs, it.coords.z)
+		end
+	end
+end
+
+
+--- onPlayerSync
+function handler.on_player_sync_reader(bs)
+	local read = BitStreamIO.bs_read
+	local has_value = read.bool
+	local data = {}
+	local playerId = read.int16(bs)
+	if has_value(bs) then data.leftRightKeys = read.int16(bs) end
+	if has_value(bs) then data.upDownKeys = read.int16(bs) end
+	data.keysData = read.int16(bs)
+	data.position = read.vector3d(bs)
+	data.quaternion = read.normQuat(bs)
+	data.health, data.armor = utils.decompress_health_and_armor(read.int8(bs))
+	data.weapon = read.int8(bs)
+	data.specialAction = read.int8(bs)
+	data.moveSpeed = read.compressedVector(bs)
+	if has_value(bs) then
+		data.surfingVehicleId = read.int16(bs)
+		data.surfingOffsets = read.vector3d(bs)
+	end
+	if has_value(bs) then
+		data.animationId = read.int16(bs)
+		data.animationFlags = read.int16(bs)
+	end
+	return {playerId, data}
+end
+
+function handler.on_player_sync_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local playerId = data[1]
+	local data = data[2]
+	write.int16(bs, playerId)
+	write.bool(bs, data.leftRightKeys ~= nil)
+	if data.leftRightKeys then write.int16(bs, data.leftRightKeys) end
+	write.bool(bs, data.upDownKeys ~= nil)
+	if data.upDownKeys then write.int16(bs, data.upDownKeys) end
+	write.int16(bs, data.keysData)
+	write.vector3d(bs, data.position)
+	write.normQuat(bs, data.quaternion)
+	write.int8(bs, utils.compress_health_and_armor(data.health, data.armor))
+	write.int8(bs, data.weapon)
+	write.int8(bs, data.specialAction)
+	write.compressedVector(bs, data.moveSpeed)
+	write.bool(bs, data.surfingVehicleId ~= nil)
+	if data.surfingVehicleId then
+		write.int16(bs, data.surfingVehicleId)
+		write.vector3d(bs, data.surfingOffsets)
+	end
+	write.bool(bs, data.animationId ~= nil)
+	if data.animationId then
+		write.int16(bs, data.animationId)
+		write.int16(bs, data.animationFlags)
+	end
+end
+
+
+--- onVehicleSync
+function handler.on_vehicle_sync_reader(bs)
+	local read = BitStreamIO.bs_read
+	local data = {}
+	local playerId = read.int16(bs)
+	local vehicleId = read.int16(bs)
+	data.leftRightKeys = read.int16(bs)
+	data.upDownKeys = read.int16(bs)
+	data.keysData = read.int16(bs)
+	data.quaternion = read.normQuat(bs)
+	data.position = read.vector3d(bs)
+	data.moveSpeed = read.compressedVector(bs)
+	data.vehicleHealth = read.int16(bs)
+	data.playerHealth, data.armor = utils.decompress_health_and_armor(read.int8(bs))
+	data.currentWeapon = read.int8(bs)
+	data.siren = read.bool(bs)
+	data.landingGear = read.bool(bs)
+	if read.bool(bs) then
+		data.trainSpeed = read.int32(bs)
+	end
+	if read.bool(bs) then
+		data.trailerId = read.int16(bs)
+	end
+	return {playerId, vehicleId, data}
+end
+
+function handler.on_vehicle_sync_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local playerId = data[1]
+	local vehicleId = data[2]
+	local data = data[3]
+	write.int16(bs, playerId)
+	write.int16(bs, vehicleId)
+	write.int16(bs, data.leftRightKeys)
+	write.int16(bs, data.upDownKeys)
+	write.int16(bs, data.keysData)
+	write.normQuat(bs, data.quaternion)
+	write.vector3d(bs, data.position)
+	write.compressedVector(bs, data.moveSpeed)
+	write.int16(bs, data.vehicleHealth)
+	write.int8(bs, utils.compress_health_and_armor(data.playerHealth, data.armor))
+	write.int8(bs, data.currentWeapon)
+	write.bool(bs, data.siren)
+	write.bool(bs, data.landingGear)
+	write.bool(bs, data.trainSpeed ~= nil)
+	if data.trainSpeed ~= nil then
+		write.int32(bs, data.trainSpeed)
+	end
+	write.bool(bs, data.trailerId ~= nil)
+	if data.trailerId ~= nil then
+		write.int16(bs, data.trailerId)
+	end
+end
+
+
+--- onVehicleStreamIn
+function handler.on_vehicle_stream_in_reader(bs)
+	local read = BitStreamIO.bs_read
+	local data = {modSlots = {}}
+	local vehicleId = read.int16(bs)
+	data.type = read.int32(bs)
+	data.position = read.vector3d(bs)
+	data.rotation = read.float(bs)
+	data.interiorColor1 = read.int8(bs)
+	data.interiorColor2 = read.int8(bs)
+	data.health = read.float(bs)
+	data.interiorId = read.int8(bs)
+	data.doorDamageStatus = read.int32(bs)
+	data.panelDamageStatus = read.int32(bs)
+	data.lightDamageStatus = read.int8(bs)
+	data.tireDamageStatus = read.int8(bs)
+	data.addSiren = read.int8(bs)
+	for i = 1, 14 do data.modSlots[i] = read.int8(bs) end --- fix it
+	data.paintJob = read.int8(bs)
+	data.bodyColor1 = read.int32(bs)
+	data.bodyColor2 = read.int32(bs)
+	data.unk = read.int8(bs)
+	return {vehicleId, data}
+end
+
+function handler.on_vehicle_stream_in_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local vehicleId = data[1]
+	local data = data[2]
+	write.int16(bs, vehicleId)
+	write.int32(bs, data.type)
+	write.vector3d(bs, data.position)
+	write.float(bs, data.rotation)
+	write.int8(bs, data.interiorColor1)
+	write.int8(bs, data.interiorColor2)
+	write.float(bs, data.health)
+	write.int8(bs, data.interiorId)
+	write.int32(bs, data.doorDamageStatus)
+	write.int32(bs, data.panelDamageStatus)
+	write.int8(bs, data.lightDamageStatus)
+	write.int8(bs, data.tireDamageStatus)
+	write.int8(bs, data.addSiren)
+	for i = 1, 14 do write.int8(bs, data.modSlots[i]) end --- fix it
+	write.int8(bs, data.paintJob)
+	write.int32(bs, data.bodyColor1)
+	write.int32(bs, data.bodyColor2)
+	write.int8(bs, data.unk)
+end
+
+
+--- onShowTextDraw
+function handler.on_show_textdraw_reader(bs)
+	local read = BitStreamIO.bs_read
+	local data = {}
+	local textdrawId = read.int16(bs)
+	data.flags = read.int8(bs)
+	data.letterWidth = read.float(bs)
+	data.letterHeight = read.float(bs)
+	data.letterColor = read.int32(bs)
+	data.lineWidth = read.float(bs)
+	data.lineHeight = read.float(bs)
+	data.boxColor = read.int32(bs)
+	data.shadow = read.int8(bs)
+	data.outline = read.int8(bs)
+	data.backgroundColor = read.int32(bs)
+	data.style = read.int8(bs)
+	data.selectable = read.int8(bs)
+	data.position = read.vector2d(bs)
+	data.modelId = read.int16(bs)
+	data.rotation = read.vector3d(bs)
+	data.zoom = read.float(bs)
+	data.color = read.int32(bs)
+	data.text = read.string16(bs)
+	return {textdrawId, data}
+end
+
+function handler.on_show_textdraw_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local textdrawId = data[1]
+	local data = data[2]
+	write.int16(bs, textdrawId)
+	write.int8(bs, data.flags)
+	write.float(bs, data.letterWidth)
+	write.float(bs, data.letterHeight)
+	write.int32(bs, data.letterColor)
+	write.float(bs, data.lineWidth)
+	write.float(bs, data.lineHeight)
+	write.int32(bs, data.boxColor)
+	write.int8(bs, data.shadow)
+	write.int8(bs, data.outline)
+	write.int32(bs, data.backgroundColor)
+	write.int8(bs, data.style)
+	write.int8(bs, data.selectable)
+	write.vector2d(bs, data.position)
+	write.int16(bs, data.modelId)
+	write.vector3d(bs, data.rotation)
+	write.float(bs, data.zoom)
+	write.int32(bs, data.color)
+	write.string16(bs, data.text)
+end
+
+local MATERIAL_TYPE = {
+	NONE = 0,
+	TEXTURE = 1,
+	TEXT = 2,
+}
+
+local function read_object_material(bs)
+	local read = BitStreamIO.bs_read
+	local data = {}
+	data.materialId = read.int8(bs)
+	data.modelId = read.int16(bs)
+	data.libraryName = read.string8(bs)
+	data.textureName = read.string8(bs)
+	data.color = read.int32(bs)
+	data.type = MATERIAL_TYPE.TEXTURE
+	return data
+end
+
+local function write_object_material(bs, data)
+	local write = BitStreamIO.bs_write
+	write.int8(bs, data.type)
+	write.int8(bs, data.materialId)
+	write.int16(bs, data.modelId)
+	write.string8(bs, data.libraryName)
+	write.string8(bs, data.textureName)
+	write.int32(bs, data.color)
+end
+
+local function read_object_material_text(bs)
+	local read = BitStreamIO.bs_read
+	local data = {}
+	data.materialId = read.int8(bs)
+	data.materialSize = read.int8(bs)
+	data.fontName = read.string8(bs)
+	data.fontSize = read.int8(bs)
+	data.bold = read.int8(bs)
+	data.fontColor = read.int32(bs)
+	data.backGroundColor = read.int32(bs)
+	data.align = read.int8(bs)
+	data.text = read.encodedString2048(bs)
+	data.type = MATERIAL_TYPE.TEXT
+	return data
+end
+
+local function write_object_material_text(bs, data)
+	local write = BitStreamIO.bs_write
+	write.int8(bs, data.type)
+	write.int8(bs, data.materialId)
+	write.int8(bs, data.materialSize)
+	write.string8(bs, data.fontName)
+	write.int8(bs, data.fontSize)
+	write.int8(bs, data.bold)
+	write.int32(bs, data.fontColor)
+	write.int32(bs, data.backGroundColor)
+	write.int8(bs, data.align)
+	write.encodedString2048(bs, data.text)
+end
+
+--- onSetObjectMaterial
+function handler.on_set_object_material_reader(bs)
+	local read = BitStreamIO.bs_read
+	local objectId = read.int16(bs)
+	local materialType = read.int8(bs)
+	local material
+	if materialType == MATERIAL_TYPE.TEXTURE then
+		material = read_object_material(bs)
+	elseif materialType == MATERIAL_TYPE.TEXT then
+		material = read_object_material_text(bs)
+	end
+	local ev = materialType == MATERIAL_TYPE.TEXTURE and 'onSetObjectMaterial' or 'onSetObjectMaterialText'
+	return ev, {objectId, material}
+end
+
+function handler.on_set_object_material_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local objectId = data[1]
+	local mat = data[2]
+	write.int16(bs, objectId)
+	if mat.type == MATERIAL_TYPE.TEXTURE then
+		write_object_material(bs, mat)
+	elseif mat.type == MATERIAL_TYPE.TEXT then
+		write_object_material_text(bs, mat)
+	end
+end
+
+
+--- onCreateObject
+function handler.on_create_object_reader(bs)
+	local read = BitStreamIO.bs_read
+	local data = {materials = {}, materialText = {}}
+	local objectId = read.int16(bs)
+	data.modelId = read.int32(bs)
+	data.position = read.vector3d(bs)
+	data.rotation = read.vector3d(bs)
+	data.drawDistance = read.float(bs)
+	data.noCameraCol = read.bool8(bs)
+	data.attachToVehicleId = read.int16(bs)
+	data.attachToObjectId = read.int16(bs)
+	if data.attachToVehicleId ~= 65535 or data.attachToObjectId ~= 65535 then
+		data.attachOffsets = read.vector3d(bs)
+		data.attachRotation = read.vector3d(bs)
+		data.syncRotation = read.bool8(bs)
+	end
+	data.texturesCount = read.int8(bs)
+
+	local materialType
+	while raknetBitStreamGetNumberOfUnreadBits(bs) >= 8 do
+		materialType = read.int8(bs)
+		if materialType == MATERIAL_TYPE.TEXTURE then
+			table.insert(data.materials, read_object_material(bs))
+		elseif materialType == MATERIAL_TYPE.TEXT then
+			table.insert(data.materialText, read_object_material_text(bs))
+		end
+	end
+	data.materials_text = data.materialText -- obsolete
+	return {objectId, data}
+end
+
+function handler.on_create_object_writer(bs, data)
+	local write = BitStreamIO.bs_write
+	local objectId = data[1]
+	local data = data[2]
+	write.int16(bs, objectId)
+	write.int32(bs, data.modelId)
+	write.vector3d(bs, data.position)
+	write.vector3d(bs, data.rotation)
+	write.float(bs, data.drawDistance)
+	write.bool8(bs, data.noCameraCol)
+	write.int16(bs, data.attachToVehicleId)
+	write.int16(bs, data.attachToObjectId)
+	if data.attachToVehicleId ~= 65535 or data.attachToObjectId ~= 65535 then
+		write.vector3d(bs, data.attachOffsets)
+		write.vector3d(bs, data.attachRotation)
+		write.bool8(bs, data.syncRotation)
+	end
+	write.int8(bs, data.texturesCount)
+
+	for _, it in ipairs(data.materials) do
+		write_object_material(bs, it)
+	end
+	for _, it in ipairs(data.materialText) do
+		write_object_material_text(bs, it)
+	end
+end
+
+return handler
+
+
+]], '@samp.events.handlers')
+
+    if not fn then error(err or 'bundle load failed: samp.events.handlers') end
+
+    return fn()
+
+end
+
+
+
+package.preload['samp.events.utils'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of the SAMP.Lua project.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, FYP @ BlastHack Team <blast.hk>
+-- https://github.com/THE-FYP/SAMP.Lua
+
+local ffi = require 'ffi'
+local utils = {}
+
+function utils.decompress_health_and_armor(hpAp)
+	local hp = bit.rshift(hpAp, 4)
+	local armor = bit.band(hpAp, 0x0F)
+	if hp == 0x0F then hp = 100
+	elseif hp ~= 0 then hp = hp * 7
+	end
+	if armor == 0x0F then armor = 100
+	elseif armor ~= 0 then armor = armor * 7
+	end
+	return hp, armor
+end
+
+function utils.compress_health_and_armor(hp, armor)
+	local hpAp = 0
+	if hp > 0 and hp < 100 then hpAp = bit.lshift(hp / 7, 4)
+	elseif hp >= 100 then hpAp = 0xF0
+	end
+	if armor > 0 and armor < 100 then hpAp = bit.bor(hpAp, armor / 7)
+	elseif armor >= 100 then hpAp = bit.bor(hpAp, 0x0F)
+	end
+	return hpAp
+end
+
+function utils.read_sync_data(bs, st)
+	require 'samp.synchronization'
+	local dataStruct = ffi.new(st .. '[1]')
+	raknetBitStreamReadBuffer(bs, tonumber(ffi.cast('intptr_t', dataStruct)), ffi.sizeof(dataStruct))
+	return dataStruct[0]
+end
+
+function utils.write_sync_data(bs, st, ffiobj)
+	require 'samp.synchronization'
+	raknetBitStreamWriteBuffer(bs, tonumber(ffi.cast('intptr_t', ffiobj)), ffi.sizeof(st))
+end
+
+function utils.process_outcoming_sync_data(bs, st)
+	local data = raknetBitStreamGetDataPtr(bs) + 1
+	require 'samp.synchronization'
+	return {ffi.cast(st .. '*', data)}
+end
+
+return utils
+
+
+]], '@samp.events.utils')
+
+    if not fn then error(err or 'bundle load failed: samp.events.utils') end
+
+    return fn()
+
+end
+
+
+
+package.preload['lib.vkeys'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of SA MoonLoader package.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, BlastHack Team <blast.hk>
+
+
+local k = {
+	VK_LBUTTON = 0x01,
+	VK_RBUTTON = 0x02,
+	VK_CANCEL = 0x03,
+	VK_MBUTTON = 0x04,
+	VK_XBUTTON1 = 0x05,
+	VK_XBUTTON2 = 0x06,
+	VK_BACK = 0x08,
+	VK_TAB = 0x09,
+	VK_CLEAR = 0x0C,
+	VK_RETURN = 0x0D,
+	VK_SHIFT = 0x10,
+	VK_CONTROL = 0x11,
+	VK_MENU = 0x12,
+	VK_PAUSE = 0x13,
+	VK_CAPITAL = 0x14,
+	VK_KANA = 0x15,
+	VK_JUNJA = 0x17,
+	VK_FINAL = 0x18,
+	VK_KANJI = 0x19,
+	VK_ESCAPE = 0x1B,
+	VK_CONVERT = 0x1C,
+	VK_NONCONVERT = 0x1D,
+	VK_ACCEPT = 0x1E,
+	VK_MODECHANGE = 0x1F,
+	VK_SPACE = 0x20,
+	VK_PRIOR = 0x21,
+	VK_NEXT = 0x22,
+	VK_END = 0x23,
+	VK_HOME = 0x24,
+	VK_LEFT = 0x25,
+	VK_UP = 0x26,
+	VK_RIGHT = 0x27,
+	VK_DOWN = 0x28,
+	VK_SELECT = 0x29,
+	VK_PRINT = 0x2A,
+	VK_EXECUTE = 0x2B,
+	VK_SNAPSHOT = 0x2C,
+	VK_INSERT = 0x2D,
+	VK_DELETE = 0x2E,
+	VK_HELP = 0x2F,
+	VK_0 = 0x30,
+	VK_1 = 0x31,
+	VK_2 = 0x32,
+	VK_3 = 0x33,
+	VK_4 = 0x34,
+	VK_5 = 0x35,
+	VK_6 = 0x36,
+	VK_7 = 0x37,
+	VK_8 = 0x38,
+	VK_9 = 0x39,
+	VK_A = 0x41,
+	VK_B = 0x42,
+	VK_C = 0x43,
+	VK_D = 0x44,
+	VK_E = 0x45,
+	VK_F = 0x46,
+	VK_G = 0x47,
+	VK_H = 0x48,
+	VK_I = 0x49,
+	VK_J = 0x4A,
+	VK_K = 0x4B,
+	VK_L = 0x4C,
+	VK_M = 0x4D,
+	VK_N = 0x4E,
+	VK_O = 0x4F,
+	VK_P = 0x50,
+	VK_Q = 0x51,
+	VK_R = 0x52,
+	VK_S = 0x53,
+	VK_T = 0x54,
+	VK_U = 0x55,
+	VK_V = 0x56,
+	VK_W = 0x57,
+	VK_X = 0x58,
+	VK_Y = 0x59,
+	VK_Z = 0x5A,
+	VK_LWIN = 0x5B,
+	VK_RWIN = 0x5C,
+	VK_APPS = 0x5D,
+	VK_SLEEP = 0x5F,
+	VK_NUMPAD0 = 0x60,
+	VK_NUMPAD1 = 0x61,
+	VK_NUMPAD2 = 0x62,
+	VK_NUMPAD3 = 0x63,
+	VK_NUMPAD4 = 0x64,
+	VK_NUMPAD5 = 0x65,
+	VK_NUMPAD6 = 0x66,
+	VK_NUMPAD7 = 0x67,
+	VK_NUMPAD8 = 0x68,
+	VK_NUMPAD9 = 0x69,
+	VK_MULTIPLY = 0x6A,
+	VK_ADD = 0x6B,
+	VK_SEPARATOR = 0x6C,
+	VK_SUBTRACT = 0x6D,
+	VK_DECIMAL = 0x6E,
+	VK_DIVIDE = 0x6F,
+	VK_F1 = 0x70,
+	VK_F2 = 0x71,
+	VK_F3 = 0x72,
+	VK_F4 = 0x73,
+	VK_F5 = 0x74,
+	VK_F6 = 0x75,
+	VK_F7 = 0x76,
+	VK_F8 = 0x77,
+	VK_F9 = 0x78,
+	VK_F10 = 0x79,
+	VK_F11 = 0x7A,
+	VK_F12 = 0x7B,
+	VK_F13 = 0x7C,
+	VK_F14 = 0x7D,
+	VK_F15 = 0x7E,
+	VK_F16 = 0x7F,
+	VK_F17 = 0x80,
+	VK_F18 = 0x81,
+	VK_F19 = 0x82,
+	VK_F20 = 0x83,
+	VK_F21 = 0x84,
+	VK_F22 = 0x85,
+	VK_F23 = 0x86,
+	VK_F24 = 0x87,
+	VK_NUMLOCK = 0x90,
+	VK_SCROLL = 0x91,
+	VK_OEM_FJ_JISHO = 0x92,
+	VK_OEM_FJ_MASSHOU = 0x93,
+	VK_OEM_FJ_TOUROKU = 0x94,
+	VK_OEM_FJ_LOYA = 0x95,
+	VK_OEM_FJ_ROYA = 0x96,
+	VK_LSHIFT = 0xA0,
+	VK_RSHIFT = 0xA1,
+	VK_LCONTROL = 0xA2,
+	VK_RCONTROL = 0xA3,
+	VK_LMENU = 0xA4,
+	VK_RMENU = 0xA5,
+	VK_BROWSER_BACK = 0xA6,
+	VK_BROWSER_FORWARD = 0xA7,
+	VK_BROWSER_REFRESH = 0xA8,
+	VK_BROWSER_STOP = 0xA9,
+	VK_BROWSER_SEARCH = 0xAA,
+	VK_BROWSER_FAVORITES = 0xAB,
+	VK_BROWSER_HOME = 0xAC,
+	VK_VOLUME_MUTE = 0xAD,
+	VK_VOLUME_DOWN = 0xAE,
+	VK_VOLUME_UP = 0xAF,
+	VK_MEDIA_NEXT_TRACK = 0xB0,
+	VK_MEDIA_PREV_TRACK = 0xB1,
+	VK_MEDIA_STOP = 0xB2,
+	VK_MEDIA_PLAY_PAUSE = 0xB3,
+	VK_LAUNCH_MAIL = 0xB4,
+	VK_LAUNCH_MEDIA_SELECT = 0xB5,
+	VK_LAUNCH_APP1 = 0xB6,
+	VK_LAUNCH_APP2 = 0xB7,
+	VK_OEM_1 = 0xBA,
+	VK_OEM_PLUS = 0xBB,
+	VK_OEM_COMMA = 0xBC,
+	VK_OEM_MINUS = 0xBD,
+	VK_OEM_PERIOD = 0xBE,
+	VK_OEM_2 = 0xBF,
+	VK_OEM_3 = 0xC0,
+	VK_ABNT_C1 = 0xC1,
+	VK_ABNT_C2 = 0xC2,
+	VK_OEM_4 = 0xDB,
+	VK_OEM_5 = 0xDC,
+	VK_OEM_6 = 0xDD,
+	VK_OEM_7 = 0xDE,
+	VK_OEM_8 = 0xDF,
+	VK_OEM_AX = 0xE1,
+	VK_OEM_102 = 0xE2,
+	VK_ICO_HELP = 0xE3,
+	VK_PROCESSKEY = 0xE5,
+	VK_ICO_CLEAR = 0xE6,
+	VK_PACKET = 0xE7,
+	VK_OEM_RESET = 0xE9,
+	VK_OEM_JUMP = 0xEA,
+	VK_OEM_PA1 = 0xEB,
+	VK_OEM_PA2 = 0xEC,
+	VK_OEM_PA3 = 0xED,
+	VK_OEM_WSCTRL = 0xEE,
+	VK_OEM_CUSEL = 0xEF,
+	VK_OEM_ATTN = 0xF0,
+	VK_OEM_FINISH = 0xF1,
+	VK_OEM_COPY = 0xF2,
+	VK_OEM_AUTO = 0xF3,
+	VK_OEM_ENLW = 0xF4,
+	VK_OEM_BACKTAB = 0xF5,
+	VK_ATTN = 0xF6,
+	VK_CRSEL = 0xF7,
+	VK_EXSEL = 0xF8,
+	VK_EREOF = 0xF9,
+	VK_PLAY = 0xFA,
+	VK_ZOOM = 0xFB,
+	VK_PA1 = 0xFD,
+	VK_OEM_CLEAR = 0xFE,
+}
+
+local names = {
+	[k.VK_LBUTTON] = 'Left Button',
+	[k.VK_RBUTTON] = 'Right Button',
+	[k.VK_CANCEL] = 'Break',
+	[k.VK_MBUTTON] = 'Middle Button',
+	[k.VK_XBUTTON1] = 'X Button 1',
+	[k.VK_XBUTTON2] = 'X Button 2',
+	[k.VK_BACK] = 'Backspace',
+	[k.VK_TAB] = 'Tab',
+	[k.VK_CLEAR] = 'Clear',
+	[k.VK_RETURN] = 'Enter',
+	[k.VK_SHIFT] = 'Shift',
+	[k.VK_CONTROL] = 'Ctrl',
+	[k.VK_MENU] = 'Alt',
+	[k.VK_PAUSE] = 'Pause',
+	[k.VK_CAPITAL] = 'Caps Lock',
+	[k.VK_KANA] = 'Kana',
+	[k.VK_JUNJA] = 'Junja',
+	[k.VK_FINAL] = 'Final',
+	[k.VK_KANJI] = 'Kanji',
+	[k.VK_ESCAPE] = 'Esc',
+	[k.VK_CONVERT] = 'Convert',
+	[k.VK_NONCONVERT] = 'Non Convert',
+	[k.VK_ACCEPT] = 'Accept',
+	[k.VK_MODECHANGE] = 'Mode Change',
+	[k.VK_SPACE] = 'Space',
+	[k.VK_PRIOR] = 'Page Up',
+	[k.VK_NEXT] = 'Page Down',
+	[k.VK_END] = 'End',
+	[k.VK_HOME] = 'Home',
+	[k.VK_LEFT] = 'Arrow Left',
+	[k.VK_UP] = 'Arrow Up',
+	[k.VK_RIGHT] = 'Arrow Right',
+	[k.VK_DOWN] = 'Arrow Down',
+	[k.VK_SELECT] = 'Select',
+	[k.VK_PRINT] = 'Print',
+	[k.VK_EXECUTE] = 'Execute',
+	[k.VK_SNAPSHOT] = 'Print Screen',
+	[k.VK_INSERT] = 'Insert',
+	[k.VK_DELETE] = 'Delete',
+	[k.VK_HELP] = 'Help',
+	[k.VK_0] = '0',
+	[k.VK_1] = '1',
+	[k.VK_2] = '2',
+	[k.VK_3] = '3',
+	[k.VK_4] = '4',
+	[k.VK_5] = '5',
+	[k.VK_6] = '6',
+	[k.VK_7] = '7',
+	[k.VK_8] = '8',
+	[k.VK_9] = '9',
+	[k.VK_A] = 'A',
+	[k.VK_B] = 'B',
+	[k.VK_C] = 'C',
+	[k.VK_D] = 'D',
+	[k.VK_E] = 'E',
+	[k.VK_F] = 'F',
+	[k.VK_G] = 'G',
+	[k.VK_H] = 'H',
+	[k.VK_I] = 'I',
+	[k.VK_J] = 'J',
+	[k.VK_K] = 'K',
+	[k.VK_L] = 'L',
+	[k.VK_M] = 'M',
+	[k.VK_N] = 'N',
+	[k.VK_O] = 'O',
+	[k.VK_P] = 'P',
+	[k.VK_Q] = 'Q',
+	[k.VK_R] = 'R',
+	[k.VK_S] = 'S',
+	[k.VK_T] = 'T',
+	[k.VK_U] = 'U',
+	[k.VK_V] = 'V',
+	[k.VK_W] = 'W',
+	[k.VK_X] = 'X',
+	[k.VK_Y] = 'Y',
+	[k.VK_Z] = 'Z',
+	[k.VK_LWIN] = 'Left Win',
+	[k.VK_RWIN] = 'Right Win',
+	[k.VK_APPS] = 'Context Menu',
+	[k.VK_SLEEP] = 'Sleep',
+	[k.VK_NUMPAD0] = 'Numpad 0',
+	[k.VK_NUMPAD1] = 'Numpad 1',
+	[k.VK_NUMPAD2] = 'Numpad 2',
+	[k.VK_NUMPAD3] = 'Numpad 3',
+	[k.VK_NUMPAD4] = 'Numpad 4',
+	[k.VK_NUMPAD5] = 'Numpad 5',
+	[k.VK_NUMPAD6] = 'Numpad 6',
+	[k.VK_NUMPAD7] = 'Numpad 7',
+	[k.VK_NUMPAD8] = 'Numpad 8',
+	[k.VK_NUMPAD9] = 'Numpad 9',
+	[k.VK_MULTIPLY] = 'Numpad *',
+	[k.VK_ADD] = 'Numpad +',
+	[k.VK_SEPARATOR] = 'Separator',
+	[k.VK_SUBTRACT] = 'Num -',
+	[k.VK_DECIMAL] = 'Numpad .',
+	[k.VK_DIVIDE] = 'Numpad /',
+	[k.VK_F1] = 'F1',
+	[k.VK_F2] = 'F2',
+	[k.VK_F3] = 'F3',
+	[k.VK_F4] = 'F4',
+	[k.VK_F5] = 'F5',
+	[k.VK_F6] = 'F6',
+	[k.VK_F7] = 'F7',
+	[k.VK_F8] = 'F8',
+	[k.VK_F9] = 'F9',
+	[k.VK_F10] = 'F10',
+	[k.VK_F11] = 'F11',
+	[k.VK_F12] = 'F12',
+	[k.VK_F13] = 'F13',
+	[k.VK_F14] = 'F14',
+	[k.VK_F15] = 'F15',
+	[k.VK_F16] = 'F16',
+	[k.VK_F17] = 'F17',
+	[k.VK_F18] = 'F18',
+	[k.VK_F19] = 'F19',
+	[k.VK_F20] = 'F20',
+	[k.VK_F21] = 'F21',
+	[k.VK_F22] = 'F22',
+	[k.VK_F23] = 'F23',
+	[k.VK_F24] = 'F24',
+	[k.VK_NUMLOCK] = 'Num Lock',
+	[k.VK_SCROLL] = 'Scrol Lock',
+	[k.VK_OEM_FJ_JISHO] = 'Jisho',
+	[k.VK_OEM_FJ_MASSHOU] = 'Mashu',
+	[k.VK_OEM_FJ_TOUROKU] = 'Touroku',
+	[k.VK_OEM_FJ_LOYA] = 'Loya',
+	[k.VK_OEM_FJ_ROYA] = 'Roya',
+	[k.VK_LSHIFT] = 'Left Shift',
+	[k.VK_RSHIFT] = 'Right Shift',
+	[k.VK_LCONTROL] = 'Left Ctrl',
+	[k.VK_RCONTROL] = 'Right Ctrl',
+	[k.VK_LMENU] = 'Left Alt',
+	[k.VK_RMENU] = 'Right Alt',
+	[k.VK_BROWSER_BACK] = 'Browser Back',
+	[k.VK_BROWSER_FORWARD] = 'Browser Forward',
+	[k.VK_BROWSER_REFRESH] = 'Browser Refresh',
+	[k.VK_BROWSER_STOP] = 'Browser Stop',
+	[k.VK_BROWSER_SEARCH] = 'Browser Search',
+	[k.VK_BROWSER_FAVORITES] = 'Browser Favorites',
+	[k.VK_BROWSER_HOME] = 'Browser Home',
+	[k.VK_VOLUME_MUTE] = 'Volume Mute',
+	[k.VK_VOLUME_DOWN] = 'Volume Down',
+	[k.VK_VOLUME_UP] = 'Volume Up',
+	[k.VK_MEDIA_NEXT_TRACK] = 'Next Track',
+	[k.VK_MEDIA_PREV_TRACK] = 'Previous Track',
+	[k.VK_MEDIA_STOP] = 'Stop',
+	[k.VK_MEDIA_PLAY_PAUSE] = 'Play / Pause',
+	[k.VK_LAUNCH_MAIL] = 'Mail',
+	[k.VK_LAUNCH_MEDIA_SELECT] = 'Media',
+	[k.VK_LAUNCH_APP1] = 'App1',
+	[k.VK_LAUNCH_APP2] = 'App2',
+	[k.VK_OEM_1] = {';', ':'},
+	[k.VK_OEM_PLUS] = {'=', '+'},
+	[k.VK_OEM_COMMA] = {',', '<'},
+	[k.VK_OEM_MINUS] = {'-', '_'},
+	[k.VK_OEM_PERIOD] = {'.', '>'},
+	[k.VK_OEM_2] = {'/', '?'},
+	[k.VK_OEM_3] = {'`', '~'},
+	[k.VK_ABNT_C1] = 'Abnt C1',
+	[k.VK_ABNT_C2] = 'Abnt C2',
+	[k.VK_OEM_4] = {'[', '{'},
+	[k.VK_OEM_5] = {'\'', '|'},
+	[k.VK_OEM_6] = {']', '}'},
+	[k.VK_OEM_7] = {'\'', '"'},
+	[k.VK_OEM_8] = {'!', '�'},
+	[k.VK_OEM_AX] = 'Ax',
+	[k.VK_OEM_102] = '> <',
+	[k.VK_ICO_HELP] = 'IcoHlp',
+	[k.VK_PROCESSKEY] = 'Process',
+	[k.VK_ICO_CLEAR] = 'IcoClr',
+	[k.VK_PACKET] = 'Packet',
+	[k.VK_OEM_RESET] = 'Reset',
+	[k.VK_OEM_JUMP] = 'Jump',
+	[k.VK_OEM_PA1] = 'OemPa1',
+	[k.VK_OEM_PA2] = 'OemPa2',
+	[k.VK_OEM_PA3] = 'OemPa3',
+	[k.VK_OEM_WSCTRL] = 'WsCtrl',
+	[k.VK_OEM_CUSEL] = 'Cu Sel',
+	[k.VK_OEM_ATTN] = 'Oem Attn',
+	[k.VK_OEM_FINISH] = 'Finish',
+	[k.VK_OEM_COPY] = 'Copy',
+	[k.VK_OEM_AUTO] = 'Auto',
+	[k.VK_OEM_ENLW] = 'Enlw',
+	[k.VK_OEM_BACKTAB] = 'Back Tab',
+	[k.VK_ATTN] = 'Attn',
+	[k.VK_CRSEL] = 'Cr Sel',
+	[k.VK_EXSEL] = 'Ex Sel',
+	[k.VK_EREOF] = 'Er Eof',
+	[k.VK_PLAY] = 'Play',
+	[k.VK_ZOOM] = 'Zoom',
+	[k.VK_PA1] = 'Pa1',
+	[k.VK_OEM_CLEAR] = 'OemClr'
+}
+
+k.key_names = names
+
+function k.id_to_name(vkey)
+	local name = names[vkey]
+	if type(name) == 'table' then
+		return name[1]
+	end
+	return name
+end
+
+function k.name_to_id(keyname, case_sensitive)
+	if not case_sensitive then
+		keyname = string.upper(keyname)
+	end
+	for id, v in pairs(names) do
+		if type(v) == 'table' then
+			for _, v2 in pairs(v) do
+				v2 = (case_sensitive) and v2 or string.upper(v2)
+				if v2 == keyname then
+					return id
+				end
+			end
+		else
+			local name = (case_sensitive) and v or string.upper(v)
+			if name == keyname then
+				return id
+			end
+		end
+	end
+end
+
+return k
+
+]], '@lib.vkeys')
+
+    if not fn then error(err or 'bundle load failed: lib.vkeys') end
+
+    return fn()
+
+end
+
+
+
+package.preload['encoding'] = function()
+
+    local fn, err = loadstring([=[
+
+-- This file is part of SA MoonLoader package.
+-- Licensed under the MIT License.
+-- Copyright (c) 2017, BlastHack Team <blast.hk>
+
+-- For information about iconv and lua-iconv see the 'iconv' directory
+
+-------------------
+--- USAGE GUIDE ---
+-------------------
+--[[
+-- initialization
+local encoding = require 'encoding'
+encoding.default = 'cp1251' -- set the same encoding as script file
+u8 = encoding.UTF8 -- get the UTF-8 converter
+
+-- usage
+local utf8_string = u8'text in cp1251' -- convert to UTF-8 from default encoding
+local utf8_string = u8:encode('text in cp1251') -- same as above
+local text = u8:decode(utf8_string) -- convert UTF-8 back to default encoding
+local utf8_from_ucs2be = u8(ucs2be_string, 'UCS-2BE') -- convert to UTF-8 from another encoding
+local text_latin1 = u8:decode(utf8_from_ucs2be, 'ISO-8859-1') -- decode UTF-8 to a non-default encoding
+]]
+
+local iconv = require 'iconv'
+
+local encoding = {
+	default = 'ASCII'
+}
+
+local aliases = {
+	UTF7 = 'UTF-7',
+	UTF8 = 'UTF-8',
+	UTF16 = 'UTF-16',
+	UTF32 = 'UTF-32'
+}
+
+local function normalize_encoding_name(e)
+	e = string.upper(string.gsub(e, '_', '-'))
+	if aliases[e] then return aliases[e] end
+	return e
+end
+
+local converter = {}
+function converter.new(enc)
+	local private = {
+		encoder = {},
+		decoder = {},
+	}
+
+	local public = {
+		encoding = enc
+	}
+	function public:encode(str, enc)
+		if enc then enc = normalize_encoding_name(enc)
+		else enc = encoding.default
+		end
+		local cd = private.encoder[enc]
+		if not cd then
+			cd = iconv.new(self.encoding .. '//IGNORE', enc)
+			assert(cd)
+			private.encoder[enc] = cd
+		end
+		local encoded = cd:iconv(str)
+		return encoded
+	end
+
+	function public:decode(str, enc)
+		if enc then enc = normalize_encoding_name(enc)
+		else enc = encoding.default
+		end
+		local cd = private.decoder[enc]
+		if not cd then
+			cd = iconv.new(enc .. '//IGNORE', self.encoding)
+			assert(cd)
+			private.decoder[enc] = cd
+		end
+		local decoded = cd:iconv(str)
+		return decoded
+	end
+
+	local mt = {}
+	function mt:__call(str, enc)
+		return self:encode(str, enc)
+	end
+
+	setmetatable(public, mt)
+	return public
+end
+
+setmetatable(encoding, {
+	__index = function(table, index)
+		assert(type(index) == 'string')
+		local enc = normalize_encoding_name(index)
+		local already_loaded = rawget(table, enc)
+		if already_loaded then
+			table[index] = already_loaded
+			return already_loaded
+		else
+			-- create new converter
+			local conv = converter.new(enc)
+			table[index] = conv
+			table[enc] = conv
+			return conv
+		end
+	end
+})
+
+return encoding
+
+
+]=], '@encoding')
+
+    if not fn then error(err or 'bundle load failed: encoding') end
+
+    return fn()
+
+end
+
+
+
+package.preload['lib.vector3d'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of SA MoonLoader package.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, BlastHack Team <blast.hk>
+
+-- Vector3D class
+-- authors: MTA Team (original MTA's CVector), FYP (lua implementation)
+
+
+local EPSILON = 0.0001
+local function isNearZero(f)
+	return math.abs(f) < EPSILON
+end
+
+Vector3D = function(x, y, z)
+	local mt = {}
+	local obj = {
+		x = x,
+		y = y,
+		z = z
+	}
+
+	function obj:get()
+		return self.x, self.y, self.z
+	end
+
+	function obj:length()
+		return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+	end
+
+	function obj:normalize()
+		local len = self:length()
+		if len < EPSILON then return 0 end
+		self.x = self.x / len
+		self.y = self.y / len
+		self.z = self.z / len
+		return len
+	end
+
+	function obj:zeroNearZero()
+		if isNearZero(self.x) then self.x = 0 end
+		if isNearZero(self.y) then self.y = 0 end
+		if isNearZero(self.z) then self.z = 0 end
+	end
+
+	function obj:dotProduct(v)
+		return self.x * v.x + self.y * v.y + self.z * v.z
+	end
+
+	function obj:crossProduct(v)
+		local x, y, z = self.x, self.y, self.z
+		self.x = y * v.z - v.y * z
+		self.y = z * v.x - v.z * x
+		self.z = x * v.y - v.x * y
+	end
+
+	obj.zero_near_zero = obj.zeroNearZero
+	obj.dot_product = obj.dotProduct
+	obj.cross_product = obj.crossProduct
+
+	-- meta
+	function mt:__add(v)
+		return Vector3D(self.x + v.x, self.y + v.y, self.z + v.z)
+	end
+
+	function mt:__mul(v)
+		if type(v) == "number" then
+			return Vector3D(self.x * v, self.y * v, self.z * v)
+		end
+		return Vector3D(self.x * v.x, self.y * v.y, self.z * v.z)
+	end
+
+	function mt:__sub(v)
+		return Vector3D(self.x - v.x, self.y - v.y, self.z - v.z)
+	end
+
+	setmetatable(obj, mt)
+	return obj
+end
+
+return Vector3D
+
+
+]], '@lib.vector3d')
+
+    if not fn then error(err or 'bundle load failed: lib.vector3d') end
+
+    return fn()
+
+end
+
+
+
+package.preload['vector3d'] = function()
+
+    local fn, err = loadstring([[
+
+-- This file is part of SA MoonLoader package.
+-- Licensed under the MIT License.
+-- Copyright (c) 2016, BlastHack Team <blast.hk>
+
+-- Vector3D class
+-- authors: MTA Team (original MTA's CVector), FYP (lua implementation)
+
+
+local EPSILON = 0.0001
+local function isNearZero(f)
+	return math.abs(f) < EPSILON
+end
+
+Vector3D = function(x, y, z)
+	local mt = {}
+	local obj = {
+		x = x,
+		y = y,
+		z = z
+	}
+
+	function obj:get()
+		return self.x, self.y, self.z
+	end
+
+	function obj:length()
+		return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+	end
+
+	function obj:normalize()
+		local len = self:length()
+		if len < EPSILON then return 0 end
+		self.x = self.x / len
+		self.y = self.y / len
+		self.z = self.z / len
+		return len
+	end
+
+	function obj:zeroNearZero()
+		if isNearZero(self.x) then self.x = 0 end
+		if isNearZero(self.y) then self.y = 0 end
+		if isNearZero(self.z) then self.z = 0 end
+	end
+
+	function obj:dotProduct(v)
+		return self.x * v.x + self.y * v.y + self.z * v.z
+	end
+
+	function obj:crossProduct(v)
+		local x, y, z = self.x, self.y, self.z
+		self.x = y * v.z - v.y * z
+		self.y = z * v.x - v.z * x
+		self.z = x * v.y - v.x * y
+	end
+
+	obj.zero_near_zero = obj.zeroNearZero
+	obj.dot_product = obj.dotProduct
+	obj.cross_product = obj.crossProduct
+
+	-- meta
+	function mt:__add(v)
+		return Vector3D(self.x + v.x, self.y + v.y, self.z + v.z)
+	end
+
+	function mt:__mul(v)
+		if type(v) == "number" then
+			return Vector3D(self.x * v, self.y * v, self.z * v)
+		end
+		return Vector3D(self.x * v.x, self.y * v.y, self.z * v.z)
+	end
+
+	function mt:__sub(v)
+		return Vector3D(self.x - v.x, self.y - v.y, self.z - v.z)
+	end
+
+	setmetatable(obj, mt)
+	return obj
+end
+
+return Vector3D
+
+
+]], '@vector3d')
+
+    if not fn then error(err or 'bundle load failed: vector3d') end
+
+    return fn()
+
+end
+
+
+
 
 do
 
@@ -10862,6 +13409,45 @@ do
 --[[ Модуль: bootstrap — require зависимостей, imgui compat, encoding CP1251. ]]
 require 'lib.moonloader'
 require 'lib.sampfuncs'
+
+local function ensureIconvDll()
+    local iconvPath = getWorkingDirectory() .. '\\lib\\iconv.dll'
+    if doesFileExist(iconvPath) then
+        return true
+    end
+    if not downloadUrlToFile then
+        return false
+    end
+    local libDir = getWorkingDirectory() .. '\\lib'
+    if not doesDirectoryExist(libDir) then
+        createDirectory(libDir)
+    end
+    local url = 'https://github.com/illusshion/report_desk_helper/releases/latest/download/iconv.dll'
+    local tmp = iconvPath .. '.download'
+    downloadUrlToFile(url, tmp)
+    local deadline = os.clock() + 30
+    while os.clock() < deadline do
+        if doesFileExist(tmp) then
+            local f = io.open(tmp, 'rb')
+            if f then
+                local n = f:seek('end') or 0
+                f:close()
+                if n > 4096 then
+                    if doesFileExist(iconvPath) then
+                        os.remove(iconvPath)
+                    end
+                    os.rename(tmp, iconvPath)
+                    if doesFileExist(iconvPath) then
+                        print('[Report Desk] iconv.dll installed')
+                        return true
+                    end
+                end
+            end
+        end
+        wait(50)
+    end
+    return doesFileExist(iconvPath)
+end
 
 local sampev = require 'lib.samp.events'
 local imgui = require 'mimgui'
@@ -10879,6 +13465,9 @@ pcall(function()
     ffi.cdef[[short GetAsyncKeyState(int vKey);]]
     cheat_user32 = ffi.load('user32')
 end)
+if not ensureIconvDll() then
+    error('[Report Desk] missing lib/iconv.dll (network required once)')
+end
 local encoding = require 'encoding'
 local vkeys = require 'lib.vkeys'
 encoding.default = 'CP1251'

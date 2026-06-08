@@ -6,7 +6,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.10')
+script_version('1.0.11')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 -- mimgui ставится через report_desk_deps (не в script_dependencies — иначе ML не запустит main)
 script_dependencies('SAMP', 'SAMPFUNCS')
@@ -59,8 +59,8 @@ function main()
     if fullDeskSourcePresent() then
         return
     end
-    if not isSampfuncsLoaded() or not isSampLoaded() then
-        return
+    while not isSampfuncsLoaded() or not isSampLoaded() do
+        wait(100)
     end
     while not isSampAvailable() do
         wait(100)
@@ -72,14 +72,31 @@ function main()
     end)
     local chatSay = autoupdate and autoupdate.chatSay or nil
 
+    local manifest = nil
+    if autoupdate and autoupdate.fetchRemoteManifest then
+        manifest = select(1, autoupdate.fetchRemoteManifest())
+        if manifest and autoupdate.ensureBootstrap then
+            local bootstrapReload = select(1, autoupdate.ensureBootstrap(manifest, { say = chatSay }))
+            if bootstrapReload then
+                return
+            end
+            package.loaded['report_desk_autoupdate'] = nil
+            package.loaded['report_desk_deps'] = nil
+            pcall(function()
+                autoupdate = require('report_desk_autoupdate')
+            end)
+            chatSay = autoupdate and autoupdate.chatSay or chatSay
+        end
+    end
+
     local deps = nil
     pcall(function()
         deps = require('report_desk_deps')
     end)
     if deps then
-        local depsOk, installed = deps.ensureAll({ say = chatSay })
+        local depsOk, installed = deps.ensureAll({ say = chatSay, manifest = manifest })
         if not depsOk then
-            print('[Report Desk] launcher: deps check failed (see chat / reinstall zip)')
+            print('[Report Desk] launcher: deps check failed (see chat / moonloader.log)')
             return
         end
         if installed and thisScript and thisScript().reload then
@@ -157,6 +174,12 @@ function main()
         print('[Report Desk] core error: ' .. tostring(runErr))
         if autoupdate and autoupdate.chatSay then
             autoupdate.chatSay('core error (see moonloader.log)')
+        end
+        if autoupdate and manifest and autoupdate.ensureBootstrap then
+            local healed = select(1, autoupdate.ensureBootstrap(manifest, { say = chatSay }))
+            if healed and thisScript and thisScript().reload then
+                return
+            end
         end
     end
 end

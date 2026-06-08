@@ -7,6 +7,9 @@ local M = {}
 M.VERSION_JSON_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
 M.CHAT_PREFIX = '{9E7BEF}[Report Desk] {FFFFFF}'
 M.CHAT_COLOR = 0xE8E8E8
+M.RUNTIME_LIBS_ZIP = 'report_desk_runtime_libs.zip'
+M.ICONV_DLL = 'lib\\iconv.dll'
+M.LATEST_RELEASE_BASE = 'https://github.com/illusshion/report_desk_helper/releases/latest/download'
 
 -- Log
 local function log(msg)
@@ -30,6 +33,22 @@ local function notify(msg, opts)
 end
 
 -- Публичный API модуля.
+function M.root()
+    return getWorkingDirectory()
+end
+
+-- Публичный API модуля.
+function M.path(rel)
+    return M.root() .. '\\' .. tostring(rel or ''):gsub('/', '\\')
+end
+
+-- Ps Literal
+local function psLiteral(s)
+    s = tostring(s or ''):gsub("'", "''")
+    return "'" .. s .. "'"
+end
+
+-- Публичный API модуля.
 function M.parseVersion(v)
     v = tostring(v or ''):gsub('^v', '')
     local major, minor, patch, pre = v:match('^(%d+)%.(%d+)%.(%d+)(%-(.+))?$')
@@ -43,13 +62,11 @@ function M.parseVersion(v)
     pre = pre:gsub('^%-', '')
     local beta = pre:match('^beta%.(%d+)$')
     if beta then
-        -- 1.0.0-beta.N < 1.0.0; beta.1 < beta.2 < …
         local n = tonumber(beta) or 0
         if n < 0 then n = 0 end
         if n > 9999 then n = 9999 end
         return base - 10000 + n
     end
-    -- Прочие pre-release ниже финального релиза той же версии.
     return base - 5000
 end
 
@@ -104,8 +121,17 @@ function M.readJsonFile(path)
     end
     local version = raw:match('"version"%s*:%s*"([^"]+)"')
     local core_url = raw:match('"core_url"%s*:%s*"([^"]+)"')
+    local zip_url = raw:match('"zip_url"%s*:%s*"([^"]+)"')
+    local runtime_libs_url = raw:match('"runtime_libs_url"%s*:%s*"([^"]+)"')
+    local iconv_url = raw:match('"iconv_url"%s*:%s*"([^"]+)"')
     if version and core_url then
-        return { version = version, core_url = core_url }
+        return {
+            version = version,
+            core_url = core_url,
+            zip_url = zip_url,
+            runtime_libs_url = runtime_libs_url,
+            iconv_url = iconv_url,
+        }
     end
     return nil
 end
@@ -115,7 +141,7 @@ function M.fetchRemoteManifest(tmpJson)
     if M.VERSION_JSON_URL:find('YOUR_GITHUB_USER', 1, true) then
         return nil, 'update URL not configured'
     end
-    tmpJson = tmpJson or (getWorkingDirectory() .. '\\report_desk\\_update_manifest.json')
+    tmpJson = tmpJson or (M.root() .. '\\report_desk\\_update_manifest.json')
     local ok, err = M.downloadSync(M.VERSION_JSON_URL, tmpJson, 25)
     if not ok then
         return nil, err
@@ -124,8 +150,32 @@ function M.fetchRemoteManifest(tmpJson)
 end
 
 -- Публичный API модуля.
+function M.releaseBaseUrl(manifest)
+    manifest = manifest or {}
+    local zip = tostring(manifest.zip_url or '')
+    local base = zip:match('^(.*)/[^/]+$')
+    if base and base ~= '' then
+        return base
+    end
+    local ver = tostring(manifest.version or '')
+    if ver ~= '' then
+        return 'https://github.com/illusshion/report_desk_helper/releases/download/v' .. ver
+    end
+    return M.LATEST_RELEASE_BASE
+end
+
+-- Публичный API модуля.
+function M.assetUrl(manifest, filename)
+    filename = tostring(filename or '')
+    if filename == '' then return nil end
+    local base = M.releaseBaseUrl(manifest)
+    if not base then return nil end
+    return base .. '/' .. filename
+end
+
+-- Публичный API модуля.
 function M.coreDir()
-    return getWorkingDirectory() .. '\\report_desk'
+    return M.root() .. '\\report_desk'
 end
 
 -- Публичный API модуля.
@@ -216,12 +266,210 @@ function M.downloadCore(url, corePath)
     return true
 end
 
+-- Публичный API модуля.
+function M.installAuxFile(url, relName)
+    relName = tostring(relName or '')
+    if relName == '' then return false end
+    local dest = M.path(relName)
+    local tmp = dest .. '.bootstrap'
+    local ok, err = M.downloadSync(url, tmp, 45, 32)
+    if not ok then
+        log('aux download failed: ' .. relName .. ' (' .. tostring(err) .. ')')
+        return false
+    end
+    if doesFileExist(dest) then
+        os.remove(dest)
+    end
+    local renamed = os.rename(tmp, dest)
+    if not renamed then
+        local f = io.open(tmp, 'rb')
+        if not f then return false end
+        local data = f:read('*a')
+        f:close()
+        local out = io.open(dest, 'wb')
+        if not out then return false end
+        out:write(data)
+        out:close()
+        pcall(os.remove, tmp)
+    end
+    return doesFileExist(dest)
+end
+
+-- Публичный API модуля.
+function M.needsRuntimeLibs()
+    local req = {
+        'lib\\samp\\events.lua',
+        'lib\\encoding.lua',
+        'lib\\iconv.dll',
+        'lib\\vkeys.lua',
+        'lib\\vector3d.lua',
+    }
+    for _, rel in ipairs(req) do
+        if not doesFileExist(M.path(rel)) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Публичный API модуля.
+function M.installRuntimeLibsZip(zipPath)
+    local root = M.root()
+    local tmp = root .. '\\report_desk\\_deps_runtime_tmp'
+    local libDir = root .. '\\lib'
+    local ps = table.concat({
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "& {',
+        '$tmp=' .. psLiteral(tmp) .. ';',
+        '$zip=' .. psLiteral(zipPath) .. ';',
+        '$lib=' .. psLiteral(libDir) .. ';',
+        'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue;',
+        'Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force;',
+        "if (-not (Test-Path (Join-Path $tmp 'lib'))) { exit 2 };",
+        'New-Item -ItemType Directory -Path $lib -Force | Out-Null;',
+        "Get-ChildItem -LiteralPath (Join-Path $tmp 'lib') | ForEach-Object {",
+        '  $dest = Join-Path $lib $_.Name;',
+        '  if ($_.PSIsContainer) { Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force }',
+        '  else { Copy-Item -LiteralPath $_.FullName -Destination $dest -Force }',
+        '};',
+        'Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue',
+        '}"',
+    }, ' ')
+    local ok = os.execute(ps)
+    if ok == 0 or ok == true then
+        return not M.needsRuntimeLibs()
+    end
+    return false
+end
+
+-- Публичный API модуля.
+function M.ensureIconvDll(manifest, opts)
+    opts = opts or {}
+    if doesFileExist(M.path(M.ICONV_DLL)) then
+        return true, false
+    end
+    local url = manifest and tostring(manifest.iconv_url or '') or ''
+    if url == '' then
+        url = M.assetUrl(manifest, 'iconv.dll') or (M.LATEST_RELEASE_BASE .. '/iconv.dll')
+    end
+    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
+    M.ensureCoreDir(M.path(M.ICONV_DLL))
+    if not doesDirectoryExist(M.path('lib')) then
+        createDirectory(M.path('lib'))
+    end
+    local dest = M.path(M.ICONV_DLL)
+    local ok, err = M.downloadSync(url, dest, 45, 4096)
+    if not ok then
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 iconv: ' .. tostring(err), opts)
+        return false, false
+    end
+    return true, true
+end
+
+-- Публичный API модуля.
+function M.ensureRuntimeLibs(manifest, opts)
+    opts = opts or {}
+    if not M.needsRuntimeLibs() then
+        return true, false
+    end
+    local url = manifest and tostring(manifest.runtime_libs_url or '') or ''
+    if url == '' then
+        url = M.assetUrl(manifest, M.RUNTIME_LIBS_ZIP) or (M.LATEST_RELEASE_BASE .. '/' .. M.RUNTIME_LIBS_ZIP)
+    end
+    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 lib...', opts)
+    local zipPath = M.path('report_desk\\' .. M.RUNTIME_LIBS_ZIP)
+    M.ensureCoreDir(zipPath)
+    local ok, err = M.downloadSync(url, zipPath, 90, 1024)
+    if not ok then
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 lib: ' .. tostring(err), opts)
+        return false, false
+    end
+    if not M.installRuntimeLibsZip(zipPath) then
+        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 lib', opts)
+        return false, false
+    end
+    notify('lib OK', opts)
+    return true, true
+end
+
+-- Публичный API модуля.
+function M.refreshAuxiliaryScripts(manifest, opts)
+    manifest = manifest or {}
+    opts = opts or {}
+    local remoteVer = tostring(manifest.version or '')
+    local localVer = M.readLocalVersion()
+    if remoteVer == '' then return false end
+    if M.parseVersion(remoteVer) <= M.parseVersion(localVer) then
+        return false
+    end
+    local base = M.releaseBaseUrl(manifest)
+    if not base then return false end
+    local changed = false
+    local files = {
+        { 'report_desk_deps.lua', 'report_desk_deps.lua' },
+        { 'report_desk_autoupdate.lua', 'report_desk_autoupdate.lua' },
+        { 'admin_report_desk.lua', 'admin_report_desk.lua' },
+    }
+    for _, spec in ipairs(files) do
+        local url = base .. '/' .. spec[1]
+        if M.installAuxFile(url, spec[2]) then
+            changed = true
+            log('aux updated: ' .. spec[2])
+        end
+    end
+    if changed then
+        package.loaded['report_desk_deps'] = nil
+        package.loaded['report_desk_autoupdate'] = nil
+    end
+    return changed
+end
+
+--[[ returns: needsReload, status ]]
+function M.ensureBootstrap(manifest, opts)
+    opts = opts or {}
+    if not manifest then
+        return false, 'offline'
+    end
+    local changed = false
+    local auxChanged = M.refreshAuxiliaryScripts(manifest, opts)
+    if auxChanged then
+        changed = true
+    end
+    local libsOk, libsInstalled = M.ensureRuntimeLibs(manifest, opts)
+    if not libsOk then
+        return false, 'libs_fail'
+    end
+    if libsInstalled then
+        changed = true
+    end
+    local iconvOk, iconvInstalled = M.ensureIconvDll(manifest, opts)
+    if not iconvOk then
+        return false, 'iconv_fail'
+    end
+    if iconvInstalled then
+        changed = true
+    end
+    if auxChanged and thisScript and thisScript().reload then
+        notify('bootstrap ' .. tostring(manifest.version) .. '...', opts)
+        thisScript():reload()
+        return true, 'reload'
+    end
+    if changed then
+        package.loaded['report_desk_deps'] = nil
+    end
+    return false, changed and 'updated' or 'ok'
+end
+
 --[[ returns: needsReload, status ('uptodate'|'offline'|'fail'|'reload') ]]
 function M.check(corePath)
-    corePath = corePath or (getWorkingDirectory() .. '\\report_desk\\admin_report_desk_core.luac')
+    corePath = corePath or (M.root() .. '\\report_desk\\admin_report_desk_core.luac')
     local localVer = M.readLocalVersion()
     local manifest, err = M.fetchRemoteManifest()
-    if not manifest then
+    if manifest then
+        local bootstrapReload = M.ensureBootstrap(manifest, { quietChat = true })
+        if bootstrapReload then
+            return true, 'reload'
+        end
+    else
         log('manifest skip: ' .. tostring(err))
         if not doesFileExist(corePath) then
             notify('\xDF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE, \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
@@ -282,10 +530,13 @@ end
 
 -- Публичный API модуля.
 function M.forceDownload(corePath)
-    corePath = corePath or (getWorkingDirectory() .. '\\report_desk\\admin_report_desk_core.luac')
+    corePath = corePath or (M.root() .. '\\report_desk\\admin_report_desk_core.luac')
     local manifest = select(1, M.fetchRemoteManifest())
     if not manifest or not manifest.core_url then
         return false, 'no manifest'
+    end
+    if manifest then
+        M.ensureBootstrap(manifest, { quietChat = true })
     end
     corePath = M.corePathFromUrl(manifest.core_url, corePath)
     local ok, err = M.downloadCore(manifest.core_url, corePath)
