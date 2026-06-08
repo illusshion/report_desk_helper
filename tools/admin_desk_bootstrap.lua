@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.17')
+script_version('1.0.18')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -23,6 +23,15 @@ do
         end
     end
 end
+
+local MANIFEST_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
+local SEED_LIBS = {
+    'report_desk_sha256.lua',
+    'report_desk_zip.lua',
+    'report_desk_fs.lua',
+    'report_desk_deps.lua',
+    'report_desk_autoupdate.lua',
+}
 
 local function devEntryPresent()
     if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
@@ -48,8 +57,6 @@ local function resolveCorePath()
     end
     return CORE_DIR .. '\\AdminDeskCore.luac'
 end
-
-local CORE_PATH = resolveCorePath()
 
 local function loadCore()
     local path = resolveCorePath()
@@ -82,15 +89,6 @@ local function clearDeskModuleCache()
     package.loaded['report_desk_fs'] = nil
 end
 
-local MANIFEST_URL = 'https://raw.githubusercontent.com/illusshion/report_desk_helper/main/release/version.json'
-local SEED_LIBS = {
-    'report_desk_sha256.lua',
-    'report_desk_zip.lua',
-    'report_desk_fs.lua',
-    'report_desk_deps.lua',
-    'report_desk_autoupdate.lua',
-}
-
 local function ensureDirFor(path)
     local dir = path:match('^(.*)\\[^\\]+$')
     if dir and dir ~= '' and not doesDirectoryExist(dir) then
@@ -119,42 +117,27 @@ local function downloadWait(url, dest, minBytes, timeoutSec)
     return false
 end
 
-local function manifestAssetUrl(raw, asset)
-    local esc = asset:gsub('([%.%-])', '%%%1')
-    return raw:match('"' .. esc .. '"%s*:%s*{[^}]-"url"%s*:%s*"([^"]+)"')
+local function libPath(name)
+    return getWorkingDirectory() .. '\\lib\\' .. name
 end
 
-local function bootstrapSeedUpdater()
-    if requireAutoupdate() then return false end
-    print('[Report Desk] first run — seeding updater modules...')
-    local root = getWorkingDirectory()
-    ensureDirFor(root .. '\\lib\\report_desk_autoupdate.lua')
-    ensureDirFor(root .. '\\report_desk\\_bootstrap_manifest.json')
-    local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
-    if not downloadWait(MANIFEST_URL, tmpJson, 32, 30) then
-        print('[Report Desk] bootstrap: manifest download failed')
-        return false
+local function updaterInstalled()
+    return doesFileExist(libPath('report_desk_autoupdate.lua'))
+end
+
+local function manifestField(raw, key)
+    return raw:match('"' .. key .. '"%s*:%s*"([^"]+)"')
+end
+
+local function manifestAssetUrl(raw, asset)
+    local esc = asset:gsub('([%.%-])', '%%%1')
+    local url = raw:match('"' .. esc .. '"%s*:%s*{[^}]-"url"%s*:%s*"([^"]+)"')
+    if url and url ~= '' then return url end
+    local base = manifestField(raw, 'release_base')
+    if base and base ~= '' then
+        return base .. '/' .. asset
     end
-    local f = io.open(tmpJson, 'r')
-    if not f then return false end
-    local raw = f:read('*a') or ''
-    f:close()
-    local seeded = false
-    for _, asset in ipairs(SEED_LIBS) do
-        local dest = root .. '\\lib\\' .. asset
-        if not doesFileExist(dest) then
-            local url = manifestAssetUrl(raw, asset)
-            if url and url ~= '' and downloadWait(url, dest, 256, 120) then
-                print('[Report Desk] seeded ' .. asset)
-                seeded = true
-            end
-        end
-    end
-    clearDeskModuleCache()
-    if requireAutoupdate() then
-        return seeded
-    end
-    return false
+    return nil
 end
 
 local function requireAutoupdate()
@@ -175,7 +158,47 @@ local function requireDeps()
     return nil
 end
 
+local function bootstrapSeedUpdater()
+    if updaterInstalled() then
+        return false
+    end
+    print('[Report Desk] first run — downloading updater modules...')
+    local root = getWorkingDirectory()
+    local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
+    ensureDirFor(tmpJson)
+    ensureDirFor(libPath('report_desk_autoupdate.lua'))
+    if not downloadWait(MANIFEST_URL, tmpJson, 32, 30) then
+        print('[Report Desk] bootstrap: manifest download failed')
+        return false
+    end
+    local f = io.open(tmpJson, 'r')
+    if not f then return false end
+    local raw = f:read('*a') or ''
+    f:close()
+    local seeded = false
+    for _, asset in ipairs(SEED_LIBS) do
+        local dest = libPath(asset)
+        if not doesFileExist(dest) then
+            local url = manifestAssetUrl(raw, asset)
+            if url and downloadWait(url, dest, 256, 120) then
+                print('[Report Desk] downloaded ' .. asset)
+                seeded = true
+            else
+                print('[Report Desk] bootstrap: failed ' .. asset)
+            end
+        end
+    end
+    if not updaterInstalled() then
+        print('[Report Desk] bootstrap: autoupdate module missing after seed')
+        return false
+    end
+    return seeded
+end
+
 local function applyPendingBootstrap()
+    if not updaterInstalled() then
+        return false
+    end
     local autoupdate = requireAutoupdate()
     if autoupdate and autoupdate.applyPendingFiles then
         if autoupdate.applyPendingFiles() and thisScript and thisScript().reload then
@@ -246,7 +269,7 @@ function main()
     registerUpdateCommands(autoupdate, chatSay)
 
     if not autoupdate then
-        if chatSay then chatSay('missing report_desk_autoupdate.lua') end
+        print('[Report Desk] missing lib/report_desk_autoupdate.lua (check moonloader.log)')
         return
     end
 
@@ -259,11 +282,11 @@ function main()
             return
         end
     else
-        local willReload, status = autoupdate.sync(manifest, {
+        local willReload = select(1, autoupdate.sync(manifest, {
             quietChat = true,
             mode = 'full',
             includeCore = true,
-        })
+        }))
         if willReload then
             return
         end
