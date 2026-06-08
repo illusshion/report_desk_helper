@@ -338,12 +338,16 @@ local function firstExisting(paths)
     return nil
 end
 
+local function assetsSkinsDir()
+    return getWorkingDirectory() .. '\\config\\AdminDesk\\assets\\res\\report_desk_skins\\'
+end
+
 -- Публичный API модуля.
 function M.resolveSkinPath(dir, entry)
     if not entry or not entry.id then return nil end
     local id = entry.id
     local png = string.format('%sskin-%d.png', dir, id)
-    local candidates = { png }
+    local candidates = { png, assetsSkinsDir() .. string.format('skin-%d.png', id) }
     if entry.file then
         local f = dir .. entry.file
         if f ~= png then candidates[#candidates + 1] = f end

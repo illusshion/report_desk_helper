@@ -1168,15 +1168,17 @@ function M.corePathFromUrl(url, fallback)
 end
 
 local function assetMarkerOk()
-    local newPath = M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png')
-    if doesFileExist(newPath) then
-        local sz = fileBytes(newPath)
-        return type(sz) == 'number' and sz > 256
-    end
-    local oldPath = M.path('res\\report_desk_skins\\skin-1.png')
-    if doesFileExist(oldPath) then
-        local sz = fileBytes(oldPath)
-        return type(sz) == 'number' and sz > 256
+    local paths = {
+        M.path('res\\report_desk_skins\\skin-1.png'),
+        M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png'),
+    }
+    for _, p in ipairs(paths) do
+        if doesFileExist(p) then
+            local sz = fileBytes(p)
+            if type(sz) == 'number' and sz > 256 then
+                return true
+            end
+        end
     end
     return false
 end
@@ -1219,9 +1221,8 @@ local function extractAssetsZip(zipPath)
     if zipPath == '' or not doesFileExist(zipPath) then
         return false, 'zip missing'
     end
-    local destRoot = M.path(M.ASSETS_CACHE_DIR)
-    deskFs.ensureDir(destRoot)
-    local ok, err = deskZip.extract(zipPath, destRoot)
+    local destRoot = M.root()
+    local ok, err = deskZip.extract(zipPath, destRoot, { yieldEvery = 20 })
     if not ok then
         return false, err or 'extract failed'
     end
@@ -1279,6 +1280,31 @@ function M.ensureAssets(manifest, opts)
     })
     notify('assets OK', opts)
     return true, true
+end
+
+function M.deferAssets(manifest, opts)
+    opts = opts or {}
+    manifest = manifest or {}
+    if not M.needsAssets(manifest) then
+        return false
+    end
+    if not lua_thread or not lua_thread.create then
+        M.ensureAssets(manifest, opts)
+        return true
+    end
+    lua_thread.create(function()
+        while true do
+            if isSampAvailable and isSampAvailable() then
+                if sampIsLocalPlayerSpawned and sampIsLocalPlayerSpawned() then
+                    break
+                end
+            end
+            wait(500)
+        end
+        wait(2000)
+        M.ensureAssets(manifest, opts)
+    end)
+    return true
 end
 
 function M.installCore(tmpPath, corePath)

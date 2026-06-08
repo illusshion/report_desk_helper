@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.25')
+script_version('1.0.26')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -342,12 +342,10 @@ local function runInstallPipeline()
     chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
 
-    if autoupdate.needsAssets(manifest) then
-        bootstrapSay('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (~50 \xCC\xE1)...')
-        local assetsOk = select(1, autoupdate.ensureAssets(manifest, { quietChat = false }))
-        if not assetsOk then
-            bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 assets')
-            return false
+    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
+        bootstrapSay('\xCF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xEF\xEE\xF1\xEB\xE5 \xF1\xEF\xE0\xE2\xED\xE0 (~50 \xCC\xE1)')
+        if autoupdate.deferAssets then
+            autoupdate.deferAssets(manifest, { quietChat = false })
         end
     end
 
