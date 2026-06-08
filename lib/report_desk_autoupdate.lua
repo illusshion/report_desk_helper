@@ -511,24 +511,12 @@ end
 function M.installMimguiZip(zipPath)
     reloadDeskSupportModules()
     local root = M.root()
-    local tmp = root .. '\\report_desk\\_deps_mimgui_tmp'
-    deskFs.removeTree(tmp)
-    deskFs.ensureDir(tmp)
-    local ok, err = deskZip.extract(zipPath, tmp)
+    deskFs.ensureDir(root .. '\\lib')
+    local ok, err = deskZip.extract(zipPath, root .. '\\lib')
     if not ok then
         log('mimgui extract: ' .. tostring(err))
         return false
     end
-    local src = tmp .. '\\mimgui'
-    if not doesDirectoryExist(src) then
-        deskFs.removeTree(tmp)
-        return false
-    end
-    local dest = root .. '\\lib\\mimgui'
-    deskFs.removeTree(dest)
-    deskFs.ensureDir(root .. '\\lib')
-    deskFs.copyTree(src, dest)
-    deskFs.removeTree(tmp)
     return M.hasMimgui()
 end
 
@@ -536,23 +524,16 @@ end
 function M.installRuntimeLibsZip(zipPath)
     reloadDeskSupportModules()
     local root = M.root()
-    local tmp = root .. '\\report_desk\\_deps_runtime_tmp'
-    deskFs.removeTree(tmp)
-    deskFs.ensureDir(tmp)
-    local ok, err = deskZip.extract(zipPath, tmp)
+    local ok, err = deskZip.extract(zipPath, root)
     if not ok then
         log('runtime extract: ' .. tostring(err))
         return false
     end
-    local libSrc = tmp .. '\\lib'
-    if not doesDirectoryExist(libSrc) then
-        deskFs.removeTree(tmp)
+    if needsRuntimeLibs() then
+        log('runtime install incomplete after extract')
         return false
     end
-    deskFs.ensureDir(root .. '\\lib')
-    deskFs.copyTree(libSrc, root .. '\\lib')
-    deskFs.removeTree(tmp)
-    return not needsRuntimeLibs()
+    return true
 end
 
 local function runtimeSpec(manifest)

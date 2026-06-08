@@ -1,7 +1,7 @@
 {
-    "tag":  "v1.0.23",
-    "version":  "1.0.23",
-    "built_at":  "2026-06-08T23:54:25.3909485+03:00",
+    "tag":  "v1.0.24",
+    "version":  "1.0.24",
+    "built_at":  "2026-06-08T23:59:35.5522817+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
@@ -11,14 +11,14 @@
                                  },
                       "bootstrap_file":  {
                                              "path":  "dist\\AdminDesk.luac",
-                                             "sha256":  "7bd7210027ca8e6b37f15b1cede14e14631f410358f65caf5e337c0854d1ea6d",
+                                             "sha256":  "8cb5d3cdd9939b54f052f40accb3e3ea85a2b762c0b3b13b5b837a8b7dea5cfc",
                                              "bytes":  7958
                                          },
-                      "version":  "1.0.23",
+                      "version":  "1.0.24",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "c855a5cc7e6382ec954cc7f011f7e26cd4675a96f93b20f4cf1bd277c08d29dd",
-                                  "bytes":  57567224
+                                  "sha256":  "62f13b84a39be96953df761434cd715b6b929910e47e1f5874e471508c84e0b5",
+                                  "bytes":  57566585
                               },
                       "bootstrap":  "AdminDesk.luac",
                       "core_asset":  "AdminDeskCore.luac",
@@ -36,8 +36,8 @@
                                },
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "8bd8ef8271d08ad3d0f9d9d2315e91c9451009ce31dbec88774f3c08776a750a",
-                                         "bytes":  48411
+                                         "sha256":  "d48d9b0abd9f6a766ff232930a571e1719e1f81622ed8638e8d93263f1514a22",
+                                         "bytes":  47772
                                      }
                   },
     "verified":  true,
