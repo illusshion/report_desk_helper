@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.18')
+script_version('1.0.19')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -87,6 +87,7 @@ local function clearDeskModuleCache()
     package.loaded['report_desk_sha256'] = nil
     package.loaded['report_desk_zip'] = nil
     package.loaded['report_desk_fs'] = nil
+    package.loaded.mimgui = nil
 end
 
 local function ensureDirFor(path)
@@ -96,8 +97,25 @@ local function ensureDirFor(path)
     end
 end
 
+local function libPath(name)
+    return getWorkingDirectory() .. '\\lib\\' .. name
+end
+
+local function updaterInstalled()
+    return doesFileExist(libPath('report_desk_autoupdate.lua'))
+end
+
+local function bootstrapSay(text)
+    text = tostring(text or '')
+    if text == '' then return end
+    print('[Report Desk] ' .. text)
+    if isSampAvailable and isSampAvailable() and sampAddChatMessage then
+        pcall(sampAddChatMessage, '{9E7BEF}[Report Desk] {FFFFFF}' .. text, 0xE8E8E8)
+    end
+end
+
 local function downloadWait(url, dest, minBytes, timeoutSec)
-    if not downloadUrlToFile then return false end
+    if not downloadUrlToFile then return false, 'no downloadUrlToFile' end
     minBytes = minBytes or 256
     ensureDirFor(dest)
     if doesFileExist(dest) then pcall(os.remove, dest) end
@@ -114,15 +132,7 @@ local function downloadWait(url, dest, minBytes, timeoutSec)
         end
         wait(100)
     end
-    return false
-end
-
-local function libPath(name)
-    return getWorkingDirectory() .. '\\lib\\' .. name
-end
-
-local function updaterInstalled()
-    return doesFileExist(libPath('report_desk_autoupdate.lua'))
+    return false, 'timeout'
 end
 
 local function manifestField(raw, key)
@@ -140,17 +150,33 @@ local function manifestAssetUrl(raw, asset)
     return nil
 end
 
+local function preloadLib(name)
+    package.loaded[name] = nil
+    local ok, err = pcall(require, name)
+    if not ok then
+        return false, tostring(err)
+    end
+    return true
+end
+
 local function requireAutoupdate()
     clearDeskModuleCache()
+    for _, name in ipairs({ 'report_desk_sha256', 'report_desk_fs', 'report_desk_zip' }) do
+        if doesFileExist(libPath(name .. '.lua')) then
+            local ok, err = preloadLib(name)
+            if not ok then
+                return nil, 'preload ' .. name .. ': ' .. err
+            end
+        end
+    end
     local ok, mod = pcall(require, 'lib.report_desk_autoupdate')
     if ok then return mod end
     ok, mod = pcall(require, 'report_desk_autoupdate')
     if ok then return mod end
-    return nil
+    return nil, 'require autoupdate failed'
 end
 
 local function requireDeps()
-    clearDeskModuleCache()
     local ok, mod = pcall(require, 'lib.report_desk_deps')
     if ok then return mod end
     ok, mod = pcall(require, 'report_desk_deps')
@@ -160,39 +186,49 @@ end
 
 local function bootstrapSeedUpdater()
     if updaterInstalled() then
-        return false
+        return true
     end
-    print('[Report Desk] first run — downloading updater modules...')
+    bootstrapSay('\xCF\xE5\xF0\xE2\xFB\xE9 \xE7\xE0\xEF\xF3\xF1\xEA, \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEC\xEE\xE4\xF3\xEB\xE5\xE9...')
+    print('[Report Desk] first run — seeding updater modules')
     local root = getWorkingDirectory()
     local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
     ensureDirFor(tmpJson)
     ensureDirFor(libPath('report_desk_autoupdate.lua'))
-    if not downloadWait(MANIFEST_URL, tmpJson, 32, 30) then
-        print('[Report Desk] bootstrap: manifest download failed')
+    local ok, err = downloadWait(MANIFEST_URL, tmpJson, 32, 45)
+    if not ok then
+        bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 manifest: ' .. tostring(err))
         return false
     end
     local f = io.open(tmpJson, 'r')
-    if not f then return false end
+    if not f then
+        bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xF7\xF2\xE5\xED\xE8\xFF manifest')
+        return false
+    end
     local raw = f:read('*a') or ''
     f:close()
-    local seeded = false
     for _, asset in ipairs(SEED_LIBS) do
         local dest = libPath(asset)
         if not doesFileExist(dest) then
             local url = manifestAssetUrl(raw, asset)
-            if url and downloadWait(url, dest, 256, 120) then
-                print('[Report Desk] downloaded ' .. asset)
-                seeded = true
-            else
-                print('[Report Desk] bootstrap: failed ' .. asset)
+            if not url then
+                bootstrapSay('\xED\xE5\xF2 URL: ' .. asset)
+                return false
             end
+            ok, err = downloadWait(url, dest, 256, 180)
+            if not ok then
+                bootstrapSay('\xEE\xF8\xE8\xE1\xEA\xE0 ' .. asset .. ': ' .. tostring(err))
+                return false
+            end
+            print('[Report Desk] seeded ' .. asset)
         end
     end
+    wait(50)
     if not updaterInstalled() then
-        print('[Report Desk] bootstrap: autoupdate module missing after seed')
+        bootstrapSay('\xEC\xEE\xE4\xF3\xEB\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
         return false
     end
-    return seeded
+    bootstrapSay('\xEC\xEE\xE4\xF3\xEB\xE8 OK, \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0...')
+    return true
 end
 
 local function applyPendingBootstrap()
@@ -200,22 +236,12 @@ local function applyPendingBootstrap()
         return false
     end
     local autoupdate = requireAutoupdate()
-    if autoupdate and autoupdate.applyPendingFiles then
-        if autoupdate.applyPendingFiles() and thisScript and thisScript().reload then
+    if type(autoupdate) ~= 'table' then return false end
+    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles() then
+        print('[Report Desk] pending files applied — reload')
+        if thisScript and thisScript().reload then
             thisScript():reload()
             return true
-        end
-    end
-    local scriptPath = (thisScript and thisScript().path) or (getWorkingDirectory() .. '\\AdminDesk.luac')
-    local pending = scriptPath .. '.pending'
-    if doesFileExist(pending) then
-        pcall(os.remove, scriptPath)
-        if os.rename(pending, scriptPath) then
-            print('[Report Desk] bootstrap updated from pending')
-            if thisScript and thisScript().reload then
-                thisScript():reload()
-                return true
-            end
         end
     end
     return false
@@ -248,6 +274,96 @@ local function registerUpdateCommands(autoupdate, chatSay)
     end)
 end
 
+local function bootstrapReload(reason)
+    print('[Report Desk] reload: ' .. tostring(reason))
+    if thisScript and thisScript().reload then
+        thisScript():reload()
+        return true
+    end
+    return false
+end
+
+local function runInstallPipeline()
+    if not bootstrapSeedUpdater() then
+        return false
+    end
+
+    local autoupdate, autoupdateErr = requireAutoupdate()
+    if not autoupdate then
+        bootstrapSay(tostring(autoupdateErr or 'autoupdate missing'))
+        return false
+    end
+
+    local chatSay = autoupdate.chatSay
+    registerUpdateCommands(autoupdate, chatSay)
+
+    local manifest, manifestErr = autoupdate.fetchRemoteManifest()
+    if not manifest then
+        if corePresent() then
+            print('[Report Desk] offline, using local core')
+            return true
+        end
+        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE: ' .. tostring(manifestErr))
+        return false
+    end
+
+    bootstrapSay('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEA\xEE\xEC\xEF\xEE\xED\xE5\xED\xF2\xEE\xE2...')
+    local willReload, syncStatus = autoupdate.sync(manifest, {
+        quietChat = false,
+        mode = 'full',
+        includeCore = true,
+        reload = false,
+    })
+    if syncStatus == 'fail' then
+        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC (/deskrepair)')
+        return false
+    end
+    if willReload then
+        if autoupdate.applyPendingFiles then
+            autoupdate.applyPendingFiles()
+            clearDeskModuleCache()
+        end
+        bootstrapReload('sync pending')
+        return false
+    end
+
+    clearDeskModuleCache()
+    autoupdate = requireAutoupdate()
+    if not autoupdate then
+        bootstrapSay('autoupdate lost after sync')
+        return false
+    end
+    chatSay = autoupdate.chatSay
+    registerUpdateCommands(autoupdate, chatSay)
+
+    if autoupdate.needsAssets(manifest) then
+        bootstrapSay('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (~50 \xCC\xE1)...')
+        local assetsOk = select(1, autoupdate.ensureAssets(manifest, { quietChat = false }))
+        if not assetsOk then
+            bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 assets')
+            return false
+        end
+    end
+
+    local deps = requireDeps()
+    if not deps then
+        bootstrapSay('deps module missing')
+        return false
+    end
+    local depsOk = select(1, deps.ensureAll({ say = chatSay, manifest = manifest }))
+    if not depsOk then
+        bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
+        return false
+    end
+
+    if not corePresent() then
+        bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
+        return false
+    end
+
+    return true
+end
+
 function main()
     if devEntryPresent() then
         return
@@ -259,103 +375,34 @@ function main()
         wait(100)
     end
 
-    if bootstrapSeedUpdater() and thisScript and thisScript().reload then
-        thisScript():reload()
-        return
-    end
+    local ok, err = pcall(function()
+        if not runInstallPipeline() then
+            return
+        end
 
-    local autoupdate = requireAutoupdate()
-    local chatSay = autoupdate and autoupdate.chatSay or nil
-    registerUpdateCommands(autoupdate, chatSay)
-
-    if not autoupdate then
-        print('[Report Desk] missing lib/report_desk_autoupdate.lua (check moonloader.log)')
-        return
-    end
-
-    local manifest = select(1, autoupdate.fetchRemoteManifest())
-    if not manifest then
-        if not corePresent() then
-            if chatSay then
-                chatSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE (offline)')
+        local autoupdate = requireAutoupdate()
+        local fn, loadErr = loadCore()
+        if not fn then
+            bootstrapSay(tostring(loadErr))
+            if autoupdate and autoupdate.repair then
+                bootstrapReload('core load fail')
             end
             return
         end
-    else
-        local willReload = select(1, autoupdate.sync(manifest, {
-            quietChat = true,
-            mode = 'full',
-            includeCore = true,
-        }))
-        if willReload then
-            return
-        end
-        clearDeskModuleCache()
-        autoupdate = requireAutoupdate()
-        chatSay = autoupdate and autoupdate.chatSay or chatSay
-        registerUpdateCommands(autoupdate, chatSay)
 
-        if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
-            local ok = select(1, autoupdate.ensureAssets(manifest, { quietChat = true }))
-            if not ok then
-                if chatSay then chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 assets') end
-                return
-            end
+        local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
+        if autoupdate and autoupdate.chatSay then
+            local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
+            local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
+            autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
         end
-    end
 
-    local deps = requireDeps()
-    if deps then
-        local depsOk, installed = deps.ensureAll({ say = chatSay, manifest = manifest })
-        if not depsOk then
-            print('[Report Desk] bootstrap: deps check failed (see chat / moonloader.log)')
-            return
-        end
-        if installed and thisScript and thisScript().reload then
-            thisScript():reload()
-            return
-        end
-    end
-
-    if not corePresent() then
-        if chatSay then
-            chatSay('\xDF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
-        end
-        return
-    end
-
-    local fn, err = loadCore()
-    if not fn then
-        if autoupdate.chatSay then
-            autoupdate.chatSay(tostring(err))
-        end
-        if autoupdate.repair then
-            print('[Report Desk] core load failed — attempting repair')
-            local healed = select(1, autoupdate.repair())
-            if healed then return end
-        end
-        return
-    end
-
-    local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
-    if autoupdate.chatSay then
-        local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
-        local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
-        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
-    end
-
-    local ok, runErr = pcall(function()
         fn()
         main()
     end)
+
     if not ok then
-        print('[Report Desk] core error: ' .. tostring(runErr))
-        if autoupdate.chatSay then
-            autoupdate.chatSay('core error (see moonloader.log), /deskrepair')
-        end
-        if autoupdate.repair then
-            local healed = select(1, autoupdate.repair())
-            if healed then return end
-        end
+        bootstrapSay('bootstrap error: ' .. tostring(err))
+        print('[Report Desk] bootstrap error: ' .. tostring(err))
     end
 end

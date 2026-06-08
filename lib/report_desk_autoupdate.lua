@@ -914,11 +914,15 @@ function M.sync(manifest, opts)
             break
         end
     end
-    if needsPendingReload or opts.reload ~= false then
+    if needsPendingReload then
+        if opts.reload == false then
+            return true, 'pending'
+        end
         if thisScript and thisScript().reload then
             thisScript():reload()
             return true, 'reload'
         end
+        return true, 'pending'
     end
     return false, 'updated'
 end
@@ -953,10 +957,6 @@ function M.check(corePath)
         local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = true })
         if not ok then
             return false, 'assets_fail'
-        end
-        if assetsUpdated and thisScript and thisScript().reload then
-            thisScript():reload()
-            return true, 'reload'
         end
     end
     return willReload, status
@@ -998,10 +998,6 @@ function M.repair()
         local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = false })
         if not ok then
             return false, 'assets_fail'
-        end
-        if assetsUpdated and thisScript and thisScript().reload then
-            thisScript():reload()
-            return true, 'reload'
         end
     end
     return willReload, status
