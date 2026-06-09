@@ -1,5 +1,11 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.1
+
+- **Fix (критично):** не применять `AdminDesk.luac.pending` во время работы скрипта — убирает краш `ensureDirFor` и «Script terminated».
+- **Fix:** launcher pending применяется только при старте с контролируемым reload.
+- **Fix:** changelog из manifest конвертируется UTF-8 → CP1251 для чата SAMP.
+
 ## 1.0.0 (Beta 1)
 
 **Первая стабильная версия хелпера.**

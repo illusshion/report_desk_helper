@@ -151,8 +151,25 @@ function M.readManifestChangelog(manifest)
     if #cl > 180 then
         cl = cl:sub(1, 177) .. '...'
     end
-    return cl
+    return M.chatTextFromUtf8(cl)
 end
+
+local function chatTextFromUtf8(text)
+    text = tostring(text or '')
+    if text == '' then return text end
+    local ok, enc = pcall(require, 'encoding')
+    if ok and enc and enc.UTF8 and enc.CP1251 then
+        local convOk, converted = pcall(function()
+            return enc.UTF8:decode(text):encode(enc.CP1251)
+        end)
+        if convOk and type(converted) == 'string' and converted ~= '' then
+            return converted
+        end
+    end
+    return text
+end
+
+M.chatTextFromUtf8 = chatTextFromUtf8
 
 -- Show Update Success Message
 function M.showUpdateSuccessMessage(manifest)
@@ -1229,6 +1246,9 @@ function M.repair()
         M.applyPendingFiles()
         package.loaded['report_desk_autoupdate'] = nil
         package.loaded['lib.report_desk_autoupdate'] = nil
+        if M.applyLauncherPending and M.applyLauncherPending() then
+            return true, 'reload'
+        end
     end
     if M.needsAssets(manifest) then
         local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = false })
@@ -1333,14 +1353,36 @@ function M.printDiagnostics()
 end
 
 -- Публичный API модуля.
-function M.applyPendingFiles()
+function M.applyLauncherPending()
     local root = M.root()
-    local pendingSpecs = {
+    local pairs = {
         { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac' },
         { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua' },
-        { pending = root .. '\\admin_report_desk.lua.pending', dest = root .. '\\admin_report_desk.lua' },
-        { pending = root .. '\\lib\\report_desk_autoupdate.lua.pending', dest = root .. '\\lib\\report_desk_autoupdate.lua' },
     }
+    for _, spec in ipairs(pairs) do
+        if doesFileExist(spec.pending) then
+            pcall(os.remove, spec.dest)
+            if os.rename(spec.pending, spec.dest) then
+                log('applied launcher pending: ' .. spec.dest)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Публичный API модуля.
+function M.applyPendingFiles(opts)
+    opts = opts or {}
+    local includeLauncher = opts.includeLauncher == true
+    local root = M.root()
+    local pendingSpecs = {}
+    if includeLauncher then
+        pendingSpecs[#pendingSpecs + 1] = { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac' }
+        pendingSpecs[#pendingSpecs + 1] = { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua' }
+    end
+    pendingSpecs[#pendingSpecs + 1] = { pending = root .. '\\admin_report_desk.lua.pending', dest = root .. '\\admin_report_desk.lua' }
+    pendingSpecs[#pendingSpecs + 1] = { pending = root .. '\\lib\\report_desk_autoupdate.lua.pending', dest = root .. '\\lib\\report_desk_autoupdate.lua' }
     local changed = false
     for _, spec in ipairs(pendingSpecs) do
         if doesFileExist(spec.pending) then

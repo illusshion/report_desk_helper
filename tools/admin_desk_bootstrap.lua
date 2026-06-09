@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.0')
+script_version('1.0.1')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -237,15 +237,35 @@ local function bootstrapSeedUpdater()
     return true
 end
 
+local function applyLauncherPendingAtStartup()
+    if not updaterInstalled() then
+        return false
+    end
+    local autoupdate = requireAutoupdate()
+    if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
+        return false
+    end
+    if autoupdate.applyLauncherPending() then
+        clearDeskModuleCache()
+        print('[Report Desk] launcher updated, reloading bootstrap')
+        wait(200)
+        if thisScript and thisScript().reload then
+            thisScript():reload()
+            return true
+        end
+    end
+    return false
+end
+
 local function applyPendingBootstrap()
     if not updaterInstalled() then
         return
     end
     local autoupdate = requireAutoupdate()
     if type(autoupdate) ~= 'table' then return end
-    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles() then
+    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles({ includeLauncher = false }) then
         clearDeskModuleCache()
-        print('[Report Desk] pending files applied')
+        print('[Report Desk] pending module files applied')
     end
 end
 
@@ -360,7 +380,7 @@ local function runInstallPipeline()
     if willReload then
         print('[Report Desk] update applied, loading core in same session')
         if autoupdate.applyPendingFiles then
-            autoupdate.applyPendingFiles()
+            autoupdate.applyPendingFiles({ includeLauncher = false })
             clearDeskModuleCache()
         end
     end
@@ -369,7 +389,7 @@ local function runInstallPipeline()
     autoupdate = requireAutoupdate()
     if not autoupdate then
         bootstrapSay('autoupdate lost after sync')
-        return false
+        return false, false
     end
     chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
@@ -415,6 +435,9 @@ function main()
         end
     end
     if devEntryPresent() then
+        return
+    end
+    if applyLauncherPendingAtStartup() then
         return
     end
     applyPendingBootstrap()
