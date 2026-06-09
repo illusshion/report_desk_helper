@@ -1,5 +1,5 @@
 {
-    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDeskCore.lua",
+    "core_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDeskCore.luac",
     "version":  "1.0.27",
     "manifest_version":  3,
     "runtime_libs":  {
@@ -9,34 +9,27 @@
                          "bytes":  1084227
                      },
     "files":  {
-                  "AdminDeskCore.lua":  {
-                                            "dest":  "report_desk/AdminDeskCore.lua",
-                                            "pending":  false,
-                                            "sha256":  "cb27f7192a17287158b92a5c2211a9bd07762caef093cac3db06f6d1e0debcce",
-                                            "bytes":  1192604,
-                                            "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDeskCore.lua"
-                                        },
-                  "AdminDesk.lua":  {
-                                        "dest":  "AdminDesk.lua",
-                                        "pending":  true,
-                                        "sha256":  "7822052c4a7279776ad2582df3379913a64586344597476374d6a2a4856133c2",
-                                        "bytes":  14284,
-                                        "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDesk.lua"
-                                    },
-                  "report_desk_deps.lua":  {
-                                               "dest":  "lib/report_desk_deps.lua",
-                                               "pending":  false,
-                                               "sha256":  "d5332cef4e6cb2a3d447b40eb61363e257fc5d81c1f169474beff6116fba5527",
-                                               "bytes":  2638,
-                                               "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_deps.lua"
-                                           },
-                  "report_desk_autoupdate.lua":  {
-                                                     "dest":  "lib/report_desk_autoupdate.lua",
-                                                     "pending":  true,
-                                                     "sha256":  "b76d1c553a6ca61d69a16434bb953ee3df54af62aae11b06bffe8752ac3dd9b8",
-                                                     "bytes":  52284,
-                                                     "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_autoupdate.lua"
-                                                 },
+                  "AdminDesk.luac":  {
+                                         "dest":  "AdminDesk.luac",
+                                         "pending":  true,
+                                         "sha256":  "1a76b5d1478689a79a480c53b3aa316e2d028a08bdcff08afb22f57401780a90",
+                                         "bytes":  8110,
+                                         "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDesk.luac"
+                                     },
+                  "report_desk_sha256.lua":  {
+                                                 "dest":  "lib/report_desk_sha256.lua",
+                                                 "pending":  false,
+                                                 "sha256":  "e9c28200da06cf57f79380c1cf885f1ebd67ea54a93e9be254cc5ab558282ff2",
+                                                 "bytes":  6218,
+                                                 "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_sha256.lua"
+                                             },
+                  "AdminDeskCore.luac":  {
+                                             "dest":  "report_desk/AdminDeskCore.luac",
+                                             "pending":  false,
+                                             "sha256":  "35e640228e5aa4f741c5bac5536c7f59f70ecbbe061b046c0467978c512caa3a",
+                                             "bytes":  1163052,
+                                             "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/AdminDeskCore.luac"
+                                         },
                   "report_desk_zip.lua":  {
                                               "dest":  "lib/report_desk_zip.lua",
                                               "pending":  false,
@@ -51,6 +44,13 @@
                                              "bytes":  4031,
                                              "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_fs.lua"
                                          },
+                  "report_desk_deps.lua":  {
+                                               "dest":  "lib/report_desk_deps.lua",
+                                               "pending":  false,
+                                               "sha256":  "d5332cef4e6cb2a3d447b40eb61363e257fc5d81c1f169474beff6116fba5527",
+                                               "bytes":  2638,
+                                               "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_deps.lua"
+                                           },
                   "iconv.dll":  {
                                     "dest":  "lib/iconv.dll",
                                     "pending":  false,
@@ -58,13 +58,13 @@
                                     "bytes":  1000960,
                                     "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/iconv.dll"
                                 },
-                  "report_desk_sha256.lua":  {
-                                                 "dest":  "lib/report_desk_sha256.lua",
-                                                 "pending":  false,
-                                                 "sha256":  "e9c28200da06cf57f79380c1cf885f1ebd67ea54a93e9be254cc5ab558282ff2",
-                                                 "bytes":  6218,
-                                                 "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_sha256.lua"
-                                             }
+                  "report_desk_autoupdate.lua":  {
+                                                     "dest":  "lib/report_desk_autoupdate.lua",
+                                                     "pending":  true,
+                                                     "sha256":  "b76d1c553a6ca61d69a16434bb953ee3df54af62aae11b06bffe8752ac3dd9b8",
+                                                     "bytes":  52284,
+                                                     "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_autoupdate.lua"
+                                                 }
               },
     "zip_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_helper_main.zip",
     "runtime_libs_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/report_desk_runtime_libs.zip",
@@ -89,6 +89,6 @@
                    "version":  "1.7.1",
                    "bytes":  789842
                },
-    "changelog":  "Checker leaders/clist HUD, vehicles search UI, config safety, modular core deps.",
+    "changelog":  "Checker leaders/clist HUD, vehicles search UI, config safety, runtime deps in repo.",
     "iconv_url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1.0.27/iconv.dll"
 }
