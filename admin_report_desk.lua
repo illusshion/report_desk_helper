@@ -28,6 +28,11 @@ local function prepareDeskReload()
     end
     rawset(_G, '__desk_checkerSyncSession', nil)
     rawset(_G, '__desk_pendingCheckerCatalog', nil)
+    pcall(function()
+        local wm = package.loaded['report_desk_wm_dispatch']
+        if wm and wm.uninstall then wm.uninstall() end
+    end)
+    package.loaded['report_desk_wm_dispatch'] = nil
     local app = package.loaded['report_desk_app']
     if app and app.unload then
         pcall(app.unload)

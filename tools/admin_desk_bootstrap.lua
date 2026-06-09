@@ -319,6 +319,7 @@ local function runInstallPipeline()
         mode = 'full',
         includeCore = true,
         reload = false,
+        showOverlay = true,
     })
     if syncStatus == 'fail' then
         bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC (/deskrepair)')
@@ -345,7 +346,7 @@ local function runInstallPipeline()
     if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
         bootstrapSay('\xCF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xEF\xEE\xF1\xEB\xE5 \xF1\xEF\xE0\xE2\xED\xE0 (~50 \xCC\xE1)')
         if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, { quietChat = false })
+            autoupdate.deferAssets(manifest, { quietChat = false, showOverlay = true })
         end
     end
 

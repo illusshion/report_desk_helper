@@ -33,6 +33,7 @@ local encoding = require 'encoding'
 local vkeys = require 'lib.vkeys'
 encoding.default = 'CP1251'
 local u8 = encoding.UTF8
+deskWmDispatch = require 'report_desk_wm_dispatch'
 
 -- Совместимость старых версий mimgui (RadioButton, PushID).
 if imgui and not imgui.RadioButton then

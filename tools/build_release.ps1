@@ -15,6 +15,10 @@ $bundleScript = Join-Path $PSScriptRoot 'bundle_report_desk.ps1'
 if ($SkipLuac) {
     & $bundleScript -MoonloaderRoot $MoonloaderRoot -SkipLuac
 } else {
+    $luajitCheck = Resolve-DeskLuajit $MoonloaderRoot $PSScriptRoot
+    if (-not $luajitCheck) {
+        Write-Error 'LuaJIT 2.1 compiler required. Extract tools/luajit-compiler from luajit-210-compiler.zip (blast.hk/moonloader). Use -SkipLuac only for dev plaintext builds.'
+    }
     & $bundleScript -MoonloaderRoot $MoonloaderRoot
 }
 
@@ -28,15 +32,26 @@ $repoName = $repo.github_repo
 $tag = ($repo.release_tag_prefix) + $Version
 if ($tag -notmatch '^v') { $tag = 'v' + $Version }
 
-$coreLuac = Join-Path $MoonloaderRoot 'dist\report_desk\admin_report_desk_core.luac'
-$coreLua = Join-Path $MoonloaderRoot 'dist\report_desk\admin_report_desk_core.lua'
-$coreAsset = 'admin_report_desk_core.luac'
+$coreLuac = Join-Path $MoonloaderRoot 'dist\report_desk\AdminDeskCore.luac'
+$coreLua = Join-Path $MoonloaderRoot 'dist\report_desk\AdminDeskCore.lua'
+$coreAsset = 'AdminDeskCore.luac'
+$bootstrapLuac = Join-Path $MoonloaderRoot 'dist\AdminDesk.luac'
+$bootstrapLua = Join-Path $MoonloaderRoot 'dist\AdminDesk.lua'
+$bootstrapAsset = 'AdminDesk.luac'
 if (-not (Test-Path $coreLuac) -or $SkipLuac) {
     if (Test-Path $coreLua) {
-        $coreAsset = 'admin_report_desk_core.lua'
+        $coreAsset = 'AdminDeskCore.lua'
         Write-Warning "Shipping $coreAsset (luac missing or -SkipLuac)"
     } else {
         Write-Error 'Bundle produced no core file in dist\report_desk\'
+    }
+}
+if (-not (Test-Path $bootstrapLuac) -or $SkipLuac) {
+    if (Test-Path $bootstrapLua) {
+        $bootstrapAsset = 'AdminDesk.lua'
+        Write-Warning "Shipping $bootstrapAsset (bootstrap luac missing or -SkipLuac)"
+    } else {
+        Write-Error 'Bundle produced no AdminDesk bootstrap in dist\'
     }
 }
 if ($Changelog -eq '') {
@@ -45,32 +60,20 @@ if ($Changelog -eq '') {
 
 $zipName = 'report_desk_helper_main.zip'
 $runtimeLibsName = 'report_desk_runtime_libs.zip'
-$versionJson = @{
-    version           = $Version
-    core_url          = "https://github.com/$owner/$repoName/releases/download/$tag/$coreAsset"
-    core_url_fallback = "https://raw.githubusercontent.com/$owner/$repoName/main/report_desk/admin_report_desk_core.lua"
-    zip_url           = "https://github.com/$owner/$repoName/releases/download/$tag/$zipName"
-    runtime_libs_url  = "https://github.com/$owner/$repoName/releases/download/$tag/$runtimeLibsName"
-    iconv_url         = "https://github.com/$owner/$repoName/releases/download/$tag/iconv.dll"
-    changelog         = $Changelog
-} | ConvertTo-Json -Depth 3
 
-$releaseDir = Join-Path $MoonloaderRoot 'release'
-$versionPath = Join-Path $releaseDir 'version.json'
-[System.IO.File]::WriteAllText($versionPath, $versionJson + "`n", $Utf8NoBom)
-
-# Синхронизация ядра в repo (raw fallback = тот же файл, что уйдёт в Release)
-Clear-DeskGitIndexFlags $MoonloaderRoot @('report_desk/admin_report_desk_core.lua')
+# Синхронизация ядра в repo (raw fallback = plaintext AdminDeskCore.lua)
+Clear-DeskGitIndexFlags $MoonloaderRoot @('report_desk/AdminDeskCore.lua', 'report_desk/admin_report_desk_core.lua')
 $repoCoreDir = Join-Path $MoonloaderRoot 'report_desk'
 New-Item -ItemType Directory -Force -Path $repoCoreDir | Out-Null
+Copy-Item $coreLua (Join-Path $repoCoreDir 'AdminDeskCore.lua') -Force
 Copy-Item $coreLua (Join-Path $repoCoreDir 'admin_report_desk_core.lua') -Force
 $gitAttr = Join-Path $MoonloaderRoot '.gitattributes'
 if (-not (Test-Path $gitAttr)) {
     Write-Warning '.gitattributes missing — git may alter core line endings (raw fallback != Release)'
-} elseif ((Get-Content $gitAttr -Raw) -notlike '*admin_report_desk_core.lua binary*') {
-    Write-Warning '.gitattributes must mark admin_report_desk_core.lua as binary'
+} elseif ((Get-Content $gitAttr -Raw) -notlike '*AdminDeskCore.lua binary*' -and (Get-Content $gitAttr -Raw) -notlike '*admin_report_desk_core.lua binary*') {
+    Write-Warning '.gitattributes must mark AdminDeskCore.lua as binary'
 }
-Write-Host "Synced report_desk\admin_report_desk_core.lua (fallback on main)"
+Write-Host "Synced report_desk\AdminDeskCore.lua (fallback on main)"
 
 $manifestUrl = "https://raw.githubusercontent.com/$owner/$repoName/main/release/version.json"
 $updaterSrc = Join-Path $MoonloaderRoot 'lib\report_desk_autoupdate.lua'
@@ -83,12 +86,24 @@ $updater = $updater -replace "M\.VERSION_JSON_URL = '[^']*'", "M.VERSION_JSON_UR
 [System.IO.File]::WriteAllText($updaterDist, $updater, $Utf8NoBom)
 Write-Host "dist autoupdate URL -> $manifestUrl"
 
-# Версия launcher: tools stub (источник) + dist (zip)
+# Версия bootstrap + legacy stub
+$bootstrapSrc = Join-Path $PSScriptRoot 'admin_desk_bootstrap.lua'
+$bootstrapDistLua = Join-Path $MoonloaderRoot 'dist\AdminDesk.lua'
+Set-DeskStubVersion $bootstrapSrc $Version
+if (Test-Path $bootstrapDistLua) { Set-DeskStubVersion $bootstrapDistLua $Version }
+if (Test-Path $bootstrapDistLua) {
+    $luajitExe = Resolve-DeskLuajit $MoonloaderRoot $PSScriptRoot
+    if ($luajitExe) {
+        Invoke-DeskLuajitCompile $luajitExe $bootstrapDistLua $bootstrapLuac
+    }
+}
 $stubSrc = Join-Path $PSScriptRoot 'admin_report_desk_stub.lua'
-$stubDist = Join-Path $MoonloaderRoot 'dist\admin_report_desk.lua'
-Set-DeskStubVersion $stubSrc $Version
-Set-DeskStubVersion $stubDist $Version
-Write-Host "Launcher version -> $Version (tools stub + dist)"
+if (Test-Path $stubSrc) {
+    $stubDist = Join-Path $MoonloaderRoot 'dist\admin_report_desk.lua'
+    Set-DeskStubVersion $stubSrc $Version
+    if (Test-Path $stubDist) { Set-DeskStubVersion $stubDist $Version }
+}
+Write-Host "Bootstrap version -> $Version"
 
 # Zip (launcher + autoupdate + deps + core + configs + preview assets)
 $distDir = Join-Path $MoonloaderRoot 'dist'
@@ -98,19 +113,27 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
-Copy-Item (Join-Path $distDir 'admin_report_desk.lua') $stage
+if (Test-Path (Join-Path $distDir $bootstrapAsset)) {
+    Copy-Item (Join-Path $distDir $bootstrapAsset) $stage
+}
+if (Test-Path (Join-Path $distDir 'admin_report_desk.lua')) {
+    Copy-Item (Join-Path $distDir 'admin_report_desk.lua') $stage
+}
 Copy-Item (Join-Path $distDir 'report_desk') (Join-Path $stage 'report_desk') -Recurse
 $libStage = Join-Path $stage 'lib'
 New-Item -ItemType Directory -Path $libStage -Force | Out-Null
 Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') (Join-Path $libStage 'report_desk_autoupdate.lua') -Force
+foreach ($aux in @('report_desk_deps.lua', 'report_desk_sha256.lua', 'report_desk_zip.lua', 'report_desk_fs.lua')) {
+    $src = Join-Path $MoonloaderRoot "lib\$aux"
+    if (-not (Test-Path $src)) { Write-Error "Missing lib\$aux" }
+    Copy-Item $src (Join-Path $libStage $aux) -Force
+    Copy-Item $src (Join-Path $distDir $aux) -Force
+}
 $depsSrc = Join-Path $MoonloaderRoot 'lib\report_desk_deps.lua'
 if (-not (Test-Path $depsSrc)) {
     $depsSrc = Join-Path $MoonloaderRoot 'report_desk_deps.lua'
 }
-if (Test-Path $depsSrc) {
-    Copy-Item $depsSrc (Join-Path $libStage 'report_desk_deps.lua') -Force
-    Copy-Item $depsSrc (Join-Path $distDir 'report_desk_deps.lua') -Force
-} else {
+if (-not (Test-Path $depsSrc)) {
     Write-Error 'Missing lib\report_desk_deps.lua'
 }
 
@@ -125,7 +148,7 @@ Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.lua')
 Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.default.lua')
 
 function Copy-PreviewAssets($srcSub, $dstSub) {
-    $src = Join-Path $MoonloaderRoot $srcSub
+    $src = Resolve-DeskPreviewAssetsRoot $MoonloaderRoot $srcSub
     $dst = Join-Path $stage $dstSub
     if (-not (Test-Path $src)) {
         Write-Warning "Skip missing assets: $srcSub"
@@ -176,7 +199,8 @@ $mimguiN = Copy-PreviewAssets 'lib\mimgui' 'lib\mimgui'
 Write-Host "Zip assets: skins=$skinN veh=$vehN mimgui=$mimguiN runtime=$($runtimeLibs.Count)"
 
 $items = Get-ChildItem $stage | ForEach-Object { $_.FullName }
-Compress-Archive -Path $items -DestinationPath $zipPath -Force
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+Write-DeskStoreZip -SourceDir $stage -OutPath $zipPath
 Remove-Item $stage -Recurse -Force
 $zipMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "Release zip: $zipPath ($zipMb MB)"
@@ -198,14 +222,46 @@ foreach ($rel in $runtimeLibs) {
 }
 $runtimeZipPath = Join-Path $distDir $runtimeLibsName
 if (Test-Path $runtimeZipPath) { Remove-Item $runtimeZipPath -Force }
-Compress-Archive -Path (Join-Path $runtimeStage 'lib') -DestinationPath $runtimeZipPath -Force
+Write-DeskStoreZip -SourceDir $runtimeStage -OutPath $runtimeZipPath
 Remove-Item $runtimeStage -Recurse -Force
 Copy-Item (Join-Path $MoonloaderRoot 'lib\iconv.dll') (Join-Path $distDir 'iconv.dll') -Force
 $runtimeKb = [math]::Round((Get-Item $runtimeZipPath).Length / 1KB, 1)
 Write-Host "Runtime libs zip: $runtimeZipPath ($runtimeKb KB)"
 
+$assetsZipPath = Join-Path $distDir 'report_desk_assets.zip'
+Build-DeskAssetsZip -MoonloaderRoot $MoonloaderRoot -OutPath $assetsZipPath | Out-Null
+
+$mimguiZipPath = Join-Path $distDir 'mimgui-v1.7.1.zip'
+$mimguiStage = Join-Path $distDir '_mimgui_stage'
+if (Test-Path $mimguiStage) { Remove-Item $mimguiStage -Recurse -Force }
+New-Item -ItemType Directory -Path $mimguiStage -Force | Out-Null
+$mimguiSrcZip = Join-Path $mimguiStage 'upstream.zip'
+$mimguiUrl = 'https://github.com/THE-FYP/mimgui/releases/download/v1.7.1/mimgui-v1.7.1.zip'
+Write-Host "Downloading mimgui repack source..."
+Invoke-WebRequest -Uri $mimguiUrl -OutFile $mimguiSrcZip -UseBasicParsing
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$extractTmp = Join-Path $mimguiStage 'extract'
+New-Item -ItemType Directory -Path $extractTmp -Force | Out-Null
+[System.IO.Compression.ZipFile]::ExtractToDirectory($mimguiSrcZip, $extractTmp)
+if (-not (Test-Path (Join-Path $extractTmp 'mimgui'))) {
+    Write-Error 'mimgui upstream zip missing mimgui/ folder'
+}
+Write-DeskStoreZip -SourceDir $extractTmp -OutPath $mimguiZipPath
+Remove-Item $mimguiStage -Recurse -Force
+Write-Host "mimgui store zip: $mimguiZipPath"
+
+$versionObj = Build-DeskVersionJson -MoonloaderRoot $MoonloaderRoot -Version $Version -Tag $tag `
+    -Owner $owner -RepoName $repoName -CoreAssetName $coreAsset -BootstrapAssetName $bootstrapAsset `
+    -Changelog $Changelog -ZipName $zipName
+$releaseDir = Join-Path $MoonloaderRoot 'release'
+$versionPath = Join-Path $releaseDir 'version.json'
+$versionJson = $versionObj | ConvertTo-Json -Depth 6
+[System.IO.File]::WriteAllText($versionPath, $versionJson + "`n", $Utf8NoBom)
+Write-Host "version.json manifest v2 with SHA256 for all release files"
+
 # Проверка: dist core = repo core = zip core; версии совпадают
-$artifacts = Test-DeskReleaseArtifacts -MoonloaderRoot $MoonloaderRoot -Version $Version -CoreAssetName $coreAsset -ZipName $zipName
+$artifacts = Test-DeskReleaseArtifacts -MoonloaderRoot $MoonloaderRoot -Version $Version `
+    -CoreAssetName $coreAsset -BootstrapAssetName $bootstrapAsset -ZipName $zipName
 $manifestPath = Write-DeskBuildManifest -MoonloaderRoot $MoonloaderRoot -Version $Version -Tag $tag -Artifacts $artifacts
 
 Write-Host ''

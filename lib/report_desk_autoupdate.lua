@@ -66,6 +66,51 @@ M.ICONV_DLL = 'lib\\iconv.dll'
 M.LATEST_RELEASE_BASE = 'https://github.com/illusshion/report_desk_helper/releases/latest/download'
 M.DOWNLOAD_RETRIES = 3
 
+local deskOverlay
+local activeOverlayOpts = nil
+
+local function getOverlay()
+    if deskOverlay then return deskOverlay end
+    local ok, mod = pcall(require, 'report_desk_update_overlay')
+    if ok then deskOverlay = mod end
+    return deskOverlay
+end
+
+local function overlayEnabled(opts)
+    opts = opts or activeOverlayOpts
+    if opts and opts.showOverlay == false then return false end
+    return getOverlay() ~= nil
+end
+
+local function overlayShow(title, detail, opts)
+    if not overlayEnabled(opts) then return end
+    local ov = getOverlay()
+    if ov and ov.show then
+        ov.show(title, detail)
+    end
+end
+
+local function overlayUpdate(detail, fraction, opts)
+    if not overlayEnabled(opts) then return end
+    local ov = getOverlay()
+    if ov and ov.update then
+        ov.update({
+            detail = detail,
+            fraction = fraction,
+            indeterminate = fraction == nil,
+        })
+    end
+end
+
+local function overlayHide()
+    local ov = getOverlay()
+    if ov and ov.hide then ov.hide() end
+end
+
+local function setOverlayContext(opts)
+    activeOverlayOpts = opts
+end
+
 local function log(msg)
     print('[Report Desk] update: ' .. tostring(msg))
 end
@@ -148,27 +193,38 @@ function M.ensureCoreDir(filePath)
 end
 
 -- Публичный API модуля.
-function M.downloadSync(url, dest, timeoutSec, minBytes)
+function M.downloadSync(url, dest, timeoutSec, minBytes, progressLabel)
     if not downloadUrlToFile then
         return false, 'downloadUrlToFile unavailable'
     end
     minBytes = tonumber(minBytes) or 32
+    progressLabel = tostring(progressLabel or '')
     ensureDirFor(dest)
     if doesFileExist(dest) then
         pcall(os.remove, dest)
     end
     downloadUrlToFile(url, dest)
     local deadline = os.clock() + (timeoutSec or 60)
+    local expectBytes = minBytes > 32 and minBytes or nil
     while os.clock() < deadline do
         if doesFileExist(dest) then
             local f = io.open(dest, 'rb')
             if f then
                 local n = f:seek('end') or 0
                 f:close()
+                if progressLabel ~= '' then
+                    if expectBytes then
+                        overlayUpdate(progressLabel, math.min(n / expectBytes, 0.98))
+                    else
+                        overlayUpdate(progressLabel, nil)
+                    end
+                end
                 if n >= minBytes then
                     return true
                 end
             end
+        elseif progressLabel ~= '' then
+            overlayUpdate(progressLabel, nil)
         end
         wait(100)
     end
@@ -178,10 +234,10 @@ function M.downloadSync(url, dest, timeoutSec, minBytes)
     return false, 'timeout'
 end
 
-local function downloadWithRetry(url, dest, timeoutSec, minBytes)
+local function downloadWithRetry(url, dest, timeoutSec, minBytes, progressLabel)
     local lastErr = 'unknown'
     for attempt = 1, M.DOWNLOAD_RETRIES do
-        local ok, err = M.downloadSync(url, dest, timeoutSec, minBytes)
+        local ok, err = M.downloadSync(url, dest, timeoutSec, minBytes, progressLabel)
         if ok then
             return true
         end
@@ -703,11 +759,21 @@ local function downloadPlan(plan, manifest, opts)
     local staging = M.path(M.STAGING_DIR)
     local downloaded = {}
 
+    local extraCount = 0
+    if plan.runtime then extraCount = extraCount + 1 end
+    if plan.mimgui then extraCount = extraCount + 1 end
+    if plan.iconv then extraCount = extraCount + 1 end
+    local totalSteps = math.max(1, #plan + extraCount)
+    local step = 0
+
     for _, spec in ipairs(plan) do
+        step = step + 1
+        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset
+        overlayUpdate(label, (step - 1) / totalSteps, opts)
         local tmp = staging .. '\\' .. spec.asset:gsub('[\\/]', '_')
-        notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset .. '...', opts)
+        notify(label .. '...', opts)
         local minBytes = spec.bytes > 0 and spec.bytes or 32
-        local ok, err = downloadWithRetry(spec.url, tmp, 180, minBytes)
+        local ok, err = downloadWithRetry(spec.url, tmp, 180, minBytes, label)
         if not ok then
             return nil, 'download ' .. spec.asset .. ': ' .. tostring(err)
         end
@@ -720,10 +786,13 @@ local function downloadPlan(plan, manifest, opts)
     end
 
     if plan.runtime then
+        step = step + 1
         local spec = plan.runtime
         local tmp = staging .. '\\' .. spec.asset
-        notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset .. '...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 120, 512)
+        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset
+        overlayUpdate(label, (step - 1) / totalSteps, opts)
+        notify(label .. '...', opts)
+        local ok, err = downloadWithRetry(spec.url, tmp, 120, 512, label)
         if not ok then
             return nil, 'download runtime: ' .. tostring(err)
         end
@@ -738,10 +807,13 @@ local function downloadPlan(plan, manifest, opts)
     end
 
     if plan.mimgui then
+        step = step + 1
         local spec = plan.mimgui
         local tmp = staging .. '\\' .. spec.asset
+        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 mimgui'
+        overlayUpdate(label, (step - 1) / totalSteps, opts)
         notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 120, 1024)
+        local ok, err = downloadWithRetry(spec.url, tmp, 120, 1024, label)
         if not ok then
             return nil, 'download mimgui: ' .. tostring(err)
         end
@@ -756,10 +828,13 @@ local function downloadPlan(plan, manifest, opts)
     end
 
     if plan.iconv then
+        step = step + 1
         local spec = plan.iconv
         local tmp = staging .. '\\iconv.dll'
+        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 iconv.dll'
+        overlayUpdate(label, (step - 1) / totalSteps, opts)
         notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 60, 4096)
+        local ok, err = downloadWithRetry(spec.url, tmp, 60, 4096, label)
         if not ok then
             return nil, 'download iconv: ' .. tostring(err)
         end
@@ -802,7 +877,10 @@ local function commitPlan(downloaded, manifest, allFiles)
 
     reloadDeskSupportModules()
 
+    overlayUpdate('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xF4\xE0\xE9\xEB\xEE\xE2...', 0.92)
+
     if downloaded.runtime then
+        overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 runtime...', 0.94)
         if not M.installRuntimeLibsZip(downloaded.runtime) then
             return false, 'runtime unpack failed'
         end
@@ -810,6 +888,7 @@ local function commitPlan(downloaded, manifest, allFiles)
     end
 
     if downloaded.mimgui then
+        overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...', 0.96)
         if not M.installMimguiZip(downloaded.mimgui) then
             return false, 'mimgui unpack failed'
         end
@@ -900,16 +979,25 @@ function M.sync(manifest, opts)
     local remoteVer = tostring(manifest.version or '')
     notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' \xF4\xE0\xE9\xEB\xEE\xE2)...', opts)
 
+    setOverlayContext(opts)
+    if overlayEnabled(opts) then
+        overlayShow('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk', '\xC2\xE5\xF0\xF1\xE8\xFF ' .. remoteVer)
+    end
+
     updatePhase = UPDATE_PHASE.STAGE
     local downloaded, dlErr = downloadPlan(plan, manifest, opts)
     if not downloaded then
         updatePhase = UPDATE_PHASE.IDLE
+        overlayHide()
+        setOverlayContext(nil)
         notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xE8\xEB\xEE\xF1\xFC: ' .. tostring(dlErr), opts)
         return false, 'fail'
     end
 
     updatePhase = UPDATE_PHASE.COMMIT
     local ok, commitErr = commitPlan(downloaded, manifest, allFiles)
+    overlayHide()
+    setOverlayContext(nil)
     if not ok then
         updatePhase = UPDATE_PHASE.IDLE
         notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8: ' .. tostring(commitErr), opts)
@@ -917,6 +1005,7 @@ function M.sync(manifest, opts)
     end
     updatePhase = UPDATE_PHASE.IDLE
 
+    overlayUpdate('\xC3\xE0\xE3\xEE\xE2\xEE', 1.0)
     notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer, opts)
     local needsPendingReload = false
     for _, item in ipairs(downloaded) do
@@ -1222,7 +1311,13 @@ local function extractAssetsZip(zipPath)
         return false, 'zip missing'
     end
     local destRoot = M.root()
-    local ok, err = deskZip.extract(zipPath, destRoot, { yieldEvery = 20 })
+    local estFiles = 520
+    local ok, err = deskZip.extract(zipPath, destRoot, {
+        yieldEvery = 20,
+        onProgress = function(count)
+            overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (' .. tostring(count) .. ')', math.min(count / estFiles, 0.99))
+        end,
+    })
     if not ok then
         return false, err or 'extract failed'
     end
@@ -1247,10 +1342,15 @@ function M.ensureAssets(manifest, opts)
         return true, false
     end
     notify('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (assets)...', opts)
+    if overlayEnabled(opts) then
+        overlayShow('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE', '~50 \xCC\xE1')
+    end
     local zipPath = M.path(M.ASSETS_CACHE_DIR .. '\\' .. M.ASSETS_ZIP)
     deskFs.ensureDirForFile(zipPath)
-    local ok, err = downloadWithRetry(assets.url, zipPath, 300, 65536)
+    local assetBytes = tonumber(assets.bytes) or 65536
+    local ok, err = downloadWithRetry(assets.url, zipPath, 300, assetBytes, '\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE')
     if not ok then
+        overlayHide()
         notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(err), opts)
         return false, false
     end
@@ -1267,6 +1367,7 @@ function M.ensureAssets(manifest, opts)
     end
     local extracted, extractErr = extractAssetsZip(zipPath)
     if not extracted then
+        overlayHide()
         notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 assets: ' .. tostring(extractErr), opts)
         return false, false
     end
@@ -1278,19 +1379,21 @@ function M.ensureAssets(manifest, opts)
         sha256 = tostring(assets.sha256 or ''):lower(),
         installed = true,
     })
+    overlayUpdate('\xC3\xE0\xE3\xEE\xE2\xEE', 1.0)
     notify('assets OK', opts)
+    overlayHide()
     return true, true
 end
 
 function M.deferAssets(manifest, opts)
     opts = opts or {}
+    opts.showOverlay = opts.showOverlay ~= false
     manifest = manifest or {}
     if not M.needsAssets(manifest) then
         return false
     end
     if not lua_thread or not lua_thread.create then
-        M.ensureAssets(manifest, opts)
-        return true
+        return M.ensureAssets(manifest, opts)
     end
     lua_thread.create(function()
         while true do
@@ -1302,7 +1405,9 @@ function M.deferAssets(manifest, opts)
             wait(500)
         end
         wait(2000)
+        setOverlayContext(opts)
         M.ensureAssets(manifest, opts)
+        setOverlayContext(nil)
     end)
     return true
 end

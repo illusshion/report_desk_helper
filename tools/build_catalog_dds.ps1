@@ -26,7 +26,7 @@ function Test-Magick {
 
         Write-Error "ImageMagick 'magick' not found. Install or add to PATH."
 
-        Write-Host "See tools\IMAGE_ASSETS.md"
+        Write-Host "Install ImageMagick: https://imagemagick.org"
 
         exit 1
 

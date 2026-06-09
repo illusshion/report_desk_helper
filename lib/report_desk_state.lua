@@ -101,7 +101,7 @@ settings = {
     checker_hud_y = 8,
     checker_hud_h = 160,
     checker_show_admins = true,
-    checker_show_leaders = false,
+    checker_show_leaders = true,
     checker_show_friends = true,
     checker_notify_join = true,
     checker_notify_quit = true,
@@ -156,6 +156,7 @@ end
 
 -- Дефолты и миграция settings.cheats.
 function ensureCheatsSettings()
+    if type(settings) ~= 'table' then return end
     if type(settings.cheats) ~= 'table' then
         settings.cheats = defaultCheatsSettings()
     end
@@ -227,6 +228,7 @@ local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
     replyFocused = false,
+    replyInputActive = false,
     keyboardStickyUntil = 0,
     windowOpenSince = 0,
     wasOpen = false,
@@ -343,6 +345,7 @@ local deskCache = {
     cheatCaptureSlot = 'main',
     bindCapVk = nil,
     bindCapIgnoreMouseUntil = 0,
+    bindCapPollPrev = nil,
     ui = { kwBulkOpen = {}, panelStart = {}, panelStack = {} },
     filterKeys = nil,
     filterSig = '',

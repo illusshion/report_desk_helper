@@ -11,6 +11,7 @@ param(
 
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release_lib.ps1')
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
@@ -46,7 +47,11 @@ function Read-ModuleText($path) {
 
     if (-not (Test-Path $path)) { throw "Missing: $path" }
 
-    return [System.IO.File]::ReadAllText($path, $Utf8NoBom)
+    $text = [System.IO.File]::ReadAllText($path, $Utf8NoBom)
+    if ($path -like '*\samp\*' -or $path -like '*\samp\events.lua') {
+        $text = $text.Replace("require 'sampfuncs'", "require 'lib.sampfuncs'")
+    }
+    return $text
 
 }
 
@@ -216,10 +221,26 @@ $libModules = @(
     @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
     @{ Name = 'report_desk_checker_parser'; File = 'report_desk_checker_parser.lua' },
     @{ Name = 'report_desk_checker_catalog'; File = 'report_desk_checker_catalog.lua' },
+    @{ Name = 'report_desk_checker_spawn_fsm'; File = 'report_desk_checker_spawn_fsm.lua' },
+    @{ Name = 'report_desk_wm_dispatch'; File = 'report_desk_wm_dispatch.lua' },
+    @{ Name = 'report_desk_spectate_fsm'; File = 'report_desk_spectate_fsm.lua' },
 
     @{ Name = 'report_desk_vehicles'; File = 'report_desk_vehicles.lua' },
 
-    @{ Name = 'report_desk_profanity_words'; File = 'report_desk_profanity_words.lua' }
+    @{ Name = 'report_desk_profanity_words'; File = 'report_desk_profanity_words.lua' },
+
+    @{ Name = 'lib.samp.events'; File = 'samp\events.lua' },
+    @{ Name = 'samp.raknet'; File = 'samp\raknet.lua' },
+    @{ Name = 'samp.synchronization'; File = 'samp\synchronization.lua' },
+    @{ Name = 'samp.events.bitstream_io'; File = 'samp\events\bitstream_io.lua' },
+    @{ Name = 'samp.events.core'; File = 'samp\events\core.lua' },
+    @{ Name = 'samp.events.extra_types'; File = 'samp\events\extra_types.lua' },
+    @{ Name = 'samp.events.handlers'; File = 'samp\events\handlers.lua' },
+    @{ Name = 'samp.events.utils'; File = 'samp\events\utils.lua' },
+    @{ Name = 'lib.vkeys'; File = 'vkeys.lua' },
+    @{ Name = 'encoding'; File = 'encoding.lua' },
+    @{ Name = 'lib.vector3d'; File = 'vector3d.lua' },
+    @{ Name = 'vector3d'; File = 'vector3d.lua' }
 
 )
 
@@ -259,12 +280,14 @@ $appChunks = @(
 
     'report_desk_ui.lua',
 
-    'report_desk_hooks.lua',
-
     'report_desk_env_export.lua',
 
     'report_desk_main.lua'
 
+)
+
+$appChunksHooks = @(
+    'report_desk_hooks.lua'
 )
 
 $allBundleInputs = @(
@@ -285,10 +308,14 @@ $allBundleInputs = @(
     'report_desk_spectate_stats.lua',
     'report_desk_checker_parser.lua',
     'report_desk_checker_catalog.lua',
+    'report_desk_checker_spawn_fsm.lua',
+    'report_desk_wm_dispatch.lua',
+    'report_desk_spectate_fsm.lua',
     'report_desk_vehicles.lua',
     'report_desk_profanity_words.lua',
     'report_desk_remote_chat.lua',
-    'report_desk_checker.lua'
+    'report_desk_checker.lua',
+    'report_desk_cmd_binds.lua'
 ) + $appChunks
 foreach ($rel in $allBundleInputs) {
     $p = Join-Path $libDir $rel
@@ -381,6 +408,13 @@ foreach ($chunk in $appChunks) {
 }
 [void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_core' $appParts.ToArray()))
 
+$hooksParts = New-Object System.Collections.Generic.List[string]
+foreach ($chunk in $appChunksHooks) {
+    $path = Join-Path $libDir $chunk
+    [void]$hooksParts.Add((Read-ModuleText $path))
+}
+[void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_hooks' $hooksParts.ToArray()))
+
 $remoteChatPath = Join-Path $libDir 'report_desk_remote_chat.lua'
 $remoteChatText = Read-ModuleText $remoteChatPath
 [void]$sb.Append((Wrap-AppChunkSafe 'report_desk_remote_chat.lua' $remoteChatText 'remote chat disabled'))
@@ -389,11 +423,20 @@ $checkerPath = Join-Path $libDir 'report_desk_checker.lua'
 $checkerText = Read-ModuleText $checkerPath
 [void]$sb.Append((Wrap-AppChunkSafe 'report_desk_checker.lua' $checkerText 'checker disabled'))
 
+$cmdBindsPath = Join-Path $libDir 'report_desk_cmd_binds.lua'
+$cmdBindsText = Read-ModuleText $cmdBindsPath
+[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_cmd_binds.lua' $cmdBindsText 'cmd binds disabled'))
+
+$userDefaultPath = Join-Path $MoonloaderRoot 'config\admin_report_desk_user.default.lua'
+$userDefaultText = Read-ModuleText $userDefaultPath
+[void]$sb.Append((Wrap-PreloadModule 'report_desk_user_defaults' $userDefaultText))
+
 [void]$sb.Append($footer)
 
 
 
-$coreLua = Join-Path $reportDeskDir 'admin_report_desk_core.lua'
+$coreLua = Join-Path $reportDeskDir 'AdminDeskCore.lua'
+$legacyCoreLua = Join-Path $reportDeskDir 'admin_report_desk_core.lua'
 
 [System.IO.File]::WriteAllText($coreLua, $sb.ToString(), $Utf8NoBom)
 
@@ -407,9 +450,14 @@ $mustHave = @(
     'report_desk_spectate_camera',
     'report_desk_sp_keys_hud',
     'report_desk_sp_refresh',
-    'report_desk_user_defaults',
+    "package.preload['report_desk_user_defaults'] = function",
     'migrateScenariosPackIfNeeded',
-    'SCENARIOS_PACK_VERSION'
+    'SCENARIOS_PACK_VERSION',
+    "package.preload['lib.samp.events']",
+    "package.preload['encoding']",
+    'report_desk_wm_dispatch',
+    'report_desk_spectate_fsm',
+    'report_desk_checker_spawn_fsm'
 )
 $missing = @($mustHave | Where-Object { $coreText -notmatch [regex]::Escape($_) })
 if ($missing.Count -gt 0) {
@@ -419,73 +467,52 @@ Write-Host 'Bundle verification OK'
 
 
 
-$coreLuac = Join-Path $reportDeskDir 'admin_report_desk_core.luac'
+$coreLuac = Join-Path $reportDeskDir 'AdminDeskCore.luac'
+$legacyCoreLuac = Join-Path $reportDeskDir 'admin_report_desk_core.luac'
 
-$luacCandidates = @(
-
-    (Join-Path $MoonloaderRoot 'luac.exe'),
-
-    (Join-Path $MoonloaderRoot 'luac51.exe'),
-
-    'luac',
-
-    'luac5.1'
-
-)
-
-$luac = $null
-
-foreach ($c in $luacCandidates) {
-
-    if ($c -match '\\') {
-
-        if (Test-Path $c) { $luac = $c; break }
-
-    } elseif (Get-Command $c -ErrorAction SilentlyContinue) {
-
-        $luac = (Get-Command $c).Source
-
-        break
-
-    }
-
-}
-
-
+$luajit = Resolve-DeskLuajit $MoonloaderRoot $PSScriptRoot
 
 if ($SkipLuac) {
 
     Write-Warning 'SkipLuac: only .lua core produced'
 
-} elseif ($luac) {
+} elseif ($luajit) {
 
-    & $luac -o $coreLuac $coreLua
+    Invoke-DeskLuajitCompile $luajit $coreLua $coreLuac
 
-    if (Test-Path $coreLuac) {
-
-        Write-Host "Wrote $coreLuac"
-
-    } else {
-
-        Write-Warning "luac failed; ship $coreLua instead"
-
-    }
+    Write-Host "Wrote $coreLuac (LuaJIT)"
 
 } else {
 
-    Write-Warning "luac not found. Install Lua 5.1 luac or copy from MoonLoader SDK."
+    Write-Warning "LuaJIT not found. Download tools/luajit-210-compiler.zip from blast.hk/moonloader"
 
-    Write-Warning "Users can run admin_report_desk_core.lua (stub supports .lua fallback)."
+    Write-Warning "Users can run AdminDeskCore.lua (bootstrap supports .lua fallback)."
 
 }
 
+Copy-Item $coreLua $legacyCoreLua -Force
+if (Test-Path $coreLuac) {
+    Copy-Item $coreLuac $legacyCoreLuac -Force
+}
 
+$bootstrapSrc = Join-Path $PSScriptRoot 'admin_desk_bootstrap.lua'
+if (-not (Test-Path $bootstrapSrc)) {
+    Write-Error "Missing tools\admin_desk_bootstrap.lua"
+}
+$bootstrapLua = Join-Path $distDir 'AdminDesk.lua'
+Copy-Item $bootstrapSrc $bootstrapLua -Force
+$bootstrapLuac = Join-Path $distDir 'AdminDesk.luac'
+if (-not $SkipLuac -and $luajit) {
+    Invoke-DeskLuajitCompile $luajit $bootstrapLua $bootstrapLuac
+    Write-Host "Wrote $bootstrapLuac (LuaJIT)"
+} else {
+    Write-Warning 'AdminDesk.luac not built (SkipLuac or no LuaJIT)'
+}
 
 $launcherSrc = Join-Path $PSScriptRoot 'admin_report_desk_stub.lua'
-if (-not (Test-Path $launcherSrc)) {
-    Write-Error "Missing tools\admin_report_desk_stub.lua (prod launcher source)"
+if (Test-Path $launcherSrc) {
+    Copy-Item $launcherSrc (Join-Path $distDir 'admin_report_desk.lua') -Force
 }
-Copy-Item $launcherSrc (Join-Path $distDir 'admin_report_desk.lua') -Force
 
 $autoupdateSrc = Join-Path $libDir 'report_desk_autoupdate.lua'
 if (-not (Test-Path $autoupdateSrc)) {
@@ -505,7 +532,18 @@ if (Test-Path $depsSrc) {
     Write-Host "Wrote dist\report_desk_deps.lua"
 }
 
-Write-Host "Wrote dist\admin_report_desk.lua (launcher)"
+foreach ($aux in @('report_desk_sha256.lua', 'report_desk_zip.lua', 'report_desk_fs.lua')) {
+    $auxSrc = Join-Path $libDir $aux
+    if (Test-Path $auxSrc) {
+        Copy-Item $auxSrc $distDir -Force
+        Write-Host "Wrote dist\$aux"
+    }
+}
+
+Write-Host "Wrote dist\AdminDesk.lua (bootstrap source)"
+if (Test-Path (Join-Path $distDir 'admin_report_desk.lua')) {
+    Write-Host "Wrote dist\admin_report_desk.lua (legacy launcher)"
+}
 
 Write-Host "Wrote dist\report_desk_autoupdate.lua"
 

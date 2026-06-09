@@ -1,7 +1,7 @@
---[[ Модуль: публикация locals в env для late chunk (checker). ]]
+--[[ Модуль: публикация locals в env для hooks/late chunks (checker). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
--- Экспорт core locals в env — checker chunk видит imgui, settings, deskCache и т.д.
+-- Экспорт core locals в env — hooks/checker chunks видят imgui, settings, deskCache и т.д.
 do
     local e = getfenv(1)
     if type(e) ~= 'table' then return end
@@ -32,6 +32,33 @@ do
     e.findPlayerIdByNick = findPlayerIdByNick
     e.refreshPlayerNickCache = refreshPlayerNickCache
     e.nickKey = nickKey
+    if type(outbound) ~= 'table' then
+        error('[Report Desk] outbound not initialized before env export')
+    end
+    if type(chatSeen) ~= 'table' then
+        error('[Report Desk] chatSeen not initialized before env export')
+    end
+    e.chatSeen = chatSeen
+    e.outbound = outbound
+    _G.chatSeen = chatSeen
+    _G.outbound = outbound
+    e.trim = trim
+    e.stripTags = stripTags
+    e.stripChatTimestamp = stripChatTimestamp
+    e.chatLineSeenKey = chatLineSeenKey
+    e.markChatLineSeen = markChatLineSeen
+    e.markDirtyThreads = markDirtyThreads
+    e.clearPendingOutbound = clearPendingOutbound
+    e.tryIngestAdminReplyLine = tryIngestAdminReplyLine
+    e.processChatLineIngest = processChatLineIngest
+    e.profanityIsLineSeen = profanityIsLineSeen
+    e.checkProfanityFromChatLine = checkProfanityFromChatLine
+    e.checkProfanityOutgoing = checkProfanityOutgoing
+    e.installProfanityHooks = installProfanityHooks
+    e.tryInterceptSplitAnsCommand = tryInterceptSplitAnsCommand
+    e.handleOutgoingAnsCommand = handleOutgoingAnsCommand
+    e.deskLeaveSpectateMode = deskLeaveSpectateMode
+    e.deskApplyInputPolicy = deskApplyInputPolicy
     if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
     if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
     if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end

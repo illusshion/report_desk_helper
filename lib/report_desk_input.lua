@@ -366,6 +366,7 @@ end
 -- Desk hook/helper.
 function deskEnsureUiCursorForOpenPanel()
     if not showWindow[0] then return end
+    if deskInputState.replyInputActive then return end
     if deskImguiTypingActive() or deskInputState.replyFocused then return end
     if deskSpectateCameraBlocked() then return end
     deskEnableUiCursorForSamp()
@@ -464,7 +465,6 @@ function deskApplyInputPolicy()
         else
             setDeskPlayerLock(false)
         end
-        updateMimguiGameInputPassthrough()
     end
 
     deskInputState.panelOpenPrev = panelOpen
@@ -723,33 +723,15 @@ function deskWarmupMutesGameInput()
     return false
 end
 
--- Apply Desk Warmup Input Policy
-function applyDeskWarmupInputPolicy()
-    updateMimguiGameInputPassthrough()
-end
-
-local DESK_CHAT_WM_KEY = '__rd_wm_chat__'
-
-local function uninstallDeskChatWm()
-    local prev = _G[DESK_CHAT_WM_KEY]
-    if prev and removeEventHandler then
-        pcall(removeEventHandler, 'onWindowMessage', prev)
-    end
-    _G[DESK_CHAT_WM_KEY] = nil
-end
-
-local function installDeskChatWmHandler()
-    uninstallDeskChatWm()
-    local handler = function(msg, wparam, lparam)
+-- Register Desk Chat Wm Handler
+function registerDeskChatWmHandler()
+    deskWmDispatch.register('chat', 90, function(msg, wparam, lparam)
         if deskDeskOrAnsUiOpen() and deskShouldBlockSampChatKey(msg, wparam) then
             deskConsumeSampChatKey(msg)
+            return true
         end
-    end
-    addEventHandler('onWindowMessage', handler, true)
-    _G[DESK_CHAT_WM_KEY] = handler
+    end)
 end
-
-installDeskChatWmHandler()
 
 -- Update Mimgui Game Input Passthrough
 function updateMimguiGameInputPassthrough()
@@ -820,9 +802,10 @@ function updateDeskInputCapture()
     if io and (io.WantCaptureKeyboard or io.WantTextInput) then
         wantKb = true
     end
-    local wantMouse = false
-    if io and io.WantCaptureMouse then wantMouse = true end
-    if imgui.IsWindowHovered and imgui.HoveredFlags and imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow) then
+    local wantMouse = showWindow[0] == true
+    if not wantMouse and io and io.WantCaptureMouse then wantMouse = true end
+    if not wantMouse and imgui.IsWindowHovered and imgui.HoveredFlags
+            and imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow) then
         wantMouse = true
     end
     deskWantsKeyboard = wantKb or wantMouse
@@ -837,11 +820,10 @@ function flushDirtyConfigNow()
         pcall(flushCheckerCatalogNow)
     end
     if dirtySettings or dirtyThreads then
-        pcall(saveConfig)
-        dirtySettings = false
-        dirtyThreads = false
-        lastSettingsSave = os.clock()
-        lastThreadsSave = os.clock()
+        if saveConfig() then
+            lastSettingsSave = os.clock()
+            lastThreadsSave = os.clock()
+        end
     end
 end
 
@@ -850,9 +832,10 @@ function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
     if not wasOpen then return end
-    deskResetHotkeyDebounce(settings.hotkey or vkeys.VK_F7)
+    deskResetHotkeyDebounce((type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7)
     finishDeskBindCapture()
     deskInputState.replyFocused = false
+    deskInputState.replyInputActive = false
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0
     deskWantsKeyboard = false
@@ -865,7 +848,9 @@ function closeDeskWindow()
     pcall(deskTexPipeline.halt, deskTex)
     deskInputState.wasOpen = false
     deskApplyInputPolicy()
-    flushDirtyConfigNow()
+    if dirtySettings or dirtyThreads then
+        flushDirtyConfigNow()
+    end
 end
 
 -- Отправка команды/сообщения на сервер.

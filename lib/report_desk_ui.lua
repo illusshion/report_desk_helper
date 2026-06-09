@@ -1,10 +1,6 @@
 --[[ Модуль: ImGui окно Report Desk (список, чат, настройки). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
--- Draw Settings Card Begin
-function drawSettingsCardBegin(id, h)
-end
-
 -- Draw Settings Card End
 function drawSettingsCardEnd()
     imgui.Dummy(imgui.ImVec2(0, 2))
@@ -740,7 +736,7 @@ function drawComposer(composerH, quickItems)
 
     if focusReplyNext and imgui.SetKeyboardFocusHere then
         imgui.SetKeyboardFocusHere(0)
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + 2.0
         deskInputState.replyFocused = true
         focusReplyNext = false
     end
@@ -769,7 +765,14 @@ function drawComposer(composerH, quickItems)
     else
         sent = imgui.InputText('##reply', replyBuf, sizeof(replyBuf), flags)
     end
+    if imgui.IsItemClicked and imgui.IsItemClicked(0) and imgui.IsItemActive and not imgui.IsItemActive() then
+        focusReplyNext = true
+    end
     deskKeepInputOnActiveItem()
+    local replyActive = false
+    if imgui.IsItemActive then replyActive = imgui.IsItemActive() end
+    if not replyActive and imgui.IsItemFocused then replyActive = imgui.IsItemFocused() end
+    deskInputState.replyInputActive = replyActive
     imgui.PopItemWidth()
     imgui.PopStyleColor(2)
 
@@ -1543,6 +1546,10 @@ end
 -- Apply Chat Scroll If Needed
 function applyChatScrollIfNeeded(msgCount)
     msgCount = tonumber(msgCount) or 0
+    -- Автоскролл забирает фокус у поля ответа — не трогаем лог, пока пользователь печатает.
+    if deskInputState.replyInputActive or deskInputState.replyFocused then return end
+    if focusReplyNext then return end
+    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return end
     local snapKey = deskInputState.chatSnapBottomKey
     local wantSnap = snapKey and snapKey == selectedKey and msgCount > 0
     local wantFollow = not snapKey
@@ -1611,6 +1618,7 @@ end
 function drawChatPanel()
     local t = getSelectedThread()
     if not t then
+        deskInputState.replyInputActive = false
         pushPanelStyle(col_chat_bg)
         imgui.BeginChild('##chat_empty', imgui.ImVec2(-1, -1), false)
         drawEmptyChatPlaceholder()
@@ -1658,11 +1666,16 @@ function drawChatPanel()
     else
         imgui.Dummy(imgui.ImVec2(0, 6))
         local renderFrom = 1
-        if #msgs > CHAT_UI_RENDER_MAX then
-            renderFrom = #msgs - CHAT_UI_RENDER_MAX + 1
+        local chatRenderMax = CHAT_UI_RENDER_MAX
+        local openSince = tonumber(deskInputState.windowOpenSince) or 0
+        if openSince > 0 and (os.clock() - openSince) < 0.3 then
+            chatRenderMax = math.min(30, CHAT_UI_RENDER_MAX)
+        end
+        if #msgs > chatRenderMax then
+            renderFrom = #msgs - chatRenderMax + 1
             imgui.TextColored(col_muted2, uiText(string.format(
                 '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE \xEF\xEE\xF1\xEB\xE5\xE4\xED\xE8\xE5 %d \xE8\xE7 %d',
-                CHAT_UI_RENDER_MAX, #msgs)))
+                chatRenderMax, #msgs)))
             imgui.Dummy(imgui.ImVec2(0, 4))
         end
         local lastDay = nil
@@ -2059,7 +2072,7 @@ function drawSettingsTab()
         invalidateFilterCache()
         markDirtyThreads()
         markDirtySettings()
-        saveConfig()
+        flushDirtyConfigNow()
         say('\xC4\xE8\xE0\xEB\xEE\xE3\xE8 \xEE\xF7\xE8\xF9\xE5\xED\xFB')
     end
     imgui.PopStyleColor(3)
@@ -2073,7 +2086,7 @@ end
 
 -- Toggle Window
 function toggleWindow()
-    if not sessionLive then return end
+    if not sessionLive or not chatLogReady then return end
     if type(deskSampInGame) == 'function' and not deskSampInGame() then return end
     if showWindow[0] then
         closeDeskWindow()
@@ -2094,7 +2107,12 @@ function toggleWindow()
     scenariosUiSynced = false
     focusReplyNext = getSelectedThread() ~= nil
     deskInputState.windowOpenSince = os.clock()
-    deskInputState.keyboardStickyUntil = 0
+    if getSelectedThread() ~= nil then
+        deskInputState.replyFocused = true
+        deskInputState.keyboardStickyUntil = os.clock() + 2.0
+    else
+        deskInputState.keyboardStickyUntil = 0
+    end
     deskInputState.chatFollowBottom = true
     refreshMyNick()
     deskInputState.wasOpen = true
@@ -2123,6 +2141,9 @@ function drawMainWindow()
             closeDeskWindow()
         end
         imgui.End()
+        if showWindow[0] then
+            pcall(updateDeskInputCapture)
+        end
         return
     end
 
@@ -2148,6 +2169,19 @@ function drawMainWindow()
             if not okCq then
                 imgui.TextColored(col_warn, 'Quick replies UI error:')
                 imgui.TextWrapped(tostring(errCq))
+            end
+            imgui.EndTabItem()
+        end
+        if imgui.BeginTabItem(uiText('\xCA\xEE\xEC\xE0\xED\xE4\xFB') .. '##tab_cmd') then
+            if type(drawCmdBindsTab) ~= 'function' then
+                imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xEA\xEE\xEC\xE0\xED\xE4 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
+            else
+                local okCmd, errCmd = pcall(drawCmdBindsTab)
+                if not okCmd then
+                    imgui.TextColored(col_warn, 'Cmd binds UI error:')
+                    imgui.TextWrapped(tostring(errCmd))
+                    print('[Report Desk] cmd binds UI: ' .. tostring(errCmd))
+                end
             end
             imgui.EndTabItem()
         end
@@ -2256,7 +2290,7 @@ end)
 -- Desk hook/helper.
 function deskPassesGameKey(wparam)
     if deskCache.gamePassVks[wparam] then return true end
-    local hk = settings.hotkey or (vkeys and vkeys.VK_F7) or 0x76
+    local hk = (type(settings) == 'table' and settings.hotkey) or (vkeys and vkeys.VK_F7) or 0x76
     if wparam == hk then return true end
     if vkeys then
         if wparam == vkeys.VK_CONTROL or wparam == vkeys.VK_SHIFT
@@ -2272,8 +2306,12 @@ end
 -- Draw Desk Sp Spectate Overlay
 function drawDeskSpSpectateOverlay()
     if type(settings) ~= 'table' then return end
-    if deskSpectateStats.shouldShowHud and deskSpectateStats.shouldShowHud(settings) then
-        pcall(deskSpectateStats.drawOverlay, settings)
+    if type(deskSpectateStats) ~= 'table' then return end
+    if deskSpectateStats.shouldShowHud then
+        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
+        if okShow and show then
+            pcall(deskSpectateStats.drawOverlay, settings)
+        end
     end
     if deskSpectateStats.drawSpMenu then
         pcall(deskSpectateStats.drawSpMenu, settings)
@@ -2296,7 +2334,10 @@ function deskSpSpectateOverlayVisible()
         if ok then tid = tonumber(v) or -1 end
     end
     if tid >= 0 then return true end
-    if deskSpectateStats.shouldShowHud and deskSpectateStats.shouldShowHud(settings) then return true end
+    if type(deskSpectateStats) == 'table' and deskSpectateStats.shouldShowHud then
+        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
+        if okShow and show then return true end
+    end
     return false
 end
 
@@ -2347,7 +2388,8 @@ do
         function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            ensureCheatsSettings()
+            pcall(ensureCheatsSettings)
+            if type(settings) ~= 'table' or type(settings.cheats) ~= 'table' then return false end
             return settings.cheats.show_hud ~= false
         end,
         function(self)
@@ -2363,8 +2405,10 @@ do
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
             if not sessionLive then return false end
-            if settings.spectate_vehicle_hud == false then return false end
-            return deskSpectateStats.shouldShowVehicleHud and deskSpectateStats.shouldShowVehicleHud(settings)
+            if type(settings) ~= 'table' or settings.spectate_vehicle_hud == false then return false end
+            if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.shouldShowVehicleHud then return false end
+            local okShow, show = pcall(deskSpectateStats.shouldShowVehicleHud, settings)
+            return okShow and show == true
         end,
         function(self)
             if deskSpectateStats.drawVehicleHud then
@@ -2380,8 +2424,10 @@ do
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
             if not sessionLive then return false end
-            if settings.spectate_keys_hud == false then return false end
-            return deskSpectateStats.shouldShowKeysHud and deskSpectateStats.shouldShowKeysHud(settings)
+            if type(settings) ~= 'table' or settings.spectate_keys_hud == false then return false end
+            if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.shouldShowKeysHud then return false end
+            local okShow, show = pcall(deskSpectateStats.shouldShowKeysHud, settings)
+            return okShow and show == true
         end,
         function(self)
             if deskSpectateStats.drawKeysHud then
@@ -2399,7 +2445,7 @@ do
             return deskSpSpectateOverlayVisible()
         end,
         function(self)
-            drawDeskSpSpectateOverlay()
+            pcall(drawDeskSpSpectateOverlay)
             self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
         end
@@ -2407,7 +2453,9 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
-            return deskSpectateStats.isAnsBarOpen and deskSpectateStats.isAnsBarOpen()
+            if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.isAnsBarOpen then return false end
+            local okOpen, open = pcall(deskSpectateStats.isAnsBarOpen)
+            return okOpen and open == true
         end,
         function(self)
             self.HideCursor = deskMimguiHideCursor()
@@ -2437,9 +2485,7 @@ do
         function(self)
             self.HideCursor = deskMimguiHideCursor()
             self.LockPlayer = false
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                updateMimguiGameInputPassthrough()
-            end
+            pcall(updateMimguiGameInputPassthrough)
         end
     ), true, false)
 end
@@ -2460,17 +2506,20 @@ function applyCheatKeyCapture(msg, wparam, lparam)
         elseif wparam == vkeys.VK_DELETE or wparam == vkeys.VK_BACK then
             cheatClearBind(prefix)
             finishDeskBindCapture()
-        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam) then
-            deskCache.bindCapVk = wparam
+        else
+            local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+            if capKey then
+                deskCache.bindCapVk = capKey
+                if deskBindMouseCommitsOnDown(capKey) then
+                    deskBindCapSaveCheat(prefix)
+                end
+            end
         end
         return true
     end
     if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        local capVk = tonumber(deskCache.bindCapVk) or 0
-        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam) then
-            commitCheatBindCapture(prefix)
-            finishDeskBindCapture()
-        end
+        local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+        deskBindCapTrySaveOnUp(capKey, deskBindCapSaveCheat, prefix)
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
@@ -2481,8 +2530,7 @@ function applyCheatKeyCapture(msg, wparam, lparam)
         end
         deskCache.bindCapVk = mvk
         if deskBindMouseCommitsOnDown(mvk) then
-            commitCheatBindCapture(prefix)
-            finishDeskBindCapture()
+            deskBindCapSaveCheat(prefix)
         end
         return true
     end
@@ -2492,16 +2540,20 @@ function applyCheatKeyCapture(msg, wparam, lparam)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
-        if not deskBindMouseCommitsOnDown(relMv) then
-            local capVk = tonumber(deskCache.bindCapVk) or 0
-            if capVk > 0 and relMv == capVk then
-                commitCheatBindCapture(prefix)
-                finishDeskBindCapture()
-            end
-        end
+        deskBindCapTrySaveOnUp(relMv, deskBindCapSaveCheat, prefix)
         return true
     end
     return true
+end
+
+-- XButton index from wparam (HIWORD on Windows).
+local function xbuttonIndex(wparam)
+    wparam = tonumber(wparam) or 0
+    local hi = bit.rshift(wparam, 16)
+    if hi == 1 or hi == 2 then return hi end
+    local lo = bit.band(wparam, 0xFFFF)
+    if lo == 1 or lo == 2 then return lo end
+    return nil
 end
 
 -- Парсинг данных с сервера/чата.
@@ -2510,7 +2562,7 @@ function parseMouseButtonVk(msg, wparam, lparam)
     if msg == deskCache.wm.RBUTTONDOWN then return vkeys.VK_RBUTTON end
     if msg == deskCache.wm.MBUTTONDOWN then return vkeys.VK_MBUTTON end
     if msg == deskCache.wm.XBUTTONDOWN then
-        local btn = bit.rshift(tonumber(wparam) or 0, 16)
+        local btn = xbuttonIndex(wparam)
         if btn == 1 then return vkeys.VK_XBUTTON1 end
         if btn == 2 then return vkeys.VK_XBUTTON2 end
     end
@@ -2523,7 +2575,7 @@ function parseMouseButtonReleaseVk(msg, wparam, lparam)
     if msg == 0x0205 then return vkeys.VK_RBUTTON end
     if msg == 0x0209 then return vkeys.VK_MBUTTON end
     if msg == 0x020C then
-        local btn = bit.rshift(tonumber(wparam) or 0, 16)
+        local btn = xbuttonIndex(wparam)
         if btn == 1 then return vkeys.VK_XBUTTON1 end
         if btn == 2 then return vkeys.VK_XBUTTON2 end
     end
@@ -2544,50 +2596,41 @@ function applyHotkeyCapture(msg, wparam, lparam)
             settings.hotkey = vkeys.VK_F7
             markDirtySettings()
             finishDeskBindCapture()
-        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam)
-                and not deskHotkeyBlockedByMarkerWheel(wparam) then
-            deskCache.bindCapVk = wparam
+        else
+            local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+            if capKey then
+                deskCache.bindCapVk = capKey
+                if deskBindMouseCommitsOnDown(capKey) then
+                    deskBindCapSaveHotkey(capKey)
+                end
+            end
         end
         return true
     end
     if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        local capVk = tonumber(deskCache.bindCapVk) or 0
-        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam)
-                and not deskHotkeyBlockedByMarkerWheel(wparam) then
-            settings.hotkey = capVk
-            markDirtySettings()
-            finishDeskBindCapture()
-        end
+        local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+        deskBindCapTrySaveOnUp(capKey, deskBindCapSaveHotkey, capKey)
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
-    if mvk and not deskHotkeyBlockedByMarkerWheel(mvk) then
+    if mvk then
         if deskBindMouseUiClickVk(mvk)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
         deskCache.bindCapVk = mvk
         if deskBindMouseCommitsOnDown(mvk) then
-            settings.hotkey = mvk
-            markDirtySettings()
-            finishDeskBindCapture()
+            deskBindCapSaveHotkey(mvk)
         end
         return true
     end
     local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
-    if relMv and not deskHotkeyBlockedByMarkerWheel(relMv) then
+    if relMv then
         if deskBindMouseUiClickVk(relMv)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
-        if not deskBindMouseCommitsOnDown(relMv) then
-            local capVk = tonumber(deskCache.bindCapVk) or 0
-            if capVk > 0 and relMv == capVk then
-                settings.hotkey = capVk
-                markDirtySettings()
-                finishDeskBindCapture()
-            end
-        end
+        deskBindCapTrySaveOnUp(relMv, deskBindCapSaveHotkey, relMv)
         return true
     end
     return true
@@ -2597,45 +2640,21 @@ if vkeys and vkeys.VK_SNAPSHOT then deskCache.gamePassVks[vkeys.VK_SNAPSHOT] = t
 if vkeys and vkeys.VK_F12 then deskCache.gamePassVks[vkeys.VK_F12] = true end
 if vkeys and vkeys.VK_F8 then deskCache.gamePassVks[vkeys.VK_F8] = true end
 
-local DESK_WM_KEYS = {
-    hotkey = '__rd_wm_hotkey__',
-    gamePass = '__rd_wm_gamepass__',
-    main = '__rd_wm_main__',
-}
-
-local function uninstallDeskWm(key)
-    local prev = _G[DESK_WM_KEYS[key]]
-    if prev and removeEventHandler then
-        pcall(removeEventHandler, 'onWindowMessage', prev)
-    end
-    _G[DESK_WM_KEYS[key]] = nil
-end
-
-local function installDeskWm(key, fn, front)
-    uninstallDeskWm(key)
-    addEventHandler('onWindowMessage', fn, front == true)
-    _G[DESK_WM_KEYS[key]] = fn
-end
-
 local function installDeskWmHandlers()
-    installDeskWm('hotkey', function(msg, wparam, lparam)
-        if tryHandleDeskHotkeyMessage(msg, wparam, lparam) then return end
-    end, true)
-
-    installDeskWm('gamePass', function(msg, wparam, lparam)
-        if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
-            if deskCache.gamePassVks[wparam] then
-                updateMimguiGameInputPassthrough()
-                return
-            end
+    if type(registerDeskChatWmHandler) == 'function' then
+        registerDeskChatWmHandler()
+    end
+    deskWmDispatch.register('hotkey', 100, function(msg, wparam, lparam)
+        if tryHandleDeskHotkeyMessage(msg, wparam, lparam) then
+            return true
         end
-    end, true)
+    end)
 
-    installDeskWm('main', function(msg, wparam, lparam)
+    deskWmDispatch.register('main', 50, function(msg, wparam, lparam)
         if deskCache.cheatCapture then
             if applyCheatKeyCapture(msg, wparam, lparam) then
                 consumeWindowMessage(true, true, true)
-                return
+                return true
             end
         else
             local mvk = parseMouseButtonVk(msg, wparam, lparam)
@@ -2651,7 +2670,7 @@ local function installDeskWmHandlers()
         if deskCache.hotkeyCapture then
             if applyHotkeyCapture(msg, wparam, lparam) then
                 consumeWindowMessage(true, true, true)
-                return
+                return true
             end
         end
 
@@ -2667,7 +2686,7 @@ local function installDeskWmHandlers()
                 end
                 if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
                     consumeWindowMessage(true, false, true)
-                    return
+                    return true
                 end
                 if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
                     if deskCache.hotkeyCapture or deskCache.cheatCapture then
@@ -2676,17 +2695,18 @@ local function installDeskWmHandlers()
                         closeDeskWindow()
                     end
                     consumeWindowMessage(true, false, true)
-                    return
+                    return true
                 end
             end
         end
-    end, false)
+    end)
 end
 
 installDeskWmHandlers()
 
 -- Try Intercept Split Ans Command
 function tryInterceptSplitAnsCommand(command)
+    if type(outbound) ~= 'table' then return false end
     command = trim(command or '')
     if command == '' then return false end
     local id, body = command:match('^/?ans%s+(%d+)%s+(.+)$')
@@ -2723,6 +2743,7 @@ end
 
 -- Handle Outgoing Ans Command
 function handleOutgoingAnsCommand(message)
+    if type(outbound) ~= 'table' or type(threads) ~= 'table' then return end
     if not message then return end
     message = trim(message)
     local id, body = message:match('^/?ans%s+(%d+)%s+(.+)$')
@@ -2781,10 +2802,7 @@ end
 -- Poll sampGetChatString: safety reconcile (hook активен) или полный fallback.
 function pollReportIngest()
     if not sampGetChatString then return end
-    if not chatLogReady then
-        seedSeenChatLines()
-        return
-    end
+    if not chatLogReady then return end
     local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
     local maxLines
     if hookActive then
@@ -2823,15 +2841,10 @@ function pollReportIngest()
         if processChatLineIngest(plain, 0, source, true, line, { delay = 0 }) then
             markChatLineSeen(key)
             chatSeen.deferred[key] = nil
-        else
+        elseif not tryParseReport(plain) then
+            -- Не помечаем репорт seen при неудачном ingest — hook/poll смогут повторить.
             markChatLineSeen(key)
         end
         ::continue::
     end
 end
-
--- Poll/опрос.
-function pollChatLog()
-    pollReportIngest()
-end
-

@@ -9,6 +9,11 @@ function main()
     local okCfg, errCfg = pcall(loadConfig)
     if not okCfg then
         print('[Report Desk] config: ' .. tostring(errCfg))
+        pcall(ensureCheatsSettings)
+        if not deskConfigReady then deskConfigReady = true end
+    end
+    if type(initCmdBinds) == 'function' then
+        pcall(initCmdBinds)
     end
     pcall(ensureComposerQuickButtons)
     pcall(syncLegacyGgTechFromComposerButtons)
@@ -29,14 +34,15 @@ function main()
             'spectate_vehicle_hud_layout_v5',
             'spectate_vehicle_hud_layout_v6',
         }
+        local layoutDirty = false
         for _, key in ipairs(layoutFlags) do
             if not settings[key] then
                 settings[key] = true
-                markDirtySettings()
+                layoutDirty = true
             end
         end
+        if layoutDirty then markDirtySettings() end
     end
-    pcall(initDeskIngest)
     pcall(updateMimguiGameInputPassthrough)
     if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
         print('[Report Desk] spectate module unavailable — spectate HUD disabled')
@@ -133,7 +139,10 @@ function main()
     setInputBuf(deskReplyBuf.time, getTimeReplyText())
     setInputBuf(deskReplyBuf.gg, getGgReplyText())
     setInputBuf(deskReplyBuf.tech, getTechReplyText())
-    if not doesFileExist(CONFIG_PATH) then saveConfig() end
+    if not doesFileExist(CONFIG_PATH) then
+        markDirtySettings()
+        markDirtyThreads()
+    end
     pcall(flushDirtyConfigNow)
 
     sampRegisterChatCommand('reps', function()
@@ -149,16 +158,7 @@ function main()
         pcall(deskAcarEnter, arg)
     end)
 
-    pcall(checkerInit)
-
-    seedSeenChatLines()
-    pcall(seedProfanitySeenForChatBuffer)
-    pcall(getFilteredThreadKeys)
     refreshMyNick()
-    sessionLive = true
-    lastSettingsSave = os.clock()
-    lastThreadsSave = os.clock()
-    lastMapPrune = os.clock()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
@@ -174,6 +174,10 @@ function main()
     installDeskPlayerColorHook()
     installDeskSpRefreshHooks()
     pcall(sampSyncAllPlayerColors)
+    sessionLive = true
+    lastSettingsSave = os.clock()
+    lastThreadsSave = os.clock()
+    lastMapPrune = os.clock()
     deskVeh.bind({
         settings = settings,
         sendChat = sendChat,
@@ -189,6 +193,38 @@ function main()
     })
     pcall(ensureDeskCatalogWarmup)
     pcall(announceDeskStartup)
+
+    lua_thread.create(function()
+        pcall(checkerInit)
+        wait(0)
+        if type(chatSeen) == 'table' then
+            chatSeen.lines = {}
+            chatSeen.order = {}
+            chatSeen.deferred = {}
+            chatSeen.consumed = {}
+            chatSeen.consumedOrder = {}
+            if sampGetChatString then
+                for i = 0, 99 do
+                    markChatLineSeen(chatLineSeenKey(sampGetChatString(i)))
+                    if i % 20 == 19 then wait(0) end
+                end
+            end
+        end
+        chatLogReady = true
+        if sampGetChatString and type(profanityMarkLineSeen) == 'function'
+                and type(chatLineSeenKey) == 'function' then
+            local pollMax = CHAT_POLL_LINES_OPEN or 100
+            for i = 0, pollMax - 1 do
+                local line = sampGetChatString(i) or ''
+                if line ~= '' then
+                    profanityMarkLineSeen(chatLineSeenKey(line))
+                end
+                if i % 20 == 19 then wait(0) end
+            end
+        end
+        pcall(getFilteredThreadKeys)
+    end)
+
     local lastPoll = 0
     local pollInterval = 0.25
     local lastNickCacheTick = 0
@@ -207,13 +243,15 @@ function main()
     local function mainLoopWaitMs()
         if showWindow[0] then return 8 end
         if deskIsSpectating() then return 16 end
-        if deskTexPipeline.anyPending() then return 0 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
-        if cheatState.hudDrag.active then return 0 end
-        if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 0 end
-        if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return 0 end
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 0 end
+        if deskTexPipeline.anyPending() then return 1 end
+        if cheatState.hudDrag.active then return 1 end
+        if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 1 end
+        if type(deskSpectateStats) == 'table'
+                and deskSpectateStats.isHudDragActive
+                and deskSpectateStats.isHudDragActive() then return 1 end
+        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 1 end
         return 50
     end
 
@@ -230,10 +268,6 @@ function main()
             lastNickCacheTick = os.clock()
         end
 
-        if not sessionLive then
-            sessionLive = true
-        end
-
         if type(deskSampInGame) == 'function' then
             local inGame = deskSampInGame()
             if inGame and not deskWasSampInGame then
@@ -247,6 +281,9 @@ function main()
 
         deskSampChatGuardFrame()
         deskApplyInputPolicy()
+        if deskCache.hotkeyCapture or deskCache.cheatCapture then
+            pcall(deskBindCapturePollFrame)
+        end
         pcall(deskTickAdminPauseState)
         if showWindow[0] then
             deskInputState.wasOpen = true
@@ -259,7 +296,7 @@ function main()
             pcall(pollReportIngest)
             lastPoll = os.clock()
         end
-        if deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
+        if type(deskSpectateStats) == 'table' and deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
             pcall(deskSpectateStats.flushOutbound)
         end
         if type(remoteChatFlushSampQueue) == 'function' then
@@ -294,7 +331,11 @@ function main()
             pcall(checkerTick)
             lastCheckerTickAt = nowLoop
         end
-        pcall(deskSpectateStats.tickPendingSp)
+        pcall(function()
+            if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
+                deskSpectateStats.tickPendingSp()
+            end
+        end)
         pcall(cheatsTickMarker)
 
         local nowSave = os.clock()
@@ -303,16 +344,19 @@ function main()
                 pcall(flushCheckerCatalogNow)
             end
             if dirtySettings or dirtyThreads then
-                pcall(saveConfig)
-                dirtySettings = false
-                dirtyThreads = false
+                if saveConfig() then
+                    lastSettingsSave = nowSave
+                    lastThreadsSave = nowSave
+                end
+            else
+                lastSettingsSave = nowSave
+                lastThreadsSave = nowSave
             end
-            lastSettingsSave = nowSave
-            lastThreadsSave = nowSave
         elseif dirtyThreads and nowSave - lastThreadsSave >= AUTOSAVE_THREADS_INTERVAL then
-            pcall(saveConfig)
-            lastThreadsSave = nowSave
-            lastSettingsSave = nowSave
+            if saveConfig() then
+                lastThreadsSave = nowSave
+                lastSettingsSave = nowSave
+            end
         end
     end
 end
@@ -329,9 +373,6 @@ function onScriptTerminate(scr)
         pcall(deskTexLoad.clearAll)
         if deskConfigReady then
             pcall(flushDirtyConfigNow)
-            saveConfig()
         end
-        local app = package.loaded['report_desk_app']
-        if app and app.unload then pcall(app.unload) end
     end
 end

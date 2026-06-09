@@ -10,15 +10,22 @@ end
 
 -- Центральный обработчик onServerMessage: checker, spectate, ingest, profanity.
 function deskOnServerMessage(color, text)
+    if type(chatSeen) ~= 'table' or type(chatSeen.lines) ~= 'table' then
+        print('[Report Desk] server msg: chatSeen unavailable (reload script)')
+        return
+    end
     if not text or text == '' then return end
     pcall(checkerOnServerMessage, color, text)
-    pcall(deskSpectateStats.onServerMessage, color, text)
+    if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onServerMessage) == 'function' then
+        pcall(deskSpectateStats.onServerMessage, color, text)
+    end
+    if not chatLogReady then return end
     local plain = stripChatTimestamp(stripTags(text))
     if plain == '' then return end
 
     local ingestKey = chatLineSeenKey(text)
     if ingestKey ~= '' and chatSeen.lines[ingestKey] then
-        if settings.profanity_filter_enabled and not profanityIsLineSeen(ingestKey) then
+        if type(settings) == 'table' and settings.profanity_filter_enabled and not profanityIsLineSeen(ingestKey) then
             pcall(checkProfanityFromChatLine, plain, ingestKey)
         end
         return
@@ -34,7 +41,7 @@ function deskOnServerMessage(color, text)
         return
     end
 
-    if settings.profanity_filter_enabled then
+    if type(settings) == 'table' and settings.profanity_filter_enabled then
         pcall(checkProfanityFromChatLine, plain, chatLineSeenKey(text))
     end
 end
@@ -48,6 +55,7 @@ end
 
 -- Перехват onShowDialog: /st stats и checker dialogs.
 function installDeskSpectateDialogHook()
+    if not sampev then return end
     if deskCache.specDialogHandler and sampev.onShowDialog == deskCache.specDialogHandler then
         return
     end
@@ -55,7 +63,10 @@ function installDeskSpectateDialogHook()
     if prev == deskCache.specDialogHandler then prev = deskCache.hookPrevShowDialog end
     deskCache.hookPrevShowDialog = prev
     deskCache.specDialogHandler = function(dialogId, style, title, button1, button2, text)
-        local okSp, handled = pcall(deskSpectateStats.onShowDialog, dialogId, style, title, button1, button2, text)
+        local okSp, handled = false, false
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onShowDialog) == 'function' then
+            okSp, handled = pcall(deskSpectateStats.onShowDialog, dialogId, style, title, button1, button2, text)
+        end
         if okSp and handled then
             return false
         end
@@ -79,12 +90,16 @@ end
 
 -- Устанавливает перехват onServerMessage.
 function installDeskServerMessageHook()
+    if not sampev then return end
     if deskCache.serverMsgHandler and sampev.onServerMessage == deskCache.serverMsgHandler then return end
     local prev = sampev.onServerMessage
     if prev == deskCache.serverMsgHandler then prev = nil end
     if deskCache.hookPrevServerMsg == nil then deskCache.hookPrevServerMsg = prev end
     deskCache.serverMsgHandler = function(color, text)
-        deskOnServerMessage(color, text)
+        local ok, err = pcall(deskOnServerMessage, color, text)
+        if not ok then
+            print('[Report Desk] server msg hook: ' .. tostring(err))
+        end
         if type(prev) == 'function' then
             return prev(color, text)
         end
@@ -93,38 +108,51 @@ function installDeskServerMessageHook()
 end
 
 -- Desk hook/helper.
-function deskOnPlayerQuit(playerId, reason)
+local function deskOnPlayerQuitBody(playerId, reason)
     playerId = tonumber(playerId)
     if not playerId then return end
     pcall(checkerOnPlayerQuit, playerId)
     pcall(function()
-        if deskSpectateStats.notifyTargetQuit then
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.notifyTargetQuit) == 'function' then
             deskSpectateStats.notifyTargetQuit(playerId)
         end
     end)
     local quitNk = ''
-    for _, t in pairs(threads) do
-        if tonumber(t.id) == playerId then
-            quitNk = nickKey(t.nick)
-            t.offlineAt = os.time()
-            t.stale = true
-            t.lastId = t.id
+    if type(threads) == 'table' then
+        for _, t in pairs(threads) do
+            if t and tonumber(t.id) == playerId then
+                quitNk = nickKey(t.nick)
+                t.offlineAt = os.time()
+                t.stale = true
+                t.lastId = t.id
+            end
         end
     end
-    if outbound.pending and tonumber(outbound.pending.id) == playerId then
+    if type(outbound) == 'table' and outbound.pending
+            and tonumber(outbound.pending.id) == playerId then
         local pNk = outbound.pending.nickKey or ''
         if quitNk == '' or pNk == '' or pNk == quitNk then
             clearPendingOutbound()
         end
     end
     if type(sampClearPlayerColor) == 'function' then
-        sampClearPlayerColor(playerId)
+        pcall(sampClearPlayerColor, playerId)
     end
-    markDirtyThreads()
+    if type(markDirtyThreads) == 'function' then
+        markDirtyThreads()
+    end
+end
+
+function deskOnPlayerQuit(playerId, reason)
+    local ok, err = pcall(deskOnPlayerQuitBody, playerId, reason)
+    if not ok then
+        print('[Report Desk] player quit: ' .. tostring(err))
+    end
 end
 
 -- Quit игрока → checker, spectate exit, thread offline.
 function installDeskPlayerQuitHook()
+    if not sampev then return end
     if deskCache.playerQuitHandler and sampev.onPlayerQuit == deskCache.playerQuitHandler then
         return
     end
@@ -143,13 +171,14 @@ end
 -- Desk hook/helper.
 function deskOnPlayerJoin(playerId, color, isNpc, nickname)
     if type(sampStorePlayerColor) == 'function' then
-        sampStorePlayerColor(playerId, color)
+        pcall(sampStorePlayerColor, playerId, color)
     end
     pcall(checkerOnPlayerJoin, playerId, nickname)
 end
 
 -- Join → checker notify/catalog.
 function installDeskPlayerJoinHook()
+    if not sampev then return end
     if deskCache.playerJoinHandler and sampev.onPlayerJoin == deskCache.playerJoinHandler then
         return
     end
@@ -157,7 +186,7 @@ function installDeskPlayerJoinHook()
     if prev == deskCache.playerJoinHandler then prev = nil end
     if deskCache.hookPrevPlayerJoin == nil then deskCache.hookPrevPlayerJoin = prev end
     deskCache.playerJoinHandler = function(playerId, color, isNpc, nickname)
-        deskOnPlayerJoin(playerId, color, isNpc, nickname)
+        pcall(deskOnPlayerJoin, playerId, color, isNpc, nickname)
         if type(prev) == 'function' then
             return prev(playerId, color, isNpc, nickname)
         end
@@ -167,6 +196,7 @@ end
 
 -- StreamIn → checker rebuild schedule.
 function installDeskPlayerStreamInHook()
+    if not sampev then return end
     if deskCache.playerStreamInHandler and sampev.onPlayerStreamIn == deskCache.playerStreamInHandler then
         return
     end
@@ -175,7 +205,7 @@ function installDeskPlayerStreamInHook()
     if deskCache.hookPrevPlayerStreamIn == nil then deskCache.hookPrevPlayerStreamIn = prev end
     deskCache.playerStreamInHandler = function(playerId, team, model, position, rotation, color, fightingStyle)
         if type(sampStorePlayerColor) == 'function' then
-            sampStorePlayerColor(playerId, color)
+            pcall(sampStorePlayerColor, playerId, color)
         end
         pcall(checkerOnPlayerStreamIn, playerId)
         if deskSpectateStats and deskSpectateStats.onSpRefreshStreamIn then
@@ -190,6 +220,7 @@ end
 
 -- SetPlayerColor RPC → clist (TAB).
 function installDeskPlayerColorHook()
+    if not sampev then return end
     if deskCache.playerColorHandler and sampev.onSetPlayerColor == deskCache.playerColorHandler then
         return
     end
@@ -198,7 +229,7 @@ function installDeskPlayerColorHook()
     if deskCache.hookPrevPlayerColor == nil then deskCache.hookPrevPlayerColor = prev end
     deskCache.playerColorHandler = function(playerId, color)
         if type(sampStorePlayerColor) == 'function' then
-            sampStorePlayerColor(playerId, color)
+            pcall(sampStorePlayerColor, playerId, color)
         end
         if type(prev) == 'function' then
             return prev(playerId, color)
@@ -311,6 +342,7 @@ end
 
 -- Перехват исходящего чата (profanity, auto-rules).
 function installDeskSendChatHook()
+    if not sampev then return end
     if deskCache.sendChatHandler and sampev.onSendChat == deskCache.sendChatHandler then
         return
     end
@@ -318,17 +350,27 @@ function installDeskSendChatHook()
     if prev == deskCache.sendChatHandler then prev = nil end
     if deskCache.hookPrevSendChat == nil then deskCache.hookPrevSendChat = prev end
     deskCache.sendChatHandler = function(message)
-        pcall(checkProfanityOutgoing, message)
-        local cmd = trim(message or ''):match('^/?(%S+)')
-        if cmd then
-            local lc = cmd:lower()
-            if lc == 'admins' or lc == 'adms' or lc == 'leaders' then
-                pcall(checkerOnSendCommand, message)
+        local blocked = false
+        local ok, err = pcall(function()
+            pcall(checkProfanityOutgoing, message)
+            local cmd = trim(message or ''):match('^/?(%S+)')
+            if cmd then
+                local lc = cmd:lower()
+                if lc == 'admins' or lc == 'adms' or lc == 'leaders' then
+                    pcall(checkerOnSendCommand, message)
+                end
             end
+            if tryInterceptSplitAnsCommand(message) then
+                blocked = true
+                return
+            end
+            handleOutgoingAnsCommand(message)
+            noteManualStatsCommand(message)
+        end)
+        if not ok then
+            print('[Report Desk] send chat hook: ' .. tostring(err))
         end
-        if tryInterceptSplitAnsCommand(message) then return false end
-        handleOutgoingAnsCommand(message)
-        noteManualStatsCommand(message)
+        if blocked then return false end
         if type(prev) == 'function' then
             return prev(message)
         end
@@ -348,7 +390,7 @@ local function noteManualStatsCommand(command)
     if s and s.wasRecentOutboundCommand and s.wasRecentOutboundCommand(command) then
         return
     end
-    if deskSpectateStats.markPendingSt then
+    if type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSt then
         pcall(deskSpectateStats.markPendingSt, tonumber(stId), { showDialog = true })
     end
 end
@@ -370,26 +412,29 @@ function tryHandleSpSpectateCommand(command)
                 end
             end)
             if deskSpectateStats and deskSpectateStats.markPendingSpCommand then
-                deskSpectateStats.markPendingSpCommand(spId, nick)
+                pcall(deskSpectateStats.markPendingSpCommand, spId, nick)
             end
         end
         return false
     end
     if command:match('^%/?sp%s*$') then
-        if deskSpectateStats and deskSpectateStats.onSpCommandOff then
-            deskSpectateStats.onSpCommandOff()
-        end
-        if deskSpectateStats and deskSpectateStats.clearSpectateTarget then
-            deskSpectateStats.clearSpectateTarget(true)
-        end
-        deskLeaveSpectateMode()
-        deskApplyInputPolicy()
+        pcall(function()
+            if deskSpectateStats and deskSpectateStats.onSpCommandOff then
+                deskSpectateStats.onSpCommandOff()
+            end
+            if deskSpectateStats and deskSpectateStats.clearSpectateTarget then
+                deskSpectateStats.clearSpectateTarget(true)
+            end
+            deskLeaveSpectateMode()
+            deskApplyInputPolicy()
+        end)
     end
     return false
 end
 
 -- Перехват /sp и других команд из чата.
 function installDeskSendCommandHook()
+    if not sampev then return end
     if deskCache.sendCommandHandler and sampev.onSendCommand == deskCache.sendCommandHandler then
         return
     end
@@ -402,17 +447,33 @@ function installDeskSendCommandHook()
             if type(prev) == 'function' then return prev(command) end
             return
         end
-        pcall(checkerOnSendCommand, command)
-        tryHandleSpSpectateCommand(command)
-        noteManualStatsCommand(command)
-        local id, body = command:match('^%/?ans%s+(%d+)%s+(.+)$')
-        if id and body then
-            if tryInterceptSplitAnsCommand(command) then return false end
+        local blocked = false
+        local ansHandled = false
+        local ok, err = pcall(function()
+            pcall(checkerOnSendCommand, command)
+            pcall(tryHandleSpSpectateCommand, command)
+            pcall(noteManualStatsCommand, command)
+            local id, body = command:match('^%/?ans%s+(%d+)%s+(.+)$')
+            if id and body then
+                if tryInterceptSplitAnsCommand(command) then
+                    blocked = true
+                    return
+                end
+                handleOutgoingAnsCommand(command)
+                ansHandled = true
+                return
+            end
+            if tryInterceptSplitAnsCommand(command) then
+                blocked = true
+                return
+            end
             handleOutgoingAnsCommand(command)
-            return
+        end)
+        if not ok then
+            print('[Report Desk] send command hook: ' .. tostring(err))
         end
-        if tryInterceptSplitAnsCommand(command) then return false end
-        handleOutgoingAnsCommand(command)
+        if blocked then return false end
+        if ansHandled then return end
         if type(prev) == 'function' then
             return prev(command)
         end
@@ -422,6 +483,7 @@ end
 
 -- Перехват onTogglePlayerSpectating для /sp UI.
 function installDeskSpectateToggleHook()
+    if not sampev then return end
     if deskCache.specToggleHandler and sampev.onTogglePlayerSpectating == deskCache.specToggleHandler then
         return
     end
@@ -431,21 +493,31 @@ function installDeskSpectateToggleHook()
     deskCache.specToggleHandler = function(toggle)
         if toggle then
             if type(prev) == 'function' then
-                prev(toggle)
+                pcall(prev, toggle)
             end
-            pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+            if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onTogglePlayerSpectating) == 'function' then
+                pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+            end
             return
         end
         -- ADV: ложный toggle(false) — prev hook сбрасывает spectate в игре; не вызываем его.
-        if deskSpectateStats.shouldBlockSpectateOff
-                and deskSpectateStats.shouldBlockSpectateOff() then
-            pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+        local blockOff = false
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.shouldBlockSpectateOff) == 'function' then
+            local okBlock, res = pcall(deskSpectateStats.shouldBlockSpectateOff)
+            blockOff = okBlock and res == true
+        end
+        if blockOff then
+            if type(deskSpectateStats.onTogglePlayerSpectating) == 'function' then
+                pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+            end
             return
         end
         if type(prev) == 'function' then
-            prev(toggle)
+            pcall(prev, toggle)
         end
-        pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onTogglePlayerSpectating) == 'function' then
+            pcall(deskSpectateStats.onTogglePlayerSpectating, toggle)
+        end
     end
     sampev.onTogglePlayerSpectating = deskCache.specToggleHandler
 end
@@ -613,6 +685,9 @@ function deskEnsureAllHooks()
     deskReinstallSpMenuHooks()
     installDeskSpMenuRpcBlock()
     installDeskCheckerRpcProbe()
+    if deskWmDispatch and deskWmDispatch.ensureInstalled then
+        deskWmDispatch.ensureInstalled()
+    end
 end
 
 -- Desk hook/helper.
@@ -800,6 +875,11 @@ function deskUninstall()
         pcall(checkerDismissOpenSyncDialogOnUnload)
     end
     deskLeaveSpectateMode()
+    pcall(function()
+        if deskWmDispatch and deskWmDispatch.uninstall then
+            deskWmDispatch.uninstall()
+        end
+    end)
     if type(deskUninstallSampInputEnableHook) == 'function' then
         pcall(deskUninstallSampInputEnableHook)
     end

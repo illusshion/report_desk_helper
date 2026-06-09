@@ -49,7 +49,7 @@ return {
         checker_hud_y = 8,
         checker_hud_h = 160,
         checker_show_admins = true,
-        checker_show_leaders = false,
+        checker_show_leaders = true,
         checker_show_friends = true,
         checker_notify_join = true,
         checker_notify_quit = true,

@@ -8,7 +8,10 @@ REPORT_COLORS = {
 }
 
 CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk.lua'
+CONFIG_BACKUP = getWorkingDirectory() .. '\\config\\admin_report_desk.bak.lua'
+CONFIG_TMP = getWorkingDirectory() .. '\\config\\admin_report_desk.lua.tmp'
 USER_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lua'
+USER_CONFIG_TMP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lua.tmp'
 USER_CONFIG_BACKUP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.bak.lua'
 USER_DEFAULT_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.default.lua'
 SCENARIOS_PACK_VERSION = 2
@@ -17,7 +20,7 @@ CHECKER_CATALOG_BACKUP = getWorkingDirectory() .. '\\config\\report_desk_checker
 SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
 
 SKIN_TEX_CACHE_MAX = 72      -- макс. skin-текстур в GPU-кэше
-VEH_TEX_CACHE_MAX = 48       -- макс. vehicle-текстур в GPU-кэше
+VEH_TEX_CACHE_MAX = 72       -- макс. vehicle-текстур в GPU-кэше
 TEX_STAGING_MAX = 16         -- очередь staging перед upload
 CATALOG_GPU_BUDGET = 5       -- текстур за tick каталога
 CATALOG_IO_IDLE_MS = 12      -- пауза IO-потока каталога, мс

@@ -110,6 +110,21 @@ function initDeskCatalogWarmup()
         pathForId = skinsPathForId,
         releaseFn = skinTexRelease,
     })
+    deskTexPipeline.registerNs('veh', {
+        pathForId = function(id)
+            if deskVeh and deskVeh.pipelinePathForId then
+                return deskVeh.pipelinePathForId(id)
+            end
+        end,
+        releaseFn = function(tex)
+            if deskVeh and deskVeh.texRelease then deskVeh.texRelease(tex) end
+        end,
+        onUploaded = function(id, meta)
+            if deskVeh and deskVeh.pipelineOnUploaded then
+                deskVeh.pipelineOnUploaded(id, meta)
+            end
+        end,
+    })
     catWarmup.inited = true
 end
 
@@ -117,13 +132,6 @@ end
 function ensureDeskCatalogWarmup()
     if catWarmup.inited then return end
     pcall(initDeskCatalogWarmup)
-end
-
--- Reset Desk Catalog Warmup
-function resetDeskCatalogWarmup()
-    pcall(deskTexPipeline.halt, deskTex)
-    catWarmup.inited = false
-    pcall(ensureDeskCatalogWarmup)
 end
 
 -- Desk hook/helper.

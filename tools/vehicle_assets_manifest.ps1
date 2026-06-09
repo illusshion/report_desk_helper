@@ -94,4 +94,4 @@ $rows | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8
 Write-Host "Vehicle assets audit: $VehDir"
 Write-Host ("  ok={0} low={1} missing={2} (jpg/low quality={3})" -f $stats.ok, $stats.low, $stats.missing, ($stats.low))
 Write-Host "  CSV: $CsvPath"
-Write-Host '  Put PNG in overrides\ or veh-{id}.png - see tools\VEHICLE_ASSETS.md'
+Write-Host '  Put PNG in overrides\ or veh-{id}.png (256x160 recommended)'

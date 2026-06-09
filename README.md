@@ -47,12 +47,10 @@ git push origin main
 
 Дальше на GitHub → **Releases** → тег `v1.0.9` → прикрепить **ровно** (SHA256 в `release\build_manifest.json`):
 
-- `dist\report_desk\admin_report_desk_core.lua` (или `.luac` если есть `luac.exe`)
+- `dist\report_desk\AdminDeskCore.lua` (или `.luac` через `tools\luajit-compiler\luajit\luajit.exe -b`)
 - `dist\report_desk_helper_main.zip`
 
 **Порядок важен:** сначала `git push main` (чтобы fallback core на main совпадал с Release), потом создать Release.
-
-Подробнее: [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)
 
 ## Разработка (локально)
 
@@ -91,5 +89,4 @@ release/version.json       — manifest для клиентов
 release/build_manifest.json — SHA256 артефактов последней сборки
 report_desk/admin_report_desk_core.lua — bundled core (git fallback)
 tools/                     — bundle, build, publish
-docs/                      — чеклисты и распространение
 ```

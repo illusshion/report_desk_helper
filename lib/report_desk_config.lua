@@ -91,29 +91,46 @@ function loadConfig()
     threads = {}
     threadOrder = {}
 
-    local configData = nil
-    if doesFileExist(CONFIG_PATH) then
-        local chunk, err = loadfile(CONFIG_PATH)
-        if chunk then
-            local ok, data = pcall(chunk)
-            if ok and type(data) == 'table' then
-                configData = data
-            end
-        else
+    local function tryLoadConfigFile(path)
+        if not doesFileExist(path) then return nil end
+        local chunk, err = loadfile(path)
+        if not chunk then
             print('[Report Desk] load: ' .. tostring(err))
+            return nil
         end
+        local ok, data = pcall(chunk)
+        if ok and type(data) == 'table' then
+            return data
+        end
+        return nil
+    end
+
+    local configData = tryLoadConfigFile(CONFIG_PATH)
+    if not configData and doesFileExist(CONFIG_BACKUP) then
+        configData = tryLoadConfigFile(CONFIG_BACKUP)
+        if configData then
+            print('[Report Desk] config: using backup')
+        end
+    end
+    if not configData and doesFileExist(CONFIG_PATH) then
+        pcall(function()
+            local corruptPath = CONFIG_PATH .. '.corrupt.' .. tostring(os.time())
+            os.rename(CONFIG_PATH, corruptPath)
+            print('[Report Desk] config corrupt — moved to ' .. corruptPath)
+        end)
     end
 
     local data = configData
     if not data then
         ensureCheatsSettings()
         bumpScenariosGen()
-        deskConfigReady = not doesFileExist(CONFIG_PATH)
+        deskConfigReady = true
         if doesFileExist(USER_CONFIG_PATH) then
             pcall(loadUserConfig)
         else
             pcall(saveUserConfig)
         end
+        markDirtySettings()
         return
     end
 
@@ -297,7 +314,8 @@ function saveUserConfig()
 
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
-    local f, err = io.open(USER_CONFIG_PATH, 'w')
+    local tmpPath = USER_CONFIG_TMP or (USER_CONFIG_PATH .. '.tmp')
+    local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] user save: ' .. tostring(err))
         return false
@@ -358,6 +376,13 @@ function saveUserConfig()
     f:write('  },\n')
     f:write('}\n')
     f:close()
+
+    local renamed, renameErr = os.rename(tmpPath, USER_CONFIG_PATH)
+    if not renamed then
+        print('[Report Desk] user save rename: ' .. tostring(renameErr))
+        pcall(function() os.remove(tmpPath) end)
+        return false
+    end
     return true
 end
 
@@ -432,12 +457,15 @@ function saveConfig()
         return false
     end
     if dirtySettings then
-        pcall(saveUserConfig)
+        if not saveUserConfig() then
+            return false
+        end
     end
 
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
-    local f, err = io.open(CONFIG_PATH, 'w')
+    local tmpPath = CONFIG_TMP or (CONFIG_PATH .. '.tmp')
+    local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] save: ' .. tostring(err))
         return false
@@ -517,6 +545,23 @@ function saveConfig()
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
     f:write(string.format('    checker_dev_rpc_probe = %s,\n', settings.checker_dev_rpc_probe == true and 'true' or 'false'))
+    if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
+        f:write('    cmd_binds = {\n')
+        for _, row in ipairs(settings.cmd_binds) do
+            if type(row) == 'table' then
+                local cmd = trim(tostring(row.cmd or '')):lower()
+                local text = trim(tostring(row.text or ''))
+                if cmd ~= '' and text ~= '' then
+                    f:write('      {\n')
+                    f:write(string.format('        cmd = %q,\n', cmd))
+                    f:write(string.format('        text = %s,\n', luaQuoteUtf8(text)))
+                    f:write(string.format('        enabled = %s,\n', row.enabled ~= false and 'true' or 'false'))
+                    f:write('      },\n')
+                end
+            end
+        end
+        f:write('    },\n')
+    end
     ensureCheatsSettings()
     local ch = settings.cheats
     f:write('    cheats = {\n')
@@ -608,6 +653,27 @@ function saveConfig()
     f:write('  },\n')
     f:write('}\n')
     f:close()
+
+    if doesFileExist(CONFIG_PATH) then
+        pcall(function()
+            if doesFileExist(CONFIG_BACKUP) then
+                os.remove(CONFIG_BACKUP)
+            end
+            os.rename(CONFIG_PATH, CONFIG_BACKUP)
+        end)
+    end
+    local renamed, renameErr = os.rename(tmpPath, CONFIG_PATH)
+    if not renamed then
+        print('[Report Desk] save rename: ' .. tostring(renameErr))
+        pcall(function()
+            if doesFileExist(CONFIG_BACKUP) and not doesFileExist(CONFIG_PATH) then
+                os.rename(CONFIG_BACKUP, CONFIG_PATH)
+            end
+        end)
+        pcall(function() os.remove(tmpPath) end)
+        return false
+    end
+
     dirtySettings = false
     dirtyThreads = false
     return true

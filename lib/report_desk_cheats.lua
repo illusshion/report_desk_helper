@@ -32,12 +32,20 @@ function cheatsInputsBlocked()
     return false
 end
 
+local DESK_REPLY_STICKY_SEC = 2.0
+
 -- Desk hook/helper.
 function deskSyncInputFocusState()
     if not showWindow[0] then
         deskInputState.replyFocused = false
+        deskInputState.replyInputActive = false
         deskInputState.keyboardStickyUntil = 0
         deskInputState.windowOpenSince = 0
+        return
+    end
+    if deskInputState.replyInputActive then
+        deskInputState.replyFocused = true
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
@@ -45,7 +53,7 @@ function deskSyncInputFocusState()
         or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
     if typing then
         deskInputState.replyFocused = true
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
     elseif deskInputState.replyFocused and deskInputState.keyboardStickyUntil <= os.clock() then
         deskInputState.replyFocused = false
     end
@@ -57,7 +65,7 @@ function deskKeepInputOnActiveItem()
     if imgui.IsItemActive then active = imgui.IsItemActive() end
     if not active and imgui.IsItemFocused then active = imgui.IsItemFocused() end
     if active or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
         deskInputState.replyFocused = true
     end
 end
@@ -66,12 +74,8 @@ end
 function deskWindowWantsKeyboard()
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
-    if deskInputState.replyFocused then return true end
-    if deskInputState.keyboardStickyUntil > os.clock() then return true end
-    local io = imgui.GetIO and imgui.GetIO()
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then return true end
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return true end
-    return false
+    -- Открытая панель — всегда держим клавиатуру у ImGui (иначе WM не доходит до InputText).
+    return true
 end
 
 -- Desk hook/helper.
@@ -79,6 +83,7 @@ function deskImguiTypingActive()
     if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
+    if deskInputState.replyInputActive then return true end
     if deskInputState.replyFocused then return true end
     if deskInputState.keyboardStickyUntil > os.clock() then return true end
     local io = imgui.GetIO and imgui.GetIO()
@@ -1372,6 +1377,50 @@ function finishDeskBindCapture()
     deskCache.cheatCaptureSlot = 'main'
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = 0
+    deskCache.bindCapPollPrev = nil
+end
+
+-- Обычные клавиши для WM_KEY* (без кнопок мыши — их см. deskBindMouseKeyboardVk).
+function deskBindKeyboardCaptureVk(wparam)
+    wparam = tonumber(wparam) or 0
+    if wparam <= 0 or wparam >= 256 then return nil end
+    if cheatBindIsModifier(wparam) then return nil end
+    if MOUSE_BIND_VKS[wparam] then return nil end
+    return wparam
+end
+
+-- M4/M5/MMB в SA часто приходят только как WM_KEY* без WM_XBUTTON*.
+function deskBindMouseKeyboardVk(wparam)
+    wparam = tonumber(wparam) or 0
+    if wparam <= 0 or wparam >= 256 then return nil end
+    if cheatBindIsModifier(wparam) then return nil end
+    if MOUSE_BIND_VKS[wparam] then return wparam end
+    return nil
+end
+
+function deskBindCaptureKeyFromKeyboard(wparam)
+    return deskBindKeyboardCaptureVk(wparam) or deskBindMouseKeyboardVk(wparam)
+end
+
+function deskBindCapResolveVk(capKey)
+    capKey = tonumber(capKey) or 0
+    if capKey <= 0 then return 0 end
+    local capVk = tonumber(deskCache.bindCapVk) or 0
+    if capVk <= 0 then
+        deskCache.bindCapVk = capKey
+        return capKey
+    end
+    return capVk
+end
+
+function deskBindCapTrySaveOnUp(capKey, saveFn, ...)
+    capKey = tonumber(capKey) or 0
+    if capKey <= 0 or type(saveFn) ~= 'function' then return false end
+    local capVk = deskBindCapResolveVk(capKey)
+    if capVk > 0 and capKey == capVk then
+        return saveFn(...) and true or false
+    end
+    return false
 end
 
 -- Desk Bind Mouse Ui Click Vk
@@ -1387,9 +1436,82 @@ function deskBindMouseCommitsOnDown(vk)
 end
 
 -- Begin Desk Bind Capture Session
+local function deskBindCaptureResetPollState()
+    local prev = {}
+    for vk in pairs(MOUSE_BIND_VKS) do
+        prev[vk] = isVkDown(vk) == true
+    end
+    deskCache.bindCapPollPrev = prev
+end
+
+local function deskBindCapturePollSave(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or cheatBindIsModifier(vk) then return false end
+    deskCache.bindCapVk = vk
+    if deskCache.cheatCapture then
+        local prefix = CHEAT_BIND_PREFIX[deskCache.cheatCapture]
+        if not prefix then return false end
+        return deskBindCapSaveCheat(prefix)
+    end
+    if deskCache.hotkeyCapture then
+        return deskBindCapSaveHotkey(vk)
+    end
+    return false
+end
+
+-- M4/M5/MMB часто видны только через GetAsyncKeyState; WM_* / WM_KEY* в SA до Lua не доходят.
+function deskBindCapturePollFrame()
+    if not deskCache.hotkeyCapture and not deskCache.cheatCapture then
+        deskCache.bindCapPollPrev = nil
+        return
+    end
+    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt or deskCache.hotkeyCaptureAt
+    if os.clock() - (tonumber(startedAt) or 0) < PF.HOTKEY_CAPTURE_GRACE then return end
+
+    local prev = deskCache.bindCapPollPrev
+    if type(prev) ~= 'table' then
+        deskBindCaptureResetPollState()
+        prev = deskCache.bindCapPollPrev
+    end
+
+    local ignoreUntil = tonumber(deskCache.bindCapIgnoreMouseUntil) or 0
+    local now = os.clock()
+
+    for vk in pairs(MOUSE_BIND_VKS) do
+        if deskBindMouseUiClickVk(vk) and now < ignoreUntil then
+            prev[vk] = isVkDown(vk) == true
+        else
+            local down = isVkDown(vk) == true
+            local was = prev[vk] == true
+            if down and not was then
+                deskCache.bindCapVk = vk
+                if deskBindMouseCommitsOnDown(vk) then
+                    if deskBindCapturePollSave(vk) then return end
+                end
+            elseif was and not down then
+                deskBindCapturePollSave(vk)
+                return
+            end
+            prev[vk] = down
+        end
+    end
+
+    local capVk = tonumber(deskCache.bindCapVk) or 0
+    if capVk > 0 and not MOUSE_BIND_VKS[capVk] and not cheatBindIsModifier(capVk) then
+        local down = isVkDown(capVk) == true
+        local was = prev[capVk] == true
+        if was and not down then
+            deskBindCapturePollSave(capVk)
+            return
+        end
+        prev[capVk] = down
+    end
+end
+
 local function beginDeskBindCaptureSession()
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = os.clock() + 0.35
+    deskBindCaptureResetPollState()
 end
 
 -- Commit Cheat Bind Capture
@@ -1410,6 +1532,30 @@ function commitCheatBindCapture(prefix)
         c[prefix .. '_alt'] = cheatModDown(vkeys.VK_MENU)
     end
     markDirtySettings()
+    return true
+end
+
+-- Desk Bind Cap Save Hotkey
+function deskBindCapSaveHotkey(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    settings.hotkey = vk
+    markDirtySettings()
+    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    deskResetHotkeyDebounce(vk)
+    deskCache.hotkeyLastToggle = os.clock()
+    finishDeskBindCapture()
+    return true
+end
+
+-- Desk Bind Cap Save Cheat
+function deskBindCapSaveCheat(prefix)
+    prefix = prefix or (deskCache.cheatCapture and CHEAT_BIND_PREFIX[deskCache.cheatCapture])
+    if not prefix then return false end
+    if not commitCheatBindCapture(prefix) then return false end
+    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    deskCache.hotkeyLastToggle = os.clock()
+    finishDeskBindCapture()
     return true
 end
 
@@ -1496,7 +1642,7 @@ function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     if not sessionLive then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
-    local hk = settings.hotkey or vkeys.VK_F7
+    local hk = (type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7
     hk = tonumber(hk) or 0
     if hk <= 0 then return false end
 

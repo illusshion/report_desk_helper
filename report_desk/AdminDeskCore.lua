@@ -10870,7 +10870,7 @@ function M.drawTab()
 
     if #vehCatalog == 0 then
         imgui.TextColored(col_warn, uiText('\xCD\xE5\xF2 \xEA\xE0\xF0\xF2\xE8\xED\xEE\xEA \xD2\xD1.'))
-        imgui.TextWrapped(uiText('tools\\VEHICLE_ASSETS.md'))
+        imgui.TextWrapped(uiText('PNG: res\\report_desk_vehicles\\veh-{ID}.png \xE8\xEB\xE8 overrides\\veh-{ID}.png'))
         imgui.EndChild()
         popPanel()
         return
@@ -14212,6 +14212,7 @@ local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
     replyFocused = false,
+    replyInputActive = false,
     keyboardStickyUntil = 0,
     windowOpenSince = 0,
     wasOpen = false,
@@ -14328,6 +14329,7 @@ local deskCache = {
     cheatCaptureSlot = 'main',
     bindCapVk = nil,
     bindCapIgnoreMouseUntil = 0,
+    bindCapPollPrev = nil,
     ui = { kwBulkOpen = {}, panelStart = {}, panelStack = {} },
     filterKeys = nil,
     filterSig = '',
@@ -16355,12 +16357,20 @@ function cheatsInputsBlocked()
     return false
 end
 
+local DESK_REPLY_STICKY_SEC = 2.0
+
 -- Desk hook/helper.
 function deskSyncInputFocusState()
     if not showWindow[0] then
         deskInputState.replyFocused = false
+        deskInputState.replyInputActive = false
         deskInputState.keyboardStickyUntil = 0
         deskInputState.windowOpenSince = 0
+        return
+    end
+    if deskInputState.replyInputActive then
+        deskInputState.replyFocused = true
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
@@ -16368,7 +16378,7 @@ function deskSyncInputFocusState()
         or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
     if typing then
         deskInputState.replyFocused = true
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
     elseif deskInputState.replyFocused and deskInputState.keyboardStickyUntil <= os.clock() then
         deskInputState.replyFocused = false
     end
@@ -16380,7 +16390,7 @@ function deskKeepInputOnActiveItem()
     if imgui.IsItemActive then active = imgui.IsItemActive() end
     if not active and imgui.IsItemFocused then active = imgui.IsItemFocused() end
     if active or (imgui.IsItemClicked and imgui.IsItemClicked(0)) then
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
         deskInputState.replyFocused = true
     end
 end
@@ -16389,12 +16399,8 @@ end
 function deskWindowWantsKeyboard()
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
-    if deskInputState.replyFocused then return true end
-    if deskInputState.keyboardStickyUntil > os.clock() then return true end
-    local io = imgui.GetIO and imgui.GetIO()
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then return true end
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return true end
-    return false
+    -- Открытая панель — всегда держим клавиатуру у ImGui (иначе WM не доходит до InputText).
+    return true
 end
 
 -- Desk hook/helper.
@@ -16402,6 +16408,7 @@ function deskImguiTypingActive()
     if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
+    if deskInputState.replyInputActive then return true end
     if deskInputState.replyFocused then return true end
     if deskInputState.keyboardStickyUntil > os.clock() then return true end
     local io = imgui.GetIO and imgui.GetIO()
@@ -17695,6 +17702,50 @@ function finishDeskBindCapture()
     deskCache.cheatCaptureSlot = 'main'
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = 0
+    deskCache.bindCapPollPrev = nil
+end
+
+-- Обычные клавиши для WM_KEY* (без кнопок мыши — их см. deskBindMouseKeyboardVk).
+function deskBindKeyboardCaptureVk(wparam)
+    wparam = tonumber(wparam) or 0
+    if wparam <= 0 or wparam >= 256 then return nil end
+    if cheatBindIsModifier(wparam) then return nil end
+    if MOUSE_BIND_VKS[wparam] then return nil end
+    return wparam
+end
+
+-- M4/M5/MMB в SA часто приходят только как WM_KEY* без WM_XBUTTON*.
+function deskBindMouseKeyboardVk(wparam)
+    wparam = tonumber(wparam) or 0
+    if wparam <= 0 or wparam >= 256 then return nil end
+    if cheatBindIsModifier(wparam) then return nil end
+    if MOUSE_BIND_VKS[wparam] then return wparam end
+    return nil
+end
+
+function deskBindCaptureKeyFromKeyboard(wparam)
+    return deskBindKeyboardCaptureVk(wparam) or deskBindMouseKeyboardVk(wparam)
+end
+
+function deskBindCapResolveVk(capKey)
+    capKey = tonumber(capKey) or 0
+    if capKey <= 0 then return 0 end
+    local capVk = tonumber(deskCache.bindCapVk) or 0
+    if capVk <= 0 then
+        deskCache.bindCapVk = capKey
+        return capKey
+    end
+    return capVk
+end
+
+function deskBindCapTrySaveOnUp(capKey, saveFn, ...)
+    capKey = tonumber(capKey) or 0
+    if capKey <= 0 or type(saveFn) ~= 'function' then return false end
+    local capVk = deskBindCapResolveVk(capKey)
+    if capVk > 0 and capKey == capVk then
+        return saveFn(...) and true or false
+    end
+    return false
 end
 
 -- Desk Bind Mouse Ui Click Vk
@@ -17710,9 +17761,82 @@ function deskBindMouseCommitsOnDown(vk)
 end
 
 -- Begin Desk Bind Capture Session
+local function deskBindCaptureResetPollState()
+    local prev = {}
+    for vk in pairs(MOUSE_BIND_VKS) do
+        prev[vk] = isVkDown(vk) == true
+    end
+    deskCache.bindCapPollPrev = prev
+end
+
+local function deskBindCapturePollSave(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or cheatBindIsModifier(vk) then return false end
+    deskCache.bindCapVk = vk
+    if deskCache.cheatCapture then
+        local prefix = CHEAT_BIND_PREFIX[deskCache.cheatCapture]
+        if not prefix then return false end
+        return deskBindCapSaveCheat(prefix)
+    end
+    if deskCache.hotkeyCapture then
+        return deskBindCapSaveHotkey(vk)
+    end
+    return false
+end
+
+-- M4/M5/MMB часто видны только через GetAsyncKeyState; WM_* / WM_KEY* в SA до Lua не доходят.
+function deskBindCapturePollFrame()
+    if not deskCache.hotkeyCapture and not deskCache.cheatCapture then
+        deskCache.bindCapPollPrev = nil
+        return
+    end
+    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt or deskCache.hotkeyCaptureAt
+    if os.clock() - (tonumber(startedAt) or 0) < PF.HOTKEY_CAPTURE_GRACE then return end
+
+    local prev = deskCache.bindCapPollPrev
+    if type(prev) ~= 'table' then
+        deskBindCaptureResetPollState()
+        prev = deskCache.bindCapPollPrev
+    end
+
+    local ignoreUntil = tonumber(deskCache.bindCapIgnoreMouseUntil) or 0
+    local now = os.clock()
+
+    for vk in pairs(MOUSE_BIND_VKS) do
+        if deskBindMouseUiClickVk(vk) and now < ignoreUntil then
+            prev[vk] = isVkDown(vk) == true
+        else
+            local down = isVkDown(vk) == true
+            local was = prev[vk] == true
+            if down and not was then
+                deskCache.bindCapVk = vk
+                if deskBindMouseCommitsOnDown(vk) then
+                    if deskBindCapturePollSave(vk) then return end
+                end
+            elseif was and not down then
+                deskBindCapturePollSave(vk)
+                return
+            end
+            prev[vk] = down
+        end
+    end
+
+    local capVk = tonumber(deskCache.bindCapVk) or 0
+    if capVk > 0 and not MOUSE_BIND_VKS[capVk] and not cheatBindIsModifier(capVk) then
+        local down = isVkDown(capVk) == true
+        local was = prev[capVk] == true
+        if was and not down then
+            deskBindCapturePollSave(capVk)
+            return
+        end
+        prev[capVk] = down
+    end
+end
+
 local function beginDeskBindCaptureSession()
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = os.clock() + 0.35
+    deskBindCaptureResetPollState()
 end
 
 -- Commit Cheat Bind Capture
@@ -17733,6 +17857,30 @@ function commitCheatBindCapture(prefix)
         c[prefix .. '_alt'] = cheatModDown(vkeys.VK_MENU)
     end
     markDirtySettings()
+    return true
+end
+
+-- Desk Bind Cap Save Hotkey
+function deskBindCapSaveHotkey(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    settings.hotkey = vk
+    markDirtySettings()
+    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    deskResetHotkeyDebounce(vk)
+    deskCache.hotkeyLastToggle = os.clock()
+    finishDeskBindCapture()
+    return true
+end
+
+-- Desk Bind Cap Save Cheat
+function deskBindCapSaveCheat(prefix)
+    prefix = prefix or (deskCache.cheatCapture and CHEAT_BIND_PREFIX[deskCache.cheatCapture])
+    if not prefix then return false end
+    if not commitCheatBindCapture(prefix) then return false end
+    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    deskCache.hotkeyLastToggle = os.clock()
+    finishDeskBindCapture()
     return true
 end
 
@@ -19057,6 +19205,7 @@ end
 -- Desk hook/helper.
 function deskEnsureUiCursorForOpenPanel()
     if not showWindow[0] then return end
+    if deskInputState.replyInputActive then return end
     if deskImguiTypingActive() or deskInputState.replyFocused then return end
     if deskSpectateCameraBlocked() then return end
     deskEnableUiCursorForSamp()
@@ -19511,9 +19660,10 @@ function updateDeskInputCapture()
     if io and (io.WantCaptureKeyboard or io.WantTextInput) then
         wantKb = true
     end
-    local wantMouse = false
-    if io and io.WantCaptureMouse then wantMouse = true end
-    if imgui.IsWindowHovered and imgui.HoveredFlags and imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow) then
+    local wantMouse = showWindow[0] == true
+    if not wantMouse and io and io.WantCaptureMouse then wantMouse = true end
+    if not wantMouse and imgui.IsWindowHovered and imgui.HoveredFlags
+            and imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow) then
         wantMouse = true
     end
     deskWantsKeyboard = wantKb or wantMouse
@@ -19544,6 +19694,7 @@ function closeDeskWindow()
     deskResetHotkeyDebounce(settings.hotkey or vkeys.VK_F7)
     finishDeskBindCapture()
     deskInputState.replyFocused = false
+    deskInputState.replyInputActive = false
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0
     deskWantsKeyboard = false
@@ -21534,6 +21685,23 @@ function saveConfig()
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
     f:write(string.format('    checker_dev_rpc_probe = %s,\n', settings.checker_dev_rpc_probe == true and 'true' or 'false'))
+    if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
+        f:write('    cmd_binds = {\n')
+        for _, row in ipairs(settings.cmd_binds) do
+            if type(row) == 'table' then
+                local cmd = trim(tostring(row.cmd or '')):lower()
+                local text = trim(tostring(row.text or ''))
+                if cmd ~= '' and text ~= '' then
+                    f:write('      {\n')
+                    f:write(string.format('        cmd = %q,\n', cmd))
+                    f:write(string.format('        text = %s,\n', luaQuoteUtf8(text)))
+                    f:write(string.format('        enabled = %s,\n', row.enabled ~= false and 'true' or 'false'))
+                    f:write('      },\n')
+                end
+            end
+        end
+        f:write('    },\n')
+    end
     ensureCheatsSettings()
     local ch = settings.cheats
     f:write('    cheats = {\n')
@@ -23871,7 +24039,7 @@ function drawComposer(composerH, quickItems)
 
     if focusReplyNext and imgui.SetKeyboardFocusHere then
         imgui.SetKeyboardFocusHere(0)
-        deskInputState.keyboardStickyUntil = os.clock() + 0.35
+        deskInputState.keyboardStickyUntil = os.clock() + 2.0
         deskInputState.replyFocused = true
         focusReplyNext = false
     end
@@ -23900,7 +24068,14 @@ function drawComposer(composerH, quickItems)
     else
         sent = imgui.InputText('##reply', replyBuf, sizeof(replyBuf), flags)
     end
+    if imgui.IsItemClicked and imgui.IsItemClicked(0) and imgui.IsItemActive and not imgui.IsItemActive() then
+        focusReplyNext = true
+    end
     deskKeepInputOnActiveItem()
+    local replyActive = false
+    if imgui.IsItemActive then replyActive = imgui.IsItemActive() end
+    if not replyActive and imgui.IsItemFocused then replyActive = imgui.IsItemFocused() end
+    deskInputState.replyInputActive = replyActive
     imgui.PopItemWidth()
     imgui.PopStyleColor(2)
 
@@ -24674,6 +24849,10 @@ end
 -- Apply Chat Scroll If Needed
 function applyChatScrollIfNeeded(msgCount)
     msgCount = tonumber(msgCount) or 0
+    -- Автоскролл забирает фокус у поля ответа — не трогаем лог, пока пользователь печатает.
+    if deskInputState.replyInputActive or deskInputState.replyFocused then return end
+    if focusReplyNext then return end
+    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return end
     local snapKey = deskInputState.chatSnapBottomKey
     local wantSnap = snapKey and snapKey == selectedKey and msgCount > 0
     local wantFollow = not snapKey
@@ -24742,6 +24921,7 @@ end
 function drawChatPanel()
     local t = getSelectedThread()
     if not t then
+        deskInputState.replyInputActive = false
         pushPanelStyle(col_chat_bg)
         imgui.BeginChild('##chat_empty', imgui.ImVec2(-1, -1), false)
         drawEmptyChatPlaceholder()
@@ -25225,7 +25405,12 @@ function toggleWindow()
     scenariosUiSynced = false
     focusReplyNext = getSelectedThread() ~= nil
     deskInputState.windowOpenSince = os.clock()
-    deskInputState.keyboardStickyUntil = 0
+    if getSelectedThread() ~= nil then
+        deskInputState.replyFocused = true
+        deskInputState.keyboardStickyUntil = os.clock() + 2.0
+    else
+        deskInputState.keyboardStickyUntil = 0
+    end
     deskInputState.chatFollowBottom = true
     refreshMyNick()
     deskInputState.wasOpen = true
@@ -25254,6 +25439,9 @@ function drawMainWindow()
             closeDeskWindow()
         end
         imgui.End()
+        if showWindow[0] then
+            pcall(updateDeskInputCapture)
+        end
         return
     end
 
@@ -25279,6 +25467,19 @@ function drawMainWindow()
             if not okCq then
                 imgui.TextColored(col_warn, 'Quick replies UI error:')
                 imgui.TextWrapped(tostring(errCq))
+            end
+            imgui.EndTabItem()
+        end
+        if imgui.BeginTabItem(uiText('\xCA\xEE\xEC\xE0\xED\xE4\xFB') .. '##tab_cmd') then
+            if type(drawCmdBindsTab) ~= 'function' then
+                imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xEA\xEE\xEC\xE0\xED\xE4 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
+            else
+                local okCmd, errCmd = pcall(drawCmdBindsTab)
+                if not okCmd then
+                    imgui.TextColored(col_warn, 'Cmd binds UI error:')
+                    imgui.TextWrapped(tostring(errCmd))
+                    print('[Report Desk] cmd binds UI: ' .. tostring(errCmd))
+                end
             end
             imgui.EndTabItem()
         end
@@ -25591,17 +25792,20 @@ function applyCheatKeyCapture(msg, wparam, lparam)
         elseif wparam == vkeys.VK_DELETE or wparam == vkeys.VK_BACK then
             cheatClearBind(prefix)
             finishDeskBindCapture()
-        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam) then
-            deskCache.bindCapVk = wparam
+        else
+            local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+            if capKey then
+                deskCache.bindCapVk = capKey
+                if deskBindMouseCommitsOnDown(capKey) then
+                    deskBindCapSaveCheat(prefix)
+                end
+            end
         end
         return true
     end
     if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        local capVk = tonumber(deskCache.bindCapVk) or 0
-        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam) then
-            commitCheatBindCapture(prefix)
-            finishDeskBindCapture()
-        end
+        local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+        deskBindCapTrySaveOnUp(capKey, deskBindCapSaveCheat, prefix)
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
@@ -25612,8 +25816,7 @@ function applyCheatKeyCapture(msg, wparam, lparam)
         end
         deskCache.bindCapVk = mvk
         if deskBindMouseCommitsOnDown(mvk) then
-            commitCheatBindCapture(prefix)
-            finishDeskBindCapture()
+            deskBindCapSaveCheat(prefix)
         end
         return true
     end
@@ -25623,16 +25826,20 @@ function applyCheatKeyCapture(msg, wparam, lparam)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
-        if not deskBindMouseCommitsOnDown(relMv) then
-            local capVk = tonumber(deskCache.bindCapVk) or 0
-            if capVk > 0 and relMv == capVk then
-                commitCheatBindCapture(prefix)
-                finishDeskBindCapture()
-            end
-        end
+        deskBindCapTrySaveOnUp(relMv, deskBindCapSaveCheat, prefix)
         return true
     end
     return true
+end
+
+-- XButton index from wparam (HIWORD on Windows).
+local function xbuttonIndex(wparam)
+    wparam = tonumber(wparam) or 0
+    local hi = bit.rshift(wparam, 16)
+    if hi == 1 or hi == 2 then return hi end
+    local lo = bit.band(wparam, 0xFFFF)
+    if lo == 1 or lo == 2 then return lo end
+    return nil
 end
 
 -- Парсинг данных с сервера/чата.
@@ -25641,7 +25848,7 @@ function parseMouseButtonVk(msg, wparam, lparam)
     if msg == deskCache.wm.RBUTTONDOWN then return vkeys.VK_RBUTTON end
     if msg == deskCache.wm.MBUTTONDOWN then return vkeys.VK_MBUTTON end
     if msg == deskCache.wm.XBUTTONDOWN then
-        local btn = bit.rshift(tonumber(wparam) or 0, 16)
+        local btn = xbuttonIndex(wparam)
         if btn == 1 then return vkeys.VK_XBUTTON1 end
         if btn == 2 then return vkeys.VK_XBUTTON2 end
     end
@@ -25654,7 +25861,7 @@ function parseMouseButtonReleaseVk(msg, wparam, lparam)
     if msg == 0x0205 then return vkeys.VK_RBUTTON end
     if msg == 0x0209 then return vkeys.VK_MBUTTON end
     if msg == 0x020C then
-        local btn = bit.rshift(tonumber(wparam) or 0, 16)
+        local btn = xbuttonIndex(wparam)
         if btn == 1 then return vkeys.VK_XBUTTON1 end
         if btn == 2 then return vkeys.VK_XBUTTON2 end
     end
@@ -25675,50 +25882,41 @@ function applyHotkeyCapture(msg, wparam, lparam)
             settings.hotkey = vkeys.VK_F7
             markDirtySettings()
             finishDeskBindCapture()
-        elseif wparam > 0 and wparam < 256 and not cheatBindIsModifier(wparam)
-                and not deskHotkeyBlockedByMarkerWheel(wparam) then
-            deskCache.bindCapVk = wparam
+        else
+            local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+            if capKey then
+                deskCache.bindCapVk = capKey
+                if deskBindMouseCommitsOnDown(capKey) then
+                    deskBindCapSaveHotkey(capKey)
+                end
+            end
         end
         return true
     end
     if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-        local capVk = tonumber(deskCache.bindCapVk) or 0
-        if capVk > 0 and wparam == capVk and not cheatBindIsModifier(wparam)
-                and not deskHotkeyBlockedByMarkerWheel(wparam) then
-            settings.hotkey = capVk
-            markDirtySettings()
-            finishDeskBindCapture()
-        end
+        local capKey = deskBindCaptureKeyFromKeyboard(wparam)
+        deskBindCapTrySaveOnUp(capKey, deskBindCapSaveHotkey, capKey)
         return true
     end
     local mvk = parseMouseButtonVk(msg, wparam, lparam)
-    if mvk and not deskHotkeyBlockedByMarkerWheel(mvk) then
+    if mvk then
         if deskBindMouseUiClickVk(mvk)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
         deskCache.bindCapVk = mvk
         if deskBindMouseCommitsOnDown(mvk) then
-            settings.hotkey = mvk
-            markDirtySettings()
-            finishDeskBindCapture()
+            deskBindCapSaveHotkey(mvk)
         end
         return true
     end
     local relMv = parseMouseButtonReleaseVk(msg, wparam, lparam)
-    if relMv and not deskHotkeyBlockedByMarkerWheel(relMv) then
+    if relMv then
         if deskBindMouseUiClickVk(relMv)
                 and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
             return true
         end
-        if not deskBindMouseCommitsOnDown(relMv) then
-            local capVk = tonumber(deskCache.bindCapVk) or 0
-            if capVk > 0 and relMv == capVk then
-                settings.hotkey = capVk
-                markDirtySettings()
-                finishDeskBindCapture()
-            end
-        end
+        deskBindCapTrySaveOnUp(relMv, deskBindCapSaveHotkey, relMv)
         return true
     end
     return true
@@ -25967,6 +26165,444 @@ function pollChatLog()
 end
 
 
+--[[ Модуль: публикация locals в env для hooks/late chunks (checker). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+-- Экспорт core locals в env — hooks/checker chunks видят imgui, settings, deskCache и т.д.
+do
+    local e = getfenv(1)
+    if type(e) ~= 'table' then return end
+    e.imgui = imgui
+    e.sampev = sampev
+    e.vkeys = vkeys
+    e.new = new
+    e.sizeof = sizeof
+    e.u8 = u8
+    e.ffi = ffi
+    e.memory = memory
+    e.cheat_user32 = cheat_user32
+    e.deskVeh = deskVeh
+    e.deskGrid = deskGrid
+    e.deskTex = deskTex
+    e.deskTexPipeline = deskTexPipeline
+    e.deskTexLoad = deskTexLoad
+    e.deskSpectateStats = deskSpectateStats
+    e.deskIngest = deskIngest
+    e.settings = settings
+    e.deskCache = deskCache
+    e.deskInputState = deskInputState
+    e.showWindow = showWindow
+    e.threads = threads
+    e.threadOrder = threadOrder
+    e.threadCount = threadCount
+    e.MAX_PLAYER_ID = MAX_PLAYER_ID
+    e.findPlayerIdByNick = findPlayerIdByNick
+    e.refreshPlayerNickCache = refreshPlayerNickCache
+    e.nickKey = nickKey
+    e.chatSeen = chatSeen
+    e.outbound = outbound
+    e.trim = trim
+    e.stripTags = stripTags
+    e.stripChatTimestamp = stripChatTimestamp
+    e.chatLineSeenKey = chatLineSeenKey
+    e.markChatLineSeen = markChatLineSeen
+    e.markDirtyThreads = markDirtyThreads
+    e.clearPendingOutbound = clearPendingOutbound
+    e.tryIngestAdminReplyLine = tryIngestAdminReplyLine
+    e.processChatLineIngest = processChatLineIngest
+    e.profanityIsLineSeen = profanityIsLineSeen
+    e.checkProfanityFromChatLine = checkProfanityFromChatLine
+    e.checkProfanityOutgoing = checkProfanityOutgoing
+    e.installProfanityHooks = installProfanityHooks
+    e.tryInterceptSplitAnsCommand = tryInterceptSplitAnsCommand
+    e.handleOutgoingAnsCommand = handleOutgoingAnsCommand
+    e.deskLeaveSpectateMode = deskLeaveSpectateMode
+    e.deskApplyInputPolicy = deskApplyInputPolicy
+    if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
+    if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
+    if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+    if deskEnsureAllHooks then _G.deskEnsureAllHooks = deskEnsureAllHooks end
+    if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
+    if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
+    if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
+    if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
+    if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
+    if deskSpectateCameraBlocked then _G.deskSpectateCameraBlocked = deskSpectateCameraBlocked end
+    if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
+    if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
+    if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
+    if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
+    if deskCache then _G.deskCache = deskCache end
+end
+
+--[[ Модуль: главный цикл MoonLoader, poll, autosave, hook health. ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+-- Главный цикл MoonLoader: init, hooks, poll ingest, autosave.
+function main()
+    while not isSampfuncsLoaded() or not isSampLoaded() do wait(100) end
+    while not isSampAvailable() do wait(100) end
+
+    local okCfg, errCfg = pcall(loadConfig)
+    if not okCfg then
+        print('[Report Desk] config: ' .. tostring(errCfg))
+    end
+    if type(initCmdBinds) == 'function' then
+        pcall(initCmdBinds)
+    end
+    pcall(ensureComposerQuickButtons)
+    pcall(syncLegacyGgTechFromComposerButtons)
+    pcall(initDeskIngest)
+    if settings.spectate_sp_ui == nil then settings.spectate_sp_ui = true end
+    if settings.spectate_vehicle_hud == nil then
+        settings.spectate_vehicle_hud = true
+        markDirtySettings()
+    end
+    -- Флаги layout: только проставить, не трогать сохранённые координаты (saveConfig раньше их не писал).
+    do
+        local layoutFlags = {
+            'spectate_hud_layout_v2',
+            'spectate_sp_ui_layout_v2',
+            'spectate_vehicle_hud_layout_v2',
+            'spectate_vehicle_hud_layout_v3',
+            'spectate_vehicle_hud_layout_v4',
+            'spectate_vehicle_hud_layout_v5',
+            'spectate_vehicle_hud_layout_v6',
+        }
+        for _, key in ipairs(layoutFlags) do
+            if not settings[key] then
+                settings[key] = true
+                markDirtySettings()
+            end
+        end
+    end
+    pcall(initDeskIngest)
+    pcall(updateMimguiGameInputPassthrough)
+    if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
+        print('[Report Desk] spectate module unavailable — spectate HUD disabled')
+    else
+    deskSpectateStats.install({
+        trim = trim,
+        stripTags = stripTags,
+        sendChat = sendChat,
+        sendMenuOutbound = sendMenuOutbound,
+        uiText = uiText,
+        toU32 = toU32,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_muted = col_muted,
+        col_muted2 = col_muted2,
+        col_label = col_label,
+        col_warn = col_warn,
+        sampIsPlayerConnected = sampIsPlayerConnected,
+        sampGetPlayerNickname = sampGetPlayerNickname,
+        sampGetPlayerColor = sampGetPlayerColor,
+        sampGetPlayerPing = sampGetPlayerPing,
+        sampGetPlayerScore = sampGetPlayerScore,
+        markDirtySettings = markDirtySettings,
+        flushDirtyConfigNow = flushDirtyConfigNow,
+        sampev = sampev,
+        getSettings = function() return settings end,
+        getSpectating = function() return deskInputState.playerSpectating end,
+        getShowWindow = function() return showWindow[0] end,
+    })
+    deskSpectateStats.installInputHooks({
+        sampev = sampev,
+        vkeys = vkeys,
+        imgui = imgui,
+        isVkDown = isVkDown,
+        hotkeyCapture = function() return deskCache.hotkeyCapture end,
+        cheatKeyCapture = function() return deskCache.cheatCapture end,
+        getShowWindow = function() return showWindow[0] end,
+        isDeskTypingActive = deskWindowWantsKeyboard,
+        getPlayerSpectating = function() return deskInputState.playerSpectating end,
+        setPlayerSpectating = deskSetPlayerSpectating,
+        sampIsChatInputActive = sampIsChatInputActive,
+        sampIsDialogActive = sampIsDialogActive,
+        sendSlapPlayer = sendSlapPlayer,
+        sendTrPlayer = sendTrPlayer,
+        utf8ToCp1251 = utf8ToCp1251,
+        readInputBuf = readInputBuf,
+        onSpectatingOn = function()
+            deskRememberSpectateCursorMode()
+            deskReleaseImguiCapture()
+            if showWindow[0] then
+                deskInputState.spectateUiModeActive = true
+                deskEnableUiCursorForSamp()
+            else
+                deskInputState.spectateUiModeActive = false
+            end
+            updateMimguiGameInputPassthrough()
+        end,
+        onSpectatingOff = function()
+            deskLeaveSpectateMode()
+            deskApplyInputPolicy()
+            if showWindow[0] then updateDeskInputCapture() end
+        end,
+        restoreSpectateCamera = deskRestoreSpectateCamera,
+        updateInputPassthrough = updateMimguiGameInputPassthrough,
+        enableSpectateCursor = deskEnableUiCursorForSamp,
+        rememberSpectateCursor = deskRememberSpectateCursorMode,
+        setSpectateUiMode = function(on)
+            deskInputState.spectateUiModeActive = on and true or false
+        end,
+        getSpectateUiModeActive = function()
+            return deskInputState.spectateUiModeActive == true
+        end,
+        onAnsBarClosed = function()
+            deskReleaseImguiCapture()
+            if deskSpectatingNow() and not showWindow[0] then
+                deskRestoreSpectateCamera()
+            end
+            updateMimguiGameInputPassthrough()
+        end,
+        markAnsTypingActive = function()
+            deskInputState.keyboardStickyUntil = os.clock() + 1.5
+        end,
+    })
+    end
+    pcall(deskReinstallSpMenuHooks)
+    pcall(installDeskSpMenuRpcBlock)
+    pcall(installDeskCheckerRpcProbe)
+    uiSound[0] = settings.sound
+    uiAutoOnlyUnread[0] = settings.auto_only_unread
+    uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
+    uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
+    uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
+    setInputBuf(deskReplyBuf.watch, settings.watch_notify or 'see')
+    setInputBuf(deskReplyBuf.time, getTimeReplyText())
+    setInputBuf(deskReplyBuf.gg, getGgReplyText())
+    setInputBuf(deskReplyBuf.tech, getTechReplyText())
+    if not doesFileExist(CONFIG_PATH) then saveConfig() end
+    pcall(flushDirtyConfigNow)
+
+    sampRegisterChatCommand('reps', function()
+        pcall(toggleWindow)
+    end)
+    sampRegisterChatCommand('reportdesk', function()
+        pcall(toggleWindow)
+    end)
+    sampRegisterChatCommand('hist', function(arg)
+        pcall(sendHistoryByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('acar', function(arg)
+        pcall(deskAcarEnter, arg)
+    end)
+
+    pcall(checkerInit)
+
+    seedSeenChatLines()
+    pcall(seedProfanitySeenForChatBuffer)
+    pcall(getFilteredThreadKeys)
+    refreshMyNick()
+    sessionLive = true
+    lastSettingsSave = os.clock()
+    lastThreadsSave = os.clock()
+    lastMapPrune = os.clock()
+    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
+    uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
+    uiProfanitySound[0] = settings.profanity_filter_sound ~= false
+    installProfanityHooks()
+    installDeskServerMessageHook()
+    installDeskSpectateDialogHook()
+    installDeskSpectateToggleHook()
+    installDeskSendChatHook()
+    installDeskSendCommandHook()
+    installDeskPlayerQuitHook()
+    installDeskPlayerJoinHook()
+    installDeskPlayerStreamInHook()
+    installDeskPlayerColorHook()
+    installDeskSpRefreshHooks()
+    pcall(sampSyncAllPlayerColors)
+    deskVeh.bind({
+        settings = settings,
+        sendChat = sendChat,
+        say = say,
+        markDirtySettings = markDirtySettings,
+        col_accent = col_accent,
+        col_accent_dim = col_accent_dim,
+        col_muted = col_muted,
+        col_muted2 = col_muted2,
+        col_warn = col_warn,
+        col_chat_bg = col_chat_bg,
+        deskTex = deskTex,
+    })
+    pcall(ensureDeskCatalogWarmup)
+    pcall(announceDeskStartup)
+    local lastPoll = 0
+    local pollInterval = 0.25
+    local lastNickCacheTick = 0
+    local lastHookCheck = 0
+    local lastCheckerTickAt = 0
+    local CHECKER_TICK_SP_INTERVAL = 0.5
+    local deskWasSampInGame = type(deskSampInGame) == 'function' and deskSampInGame() or false
+
+    local function resolveIngestPollInterval()
+        if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
+            return POLL_INTERVAL_SAFETY
+        end
+        return showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
+    end
+
+    local function mainLoopWaitMs()
+        if showWindow[0] then return 8 end
+        if deskIsSpectating() then return 16 end
+        if deskTexPipeline.anyPending() then return 0 end
+        if cheatState.airbreak then return 0 end
+        if cheatState.marker.active then return 0 end
+        if cheatState.hudDrag.active then return 0 end
+        if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 0 end
+        if type(deskSpectateStats) == 'table'
+                and deskSpectateStats.isHudDragActive
+                and deskSpectateStats.isHudDragActive() then return 0 end
+        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 0 end
+        return 50
+    end
+
+    while true do
+        wait(mainLoopWaitMs())
+
+        if os.clock() - myNickTick >= 2.0 then
+            refreshMyNick()
+            myNickTick = os.clock()
+        end
+
+        if os.clock() - lastNickCacheTick >= PLAYER_NICK_CACHE_INTERVAL then
+            refreshPlayerNickCache(false)
+            lastNickCacheTick = os.clock()
+        end
+
+        if not sessionLive then
+            sessionLive = true
+        end
+
+        if type(deskSampInGame) == 'function' then
+            local inGame = deskSampInGame()
+            if inGame and not deskWasSampInGame then
+                cheatState.hudPlaced = false
+                if type(checkerState) == 'table' then
+                    checkerState.hudPlaced = false
+                end
+            end
+            deskWasSampInGame = inGame
+        end
+
+        deskSampChatGuardFrame()
+        deskApplyInputPolicy()
+        if deskCache.hotkeyCapture or deskCache.cheatCapture then
+            pcall(deskBindCapturePollFrame)
+        end
+        pcall(deskTickAdminPauseState)
+        if showWindow[0] then
+            deskInputState.wasOpen = true
+        elseif deskInputState.wasOpen then
+            deskInputState.wasOpen = false
+        end
+
+        pollInterval = resolveIngestPollInterval()
+        if pollInterval and os.clock() - lastPoll >= pollInterval then
+            pcall(pollReportIngest)
+            lastPoll = os.clock()
+        end
+        if type(deskSpectateStats) == 'table' and deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
+            pcall(deskSpectateStats.flushOutbound)
+        end
+        if type(remoteChatFlushSampQueue) == 'function' then
+            pcall(remoteChatFlushSampQueue)
+        end
+
+        if deskCache.catalogTexFlushPending then
+            pcall(deskFlushCatalogTexPending)
+        else
+            pcall(deskTexPipeline.flushDeferred, deskTex, imgui, 8)
+        end
+        if deskCatalogTabActive and showWindow[0] then
+            pcall(deskCatalogTexTick)
+        end
+
+        if os.clock() - lastHookCheck >= HOOK_HEALTH_CHECK_INTERVAL then
+            pcall(deskEnsureAllHooks)
+            lastHookCheck = os.clock()
+        end
+
+        if os.clock() - lastMapPrune >= PRUNE_MAP_INTERVAL then
+            pcall(pruneAllTimedMaps)
+            lastMapPrune = os.clock()
+        end
+
+        pcall(cheatsProcessKeybinds)
+        pcall(cheatsMaintain)
+        local nowLoop = os.clock()
+        local checkerInterval = (deskIsSpectating() and type(checkerIsHudVisible) == 'function'
+            and not checkerIsHudVisible() and CHECKER_TICK_SP_INTERVAL) or 0
+        if nowLoop - lastCheckerTickAt >= checkerInterval then
+            pcall(checkerTick)
+            lastCheckerTickAt = nowLoop
+        end
+        pcall(function()
+            if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
+                deskSpectateStats.tickPendingSp()
+            end
+        end)
+        pcall(cheatsTickMarker)
+
+        local nowSave = os.clock()
+        if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
+            if type(flushCheckerCatalogNow) == 'function' then
+                pcall(flushCheckerCatalogNow)
+            end
+            if dirtySettings or dirtyThreads then
+                pcall(saveConfig)
+                dirtySettings = false
+                dirtyThreads = false
+            end
+            lastSettingsSave = nowSave
+            lastThreadsSave = nowSave
+        elseif dirtyThreads and nowSave - lastThreadsSave >= AUTOSAVE_THREADS_INTERVAL then
+            pcall(saveConfig)
+            lastThreadsSave = nowSave
+            lastSettingsSave = nowSave
+        end
+    end
+end
+
+-- Cleanup при выгрузке скрипта.
+function onScriptTerminate(scr)
+    if scr == thisScript() then
+        skinRadiusJob.cancel = true
+        pcall(deskTexPipeline.shutdown, deskTex, imgui)
+        pcall(deskUninstall)
+        deskRestoreNormalGameCamera()
+        pcall(updateMimguiGameInputPassthrough)
+        pcall(cheatsCleanup)
+        pcall(deskTexLoad.clearAll)
+        if deskConfigReady then
+            pcall(flushDirtyConfigNow)
+            saveConfig()
+        end
+        local app = package.loaded['report_desk_app']
+        if app and app.unload then pcall(app.unload) end
+    end
+end
+
+
+
+]=], '@report_desk_app_core')
+
+    if not chunkFn then error('[Report Desk] bundle group report_desk_app_core: ' .. tostring(chunkErr)) end
+
+    setfenv(chunkFn, __desk_bundle_env)
+
+    chunkFn()
+
+end
+
+
+
+do
+
+    local chunkFn, chunkErr = loadstring([=[
+
 --[[ Модуль: перехват SAMP-событий (чат, диалоги, RPC меню /sp). ]]
 
 local spSessionMod
@@ -25981,7 +26617,9 @@ end
 function deskOnServerMessage(color, text)
     if not text or text == '' then return end
     pcall(checkerOnServerMessage, color, text)
-    pcall(deskSpectateStats.onServerMessage, color, text)
+    if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onServerMessage) == 'function' then
+        pcall(deskSpectateStats.onServerMessage, color, text)
+    end
     local plain = stripChatTimestamp(stripTags(text))
     if plain == '' then return end
 
@@ -26024,7 +26662,10 @@ function installDeskSpectateDialogHook()
     if prev == deskCache.specDialogHandler then prev = deskCache.hookPrevShowDialog end
     deskCache.hookPrevShowDialog = prev
     deskCache.specDialogHandler = function(dialogId, style, title, button1, button2, text)
-        local okSp, handled = pcall(deskSpectateStats.onShowDialog, dialogId, style, title, button1, button2, text)
+        local okSp, handled = false, false
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onShowDialog) == 'function' then
+            okSp, handled = pcall(deskSpectateStats.onShowDialog, dialogId, style, title, button1, button2, text)
+        end
         if okSp and handled then
             return false
         end
@@ -26067,7 +26708,7 @@ function deskOnPlayerQuit(playerId, reason)
     if not playerId then return end
     pcall(checkerOnPlayerQuit, playerId)
     pcall(function()
-        if deskSpectateStats.notifyTargetQuit then
+        if type(deskSpectateStats) == 'table' and type(deskSpectateStats.notifyTargetQuit) == 'function' then
             deskSpectateStats.notifyTargetQuit(playerId)
         end
     end)
@@ -26774,400 +27415,11 @@ function deskUninstall()
     end
 end
 
---[[ Модуль: публикация locals в env для late chunk (checker). ]]
-if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
-
--- Экспорт core locals в env — checker chunk видит imgui, settings, deskCache и т.д.
-do
-    local e = getfenv(1)
-    if type(e) ~= 'table' then return end
-    e.imgui = imgui
-    e.sampev = sampev
-    e.vkeys = vkeys
-    e.new = new
-    e.sizeof = sizeof
-    e.u8 = u8
-    e.ffi = ffi
-    e.memory = memory
-    e.cheat_user32 = cheat_user32
-    e.deskVeh = deskVeh
-    e.deskGrid = deskGrid
-    e.deskTex = deskTex
-    e.deskTexPipeline = deskTexPipeline
-    e.deskTexLoad = deskTexLoad
-    e.deskSpectateStats = deskSpectateStats
-    e.deskIngest = deskIngest
-    e.settings = settings
-    e.deskCache = deskCache
-    e.deskInputState = deskInputState
-    e.showWindow = showWindow
-    e.threads = threads
-    e.threadOrder = threadOrder
-    e.threadCount = threadCount
-    e.MAX_PLAYER_ID = MAX_PLAYER_ID
-    e.findPlayerIdByNick = findPlayerIdByNick
-    e.refreshPlayerNickCache = refreshPlayerNickCache
-    e.nickKey = nickKey
-    if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
-    if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
-    if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
-    if deskEnsureAllHooks then _G.deskEnsureAllHooks = deskEnsureAllHooks end
-    if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
-    if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
-    if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
-    if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
-    if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
-    if deskSpectateCameraBlocked then _G.deskSpectateCameraBlocked = deskSpectateCameraBlocked end
-    if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
-    if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
-    if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
-    if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
-    if deskCache then _G.deskCache = deskCache end
-end
-
---[[ Модуль: главный цикл MoonLoader, poll, autosave, hook health. ]]
-if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
-
--- Главный цикл MoonLoader: init, hooks, poll ingest, autosave.
-function main()
-    while not isSampfuncsLoaded() or not isSampLoaded() do wait(100) end
-    while not isSampAvailable() do wait(100) end
-
-    local okCfg, errCfg = pcall(loadConfig)
-    if not okCfg then
-        print('[Report Desk] config: ' .. tostring(errCfg))
-    end
-    pcall(ensureComposerQuickButtons)
-    pcall(syncLegacyGgTechFromComposerButtons)
-    pcall(initDeskIngest)
-    if settings.spectate_sp_ui == nil then settings.spectate_sp_ui = true end
-    if settings.spectate_vehicle_hud == nil then
-        settings.spectate_vehicle_hud = true
-        markDirtySettings()
-    end
-    -- Флаги layout: только проставить, не трогать сохранённые координаты (saveConfig раньше их не писал).
-    do
-        local layoutFlags = {
-            'spectate_hud_layout_v2',
-            'spectate_sp_ui_layout_v2',
-            'spectate_vehicle_hud_layout_v2',
-            'spectate_vehicle_hud_layout_v3',
-            'spectate_vehicle_hud_layout_v4',
-            'spectate_vehicle_hud_layout_v5',
-            'spectate_vehicle_hud_layout_v6',
-        }
-        for _, key in ipairs(layoutFlags) do
-            if not settings[key] then
-                settings[key] = true
-                markDirtySettings()
-            end
-        end
-    end
-    pcall(initDeskIngest)
-    pcall(updateMimguiGameInputPassthrough)
-    if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
-        print('[Report Desk] spectate module unavailable — spectate HUD disabled')
-    else
-    deskSpectateStats.install({
-        trim = trim,
-        stripTags = stripTags,
-        sendChat = sendChat,
-        sendMenuOutbound = sendMenuOutbound,
-        uiText = uiText,
-        toU32 = toU32,
-        col_accent = col_accent,
-        col_accent_dim = col_accent_dim,
-        col_muted = col_muted,
-        col_muted2 = col_muted2,
-        col_label = col_label,
-        col_warn = col_warn,
-        sampIsPlayerConnected = sampIsPlayerConnected,
-        sampGetPlayerNickname = sampGetPlayerNickname,
-        sampGetPlayerColor = sampGetPlayerColor,
-        sampGetPlayerPing = sampGetPlayerPing,
-        sampGetPlayerScore = sampGetPlayerScore,
-        markDirtySettings = markDirtySettings,
-        flushDirtyConfigNow = flushDirtyConfigNow,
-        sampev = sampev,
-        getSettings = function() return settings end,
-        getSpectating = function() return deskInputState.playerSpectating end,
-        getShowWindow = function() return showWindow[0] end,
-    })
-    deskSpectateStats.installInputHooks({
-        sampev = sampev,
-        vkeys = vkeys,
-        imgui = imgui,
-        isVkDown = isVkDown,
-        hotkeyCapture = function() return deskCache.hotkeyCapture end,
-        cheatKeyCapture = function() return deskCache.cheatCapture end,
-        getShowWindow = function() return showWindow[0] end,
-        isDeskTypingActive = deskWindowWantsKeyboard,
-        getPlayerSpectating = function() return deskInputState.playerSpectating end,
-        setPlayerSpectating = deskSetPlayerSpectating,
-        sampIsChatInputActive = sampIsChatInputActive,
-        sampIsDialogActive = sampIsDialogActive,
-        sendSlapPlayer = sendSlapPlayer,
-        sendTrPlayer = sendTrPlayer,
-        utf8ToCp1251 = utf8ToCp1251,
-        readInputBuf = readInputBuf,
-        onSpectatingOn = function()
-            deskRememberSpectateCursorMode()
-            deskReleaseImguiCapture()
-            if showWindow[0] then
-                deskInputState.spectateUiModeActive = true
-                deskEnableUiCursorForSamp()
-            else
-                deskInputState.spectateUiModeActive = false
-            end
-            updateMimguiGameInputPassthrough()
-        end,
-        onSpectatingOff = function()
-            deskLeaveSpectateMode()
-            deskApplyInputPolicy()
-            if showWindow[0] then updateDeskInputCapture() end
-        end,
-        restoreSpectateCamera = deskRestoreSpectateCamera,
-        updateInputPassthrough = updateMimguiGameInputPassthrough,
-        enableSpectateCursor = deskEnableUiCursorForSamp,
-        rememberSpectateCursor = deskRememberSpectateCursorMode,
-        setSpectateUiMode = function(on)
-            deskInputState.spectateUiModeActive = on and true or false
-        end,
-        getSpectateUiModeActive = function()
-            return deskInputState.spectateUiModeActive == true
-        end,
-        onAnsBarClosed = function()
-            deskReleaseImguiCapture()
-            if deskSpectatingNow() and not showWindow[0] then
-                deskRestoreSpectateCamera()
-            end
-            updateMimguiGameInputPassthrough()
-        end,
-        markAnsTypingActive = function()
-            deskInputState.keyboardStickyUntil = os.clock() + 1.5
-        end,
-    })
-    end
-    pcall(deskReinstallSpMenuHooks)
-    pcall(installDeskSpMenuRpcBlock)
-    pcall(installDeskCheckerRpcProbe)
-    uiSound[0] = settings.sound
-    uiAutoOnlyUnread[0] = settings.auto_only_unread
-    uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
-    uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
-    uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
-    setInputBuf(deskReplyBuf.watch, settings.watch_notify or 'see')
-    setInputBuf(deskReplyBuf.time, getTimeReplyText())
-    setInputBuf(deskReplyBuf.gg, getGgReplyText())
-    setInputBuf(deskReplyBuf.tech, getTechReplyText())
-    if not doesFileExist(CONFIG_PATH) then saveConfig() end
-    pcall(flushDirtyConfigNow)
-
-    sampRegisterChatCommand('reps', function()
-        pcall(toggleWindow)
-    end)
-    sampRegisterChatCommand('reportdesk', function()
-        pcall(toggleWindow)
-    end)
-    sampRegisterChatCommand('hist', function(arg)
-        pcall(sendHistoryByPlayerId, arg)
-    end)
-    sampRegisterChatCommand('acar', function(arg)
-        pcall(deskAcarEnter, arg)
-    end)
-
-    pcall(checkerInit)
-
-    seedSeenChatLines()
-    pcall(seedProfanitySeenForChatBuffer)
-    pcall(getFilteredThreadKeys)
-    refreshMyNick()
-    sessionLive = true
-    lastSettingsSave = os.clock()
-    lastThreadsSave = os.clock()
-    lastMapPrune = os.clock()
-    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
-    uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
-    uiProfanitySound[0] = settings.profanity_filter_sound ~= false
-    installProfanityHooks()
-    installDeskServerMessageHook()
-    installDeskSpectateDialogHook()
-    installDeskSpectateToggleHook()
-    installDeskSendChatHook()
-    installDeskSendCommandHook()
-    installDeskPlayerQuitHook()
-    installDeskPlayerJoinHook()
-    installDeskPlayerStreamInHook()
-    installDeskPlayerColorHook()
-    installDeskSpRefreshHooks()
-    pcall(sampSyncAllPlayerColors)
-    deskVeh.bind({
-        settings = settings,
-        sendChat = sendChat,
-        say = say,
-        markDirtySettings = markDirtySettings,
-        col_accent = col_accent,
-        col_accent_dim = col_accent_dim,
-        col_muted = col_muted,
-        col_muted2 = col_muted2,
-        col_warn = col_warn,
-        col_chat_bg = col_chat_bg,
-        deskTex = deskTex,
-    })
-    pcall(ensureDeskCatalogWarmup)
-    pcall(announceDeskStartup)
-    local lastPoll = 0
-    local pollInterval = 0.25
-    local lastNickCacheTick = 0
-    local lastHookCheck = 0
-    local lastCheckerTickAt = 0
-    local CHECKER_TICK_SP_INTERVAL = 0.5
-    local deskWasSampInGame = type(deskSampInGame) == 'function' and deskSampInGame() or false
-
-    local function resolveIngestPollInterval()
-        if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
-            return POLL_INTERVAL_SAFETY
-        end
-        return showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
-    end
-
-    local function mainLoopWaitMs()
-        if showWindow[0] then return 8 end
-        if deskIsSpectating() then return 16 end
-        if deskTexPipeline.anyPending() then return 0 end
-        if cheatState.airbreak then return 0 end
-        if cheatState.marker.active then return 0 end
-        if cheatState.hudDrag.active then return 0 end
-        if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 0 end
-        if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return 0 end
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 0 end
-        return 50
-    end
-
-    while true do
-        wait(mainLoopWaitMs())
-
-        if os.clock() - myNickTick >= 2.0 then
-            refreshMyNick()
-            myNickTick = os.clock()
-        end
-
-        if os.clock() - lastNickCacheTick >= PLAYER_NICK_CACHE_INTERVAL then
-            refreshPlayerNickCache(false)
-            lastNickCacheTick = os.clock()
-        end
-
-        if not sessionLive then
-            sessionLive = true
-        end
-
-        if type(deskSampInGame) == 'function' then
-            local inGame = deskSampInGame()
-            if inGame and not deskWasSampInGame then
-                cheatState.hudPlaced = false
-                if type(checkerState) == 'table' then
-                    checkerState.hudPlaced = false
-                end
-            end
-            deskWasSampInGame = inGame
-        end
-
-        deskSampChatGuardFrame()
-        deskApplyInputPolicy()
-        pcall(deskTickAdminPauseState)
-        if showWindow[0] then
-            deskInputState.wasOpen = true
-        elseif deskInputState.wasOpen then
-            deskInputState.wasOpen = false
-        end
-
-        pollInterval = resolveIngestPollInterval()
-        if pollInterval and os.clock() - lastPoll >= pollInterval then
-            pcall(pollReportIngest)
-            lastPoll = os.clock()
-        end
-        if deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
-            pcall(deskSpectateStats.flushOutbound)
-        end
-        if type(remoteChatFlushSampQueue) == 'function' then
-            pcall(remoteChatFlushSampQueue)
-        end
-
-        if deskCache.catalogTexFlushPending then
-            pcall(deskFlushCatalogTexPending)
-        else
-            pcall(deskTexPipeline.flushDeferred, deskTex, imgui, 8)
-        end
-        if deskCatalogTabActive and showWindow[0] then
-            pcall(deskCatalogTexTick)
-        end
-
-        if os.clock() - lastHookCheck >= HOOK_HEALTH_CHECK_INTERVAL then
-            pcall(deskEnsureAllHooks)
-            lastHookCheck = os.clock()
-        end
-
-        if os.clock() - lastMapPrune >= PRUNE_MAP_INTERVAL then
-            pcall(pruneAllTimedMaps)
-            lastMapPrune = os.clock()
-        end
-
-        pcall(cheatsProcessKeybinds)
-        pcall(cheatsMaintain)
-        local nowLoop = os.clock()
-        local checkerInterval = (deskIsSpectating() and type(checkerIsHudVisible) == 'function'
-            and not checkerIsHudVisible() and CHECKER_TICK_SP_INTERVAL) or 0
-        if nowLoop - lastCheckerTickAt >= checkerInterval then
-            pcall(checkerTick)
-            lastCheckerTickAt = nowLoop
-        end
-        pcall(deskSpectateStats.tickPendingSp)
-        pcall(cheatsTickMarker)
-
-        local nowSave = os.clock()
-        if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
-            if type(flushCheckerCatalogNow) == 'function' then
-                pcall(flushCheckerCatalogNow)
-            end
-            if dirtySettings or dirtyThreads then
-                pcall(saveConfig)
-                dirtySettings = false
-                dirtyThreads = false
-            end
-            lastSettingsSave = nowSave
-            lastThreadsSave = nowSave
-        elseif dirtyThreads and nowSave - lastThreadsSave >= AUTOSAVE_THREADS_INTERVAL then
-            pcall(saveConfig)
-            lastThreadsSave = nowSave
-            lastSettingsSave = nowSave
-        end
-    end
-end
-
--- Cleanup при выгрузке скрипта.
-function onScriptTerminate(scr)
-    if scr == thisScript() then
-        skinRadiusJob.cancel = true
-        pcall(deskTexPipeline.shutdown, deskTex, imgui)
-        pcall(deskUninstall)
-        deskRestoreNormalGameCamera()
-        pcall(updateMimguiGameInputPassthrough)
-        pcall(cheatsCleanup)
-        pcall(deskTexLoad.clearAll)
-        if deskConfigReady then
-            pcall(flushDirtyConfigNow)
-            saveConfig()
-        end
-        local app = package.loaded['report_desk_app']
-        if app and app.unload then pcall(app.unload) end
-    end
-end
 
 
+]=], '@report_desk_app_hooks')
 
-]=], '@report_desk_app_core')
-
-    if not chunkFn then error('[Report Desk] bundle group report_desk_app_core: ' .. tostring(chunkErr)) end
+    if not chunkFn then error('[Report Desk] bundle group report_desk_app_hooks: ' .. tostring(chunkErr)) end
 
     setfenv(chunkFn, __desk_bundle_env)
 
@@ -31553,6 +31805,7 @@ function drawCmdBindsTab()
         imgui.TextWrapped(tostring(err))
         print('[Report Desk] cmd binds UI: ' .. tostring(err))
     end
+end
 
 
 ]=], '@report_desk_cmd_binds.lua')

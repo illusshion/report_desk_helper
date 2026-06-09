@@ -10,6 +10,7 @@ local vehicleHud = require 'report_desk_sp_vehicle_hud'
 local keysHud = require 'report_desk_sp_keys_hud'
 local specCamera = require 'report_desk_spectate_camera'
 local spRefresh = require 'report_desk_sp_refresh'
+local deskWmDispatch = require 'report_desk_wm_dispatch'
 
 local SP_MSG_COLOR = 1728027135
 local PENDING_ST_SEC = 12.0
@@ -2468,7 +2469,7 @@ function M.installInputHooks(deps)
     end
     wmHandlerInstalled = true
 
-    addEventHandler('onWindowMessage', function(msg, wparam, lparam)
+    deskWmDispatch.register('spectate', 95, function(msg, wparam, lparam)
         if msg == WM_ACTIVATEAPP then
             gameAppActive = (tonumber(wparam) or 0) ~= 0
             if gameAppActive then
@@ -2479,8 +2480,9 @@ function M.installInputHooks(deps)
         if specCaptureActive() then return end
         if M.handleSpectateWindowMessage(msg, wparam) then
             consumeWindowMessage(true, true, true)
+            return true
         end
-    end, true)
+    end)
 end
 
 -- Публичный API модуля.
@@ -2570,7 +2572,14 @@ function M.notifyTargetQuit(playerId)
 end
 
 -- Публичный API модуля.
+function M.uninstallWmHandler()
+    pcall(deskWmDispatch.unregister, 'spectate')
+    wmHandlerInstalled = false
+end
+
+-- Публичный API модуля.
 function M.uninstallSpectatePlayerHook()
+    M.uninstallWmHandler()
     spUi.uninstallSampevHooks()
 end
 

@@ -29,12 +29,16 @@ $DevRootFiles = @(
     'admin_report_desk_stub.lua',
     'admin_report_desk_stub.lua.off',
     'admin_report_desk.lua.bak',
+    'AdminDesk.luac',
+    'AdminDesk.lua',
     'report_desk_app.lua',
     'report_desk_profanity_words.lua',
     'report_desk_autoupdate.lua'
 )
 
 $ProdRootFiles = @(
+    'AdminDesk.luac',
+    'AdminDesk.lua',
     'admin_report_desk.lua',
     'admin_report_desk_stub.lua',
     'report_desk_deps.lua',

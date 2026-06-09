@@ -8,7 +8,7 @@ param(
 
 if (-not (Get-Command magick -ErrorAction SilentlyContinue)) {
     Write-Error "ImageMagick 'magick' not found. Install or add to PATH."
-    Write-Host "See tools\IMAGE_ASSETS.md for manual oxipng/pngquant alternatives."
+    Write-Host "Install ImageMagick or use oxipng/pngquant manually."
     exit 1
 }
 
@@ -36,4 +36,3 @@ foreach ($f in $files) {
 
 Write-Host "Optimized $ok files (skipped $skip under 90KB). Max side: $MaxSide px."
 Write-Host "For fast catalog warmup, also run: tools\build_catalog_dds.ps1 -ResizePng"
-Write-Host "See tools\IMAGE_ASSETS.md"

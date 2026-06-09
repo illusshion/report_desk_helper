@@ -35,6 +35,11 @@ local CHECKER_CHIEF_DEFAULTS = {
     { nick = 'Amattore_Adderio', level = CHECKER_LVL_CHIEF_ZGA },
 }
 
+local CHECKER_TOP_ADMIN_DEFAULTS = {
+    'Andrey_Ringo',
+    'Smart_Jackson',
+}
+
 local ADMIN_LEVEL_1 = 1
 local ADMIN_LEVEL_2 = 2
 local ADMIN_LEVEL_3 = 3
@@ -48,12 +53,54 @@ local ORG_MVD = 2
 local ORG_MO = 3
 local ORG_MZ = 4
 local ORG_SMI = 5
-local ORG_BAND = 6
-local ORG_BAND_MAX = 10
-local ORG_MAFIA = 11
-local ORG_MAFIA_MAX = 13
+local ORG_GROVE = 6
+local ORG_BALLAS = 7
+local ORG_VAGOS = 8
+local ORG_AZTECAS = 9
+local ORG_RIFA = 10
+local ORG_YAKUZA = 11
+local ORG_LCN = 12
+local ORG_RMAF = 13
+local ORG_BAND = ORG_GROVE
+local ORG_BAND_MAX = ORG_RIFA
+local ORG_MAFIA = ORG_YAKUZA
+local ORG_MAFIA_MAX = ORG_RMAF
 
 local SAMP_COLOR_AUTO_PROMOTE = -65281
+
+-- Clist фракций (sampGetPlayerColor), собрано in-game + ballas purple.
+local CHECKER_ORG_CLIST_COLOR = {
+    [ORG_GOV] = 0xFFCCFF00,     -- pravitelstvo
+    [ORG_MVD] = 0xFF0000FF,     -- mvd
+    [ORG_MO] = 0xFF996633,      -- mo
+    [ORG_MZ] = 0xFFFF6666,      -- mz
+    [ORG_SMI] = 0xFFFF6600,     -- smi
+    [ORG_GROVE] = 0xFF009900,   -- grove
+    [ORG_BALLAS] = 0xFF800080,  -- ballas (purple, not sampled)
+    [ORG_VAGOS] = 0xFFFFCD00,   -- vagos
+    [ORG_AZTECAS] = 0xFF00CCFF, -- aztecas
+    [ORG_RIFA] = 0xFF6666FF,    -- rifa
+    [ORG_YAKUZA] = 0xFFBB0000,  -- yakuza
+    [ORG_LCN] = 0xFF993366,     -- lcn
+    [ORG_RMAF] = 0xFF007575,    -- russkaya mafia
+    [0] = 0xFFAAAAAA,
+}
+
+local CHECKER_ORG_LABEL = {
+    [ORG_GOV] = 'gov',
+    [ORG_MVD] = 'mvd',
+    [ORG_MO] = 'mo',
+    [ORG_MZ] = 'mz',
+    [ORG_SMI] = 'smi',
+    [ORG_GROVE] = 'grove',
+    [ORG_BALLAS] = 'ballas',
+    [ORG_VAGOS] = 'vagos',
+    [ORG_AZTECAS] = 'aztecas',
+    [ORG_RIFA] = 'rifa',
+    [ORG_YAKUZA] = 'yakuza',
+    [ORG_LCN] = 'lcn',
+    [ORG_RMAF] = 'rmaf',
+}
 
 local CHECKER_SPECIAL_COLOR = {
     [1] = imgui.ImVec4(0.98, 0.58, 0.38, 1.0),
@@ -79,6 +126,57 @@ local CHECKER_ORG_JOIN = {
     [5] = '\xCF\xEE\xE4\xEA\xEB\xFE\xF7\xE8\xEB\xF1\xFF \xEB\xE8\xE4\xE5\xF0 \xEE\xF0\xE3\xE0\xED\xE8\xE7\xE0\xF6\xE8\xE8 \'\xD1\xCC\xC8\', %s[%i].',
 }
 
+-- Группы лидеров в настройках чекера: порядок, подзаголовок, clist-цвет секции.
+local CHECKER_LEADER_FACTION_META = {
+    gov = {
+        sort = 1,
+        title = '\xCF\xF0\xE0\xE2\xE8\xF2\xE5\xEB\xFC\xF1\xF2\xE2\xEE',
+        clistOrg = ORG_GOV,
+    },
+    mo = {
+        sort = 2,
+        title = '\xCC\xCE',
+        clistOrg = ORG_MO,
+    },
+    mz = {
+        sort = 3,
+        title = '\xCC\xC7',
+        clistOrg = ORG_MZ,
+    },
+    illegal = {
+        sort = 4,
+        title = '\xCD\xE5\xEB\xE5\xE3\xE0\xEB\xFB',
+        neutralHeader = true,
+    },
+    band = {
+        sort = 4,
+        title = '\xC1\xE0\xED\xE4\xFB',
+        subtitle = true,
+        headerColor = imgui.ImVec4(0.48, 0.72, 0.50, 1.0),
+    },
+    mafia = {
+        sort = 4,
+        title = '\xCC\xE0\xF4\xE8\xE8',
+        subtitle = true,
+        headerColor = imgui.ImVec4(0.78, 0.48, 0.48, 1.0),
+    },
+    mvd = {
+        sort = 5,
+        title = '\xCC\xC2\xC4',
+        clistOrg = ORG_MVD,
+    },
+    smi = {
+        sort = 6,
+        title = '\xD1\xCC\xC8',
+        clistOrg = ORG_SMI,
+    },
+    other = {
+        sort = 99,
+        title = '\xCF\xF0\xEE\xF7\xE5\xE5',
+        clistOrg = 0,
+    },
+}
+
 local checkerSpTheme = require 'report_desk_sp_theme'
 local CheckerParser = require 'report_desk_checker_parser'
 local CheckerCatalogStore = require 'report_desk_checker_catalog'
@@ -88,6 +186,7 @@ local CHECKER_SPAWN_ADMS_MAX_RETRIES = 2
 local CHECKER_ADMS_RESYNC_INTERVAL = 240.0
 local CHECKER_ADMS_PARSE_DUMP_LEN = 500
 local CHECKER_LEADERS_FLOW_T = 30.0
+local CHECKER_LEADERS_SNAPSHOT_MAX_AGE = 180.0
 local CHECKER_AFK_POLL_INTERVAL = 15.0
 local CHECKER_REBUILD_INTERVAL = 15.0
 local CHECKER_SPAWN_REBUILD_DELAY = 1.5
@@ -105,7 +204,7 @@ local L_ADMIN_WORD = '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0'
 local L_LEADERS = '\xCB\xE8\xE4\xE5\xF0'
 
 -- Fresh tables every load (env __index=_G would otherwise resurrect stale globals on reload).
-checkerCatalog = { admins = {}, leaders = {}, friends = {} }
+checkerCatalog = { admins = {}, leaders = {}, friends = {}, org_clist = {} }
 checkerOnline = { admins = {}, leaders = {}, friends = {} }
 checkerOnlineRev = 0
 checkerState = {}
@@ -129,6 +228,8 @@ do
     s.admsAwaitDialog = s.admsAwaitDialog == true
     s.admsAwaitUntil = tonumber(s.admsAwaitUntil) or 0
     s.admsChatMuteUntil = tonumber(s.admsChatMuteUntil) or 0
+    s.admsSyncOutbound = s.admsSyncOutbound == true
+    s.leadersSyncOutbound = s.leadersSyncOutbound == true
     s.spawnCatalogSyncAt = tonumber(s.spawnCatalogSyncAt)
     s.spawnCatalogSyncDone = s.spawnCatalogSyncDone == true
     s.spawnCatalogSyncRunning = s.spawnCatalogSyncRunning == true
@@ -142,6 +243,7 @@ do
     s.firstRebuildAt = s.firstRebuildAt
     s.pendingRebuild = s.pendingRebuild == true
     s.leaderShowUi = type(s.leaderShowUi) == 'table' and s.leaderShowUi or {}
+    s.leaderGroupShowUi = type(s.leaderGroupShowUi) == 'table' and s.leaderGroupShowUi or {}
     s.catalogRev = tonumber(s.catalogRev) or 0
     s.syncInFlight = s.syncInFlight == true
     s.lastOnlineCatalogRev = tonumber(s.lastOnlineCatalogRev) or -1
@@ -165,6 +267,7 @@ do
     s.seenPlayerIds = type(s.seenPlayerIds) == 'table' and s.seenPlayerIds or {}
     s.hudFrameInstalled = s.hudFrameInstalled == true
     s.admsOnlineSnapshot = type(s.admsOnlineSnapshot) == 'table' and s.admsOnlineSnapshot or nil
+    s.leadersOnlineSnapshot = type(s.leadersOnlineSnapshot) == 'table' and s.leadersOnlineSnapshot or nil
     s.syncSession = type(s.syncSession) == 'table' and s.syncSession or {}
     if s.syncSession.admsUntil == nil then s.syncSession.admsUntil = 0 end
     if s.syncSession.leadersUntil == nil then s.syncSession.leadersUntil = 0 end
@@ -223,6 +326,7 @@ local function ensureCheckerCatalog()
     if type(checkerCatalog.admins) ~= 'table' then checkerCatalog.admins = {} end
     if type(checkerCatalog.leaders) ~= 'table' then checkerCatalog.leaders = {} end
     if type(checkerCatalog.friends) ~= 'table' then checkerCatalog.friends = {} end
+    if type(checkerCatalog.org_clist) ~= 'table' then checkerCatalog.org_clist = {} end
 end
 
 -- === Catalog: admins/leaders/friends, индекс по nick ===
@@ -291,13 +395,12 @@ end
 local function ensureCheckerSettings()
     if settings.checker_hud == nil then settings.checker_hud = true end
     if settings.checker_show_admins == nil then settings.checker_show_admins = true end
-    if settings.checker_show_leaders == nil then settings.checker_show_leaders = false end
+    if settings.checker_show_leaders == nil then settings.checker_show_leaders = true end
     if settings.checker_show_friends == nil then settings.checker_show_friends = true end
     if settings.checker_notify_join == nil then settings.checker_notify_join = true end
     if settings.checker_notify_quit == nil then settings.checker_notify_quit = true end
     if settings.checker_notify_sound == nil then settings.checker_notify_sound = true end
     if settings.checker_notify_leader_join == nil then settings.checker_notify_leader_join = false end
-    if settings.checker_notify_leader_quit == nil then settings.checker_notify_leader_quit = false end
     if settings.checker_notify_friend_join == nil then settings.checker_notify_friend_join = settings.checker_notify_join end
     if settings.checker_auto_promote == nil then
         settings.checker_auto_promote = settings.checker_auto_admin ~= false
@@ -510,7 +613,8 @@ end
 function checkerNotifyQuitEnabled(role)
     role = role or ''
     if role == 'leader' then
-        return settings.checker_notify_leader_quit == true
+        if settings.checker_notify_leader_quit == false then return false end
+        return settings.checker_notify_quit ~= false
     end
     return settings.checker_notify_quit ~= false
 end
@@ -801,100 +905,339 @@ function checkerRemoveFriend(nick)
     return true
 end
 
+-- Нормализация org/role для сопоставления (CP1251 из /leaders + UTF-8 из каталога).
+local function cp1251Lower(s)
+    if not s or s == '' then return '' end
+    return (s:gsub('[\192-\223]', function(c)
+        return string.char(c:byte() + 32)
+    end):gsub('\168', '\184'))
+end
+
+local function checkerLeaderTextToMatch(s)
+    s = trim(s or '')
+    if s == '' then return '' end
+    if type(isUtf8Text) == 'function' and isUtf8Text(s)
+            and type(utf8ToCp1251) == 'function' then
+        s = utf8ToCp1251(s)
+    end
+    s = cp1251Lower(s)
+    return s:lower()
+end
+
+local function checkerLeaderOrgHaystack(entry)
+    local org = checkerLeaderTextToMatch(entry and entry.org_name)
+    local role = checkerLeaderTextToMatch(entry and entry.role)
+    if org == '' and role == '' then return '' end
+    if org == '' then return role end
+    if role == '' then return org end
+    return org .. ' ' .. role
+end
+
+local function checkerLeaderHayFind(hay, pattern)
+    return hay ~= '' and hay:find(pattern, 1, true) ~= nil
+end
+
+-- Org id по org_name/role (не доверяем битому org из каталога).
+function checkerResolveLeaderOrgId(entry)
+    if not entry then return 0 end
+    local hay = checkerLeaderOrgHaystack(entry)
+    if hay == '' then
+        local prev = math.floor(tonumber(entry.org) or 0)
+        if prev >= ORG_GOV and prev <= ORG_MAFIA_MAX then return prev end
+        return 0
+    end
+
+    -- Мафии (конкретные названия).
+    if checkerLeaderHayFind(hay, 'yakuza') then
+        return ORG_YAKUZA
+    end
+    if checkerLeaderHayFind(hay, 'cosa') or checkerLeaderHayFind(hay, 'nostra')
+            or checkerLeaderHayFind(hay, 'la cosa') or checkerLeaderHayFind(hay, 'lcn') then
+        return ORG_LCN
+    end
+    if checkerLeaderHayFind(hay, '\xF0\xF3\xF1\xF1\xEA')
+            or checkerLeaderHayFind(hay, '\xF0\xF3\xF1\xF1\xE0\xFF \xEC\xE0\xF4') then
+        return ORG_RMAF
+    end
+
+    -- Банды.
+    if checkerLeaderHayFind(hay, 'grove') or checkerLeaderHayFind(hay, 'street') then
+        return ORG_GROVE
+    end
+    if checkerLeaderHayFind(hay, 'ballas') then
+        return ORG_BALLAS
+    end
+    if checkerLeaderHayFind(hay, 'vagos') or checkerLeaderHayFind(hay, 'los santos vagos') then
+        return ORG_VAGOS
+    end
+    if checkerLeaderHayFind(hay, 'aztecas') or checkerLeaderHayFind(hay, 'varios los') then
+        return ORG_AZTECAS
+    end
+    if checkerLeaderHayFind(hay, 'rifa') or checkerLeaderHayFind(hay, 'the rifa') then
+        return ORG_RIFA
+    end
+
+    -- МВД (до правительства: «министерство внутренних» не gov).
+    if checkerLeaderHayFind(hay, '\xEC\xE2\xE4')
+            or checkerLeaderHayFind(hay, '\xEF\xEE\xEB\xE8\xF6')
+            or checkerLeaderHayFind(hay, 'police')
+            or checkerLeaderHayFind(hay, '\xF4\xE1\xF0')
+            or checkerLeaderHayFind(hay, '\xF4\xE5\xE4\xE5\xF0\xE0\xEB\xFC\xED')
+            or checkerLeaderHayFind(hay, '\xE1\xFE\xF0\xEE \xF0\xE0\xF1\xF1\xEB\xE5\xE4')
+            or checkerLeaderHayFind(hay, '\xF3\xEF\xF0\xE0\xE2\xEB\xE5\xED\xE8\xE5 \xEF\xEE\xEB\xE8\xF6')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xE2\xED\xF3\xF2\xF0\xE5\xED\xED\xE8\xF5')
+            or checkerLeaderHayFind(hay, '\xE2\xED\xF3\xF2\xF0\xE5\xED\xED\xE8\xF5 \xE4\xE5\xEB') then
+        return ORG_MVD
+    end
+
+    -- МО.
+    if checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xEE\xE1\xEE\xF0\xEE\xED')
+            or checkerLeaderHayFind(hay, '\xEE\xE1\xEE\xF0\xEE\xED')
+            or checkerLeaderHayFind(hay, '\xF1\xF3\xF5\xEE\xEF\xF3\xF2')
+            or checkerLeaderHayFind(hay, '\xE2\xE2\xF1')
+            or checkerLeaderHayFind(hay, '\xE2\xEE\xE7\xE4\xF3\xF8')
+            or checkerLeaderHayFind(hay, '\xF4\xEB\xEE\xF2')
+            or checkerLeaderHayFind(hay, '\xEC\xEE\xF0\xF1\xEA')
+            or checkerLeaderHayFind(hay, '\xE2\xEE\xE5\xED')
+            or checkerLeaderHayFind(hay, 'army')
+            or checkerLeaderHayFind(hay, 'ranger')
+            or checkerLeaderHayFind(hay, '\xF0\xE5\xE9\xED\xE4\xE6')
+            or checkerLeaderHayFind(hay, '\xE0\xF0\xEC\xE8') then
+        return ORG_MO
+    end
+
+    -- МЗ (+ больницы LS/SF/LV с разными названиями).
+    if checkerLeaderHayFind(hay, '\xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED')
+            or checkerLeaderHayFind(hay, '\xEC\xE3\xEC\xF6')
+            or checkerLeaderHayFind(hay, '\xEA\xEB\xE8\xED\xE8\xF7')
+            or checkerLeaderHayFind(hay, '\xEA\xEF\xF5')
+            or checkerLeaderHayFind(hay, '\xE1\xEE\xEB\xFC\xED\xE8\xF6')
+            or checkerLeaderHayFind(hay, 'hospital')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED') then
+        return ORG_MZ
+    end
+
+    -- СМИ.
+    if checkerLeaderHayFind(hay, '\xF0\xE0\xE4\xE8\xEE')
+            or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xE2\xE8\xE7')
+            or checkerLeaderHayFind(hay, '\xF1\xEC\xE8')
+            or checkerLeaderHayFind(hay, '\xF1\xE2\xFF\xE7\xE8')
+            or checkerLeaderHayFind(hay, '\xEA\xEE\xEC\xEC\xF3\xED\xE8\xEA\xE0\xF6')
+            or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xF6\xE5\xED\xF2\xF0')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED.\xF1\xE2\xFF\xE7\xE8')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED \xF1\xE2\xFF\xE7\xE8') then
+        return ORG_SMI
+    end
+
+    -- Правительство.
+    if checkerLeaderHayFind(hay, '\xEF\xF0\xE5\xE7\xE8\xE4\xE5\xED\xF2')
+            or checkerLeaderHayFind(hay, '\xE3\xF3\xE1\xE5\xF0\xED\xE0\xF2\xEE\xF0')
+            or checkerLeaderHayFind(hay, '\xEF\xF0\xE0\xE2\xE8\xF2\xE5\xEB\xFC\xF1\xF2\xE2')
+            or checkerLeaderHayFind(hay, '\xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF6\xE8\xFF \xEF\xF0\xE5\xE7\xE8\xE4\xE5\xED\xF2')
+            or checkerLeaderHayFind(hay, '\xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF6\xE8\xFF \xE3\xF3\xE1\xE5\xF0\xED\xE0\xF2\xEE\xF0') then
+        return ORG_GOV
+    end
+
+    local prev = math.floor(tonumber(entry.org) or 0)
+    if prev >= ORG_GOV and prev <= ORG_MAFIA_MAX then return prev end
+    return 0
+end
+
+function checkerInferLeaderOrgId(entry)
+    return checkerResolveLeaderOrgId(entry)
+end
+
 -- Checker (admin HUD/catalog).
 function checkerLeaderDisplayRole(entry)
     local role = trim(entry.role or '')
     if role ~= '' then
-        role = role:gsub('^%[%d+%]%s*', '')
-        role = role:gsub('^LV%s*•%s*', ''):gsub('^LS%s*|%s*', ''):gsub('^SF%s*|%s*', '')
-        return role
-    end
-    return trim(entry.org_name or '')
-end
-
--- Checker (admin HUD/catalog).
-function checkerLeaderGroupKey(entry)
-    local org = trim(entry.org_name or ''):lower()
-    if org:find('президент', 1, true) or org:find('администрация президента', 1, true) then
-        return 1, 'Правительство'
-    end
-    if org:find('министер', 1, true) or org:find('федеральн', 1, true) or org:find('фбр', 1, true)
-            or org:find('оборон', 1, true) or org:find('здравоохран', 1, true)
-            or org:find('внутренн', 1, true) or org:find('связи', 1, true)
-            or org:find('коммуникац', 1, true) then
-        return 1, 'Правительство'
-    end
-    if (org:find('los', 1, true) or org:find('лос', 1, true) or org:find('сантос', 1, true))
-            and not org:find('ventur', 1, true) and not org:find('вентур', 1, true) then
-        return 2, 'Los Santos'
-    end
-    if org:find('ventur', 1, true) or org:find('вентур', 1, true) or org:find(' las', 1, true) then
-        return 3, 'Las Venturas'
-    end
-    if org:find('fierro', 1, true) or org:find('фиерро', 1, true) or org:find('san%-f', 1, true)
-            or org:find('сан%-ф', 1, true) then
-        return 4, 'San Fierro'
-    end
-    if org:find('воен', 1, true) or org:find('флот', 1, true) or org:find('ввс', 1, true)
-            or org:find('сухопут', 1, true) or org:find('полици', 1, true) then
-        return 5, 'Силовые структуры'
-    end
-    if org:find('клиник', 1, true) or org:find('nova mac', 1, true) or org:find('мгмц', 1, true)
-            or org:find('кпх', 1, true) then
-        return 6, 'Медицина'
-    end
-    if org:find('радио', 1, true) or org:find('телевиз', 1, true) or org:find('сми', 1, true) then
-        return 7, 'СМИ'
-    end
-    if org:find('mafia', 1, true) or org:find('мафия', 1, true) or org:find('grove', 1, true)
-            or org:find('ballas', 1, true) or org:find('aztecas', 1, true) or org:find('rifa', 1, true)
-            or org:find('yakuza', 1, true) or org:find('cosa', 1, true) or org:find('nostra', 1, true) then
-        return 8, 'Криминал'
-    end
-    local orgName = trim(entry.org_name or '')
-    if orgName == '' then orgName = 'Прочее' end
-    return 90, orgName
-end
-
--- Checker (admin HUD/catalog).
-function checkerBuildLeaderGroups(list, onlyOnline)
-    local groups, order = {}, {}
-    for _, e in ipairs(list or {}) do
-        if not onlyOnline or checkerPlayerConnectedSafe(e.id) then
-            local sortKey, title = checkerLeaderGroupKey(e)
-            local gk = tostring(sortKey) .. '|' .. title
-            if not groups[gk] then
-                groups[gk] = { title = title, sortKey = sortKey, entries = {} }
-                order[#order + 1] = gk
-            end
-            groups[gk].entries[#groups[gk].entries + 1] = e
+        if checkerLeaderStatusOnline(role) ~= nil then
+            role = ''
+        else
+            role = role:gsub('^%[%d+%]%s*', '')
+            role = role:gsub('^LV%s*[%•%-%·]%s*', ''):gsub('^LS%s*|%s*', ''):gsub('^SF%s*|%s*', '')
+            role = role:gsub('^LV%s*[%-–—]%s*', '')
         end
     end
-    table.sort(order, function(a, b)
-        local ga, gb = groups[a], groups[b]
-        if ga.sortKey ~= gb.sortKey then return ga.sortKey < gb.sortKey end
-        return ga.title < gb.title
-    end)
-    for _, gk in ipairs(order) do
-        table.sort(groups[gk].entries, function(a, b) return (a.nick or '') < (b.nick or '') end)
+    if role ~= '' then return role end
+    local org = trim(entry.org_name or '')
+    if org ~= '' and checkerLeaderStatusOnline(org) == nil then
+        return org
     end
-    return order, groups
+    return ''
+end
+
+-- Checker (admin HUD/catalog).
+function checkerLeaderSettingsStats(entries)
+    local total, visible, online = 0, 0, 0
+    for _, e in ipairs(entries or {}) do
+        total = total + 1
+        if not checkerLeaderIsHidden(e) then visible = visible + 1 end
+        if checkerPlayerConnectedSafe(e.id) then online = online + 1 end
+    end
+    return total, visible, online
+end
+
+local function checkerLeaderFilterMatch(entry, flt)
+    flt = checkerLeaderTextToMatch(flt)
+    if flt == '' then return true end
+    local nick = checkerLeaderTextToMatch(entry and entry.nick)
+    local org = checkerLeaderTextToMatch(entry and entry.org_name)
+    local role = checkerLeaderTextToMatch(entry and entry.role)
+    local hay = nick .. ' ' .. org .. ' ' .. role
+    return hay:find(flt, 1, true) ~= nil
 end
 
 -- Checker (admin HUD/catalog).
 function checkerLeaderSubline(entry)
     local org = trim(entry.org_name or '')
-    local role = trim(entry.role or '')
-    if org ~= '' and role ~= '' then return org .. '  ·  ' .. role end
+    local role = checkerLeaderDisplayRole(entry)
+    if org ~= '' and role ~= '' and org ~= role then return org .. '  \xB7  ' .. role end
     if org ~= '' then return org end
     if role ~= '' then return role end
     return ''
+end
+
+-- Ключ фракции лидера для группировки в настройках.
+function checkerLeaderFactionKey(entry)
+    local org = checkerResolveLeaderOrgId(entry)
+    if org == ORG_GOV then return 'gov' end
+    if org == ORG_MVD then return 'mvd' end
+    if org == ORG_MO then return 'mo' end
+    if org == ORG_MZ then return 'mz' end
+    if org == ORG_SMI then return 'smi' end
+    if org >= ORG_BAND and org <= ORG_BAND_MAX then return 'band' end
+    if org >= ORG_MAFIA and org <= ORG_MAFIA_MAX then return 'mafia' end
+    return 'other'
+end
+
+-- Checker (admin HUD/catalog).
+function checkerLeaderFactionMeta(factionKey)
+    return CHECKER_LEADER_FACTION_META[factionKey] or CHECKER_LEADER_FACTION_META.other
+end
+
+-- Clist-цвет организации (offline / заголовки секций).
+function checkerLeaderOrgClistColor(orgId)
+    orgId = math.floor(tonumber(orgId) or 0)
+    return CHECKER_ORG_CLIST_COLOR[orgId] or CHECKER_ORG_CLIST_COLOR[0]
+end
+
+local function checkerDimNickColor(c, visible)
+    if not c or c.x == nil then
+        c = col_muted2
+    end
+    if not c or c.x == nil then
+        return imgui.ImVec4(0.55, 0.55, 0.60, 1.0)
+    end
+    if visible == false then
+        return imgui.ImVec4(c.x * 0.55, c.y * 0.55, c.z * 0.55, 0.72)
+    end
+    return c
+end
+
+-- Checker (admin HUD/catalog).
+function checkerLeaderFactionClistImColor(factionKey, visible)
+    local meta = checkerLeaderFactionMeta(factionKey)
+    if meta and meta.neutralHeader then
+        return checkerDimNickColor(col_muted2, visible)
+    end
+    local samp = checkerLeaderOrgClistColor(meta and meta.clistOrg or 0)
+    local c = checkerSampColorToImVec4(samp) or col_muted2
+    return checkerDimNickColor(c, visible)
+end
+
+-- Checker (admin HUD/catalog).
+function checkerLeaderNickColor(entry, visible)
+    local id = entry and (entry.id or checkerLookupOnlineId(entry.nick))
+    if id and checkerPlayerConnectedSafe(id) then
+        local live = checkerSafePlayerColor(id)
+        if live then return checkerDimNickColor(live, visible) end
+    end
+    local org = checkerResolveLeaderOrgId(entry)
+    local c = checkerSampColorToImVec4(checkerLeaderOrgClistColor(org)) or col_accent
+    return checkerDimNickColor(c, visible)
+end
+
+-- Checker (admin HUD/catalog).
+function checkerLeaderFactionColor(entry, visible)
+    return checkerLeaderNickColor(entry, visible)
+end
+
+local CHECKER_LEADER_SECTION_ORDER = { 'gov', 'mo', 'mz', 'illegal', 'mvd', 'smi', 'other' }
+
+-- Checker (admin HUD/catalog).
+function checkerBuildLeaderFactionGroups(list)
+    local groups, seen = {}, {}
+    for _, e in ipairs(list or {}) do
+        local fk = checkerLeaderFactionKey(e)
+        if not groups[fk] then groups[fk] = {} end
+        groups[fk][#groups[fk] + 1] = e
+        seen[fk] = true
+    end
+    for fk, entries in pairs(groups) do
+        table.sort(entries, function(a, b) return (a.nick or '') < (b.nick or '') end)
+    end
+    local order = {}
+    for _, key in ipairs(CHECKER_LEADER_SECTION_ORDER) do
+        if key == 'illegal' then
+            if (seen.band and groups.band and #groups.band > 0)
+                    or (seen.mafia and groups.mafia and #groups.mafia > 0) then
+                order[#order + 1] = 'illegal'
+            end
+        elseif seen[key] and groups[key] and #groups[key] > 0 then
+            order[#order + 1] = key
+        end
+    end
+    return order, groups
 end
 
 -- Catalog Has Any
 local function catalogHasAny()
     ensureCheckerCatalog()
     return #checkerCatalog.admins + #checkerCatalog.leaders + #checkerCatalog.friends > 0
+end
+
+-- Checker (admin HUD/catalog).
+function checkerTopAdminList()
+    local list, seen = {}, {}
+    for _, nick in ipairs(CHECKER_TOP_ADMIN_DEFAULTS) do
+        nick = trim(nick or '')
+        local key = nickKey(nick)
+        if nick ~= '' and key ~= '' and not seen[key] then
+            seen[key] = true
+            list[#list + 1] = nick
+        end
+    end
+    ensureCheckerSettings()
+    local cfg = settings.checker_top_admins
+    if type(cfg) == 'table' then
+        for _, raw in ipairs(cfg) do
+            local nick = type(raw) == 'table' and trim(raw.nick or '') or trim(tostring(raw or ''))
+            local key = nickKey(nick)
+            if nick ~= '' and key ~= '' and not seen[key] then
+                seen[key] = true
+                list[#list + 1] = nick
+            end
+        end
+    end
+    return list
+end
+
+-- Checker (admin HUD/catalog).
+function checkerIsTopAdmin(nick)
+    local key = nickKey(nick)
+    if key == '' then return false end
+    for _, n in ipairs(checkerTopAdminList()) do
+        if nickKey(n) == key then return true end
+    end
+    return false
+end
+
+-- Checker (admin HUD/catalog).
+function checkerAdminEntrySortKey(e)
+    if e and checkerIsTopAdmin(e.nick) then return 3000 end
+    return checkerAdminSortKey(e and e.level)
 end
 
 -- Checker (admin HUD/catalog).
@@ -1030,7 +1373,8 @@ function checkerParseAdminLevel(lvlStr)
 end
 
 -- Checker (admin HUD/catalog).
-function checkerFormatAdminLevelDisplay(level)
+function checkerFormatAdminLevelDisplay(level, nick)
+    if nick and checkerIsTopAdmin(nick) then return '' end
     level = math.floor(tonumber(level) or 0)
     if checkerIsChiefLevel(level) then
         return CHECKER_CHIEF_TAG[level] or ''
@@ -1046,27 +1390,49 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerSplitAdminLists(list)
-    local regular, special = {}, {}
+    local executive, regular, special = {}, {}, {}
     for _, e in ipairs(list or {}) do
+        if type(e) ~= 'table' then goto continue end
         if checkerIsSpecialLevel(e.level) then
             special[#special + 1] = e
+        elseif checkerIsChiefLevel(e.level) or checkerIsTopAdmin(e.nick) then
+            executive[#executive + 1] = e
         else
             regular[#regular + 1] = e
         end
+        ::continue::
     end
+    table.sort(executive, function(a, b)
+        if type(a) ~= 'table' then return false end
+        if type(b) ~= 'table' then return true end
+        local aChief = checkerIsChiefLevel(a.level)
+        local bChief = checkerIsChiefLevel(b.level)
+        if aChief and not bChief then return true end
+        if bChief and not aChief then return false end
+        if aChief and bChief then
+            local ka = checkerAdminSortKey(a.level)
+            local kb = checkerAdminSortKey(b.level)
+            if ka ~= kb then return ka > kb end
+        end
+        return (a.nick or '') < (b.nick or '')
+    end)
     table.sort(regular, function(a, b)
+        if type(a) ~= 'table' then return false end
+        if type(b) ~= 'table' then return true end
         local ka = checkerAdminSortKey(a.level)
         local kb = checkerAdminSortKey(b.level)
         if ka ~= kb then return ka > kb end
         return (a.nick or '') < (b.nick or '')
     end)
     table.sort(special, function(a, b)
+        if type(a) ~= 'table' then return false end
+        if type(b) ~= 'table' then return true end
         local ka = checkerSpecialLevelNum(a.level)
         local kb = checkerSpecialLevelNum(b.level)
         if ka ~= kb then return ka > kb end
         return (a.nick or '') < (b.nick or '')
     end)
-    return regular, special
+    return executive, regular, special
 end
 
 -- Нормализация и парсинг admin-строк — lib/report_desk_checker_parser.lua (Parser).
@@ -1104,9 +1470,42 @@ end
 function checkerLeadersSplitCols(line)
     local cols = {}
     for col in (line .. '\t'):gmatch('([^\t]*)\t') do
-        cols[#cols + 1] = trim(col)
+        cols[#cols + 1] = trim(stripTags(col))
     end
     return cols
+end
+
+-- true/false/nil — распознать «Онлайн»/«Оффлайн» в колонке статуса (CP1251 + latin).
+function checkerLeaderStatusOnline(status)
+    local s = checkerLeaderTextToMatch(status or '')
+    if s == '' then return nil end
+    if s:find('online', 1, true) or s:find('\xEE\xED\xEB\xE0\xE9\xED', 1, true) then
+        return true
+    end
+    if s:find('offline', 1, true) or s:find('\xEE\xF4\xF4\xE0\xE9\xED', 1, true)
+            or s:find('\xEE\xF4\xE8\xE0\xE9\xED', 1, true) then
+        return false
+    end
+    return nil
+end
+
+local function checkerLeaderNormalizeCols(cols)
+    local name = trim(cols[1] or '')
+    local org = trim(cols[2] or '')
+    local role = trim(cols[3] or '')
+    local status = trim(cols[4] or '')
+    if status == '' and role ~= '' and checkerLeaderStatusOnline(role) ~= nil then
+        status = role
+        role = ''
+    end
+    if status == '' and cols[5] and trim(cols[5]) ~= '' then
+        status = trim(cols[5])
+    end
+    if role ~= '' and checkerLeaderStatusOnline(role) ~= nil then
+        if status == '' then status = role end
+        role = ''
+    end
+    return name, org, role, status
 end
 
 -- Checker (admin HUD/catalog).
@@ -1135,12 +1534,15 @@ function checkerParseLeadersDialog(text, style)
     for i = startRow, #lines do
         local cols = checkerLeadersSplitCols(lines[i])
         if #cols >= 2 and not checkerIsLeadersHeaderRow(cols) then
-            rows[#rows + 1] = {
-                name = cols[1] or '',
-                org = cols[2] or '',
-                role = cols[3] or '',
-                status = cols[4] or '',
-            }
+            local name, org, role, status = checkerLeaderNormalizeCols(cols)
+            if name ~= '' then
+                rows[#rows + 1] = {
+                    name = name,
+                    org = org,
+                    role = role,
+                    status = status,
+                }
+            end
         end
     end
     return headers, rows
@@ -1203,6 +1605,8 @@ end
 -- Checker (admin HUD/catalog).
 function checkerSortCatalogAdmins(list)
     table.sort(list, function(a, b)
+        if type(a) ~= 'table' then return false end
+        if type(b) ~= 'table' then return true end
         local ka = checkerAdminSortKey(a.level)
         local kb = checkerAdminSortKey(b.level)
         if ka ~= kb then return ka > kb end
@@ -1333,6 +1737,69 @@ function checkerApplyAdminsDialogSync(list)
 end
 
 -- Checker (admin HUD/catalog).
+function checkerApplyLeadersOnlineSnapshot(rows)
+    ensureCheckerCatalog()
+    checkerEnsureNickIndex(true)
+    local list = {}
+    for _, r in ipairs(rows or {}) do
+        local nick = trim(stripTags(r.name or ''))
+        if nick == '' then goto continue end
+        if checkerLeaderStatusOnline(r.status) ~= true then goto continue end
+        local cat = Catalog.getLeader(nick)
+        if cat and checkerLeaderIsHidden(cat) then goto continue end
+        local id = checkerLookupOnlineId(nick)
+        if not id then goto continue end
+        local orgName = trim(stripTags(r.org or ''))
+        local role = trim(stripTags(r.role or ''))
+        if orgName == '' and cat then orgName = trim(cat.org_name or '') end
+        if role == '' and cat then role = trim(cat.role or '') end
+        if checkerLeaderStatusOnline(role) ~= nil then role = '' end
+        local entry = {
+            id = id,
+            nick = checkerSafeNick(id, nick),
+            org = checkerResolveLeaderOrgId({ org_name = orgName, role = role, org = cat and cat.org }),
+            org_name = orgName,
+            role = role,
+        }
+        list[#list + 1] = entry
+        ::continue::
+    end
+    table.sort(list, function(a, b) return (a.nick or '') < (b.nick or '') end)
+    checkerState.leadersOnlineSnapshot = {
+        list = list,
+        at = os.clock(),
+    }
+end
+
+local function checkerLeadersFromSnapshot()
+    local snap = checkerState.leadersOnlineSnapshot
+    if type(snap) ~= 'table' or type(snap.list) ~= 'table' then return nil end
+    local at = tonumber(snap.at) or 0
+    if at <= 0 or os.clock() - at > CHECKER_LEADERS_SNAPSHOT_MAX_AGE then return nil end
+    local out = {}
+    for _, e in ipairs(snap.list) do
+        if e and e.nick then
+            local id = tonumber(e.id) or checkerLookupOnlineId(e.nick)
+            if id and checkerPlayerConnectedSafe(id) then
+                local cat = Catalog.getLeader(e.nick)
+                if cat and checkerLeaderIsHidden(cat) then goto continue end
+                local prev = OnlineIndex.getById('leader', id)
+                out[#out + 1] = {
+                    id = id,
+                    nick = checkerSafeNick(id, e.nick),
+                    org = tonumber(e.org) or 0,
+                    org_name = e.org_name or '',
+                    role = e.role or '',
+                    afk = prev and prev.afk or checkerPlayerAfk(id),
+                }
+            end
+        end
+        ::continue::
+    end
+    return out
+end
+
+-- Checker (admin HUD/catalog).
 function checkerApplyLeadersSync(rows)
     if not rows or #rows == 0 then return false end
     ensureCheckerCatalog()
@@ -1351,10 +1818,11 @@ function checkerApplyLeadersSync(rows)
             local role = trim(r.role or '')
             local entry = {
                 nick = nick,
-                org = prev and tonumber(prev.org) or 0,
+                org = 0,
                 org_name = orgName ~= '' and orgName or trim(prev and prev.org_name or ''),
                 role = role ~= '' and role or trim(prev and prev.role or ''),
             }
+            entry.org = checkerResolveLeaderOrgId(entry)
             if checkerIsLeaderNickHidden(nick) or (prev and prev.hidden == true) then
                 entry.hidden = true
             end
@@ -1363,9 +1831,17 @@ function checkerApplyLeadersSync(rows)
     end
     table.sort(list, function(a, b) return (a.nick or '') < (b.nick or '') end)
     checkerCatalog.leaders = list
+    checkerState.leaderShowUi = {}
+    checkerState.leaderGroupShowUi = {}
     checkerMarkCatalogDirty()
+    checkerApplyLeadersOnlineSnapshot(rows)
     checkerScheduleRebuild()
-    print(string.format('[Report Desk] checker: dialog sync %d leaders', #list))
+    SafeCall('rebuildOnlineAfterLeaders', checkerRebuildOnline, true)
+    local onlineN = type(checkerState.leadersOnlineSnapshot) == 'table'
+        and type(checkerState.leadersOnlineSnapshot.list) == 'table'
+        and #checkerState.leadersOnlineSnapshot.list or 0
+    print(string.format('[Report Desk] checker: dialog sync %d leaders (%d online)',
+        #list, onlineN))
     return true
 end
 
@@ -1509,6 +1985,7 @@ function checkerClearSyncAdms()
     checkerState.admsAwaitDialog = false
     checkerState.admsAwaitUntil = 0
     checkerState.adminsFlowUntil = 0
+    checkerState.admsSyncOutbound = false
     checkerPersistSyncSession()
 end
 
@@ -1517,6 +1994,7 @@ function checkerClearSyncLeaders()
     local s = ensureSyncSession()
     s.leadersUntil = 0
     checkerState.leadersFlowUntil = 0
+    checkerState.leadersSyncOutbound = false
     checkerPersistSyncSession()
 end
 
@@ -1530,7 +2008,12 @@ end
 function checkerScheduleSpawnAdmsRetry()
     local s = ensureSyncSession()
     if #checkerCatalog.admins > 0 then
-        checkerState.spawnCatalogSyncDone = true
+        if checkerState.spawnLeadersHandled then
+            checkerState.spawnCatalogSyncDone = true
+        else
+            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+        end
         return
     end
     if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
@@ -1593,8 +2076,7 @@ function checkerDismissStaleSyncDialog()
         checkerClearPendingSyncDialogs()
         return
     end
-    local now = os.clock()
-    if not checkerSyncAdmsActive(now) and not checkerSyncLeadersActive(now) then
+    if not checkerState.admsSyncOutbound and not checkerState.leadersSyncOutbound then
         return
     end
     checkerDeferCloseVisibleDialog(nil, nil)
@@ -1638,45 +2120,47 @@ end
 -- Checker (admin HUD/catalog).
 function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
     local now = os.clock()
-    local adminsSyncActive = checkerSyncAdmsActive(now)
-    local leadersSyncActive = checkerSyncLeadersActive(now)
+    local isAdminsDlg = checkerIsAdminsDialog(title) or checkerDialogLooksLikeAdmins(text, style)
+    local isLeadersDlg = checkerIsLeadersDialog(title) or checkerDialogLooksLikeLeaders(text, style)
 
-    if adminsSyncActive then
-        local isAdmins = checkerIsAdminsDialog(title) or checkerDialogLooksLikeAdmins(text, style)
-        if isAdmins then
-            local list = checkerParseAdminsDialog(text, style)
-            if #list > 0 then
-                SafeCall('checkerApplyAdminsDialogSync', checkerApplyAdminsDialogSync, list)
-                if checkerState.spawnCatalogSyncRunning then
-                    checkerState.spawnAdmsHandled = true
-                    ensureSyncSession().spawnAdmsRetries = 0
-                    checkerPersistSyncSession()
-                end
-            else
-                checkerLogAdmsParseFailure(title, style, text)
-                if checkerState.spawnCatalogSyncRunning then
-                    checkerState.spawnAdmsHandled = false
-                    checkerScheduleSpawnAdmsRetry()
-                end
+    if isAdminsDlg and checkerState.admsSyncOutbound then
+        local list = checkerParseAdminsDialog(text, style)
+        if #list > 0 then
+            SafeCall('checkerApplyAdminsDialogSync', checkerApplyAdminsDialogSync, list)
+            if checkerState.spawnCatalogSyncRunning then
+                checkerState.spawnAdmsHandled = true
+                ensureSyncSession().spawnAdmsRetries = 0
+                checkerPersistSyncSession()
             end
-            checkerClearSyncAdms()
-            return true
+        else
+            checkerLogAdmsParseFailure(title, style, text)
+            if checkerState.spawnCatalogSyncRunning then
+                checkerState.spawnAdmsHandled = false
+                checkerScheduleSpawnAdmsRetry()
+            end
         end
+        checkerClearSyncAdms()
+        return true
     end
 
-    if leadersSyncActive
-            and (checkerIsLeadersDialog(title) or checkerDialogLooksLikeLeaders(text, style)) then
+    if isLeadersDlg then
+        local applied = false
         if checkerIsTableDialogStyle(style) then
             local _, rows = checkerParseLeadersDialog(text, style)
             if #rows > 0 then
-                SafeCall('checkerApplyLeadersSync', checkerApplyLeadersSync, rows)
+                applied = SafeCall('checkerApplyLeadersSync', checkerApplyLeadersSync, rows) == true
+            elseif checkerState.leadersSyncOutbound then
+                checkerLog('sync /leaders dialog parse failed (0 rows)')
             end
         end
-        checkerClearSyncLeaders()
-        if checkerState.spawnCatalogSyncRunning then
-            checkerState.spawnLeadersHandled = true
+        if checkerState.leadersSyncOutbound then
+            if checkerState.spawnCatalogSyncRunning and applied then
+                checkerState.spawnLeadersHandled = true
+            end
+            checkerClearSyncLeaders()
+            return true
         end
-        return true
+        return false
     end
 
     return false
@@ -1753,8 +2237,11 @@ function checkerRequestAdmsSync(forSpawn)
     checkerState.adminsFlowUntil = now + flowT
     checkerState.admsAwaitDialog = true
     checkerState.admsAwaitUntil = now + flowT
+    checkerState.admsSyncOutbound = true
     checkerMarkSyncAdms(now + flowT)
-    return checkerTrySendSyncChat('/adms', forSpawn)
+    local ok = checkerTrySendSyncChat('/adms', forSpawn)
+    if not ok then checkerState.admsSyncOutbound = false end
+    return ok
 end
 
 -- Checker (admin HUD/catalog).
@@ -1767,8 +2254,15 @@ function checkerRequestLeadersSync(forSpawn)
     end
     local flowT = forSpawn and CHECKER_SPAWN_DIALOG_WAIT_SEC or CHECKER_LEADERS_FLOW_T
     local now = os.clock()
+    checkerState.leadersSyncOutbound = true
     checkerMarkSyncLeaders(now + flowT)
-    return checkerTrySendSyncChat('/leaders', forSpawn)
+    local ok = checkerTrySendSyncChat('/leaders', forSpawn)
+    if ok then
+        checkerLog(forSpawn and 'spawn sync: sent /leaders' or 'sync chat: /leaders')
+    else
+        checkerState.leadersSyncOutbound = false
+    end
+    return ok
 end
 
 -- Checker (admin HUD/catalog).
@@ -1822,16 +2316,23 @@ function checkerStartSpawnCatalogSyncThread()
             end
         end
 
-        checkerClearSyncFlowFlags()
         checkerState.spawnCatalogSyncRunning = false
-        if checkerState.spawnAdmsHandled then
+        checkerClearSyncFlowFlags()
+        local admsOk = checkerState.spawnAdmsHandled or #checkerCatalog.admins > 0
+        local leadersOk = checkerState.spawnLeadersHandled
+        if admsOk and leadersOk then
             checkerState.spawnCatalogSyncDone = true
             ensureSyncSession().spawnAdmsRetries = 0
             checkerPersistSyncSession()
-        else
+            checkerLog('spawn catalog sync: /adms + /leaders ok')
+        elseif not admsOk then
             checkerScheduleSpawnAdmsRetry()
+            checkerLog('spawn catalog sync: /adms pending retry')
+        else
+            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            checkerLog('spawn catalog sync: /leaders pending retry')
         end
-        checkerLog('spawn catalog sync: /adms + /leaders')
     end)
 end
 
@@ -1839,10 +2340,6 @@ end
 function checkerScheduleSpawnCatalogSync()
     if settings.checker_auto_sync == false then return end
     if checkerState.spawnCatalogSyncDone then return end
-    if #checkerCatalog.admins > 0 and #checkerCatalog.leaders > 0 then
-        checkerState.spawnCatalogSyncDone = true
-        return
-    end
     if checkerState.spawnCatalogSyncAt then return end
     checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_DELAY
 end
@@ -1855,11 +2352,18 @@ function checkerTrySpawnCatalogSync()
     local leadersDue = tonumber(checkerState.spawnLeadersDueAt)
     if leadersDue and os.clock() >= leadersDue then
         checkerState.spawnLeadersDueAt = nil
-        checkerClearSyncFlowFlags()
-        if checkerRequestLeadersSync(true) or #checkerCatalog.admins > 0 then
+        if checkerState.spawnLeadersHandled then
             checkerState.spawnCatalogSyncDone = true
-            ensureSyncSession().spawnAdmsRetries = 0
-            checkerPersistSyncSession()
+            return
+        end
+        if not checkerSampReady() or checkerIsSpawnCatalogSyncBlocked() then
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            return
+        end
+        if checkerRequestLeadersSync(true) then
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_DIALOG_WAIT_SEC
+        else
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
         end
         return
     end
@@ -1935,8 +2439,16 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerOnSendCommand(command)
-    -- Перехват /adms /leaders только когда чекер сам запросил sync (checkerRequest*Sync).
-    -- Ручной ввод игроком не трогаем — серверное окно должно открываться.
+    local cmd = trim(command or ''):match('^/?(%S+)')
+    if not cmd then return end
+    local lc = cmd:lower()
+    if lc == 'leaders' then
+        if checkerState.leadersSyncOutbound then return end
+        checkerClearSyncLeaders()
+    elseif lc == 'adms' or lc == 'admins' then
+        if checkerState.admsSyncOutbound then return end
+        checkerClearSyncAdms()
+    end
 end
 
 -- Dev RPC probe: активно ли окно ожидания /adms (lib/report_desk_hooks.lua).
@@ -2015,6 +2527,8 @@ function checkerApplyCatalogSnapshot(c)
                     role = trim(raw.role or ''),
                     hidden = checkerIsLeaderNickHidden(nick) and true or nil,
                 }
+                local e = list[#list]
+                e.org = checkerResolveLeaderOrgId(e)
             end
         end
         if #list > 0 then
@@ -2035,6 +2549,8 @@ function checkerApplyCatalogSnapshot(c)
         end
     end
     if changed then
+        checkerState.leaderShowUi = {}
+        checkerState.leaderGroupShowUi = {}
         Catalog.rebuildIndex()
         bumpCatalogRev()
     end
@@ -2078,8 +2594,12 @@ end
 
 -- Sort Admins Online
 local function sortAdminsOnline(list)
-    local regular, special = checkerSplitAdminLists(list)
+    local executive, regular, special = checkerSplitAdminLists(list)
     local n = 0
+    for _, e in ipairs(executive) do
+        n = n + 1
+        list[n] = e
+    end
     for _, e in ipairs(regular) do
         n = n + 1
         list[n] = e
@@ -2274,25 +2794,30 @@ function checkerRebuildOnline(force)
             end
         end
     end
-    for _, e in ipairs(checkerCatalog.leaders) do
-        if e and e.nick and not checkerLeaderIsHidden(e) then
-            local id = checkerLookupOnlineId(e.nick)
-            if id then
-                local prev = OnlineIndex.getById('leader', id)
-                local nick = checkerSafeNick(id, e.nick)
-                leaders[#leaders + 1] = {
-                    id = id,
-                    nick = nick,
-                    org = tonumber(e.org) or 0,
-                    org_name = e.org_name or '',
-                    role = e.role or '',
-                    afk = prev and prev.afk or checkerPlayerAfk(id),
-                }
+    local snapLeaders = checkerLeadersFromSnapshot()
+    if snapLeaders then
+        leaders = snapLeaders
+    else
+        for _, e in ipairs(checkerCatalog.leaders) do
+            if e and e.nick and not checkerLeaderIsHidden(e) then
+                local id = checkerLookupOnlineId(e.nick)
+                if id then
+                    local prev = OnlineIndex.getById('leader', id)
+                    local nick = checkerSafeNick(id, e.nick)
+                    leaders[#leaders + 1] = {
+                        id = id,
+                        nick = nick,
+                        org = tonumber(e.org) or 0,
+                        org_name = e.org_name or '',
+                        role = e.role or '',
+                        afk = prev and prev.afk or checkerPlayerAfk(id),
+                    }
+                end
             end
         end
     end
     for _, e in ipairs(checkerCatalog.friends) do
-        if e and e.nick then
+        if e and e.nick and not Catalog.getAdmin(e.nick) then
             local id = checkerLookupOnlineId(e.nick)
             if id then
                 local prev = OnlineIndex.getById('friend', id)
@@ -2414,7 +2939,9 @@ function checkerSayAdminJoin(id, nick, level)
     level = math.floor(tonumber(level) or 0)
     local cnick = checkerFormatNickColored(nick, level)
     local msg
-    if checkerIsChiefLevel(level) then
+    if checkerIsTopAdmin(nick) then
+        msg = string.format('\xCF\xEE\xE4\xEA\xEB\xFE\xF7\xE8\xEB\xF1\xFF \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0, %s[%i].', cnick, id)
+    elseif checkerIsChiefLevel(level) then
         msg = string.format('\xCF\xEE\xE4\xEA\xEB\xFE\xF7\xE8\xEB\xF1\xFF %s, %s[%i].',
             checkerFormatAdminLevelDisplay(level), cnick, id)
     elseif checkerIsSpecialLevel(level) then
@@ -2464,7 +2991,7 @@ function checkerOnPlayerJoin(playerId, nick)
             else
                 local leader = Catalog.getLeader(nick)
                 if leader and checkerNotifyJoinEnabled('leader') then
-                    checkerSayLeaderJoin(playerId, nick, leader.org)
+                    checkerSayLeaderJoin(playerId, nick, checkerInferLeaderOrgId(leader))
                     notified = true
                 elseif Catalog.getFriend(nick) and checkerNotifyJoinEnabled('friend') then
                     if type(say) == 'function' then
@@ -2642,6 +3169,10 @@ function Sync.update()
                 end
             end
         end
+        if #checkerCatalog.leaders == 0 and not checkerSyncLeadersActive(now)
+                and not checkerIsSyncBlocked() and not checkerState.spawnCatalogSyncRunning then
+            checkerRequestLeadersSync(false)
+        end
     end
 end
 
@@ -2702,6 +3233,44 @@ function checkerTick()
     end
 end
 
+-- Пересчитать org id у лидеров из org_name (каталог мог хранить неверный org).
+local function checkerNormalizeLeaderCatalogOrg()
+    local changed = false
+    for _, e in ipairs(checkerCatalog.leaders or {}) do
+        if e then
+            local inferred = checkerResolveLeaderOrgId(e)
+            if inferred > 0 and (tonumber(e.org) or 0) ~= inferred then
+                e.org = inferred
+                changed = true
+            end
+        end
+    end
+    if changed then checkerMarkCatalogDirty() end
+end
+
+-- Убрать битые записи лидеров (org id без org_name — типичный мусор после сбоя синка).
+local function checkerSanitizeLeaderCatalog()
+    local out, changed = {}, false
+    for _, e in ipairs(checkerCatalog.leaders or {}) do
+        local nick = trim(e and e.nick or '')
+        local orgName = trim(e and e.org_name or '')
+        local orgId = math.floor(tonumber(e and e.org) or 0)
+        if nick == '' then
+            changed = true
+        elseif orgName == '' and orgId > 0 and orgId <= ORG_MAFIA_MAX then
+            changed = true
+        else
+            out[#out + 1] = e
+        end
+    end
+    if changed then
+        checkerCatalog.leaders = out
+        checkerState.leaderShowUi = {}
+        checkerState.leaderGroupShowUi = {}
+        checkerMarkCatalogDirty()
+    end
+end
+
 -- Инициализация checker HUD и catalog при старте.
 -- === Init / HUD overlay ===
 function checkerInit()
@@ -2719,7 +3288,11 @@ function checkerInit()
             rawset(_G, '__desk_pendingCheckerCatalog', nil)
         end
         Catalog.rebuildIndex()
-        checkerState.spawnedAt = nil
+        checkerSanitizeLeaderCatalog()
+        checkerNormalizeLeaderCatalogOrg()
+        if not checkerSampReady() then
+            checkerState.spawnedAt = nil
+        end
         checkerState.firstRebuildAt = nil
         checkerState.lastAfkPoll = 0
         checkerState.lastRebuild = 0
@@ -2730,20 +3303,18 @@ function checkerInit()
         checkerState.leadersFlowUntil = 0
         checkerState.admsAwaitDialog = false
         checkerState.admsAwaitUntil = 0
+        checkerState.admsSyncOutbound = false
+        checkerState.leadersSyncOutbound = false
+        checkerState.leadersOnlineSnapshot = nil
         checkerState.spawnCatalogSyncRunning = false
         checkerState.wasSuspended = false
         checkerState.hudHealAttempts = 0
         checkerState.spawnLeadersDueAt = nil
         checkerState.lastSyncChatAt = 0
         rawset(_G, SYNC_SESSION_KEY, nil)
-        if checkerSampReady() and checkerIsSpawned()
-                and (#checkerCatalog.admins > 0 or #checkerCatalog.leaders > 0) then
-            checkerState.spawnedAt = os.clock()
-            checkerState.spawnCatalogSyncDone = true
-        else
-            checkerState.spawnedAt = nil
-            checkerState.spawnCatalogSyncDone = false
-        end
+        checkerState.spawnCatalogSyncDone = false
+        checkerState.spawnAdmsHandled = false
+        checkerState.spawnLeadersHandled = false
         checkerState.spawnCatalogSyncAt = nil
         checkerState.reportedOnline = false
         checkerState.onlineNickIndex = { byNick = {}, byExact = {} }
@@ -2763,6 +3334,9 @@ function checkerInit()
         checkerDismissStaleSyncDialog()
         if checkerSampReady() then
             checkerScheduleRebuild()
+            if settings.checker_auto_sync ~= false then
+                checkerScheduleSpawnCatalogSync()
+            end
         end
         print(string.format('[Report Desk] checker catalog: %d admins, %d leaders, %d friends',
             #checkerCatalog.admins, #checkerCatalog.leaders, #checkerCatalog.friends))
@@ -2824,9 +3398,6 @@ function installCheckerHudFrame()
             self.HideCursor = deskMimguiHideCursor(
                 type(checkerHudWantsInput) == 'function' and checkerHudWantsInput())
             self.LockPlayer = false
-            if type(updateMimguiGameInputPassthrough) == 'function' then
-                updateMimguiGameInputPassthrough()
-            end
         end
     )
     if frame then
@@ -2963,7 +3534,7 @@ function drawCheckerAdminRow(e, index, idSuffix, indent)
     local col = checkerAdminColor(lv)
     local prefix = indent > 0 and '  ' or ''
     local label = string.format('%s%i. %s [%i]', prefix, index, e.nick or '', e.id or -1)
-    local lvlText = checkerFormatAdminLevelDisplay(lv)
+    local lvlText = checkerFormatAdminLevelDisplay(lv, e.nick)
     if lvlText ~= '' then
         label = label .. '  ' .. lvlText
     end
@@ -2978,14 +3549,29 @@ function drawCheckerAdminsBlock()
         imgui.TextColored(col_muted2, uiText('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2'))
         return
     end
-    local regular, special = checkerSplitAdminLists(list)
+    local executive, regular, special = checkerSplitAdminLists(list)
     local shown = 0
-    for _, e in ipairs(regular) do
-        shown = shown + 1
-        drawCheckerAdminRow(e, shown, 'adm_', 0)
+    if #executive > 0 then
+        checkerSpTheme.drawSectionLabel(
+            '\xD0\xF3\xEA\xEE\xE2\xEE\xE4\xF1\xF2\xE2\xEE:',
+            col_muted2, uiText)
+        for _, e in ipairs(executive) do
+            shown = shown + 1
+            drawCheckerAdminRow(e, shown, 'adm_e_', 0)
+        end
+    end
+    if #regular > 0 then
+        if #executive > 0 then
+            imgui.Dummy(imgui.ImVec2(0, 4))
+        end
+        shown = 0
+        for _, e in ipairs(regular) do
+            shown = shown + 1
+            drawCheckerAdminRow(e, shown, 'adm_', 0)
+        end
     end
     if #special > 0 then
-        if #regular > 0 then
+        if #executive > 0 or #regular > 0 then
             imgui.Dummy(imgui.ImVec2(0, 4))
         end
         checkerSpTheme.drawSectionLabel(
@@ -2994,7 +3580,7 @@ function drawCheckerAdminsBlock()
         local sIndex = 0
         for _, e in ipairs(special) do
             sIndex = sIndex + 1
-            drawCheckerAdminRow(e, sIndex, 'adm_s_', 2)
+            drawCheckerAdminRow(e, sIndex, 'adm_s_', 0)
         end
     end
 end
@@ -3022,38 +3608,40 @@ function drawCheckerLeadersBlock()
         imgui.TextColored(col_muted2, uiText('\xCB\xE8\xE4\xE5\xF0\xEE\xE2 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2'))
         return
     end
-    local order, groups = checkerBuildLeaderGroups(list, false)
-    if #order == 0 then
-        imgui.TextColored(col_muted2, uiText('\xCB\xE8\xE4\xE5\xF0\xEE\xE2 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2'))
-        return
-    end
     local shown = 0
-    for _, gk in ipairs(order) do
-        for _, e in ipairs(groups[gk].entries) do
-            shown = shown + 1
-            local col = checkerSafePlayerColor(e.id) or col_accent
-            local role = checkerLeaderDisplayRole(e)
-            local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
-            if role ~= '' then
-                label = label .. '  \xB7  ' .. role
-            end
-            drawCheckerHudRow(label, col)
+    for _, e in ipairs(list) do
+        shown = shown + 1
+        local col = checkerSafePlayerColor(e.id) or col_accent
+        local role = checkerLeaderDisplayRole(e)
+        local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
+        if role ~= '' then
+            label = label .. '  \xB7  ' .. role
         end
+        drawCheckerHudRow(label, col)
     end
 end
 
 -- Отрисовка checker UI.
 function drawCheckerFriendsBlock()
+    ensureCheckerCatalog()
     local list = select(3, checkerHudLists())
-    drawCheckerColorListBlock(list, '\xC4\xF0\xF3\xE7\xE5\xE9 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2', 'fr')
+    local filtered = {}
+    for _, e in ipairs(list) do
+        if e and e.nick and not Catalog.getAdmin(e.nick) then
+            filtered[#filtered + 1] = e
+        end
+    end
+    drawCheckerColorListBlock(filtered, '\xC4\xF0\xF3\xE7\xE5\xE9 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2', 'fr')
 end
 
 -- Отрисовка checker UI.
 function drawCheckerFriendsSettings()
     ensureCheckerCatalog()
     if not checkerUi.friendNick then return end
+    imgui.TextColored(col_muted2, uiText('\xCD\xE8\xEA \xE4\xF0\xF3\xE3\xE0 (\xED\xE5 \xE8\xE7 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE0 \xE0\xE4\xEC\xE8\xED\xEE\xE2):'))
+    imgui.Dummy(imgui.ImVec2(0, 4))
     if imgui.InputTextWithHint then
-        imgui.InputTextWithHint('##chk_fr_nick', uiText('\xCD\xE8\xEA \xE4\xF0\xF3\xE3\xE0'), checkerUi.friendNick, sizeof(checkerUi.friendNick))
+        imgui.InputTextWithHint('##chk_fr_nick', uiText('Nick_Name'), checkerUi.friendNick, sizeof(checkerUi.friendNick))
     else
         imgui.InputText('##chk_fr_nick', checkerUi.friendNick, sizeof(checkerUi.friendNick))
     end
@@ -3065,43 +3653,99 @@ function drawCheckerFriendsSettings()
         end
     end
     imgui.Spacing()
-    if #checkerCatalog.friends == 0 then
-        imgui.TextColored(col_muted2, uiText('\xD1\xEF\xE8\xF1\xEE\xEA \xE4\xF0\xF3\xE7\xE5\xE9 \xEF\xF3\xF1\xF2'))
-    else
-        for i, e in ipairs(checkerCatalog.friends) do
-            local nick = e.nick or ''
-            imgui.TextColored(col_accent, uiText(nick))
-            imgui.SameLine()
-            local removed = false
-            if imgui.SmallButton then
-                removed = imgui.SmallButton(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. i)
-            elseif imgui.Button then
-                removed = imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. i)
-            end
-            if removed then
-                checkerRemoveFriend(nick)
-            end
+    local visible = {}
+    for _, e in ipairs(checkerCatalog.friends) do
+        if e and e.nick and not Catalog.getAdmin(e.nick) then
+            visible[#visible + 1] = e
         end
+    end
+    if #visible == 0 then
+        imgui.TextColored(col_muted2, uiText('\xD1\xEF\xE8\xF1\xEE\xEA \xE4\xF0\xF3\xE7\xE5\xE9 \xEF\xF3\xF1\xF2'))
+        return
+    end
+    for i, e in ipairs(visible) do
+        local nick = e.nick or ''
+        local uid = nickKey(nick)
+        local id = checkerLookupOnlineId(nick)
+        local online = id and checkerPlayerConnectedSafe(id)
+        local nickCol = online and checkerSafePlayerColor(id) or col_muted2
+        imgui.PushID('chk_fr_' .. uid)
+        if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+        imgui.TextColored(nickCol, uiText(nick))
+        if online then
+            imgui.SameLine(0, 6)
+            imgui.TextColored(col_muted2, uiText('[' .. tostring(id) .. ']'))
+        end
+        imgui.SameLine(0, 12)
+        local removed = false
+        if imgui.SmallButton then
+            removed = imgui.SmallButton(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid)
+        elseif imgui.Button then
+            removed = imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid)
+        end
+        if removed then
+            checkerRemoveFriend(nick)
+        end
+        imgui.PopID()
     end
 end
 
 -- Отрисовка checker UI.
-function drawCheckerLeaderToggleRow(entry)
+local function drawCheckerLeaderSubsectionHeader(factionKey, count)
+    local meta = checkerLeaderFactionMeta(factionKey)
+    local col = meta.headerColor or col_muted2
+    if checkerSpTheme and checkerSpTheme.drawSectionLabel then
+        checkerSpTheme.drawSectionLabel(meta.title, col, uiText)
+    else
+        imgui.TextColored(col, uiText(meta.title))
+    end
+    imgui.SameLine(0, 6)
+    imgui.TextColored(col_muted2, uiText('(' .. tostring(count or 0) .. ')'))
+    imgui.Dummy(imgui.ImVec2(0, 2))
+end
+
+-- Отрисовка checker UI.
+local function drawCheckerLeaderFactionHeader(factionKey, count, firstSection)
+    local meta = checkerLeaderFactionMeta(factionKey)
+    local headerCol = checkerLeaderFactionClistImColor(factionKey, true)
+    if not firstSection then
+        imgui.Dummy(imgui.ImVec2(0, 8))
+    end
+    if checkerSpTheme and checkerSpTheme.drawSectionLabel then
+        checkerSpTheme.drawSectionLabel(meta.title, headerCol, uiText)
+    else
+        imgui.TextColored(headerCol, uiText(meta.title))
+    end
+    imgui.SameLine(0, 6)
+    imgui.TextColored(col_muted2, uiText('(' .. tostring(count or 0) .. ')'))
+    imgui.Dummy(imgui.ImVec2(0, 2))
+end
+
+-- Отрисовка checker UI.
+function drawCheckerLeaderSettingsRow(entry)
     local nick = entry.nick or ''
-    local role = checkerLeaderDisplayRole(entry)
     local ref = checkerLeaderShowRef(nick)
     if not ref then return end
     local uid = nickKey(nick)
+    local visible = ref[0] and true or false
+    local nickCol = checkerLeaderFactionColor(entry, visible)
+    local sub = checkerLeaderSubline(entry)
+    local id = entry.id or checkerLookupOnlineId(nick)
+    if id and checkerPlayerConnectedSafe(id) then
+        sub = (sub ~= '' and (sub .. '  \xB7  ') or '') .. '\xE2 \xF1\xE5\xF2\xE8'
+    end
+
     imgui.PushID('chk_ld_' .. uid)
+    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
     local changed = false
     if imgui.Checkbox('##vis', ref) then
         changed = true
     end
-    imgui.SameLine()
-    imgui.TextColored(ref[0] and col_label or col_muted2, uiText(nick))
-    if role ~= '' then
-        imgui.SameLine()
-        imgui.TextColored(col_muted2, uiText('  \xB7  ' .. role))
+    imgui.SameLine(0, 8)
+    imgui.TextColored(nickCol, uiText(nick))
+    if sub ~= '' then
+        imgui.SameLine(0, 6)
+        imgui.TextColored(col_muted2, uiText(sub))
     end
     imgui.PopID()
     if changed then
@@ -3117,53 +3761,38 @@ function drawCheckerLeadersSettings()
         imgui.TextColored(col_muted2, uiText('\xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xEB\xE8\xE4\xE5\xF0\xEE\xE2 \xEF\xF3\xF1\xF2 \x2014 \xED\xE0\xE6\xEC\xE8\xF2\xE5 \xAB\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE8\xF0\xEE\xE2\xE0\xF2\xFC\xBB \xE2 \xF7\xE5\xEA\xE5\xF0\xE5'))
         return
     end
-    imgui.TextColored(col_muted2, uiText('\xCE\xF2\xEA\xEB\xFE\xF7\xE8\xF2\xE5 \xEB\xE8\xE4\xE5\xF0\xE0, \xF7\xF2\xEE\xE1\xFB \xF3\xE1\xF0\xE0\xF2\xFC \xE5\xE3\xEE \xE8\xE7 HUD (\xF3\xE2\xE5\xE4\xEE\xEC\xEB\xE5\xED\xE8\xFF \xEE\xF1\xF2\xE0\xED\xF3\xF2\xF1\xFF).'))
-    if checkerUi.leaderFilter then
-        if imgui.InputTextWithHint then
-            imgui.InputTextWithHint('##chk_ld_flt', uiText('\xD4\xE8\xEB\xFC\xF2\xF0 \xEF\xEE \xED\xE8\xEA\xF3 \xE8\xEB\xE8 \xEE\xF0\xE3\xE0\xED\xE8\xE7\xE0\xF6\xE8\xE8'), checkerUi.leaderFilter, sizeof(checkerUi.leaderFilter))
-        else
-            imgui.InputText('##chk_ld_flt', checkerUi.leaderFilter, sizeof(checkerUi.leaderFilter))
-        end
-    end
-    local flt = checkerUi.leaderFilter and trim(readInputBuf(checkerUi.leaderFilter)):lower() or ''
-    local filtered = {}
-    for _, e in ipairs(leaders) do
-        local nick = e.nick or ''
-        local org = trim(e.org_name or '')
-        local role = checkerLeaderDisplayRole(e)
-        local hay = (nick .. ' ' .. org .. ' ' .. role):lower()
-        if flt == '' or hay:find(flt, 1, true) then
-            filtered[#filtered + 1] = e
-        end
-    end
-    local order, groups = checkerBuildLeaderGroups(filtered, false)
+
+    local order, groups = checkerBuildLeaderFactionGroups(leaders)
     if #order == 0 then
-        imgui.TextColored(col_muted2, uiText('\xCD\xE8\xF7\xE5\xE3\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE'))
-    else
-        for gi, gk in ipairs(order) do
-            local g = groups[gk]
-            imgui.TextColored(col_accent, uiText(g.title))
-            imgui.SameLine()
-            imgui.TextColored(col_muted2, uiText('(' .. #g.entries .. ')'))
-            imgui.Dummy(imgui.ImVec2(0, 2))
-            for _, e in ipairs(g.entries) do
-                drawCheckerLeaderToggleRow(e)
+        return
+    end
+    for gi, fk in ipairs(order) do
+        if fk == 'illegal' then
+            local bands = groups.band or {}
+            local mafias = groups.mafia or {}
+            if gi > 1 then
+                imgui.Dummy(imgui.ImVec2(0, 8))
             end
-            if gi < #order then
-                imgui.Dummy(imgui.ImVec2(0, 6))
-                local dl = imgui.GetWindowDrawList()
-                if dl then
-                    local p = imgui.GetCursorScreenPos()
-                    local w = imgui.GetContentRegionAvail().x
-                    if w > 20 then
-                        dl:AddLine(
-                            imgui.ImVec2(p.x, p.y),
-                            imgui.ImVec2(p.x + w, p.y),
-                            toU32(imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.25)),
-                            1.0)
-                    end
+            if #bands > 0 then
+                drawCheckerLeaderSubsectionHeader('band', #bands)
+                for _, e in ipairs(bands) do
+                    drawCheckerLeaderSettingsRow(e)
                 end
-                imgui.Dummy(imgui.ImVec2(0, 6))
+            end
+            if #bands > 0 and #mafias > 0 then
+                imgui.Dummy(imgui.ImVec2(0, 4))
+            end
+            if #mafias > 0 then
+                drawCheckerLeaderSubsectionHeader('mafia', #mafias)
+                for _, e in ipairs(mafias) do
+                    drawCheckerLeaderSettingsRow(e)
+                end
+            end
+        else
+            local entries = groups[fk]
+            drawCheckerLeaderFactionHeader(fk, #entries, gi == 1)
+            for _, e in ipairs(entries) do
+                drawCheckerLeaderSettingsRow(e)
             end
         end
     end
@@ -3346,10 +3975,10 @@ function drawCheckerTab()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##chk_sync')
-    drawSettingsCardHeader('\xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xE0\xE4\xEC\xE8\xED\xEE\xE2')
-    imgui.TextColored(col_muted2, uiText('\xCE\xED\xEB\xE0\xE9\xED \xE2 HUD \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xF2\xE0\xE1\xE0 (\xF1\xEA\xE0\xED \xE8\xE3\xF0\xEE\xEA\xEE\xE2). \xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xE0\xE4\xEC\xE8\xED\xEE\xE2 \xE7\xE0\xE3\xF0\xF3\xE6\xE0\xE5\xF2\xF1\xFF \xE0\xE2\xF2\xEE\xEC \xF7\xE5\xF0\xE5\xE7 /adms \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5. /admins \xE2 \xF0\xF3\xF7\xED\xF3\xFE \x201 \xF0\xE0\xE7 \x201 \xF3\xF0\xEE\xE2\xED\xFF \xE0\xE4\xEC\xE8\xED\xE0 \xE5\xF1\xEB\xE8 \xEF\xEE\xE2\xFB\xF1\xE8\xEB\xE8.'))
+    drawSettingsCardHeader('\xCA\xE0\xF2\xE0\xEB\xEE\xE3')
+    imgui.TextColored(col_muted2, uiText('\xCE\xED\xEB\xE0\xE9\xED \xE2 HUD \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xF2\xE0\xE1\xE0 (\xF1\xEA\xE0\xED \xE8\xE3\xF0\xEE\xEA\xEE\xE2). \xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xE7\xE0\xE3\xF0\xF3\xE6\xE0\xE5\xF2\xF1\xFF \xF7\xE5\xF0\xE5\xE7 /adms \xE8 /leaders \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5. /admins \xE2 \xF0\xF3\xF7\xED\xF3\xFE \x201 \xF0\xE0\xE7 \x201 \xF3\xF0\xEE\xE2\xED\xFF \xE0\xE4\xEC\xE8\xED\xE0 \xE5\xF1\xEB\xE8 \xEF\xEE\xE2\xFB\xF1\xE8\xEB\xE8.'))
     imgui.TextColored(col_muted2, uiText('\xC8\xE7\xEC\xE5\xED\xE5\xED\xE8\xE5 \xF3\xF0\xEE\xE2\xED\xFF \xF7\xE5\xF0\xE5\xE7 promote-\xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xF1\xE5\xF0\xE2\xE5\xF0\xE0.'))
-    if imgui.Button(uiText('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xEA\xE0\xF2\xE0\xEB\xEE\xE3 (/adms)') .. '##chk_sync_now') then
+    if imgui.Button(uiText('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xEA\xE0\xF2\xE0\xEB\xEE\xE3 (/adms + /leaders)') .. '##chk_sync_now') then
         SafeCall('checkerManualSync', checkerManualSync)
     end
     deskFormPanelEnd()
@@ -3364,7 +3993,7 @@ function drawCheckerTab()
         settings.checker_notify_leader_join = v
         markDirtySettings()
     end) then end
-    if deskFormCheckboxRow('\xCE\xF2\xEA\xEB\xFE\xF7\xE5\xED\xE8\xE5', checkerUi.notifyQuit, function(v)
+    if deskFormCheckboxRow('\xCE\xF2\xEA\xEB\xFE\xF7\xE5\xED\xE8\xE5 (\xE0\xE4\xEC\xE8\xED\xFB \xE8 \xEB\xE8\xE4\xE5\xF0\xFB)', checkerUi.notifyQuit, function(v)
         settings.checker_notify_quit = v
         markDirtySettings()
     end) then end

@@ -3,7 +3,7 @@ local M = {}
 
 local MODULE_DIR = 'lib\\'
 
-local CORE_CHUNK_FILES = {
+local CORE_A_FILES = {
     'report_desk_bootstrap.lua',
     'report_desk_constants.lua',
     'report_desk_theme.lua',
@@ -27,6 +27,7 @@ local CORE_CHUNK_FILES = {
 
 local LATE_CHUNK_FILES = {
     'report_desk_checker.lua',
+    'report_desk_cmd_binds.lua',
 }
 
 local REMOTE_CHAT_CHUNK_FILES = {
@@ -84,8 +85,10 @@ function M.load()
     local wd = getWorkingDirectory()
     env = {}
     setmetatable(env, { __index = _G })
+    env.outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
+    env.chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
 
-    runChunkBundle(wd, CORE_CHUNK_FILES, env, 'core')
+    runChunkBundle(wd, CORE_A_FILES, env, 'core')
     local okRemote, errRemote = pcall(runChunkBundle, wd, REMOTE_CHAT_CHUNK_FILES, env, 'remote_chat')
     if not okRemote then
         print('[Report Desk] remote chat disabled: ' .. tostring(errRemote))
@@ -110,3 +113,4 @@ function M.unload()
 end
 
 return M
+

@@ -97,6 +97,48 @@ local function popPanel()
     imgui.PopStyleColor(2)
 end
 
+local VEH_SEARCH_ROW_H = 28
+
+-- Push Flat Input Style
+local function pushFlatInputStyle()
+    imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.12, 0.12, 0.15, 1))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.20, 0.28, 0.35))
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 0)
+    end
+end
+
+-- Pop Flat Input Style
+local function popFlatInputStyle()
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PopStyleVar()
+    end
+    imgui.PopStyleColor(2)
+end
+
+-- Draw Search Clear Row (как drawDeskSearchClearRow на вкладке Скины)
+local function drawVehSearchClearRow(onChanged)
+    local clrText = uiText('\xCE\xF7\xE8\xF1\xF2\xE8\xF2\xFC')
+    local clrW = math.max(78, imgui.CalcTextSize(clrText).x + 18)
+    imgui.PushItemWidth(math.max(60, imgui.GetContentRegionAvail().x - clrW - 8))
+    pushFlatInputStyle()
+    local changed = false
+    if imgui.InputTextWithHint then
+        changed = imgui.InputTextWithHint('##fltveh', uiText('\xCF\xEE\xE8\xF1\xEA ID \xD2\xD1'), vehFilterBuf, sizeof(vehFilterBuf))
+    else
+        changed = imgui.InputText('##fltveh', vehFilterBuf, sizeof(vehFilterBuf))
+    end
+    popFlatInputStyle()
+    imgui.PopItemWidth()
+    imgui.SameLine(0, 8)
+    if imgui.Button(clrText .. '##clrveh', imgui.ImVec2(clrW, VEH_SEARCH_ROW_H)) then
+        ffi.fill(vehFilterBuf, sizeof(vehFilterBuf))
+        if onChanged then onChanged() end
+    elseif changed and onChanged then
+        onChanged()
+    end
+end
+
 -- Публичный API модуля.
 function M.loadCatalog()
     if vehCatalog then return end
@@ -165,6 +207,24 @@ local function peekTex(entry)
     return deskTex.peek(TEX_NS_VEH, entry.id)
 end
 
+-- Draw Tex Safe
+local function drawTexSafe(tex, id, w, h, asButton, label)
+    if not tex or not id or not deskTex or not deskTex.has(TEX_NS_VEH, id) then return false, false end
+    local size = imgui.ImVec2(w, h)
+    if asButton and imgui.ImageButton then
+        local ok, clicked = pcall(imgui.ImageButton, tex, size)
+        return ok, ok and clicked
+    end
+    if imgui.Image then
+        local ok = pcall(imgui.Image, tex, size)
+        return ok, false
+    end
+    if label and imgui.Button then
+        return true, imgui.Button(label, size)
+    end
+    return false, false
+end
+
 -- Mark Dirty
 local function markDirty()
     if markDirtyFn then markDirtyFn() end
@@ -181,21 +241,22 @@ end
 local function enqueueVisible(firstIdx, lastIdx, items)
     if not deskTex then return end
     local ids = {}
+    local keep = {}
     for i = firstIdx, lastIdx do
         local e = items[i]
-        if e and e.id then ids[#ids + 1] = e.id end
+        if e and e.id then
+            ids[#ids + 1] = e.id
+            keep[e.id] = true
+        end
     end
+    if vehSelectedId then keep[vehSelectedId] = true end
     deskTexPipeline.syncVisible(TEX_NS_VEH, ids, deskTex, { priority = { vehSelectedId } })
+    deskTex.trim(TEX_NS_VEH, M.texRelease, keep, true)
 end
 
 -- Публичный API модуля.
 function M.onTabEnter()
     M.loadCatalog()
-    deskTexPipeline.registerNs(TEX_NS_VEH, {
-        pathForId = M.pipelinePathForId,
-        releaseFn = M.texRelease,
-        onUploaded = M.pipelineOnUploaded,
-    })
     deskTexPipeline.activate(TEX_NS_VEH)
 end
 
@@ -260,26 +321,21 @@ end
 -- Draw Cell
 local function drawCell(entry, layout)
     if not entry or not entry.id then return end
-    local tex = peekTex(entry)
+    if imgui.PushIDInt then imgui.PushIDInt(entry.id) end
     local sel = (entry.id == vehSelectedId)
     local tw = layout and layout.thumbW or VEH_THUMB_W
     local th = layout and layout.thumbH or VEH_THUMB_H
-    local thumb = imgui.ImVec2(tw, th)
     if sel then
         imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
         imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
     end
-    local clicked = false
-    if tex and deskTex and deskTex.has(TEX_NS_VEH, entry.id) and imgui.ImageButton then
-        local ok, res = pcall(imgui.ImageButton, tex, thumb)
-        clicked = ok and res
-        if not ok then
-            local label = entry.lowQuality and (tostring(entry.id) .. '~') or tostring(entry.id)
-            clicked = imgui.Button(label .. '##vf_' .. entry.id, thumb)
-        end
-    else
-        local label = entry.lowQuality and (tostring(entry.id) .. '~') or tostring(entry.id)
-        clicked = imgui.Button(label .. '##v_' .. entry.id, thumb)
+    local tex = peekTex(entry)
+    local label = entry.lowQuality and (tostring(entry.id) .. '~') or tostring(entry.id)
+    local okDraw, clicked = drawTexSafe(
+        tex, entry.id, tw, th, true, label .. '##v_' .. entry.id
+    )
+    if not okDraw then
+        clicked = imgui.Button(label .. '##v_' .. entry.id, imgui.ImVec2(tw, th))
     end
     if sel then imgui.PopStyleColor(2) end
     if clicked then vehSelectedId = entry.id end
@@ -292,6 +348,7 @@ local function drawCell(entry, layout)
             imgui.SetTooltip(uiText((entry.name or '') .. ' | ID ' .. entry.id))
         end
     end
+    if imgui.PopID then imgui.PopID() end
 end
 
 -- Публичный API модуля.
@@ -314,7 +371,7 @@ function M.drawTab()
 
     if #vehCatalog == 0 then
         imgui.TextColored(col_warn, uiText('\xCD\xE5\xF2 \xEA\xE0\xF0\xF2\xE8\xED\xEE\xEA \xD2\xD1.'))
-        imgui.TextWrapped(uiText('tools\\VEHICLE_ASSETS.md'))
+        imgui.TextWrapped(uiText('PNG: res\\report_desk_vehicles\\veh-{ID}.png \xE8\xEB\xE8 overrides\\veh-{ID}.png'))
         imgui.EndChild()
         popPanel()
         return
@@ -328,9 +385,8 @@ function M.drawTab()
     if sel then
         local tex = peekTex(sel)
         local pw, ph = deskGrid.fitPreview(VEH_PREVIEW_W, VEH_PREVIEW_H, imgui.GetContentRegionAvail().x)
-        if tex and deskTex and deskTex.has(TEX_NS_VEH, sel.id) and imgui.Image then
-            pcall(imgui.Image, tex, imgui.ImVec2(pw, ph))
-        else
+        local okPrev = drawTexSafe(tex, sel.id, pw, ph, false, nil)
+        if not okPrev then
             imgui.Button('...##veh_ph', imgui.ImVec2(pw, ph))
         end
         imgui.TextColored(col_accent, uiText(sel.name or ''))
@@ -362,21 +418,7 @@ function M.drawTab()
 
     imgui.SameLine()
     imgui.BeginChild('##veh_main', imgui.ImVec2(-1, -1), true)
-    if drawDeskSearchClearRow then
-        drawDeskSearchClearRow('\xCF\xEE\xE8\xF1\xEA \xD2\xD1', vehFilterBuf, sizeof(vehFilterBuf),
-            rebuildFilter, 'veh')
-    else
-        imgui.PushItemWidth(-90)
-        if imgui.InputText(uiText('\xCF\xEE\xE8\xF1\xEA') .. '##veh_f', vehFilterBuf, sizeof(vehFilterBuf)) then
-            rebuildFilter()
-        end
-        imgui.PopItemWidth()
-        imgui.SameLine(0, 8)
-        if imgui.Button(uiText('\xCE\xF7\xE8\xF1\xF2\xE8\xF2\xFC') .. '##veh_clr', imgui.ImVec2(86, 28)) then
-            ffi.fill(vehFilterBuf, sizeof(vehFilterBuf))
-            rebuildFilter()
-        end
-    end
+    drawVehSearchClearRow(rebuildFilter)
     imgui.TextColored(col_muted2, uiText(string.format(
         '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE: %d',
         #vehFiltered)))
@@ -402,11 +444,6 @@ function M.drawTab()
     imgui.EndChild()
     popPanel()
     pcall(deskCatalogTexTick)
-end
-
--- Публичный API модуля.
-function M.preloadDone()
-    return deskTexPipeline.pendingCount(TEX_NS_VEH) == 0
 end
 
 return M

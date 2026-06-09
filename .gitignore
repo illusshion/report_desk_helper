@@ -4,7 +4,12 @@ moonloader.log
 
 # Личные настройки и история репортов (не публиковать)
 config/admin_report_desk.lua
+config/admin_report_desk.bak.lua
+config/admin_report_desk.lua.tmp
+config/admin_report_desk_threads.lua
+config/admin_report_desk_threads.bak.lua
 config/admin_report_desk_user.lua
+config/admin_report_desk_user.lua.tmp
 config/admin_report_desk_user.bak.lua
 config/report_desk_checker_catalog.lua
 config/report_desk_checker_catalog.bak.lua

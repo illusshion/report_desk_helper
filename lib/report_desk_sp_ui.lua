@@ -9,7 +9,7 @@ local deps = {}
 local ansDepsWired, menuDepsWired = false, false
 local clickHandler, toggleHandler
 local hookPrevClick, hookPrevToggle
-local WM_HANDLER_KEY = '__rd_sp_ui_wm__'
+local deskWmDispatch = require 'report_desk_wm_dispatch'
 
 local WM = {
     KEYDOWN = 0x0100,
@@ -336,26 +336,22 @@ end
 
 -- Uninstall Wm Handler
 local function uninstallWmHandler()
-    local prev = _G[WM_HANDLER_KEY]
-    if prev and removeEventHandler then
-        pcall(removeEventHandler, 'onWindowMessage', prev)
-    end
-    _G[WM_HANDLER_KEY] = nil
+    deskWmDispatch.unregister('sp_ui')
 end
 
 -- Install Wm Handler
 local function installWmHandler()
     uninstallWmHandler()
-    local handler = function(msg, wparam, lparam)
+    deskWmDispatch.register('sp_ui', 85, function(msg, wparam, lparam)
         if deps.captureActive and deps.captureActive() then return end
         if specAns.handleWindowMessage(msg, wparam, lparam) then
             consumeWindowMessage(true, true, true)
-            return
+            return true
         end
         if msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN then
             if not specAns.isOpen() and M.handleMenuKey(wparam) then
                 consumeWindowMessage(true, true, true)
-                return
+                return true
             end
         end
         if msg == WM.KEYUP or msg == WM.SYSKEYUP then
@@ -365,16 +361,15 @@ local function installWmHandler()
                         or wparam == vkeys.VK_W or wparam == vkeys.VK_S
                         or wparam == vkeys.VK_NUMPAD8 or wparam == vkeys.VK_NUMPAD2 then
                     consumeWindowMessage(true, true, true)
-                    return
+                    return true
                 end
             end
         end
         if deps.consumeMenuShieldKey and deps.consumeMenuShieldKey(msg, wparam) then
             consumeWindowMessage(true, true, true)
+            return true
         end
-    end
-    _G[WM_HANDLER_KEY] = handler
-    addEventHandler('onWindowMessage', handler, true)
+    end)
 end
 
 -- Публичный API модуля.
@@ -398,6 +393,7 @@ function M.ensureInputHooks()
     ensureTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
+    installWmHandler()
 end
 
 -- Публичный API модуля.
