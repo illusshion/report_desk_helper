@@ -1,5 +1,15 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.4 (hotfix)
+
+**Fix: лаги и повторный /adms после autoupdate**
+
+- `checkerInit` не сбрасывает spawn-sync если каталог уже загружен с диска — нет спама `/adms`/`/leaders` при reload скрипта.
+- Launcher pending применяется только при старте GTA, не в середине сессии (убран лишний reload).
+- Assets качаются после sync, не параллельно с ядром.
+- `needsAssets` не перекачивает скины если marker + sha256/install уже OK.
+- `saveUserConfig` на Windows: удаление старого файла перед rename.
+
 ## 1.0.3 (hotfix)
 
 **Fix: checker в релизе (ensureSyncSession)**

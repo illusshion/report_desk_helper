@@ -383,6 +383,9 @@ function saveUserConfig()
     f:write('}\n')
     f:close()
 
+    if doesFileExist(USER_CONFIG_PATH) then
+        pcall(os.remove, USER_CONFIG_PATH)
+    end
     local renamed, renameErr = os.rename(tmpPath, USER_CONFIG_PATH)
     if not renamed then
         print('[Report Desk] user save rename: ' .. tostring(renameErr))

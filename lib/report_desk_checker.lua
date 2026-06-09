@@ -3469,9 +3469,12 @@ function checkerInit()
         checkerState.spawnLeadersDueAt = nil
         checkerState.lastSyncChatAt = 0
         rawset(_G, SYNC_SESSION_KEY, nil)
-        checkerState.spawnCatalogSyncDone = false
-        checkerState.spawnAdmsHandled = false
-        checkerState.spawnLeadersHandled = false
+        local catalogAdmins = #(checkerCatalog.admins or {})
+        local catalogLeaders = #(checkerCatalog.leaders or {})
+        local catalogReady = catalogAdmins > 0 and catalogLeaders > 0
+        checkerState.spawnCatalogSyncDone = catalogReady
+        checkerState.spawnAdmsHandled = catalogAdmins > 0
+        checkerState.spawnLeadersHandled = catalogLeaders > 0
         checkerState.spawnCatalogSyncAt = nil
         checkerState.reportedOnline = false
         checkerState.onlineNickIndex = { byNick = {}, byExact = {} }
@@ -3491,7 +3494,7 @@ function checkerInit()
         checkerDismissStaleSyncDialog()
         if checkerSampReady() then
             checkerScheduleRebuild()
-            if settings.checker_auto_sync ~= false then
+            if settings.checker_auto_sync ~= false and not checkerState.spawnCatalogSyncDone then
                 checkerScheduleSpawnCatalogSync()
             end
         end

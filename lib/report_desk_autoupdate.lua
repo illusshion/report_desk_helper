@@ -1687,17 +1687,30 @@ end
 
 function M.needsAssets(manifest)
     manifest = manifest or {}
+    local assets = manifest.assets
+    if type(assets) ~= 'table' then
+        return not assetMarkerOk()
+    end
+    local remoteVer = tostring(assets.version or '')
+    local remoteSha = tostring(assets.sha256 or ''):lower()
+    if remoteVer == '' and remoteSha == '' then
+        return not assetMarkerOk()
+    end
+    local localMan = M.readLocalAssetsManifest() or {}
+    local localSha = tostring(localMan.sha256 or ''):lower()
+    if remoteSha ~= '' and localSha ~= '' and localSha == remoteSha then
+        return false
+    end
+    if assetMarkerOk() and localMan.installed == true then
+        if remoteSha == '' or localSha == remoteSha then
+            return false
+        end
+    end
     if not assetMarkerOk() then
         return true
     end
-    local assets = manifest.assets
-    if type(assets) ~= 'table' then return false end
-    local remoteVer = tostring(assets.version or '')
-    local remoteSha = tostring(assets.sha256 or ''):lower()
-    if remoteVer == '' then return false end
-    local localMan = M.readLocalAssetsManifest() or {}
     if tostring(localMan.version or '') == remoteVer then
-        if remoteSha == '' or tostring(localMan.sha256 or ''):lower() == remoteSha then
+        if remoteSha == '' or localSha == remoteSha then
             return false
         end
     end

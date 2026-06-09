@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.3')
+script_version('1.0.4')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -251,22 +251,25 @@ local function bootstrapSeedUpdater()
     return true
 end
 
-local function stageLauncherPendingOnDisk()
+local function applyLauncherPendingOnStartup()
     if not updaterInstalled() then
-        return
+        return false
     end
-    local ok, err = pcall(function()
+    local ok, applied = pcall(function()
         local autoupdate = requireAutoupdate()
         if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
-            return
+            return false
         end
-        if autoupdate.applyLauncherPending() then
-            print('[Report Desk] launcher committed on disk (picked up on next game start)')
-        end
+        return autoupdate.applyLauncherPending() == true
     end)
     if not ok then
-        print('[Report Desk] launcher pending skipped: ' .. tostring(err))
+        print('[Report Desk] launcher pending skipped: ' .. tostring(applied))
+        return false
     end
+    if applied then
+        print('[Report Desk] launcher updated on disk')
+    end
+    return applied == true
 end
 
 local function applyPendingBootstrap()
@@ -397,12 +400,6 @@ local function runInstallPipeline()
         return false, false
     end
 
-    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
-        if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, userOpts)
-        end
-    end
-
     if autoupdate.showUpdateOverlay then
         pcall(autoupdate.showUpdateOverlay, nil, nil, userOpts)
     end
@@ -461,7 +458,9 @@ local function runInstallPipeline()
         pcall(autoupdate.hideUpdateOverlay)
     end
 
-    stageLauncherPendingOnDisk()
+    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) and autoupdate.deferAssets then
+        autoupdate.deferAssets(manifest, userOpts)
+    end
 
     return true, sessionUpdated
 end
@@ -471,6 +470,9 @@ function main()
         return
     end
     purgeBrokenLauncherPending()
+    if applyLauncherPendingOnStartup() then
+        return
+    end
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)
     end
