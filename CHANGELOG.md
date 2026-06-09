@@ -1,5 +1,9 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.2
+
+- **Fix:** русский текст changelog в чате SAMP — корректная конвертация UTF-8 → CP1251 + поле `changelog_cp1251` в manifest.
+
 ## 1.0.1
 
 - **Fix (критично):** не применять `AdminDesk.luac.pending` во время работы скрипта — убирает краш `ensureDirFor` и «Script terminated».

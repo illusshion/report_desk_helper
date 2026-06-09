@@ -145,6 +145,11 @@ end
 -- Read Manifest Changelog
 function M.readManifestChangelog(manifest)
     manifest = manifest or {}
+    local cp1251 = manifest.changelog_cp1251 or manifest.changelog_chat or ''
+    cp1251 = tostring(cp1251):gsub('^%s+', ''):gsub('%s+$', '')
+    if cp1251 ~= '' then
+        return M.fromCp1251Escapes(cp1251)
+    end
     local cl = manifest.changelog or manifest.release_notes or ''
     cl = tostring(cl):gsub('^%s+', ''):gsub('%s+$', '')
     if cl == '' then return '' end
@@ -154,21 +159,48 @@ function M.readManifestChangelog(manifest)
     return M.chatTextFromUtf8(cl)
 end
 
+local function fromCp1251Escapes(text)
+    text = tostring(text or '')
+    if text == '' then return text end
+    if text:find('\\x', 1, true) then
+        return (text:gsub('\\x(%x%x)', function(h)
+            return string.char(tonumber(h, 16))
+        end))
+    end
+    return text
+end
+
 local function chatTextFromUtf8(text)
     text = tostring(text or '')
     if text == '' then return text end
+    if not text:find('[\208-\209][\128-\191]') then
+        return text
+    end
     local ok, enc = pcall(require, 'encoding')
-    if ok and enc and enc.UTF8 and enc.CP1251 then
+    if ok and enc and enc.UTF8 then
         local convOk, converted = pcall(function()
-            return enc.UTF8:decode(text):encode(enc.CP1251)
+            enc.default = 'CP1251'
+            return enc.UTF8:decode(text)
         end)
         if convOk and type(converted) == 'string' and converted ~= '' then
             return converted
         end
     end
+    local ok2, iconv_mod = pcall(require, 'iconv')
+    if ok2 and iconv_mod and iconv_mod.new then
+        local convOk2, converted2 = pcall(function()
+            local cd = iconv_mod.new('CP1251//IGNORE', 'UTF-8')
+            assert(cd)
+            return cd:iconv(text)
+        end)
+        if convOk2 and type(converted2) == 'string' and converted2 ~= '' then
+            return converted2
+        end
+    end
     return text
 end
 
+M.fromCp1251Escapes = fromCp1251Escapes
 M.chatTextFromUtf8 = chatTextFromUtf8
 
 -- Show Update Success Message
