@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.1')
+script_version('1.0.2')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -252,12 +252,17 @@ local function stageLauncherPendingOnDisk()
     if not updaterInstalled() then
         return
     end
-    local autoupdate = requireAutoupdate()
-    if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
-        return
-    end
-    if autoupdate.applyLauncherPending() then
-        print('[Report Desk] launcher committed on disk (picked up on next game start)')
+    local ok, err = pcall(function()
+        local autoupdate = requireAutoupdate()
+        if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
+            return
+        end
+        if autoupdate.applyLauncherPending() then
+            print('[Report Desk] launcher committed on disk (picked up on next game start)')
+        end
+    end)
+    if not ok then
+        print('[Report Desk] launcher pending skipped: ' .. tostring(err))
     end
 end
 
@@ -429,6 +434,8 @@ local function runInstallPipeline()
         pcall(autoupdate.hideUpdateOverlay)
     end
 
+    stageLauncherPendingOnDisk()
+
     return true, sessionUpdated
 end
 
@@ -436,8 +443,7 @@ function main()
     if devEntryPresent() then
         return
     end
-    stageLauncherPendingOnDisk()
-    applyPendingBootstrap()
+    pcall(applyPendingBootstrap)
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)
     end

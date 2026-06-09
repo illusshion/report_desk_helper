@@ -437,6 +437,19 @@ function M.sha256File(path)
     return deskSha256.hashFile(path)
 end
 
+local function isValidLuaBytecode(path)
+    path = tostring(path or '')
+    if path == '' or not doesFileExist(path) then return false end
+    local f = io.open(path, 'rb')
+    if not f then return false end
+    local h1, h2, h3 = f:read(1), f:read(1), f:read(1)
+    local size = f:seek('end') or 0
+    f:close()
+    if size < 128 then return false end
+    if not h1 or not h2 or not h3 then return false end
+    return h1:byte() == 0x1b and h2:byte() == 0x4c and h3:byte() == 0x4a
+end
+
 local function fileBytes(path)
     if not doesFileExist(path) then
         return nil
@@ -885,6 +898,10 @@ local function installToDest(src, spec)
     end
     if not copyFileAtomic(src, finalDest) then
         return false, 'install failed: ' .. spec.dest
+    end
+    if spec.pending and finalDest:match('%.luac%.pending$') and not isValidLuaBytecode(finalDest) then
+        pcall(os.remove, finalDest)
+        return false, 'invalid launcher bytecode: ' .. spec.dest
     end
     if spec.dest:find('%.lua$', 1) and spec.dest:find('report_desk', 1, true)
         and (spec.dest:find('AdminDeskCore', 1, true) or spec.dest:find('admin_report_desk_core', 1, true)) then
@@ -1435,13 +1452,37 @@ end
 function M.applyLauncherPending()
     local root = M.root()
     local pairs = {
-        { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac' },
-        { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua' },
+        { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac', luac = true },
+        { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua', luac = false },
     }
     for _, spec in ipairs(pairs) do
         if doesFileExist(spec.pending) then
+            if spec.luac and not isValidLuaBytecode(spec.pending) then
+                log('skip invalid launcher pending (bad bytecode): ' .. spec.pending)
+                pcall(os.remove, spec.pending)
+                return false
+            end
+            local pendingBytes = fileBytes(spec.pending) or 0
+            if pendingBytes < 128 then
+                log('skip invalid launcher pending (too small): ' .. spec.pending)
+                pcall(os.remove, spec.pending)
+                return false
+            end
+            if spec.luac and doesFileExist(spec.dest) and isValidLuaBytecode(spec.dest) then
+                local destBytes = fileBytes(spec.dest) or 0
+                if pendingBytes < destBytes * 0.5 then
+                    log('skip suspicious launcher pending (smaller than installed): ' .. spec.pending)
+                    pcall(os.remove, spec.pending)
+                    return false
+                end
+            end
             pcall(os.remove, spec.dest)
             if os.rename(spec.pending, spec.dest) then
+                if spec.luac and not isValidLuaBytecode(spec.dest) then
+                    log('launcher pending produced invalid bytecode, rolling back')
+                    pcall(os.remove, spec.dest)
+                    return false
+                end
                 log('applied launcher pending: ' .. spec.dest)
                 return true
             end

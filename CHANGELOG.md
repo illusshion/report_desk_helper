@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0 BETA hotfix (1.0.2)
+
+**Fix: GTA не запускается после обновления**
+
+- **Fix (критично):** битый `AdminDesk.luac.pending` больше не затирает рабочий launcher при старте.
+- **Fix:** проверка bytecode перед применением/записью launcher pending.
+- **Fix:** launcher pending применяется только после успешной установки, не в начале `main()`.
+- **Recovery:** если luac не грузится — используй `AdminDesk.lua` (plaintext bootstrap).
+
 ## 1.0 BETA (1.0.1)
 
 **Первая более менее рабочая версия**
