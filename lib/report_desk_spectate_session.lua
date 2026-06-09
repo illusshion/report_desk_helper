@@ -7,6 +7,16 @@ local M = {}
   TD пересоздаются каждый tick сервером.
 ]]
 
+local function callHookPrev(fn, ...)
+    if type(fn) ~= 'function' then return end
+    local results = {pcall(fn, ...)}
+    if not results[1] then
+        print('[Report Desk] sp hook chain: ' .. tostring(results[2]))
+        return
+    end
+    return unpack(results, 2)
+end
+
 local SP_MENU_MARKERS = {
     'exit', 'mute', 'slap', 'stats', 'stat', 'update',
     'weap', 'skick', 'info', 'freeze',
@@ -339,8 +349,16 @@ function M.installTextDrawHooks(sampev)
     hookPrevShowTd = prevShow
 
     showTdHook = function(id, data)
-        if M.onShowTextDraw(id, data) == false then return false end
-        if type(hookPrevShowTd) == 'function' then return hookPrevShowTd(id, data) end
+        local block = false
+        local ok, err = pcall(function()
+            block = M.onShowTextDraw(id, data) == false
+        end)
+        if not ok then
+            print('[Report Desk] sp td show: ' .. tostring(err))
+        elseif block then
+            return false
+        end
+        return callHookPrev(hookPrevShowTd, id, data)
     end
     sampev.onShowTextDraw = showTdHook
 
@@ -349,8 +367,16 @@ function M.installTextDrawHooks(sampev)
     hookPrevSetStr = prevSet
 
     setStrHook = function(id, text)
-        if M.onTextDrawSetString(id, text) == false then return false end
-        if type(hookPrevSetStr) == 'function' then return hookPrevSetStr(id, text) end
+        local block = false
+        local ok, err = pcall(function()
+            block = M.onTextDrawSetString(id, text) == false
+        end)
+        if not ok then
+            print('[Report Desk] sp td set: ' .. tostring(err))
+        elseif block then
+            return false
+        end
+        return callHookPrev(hookPrevSetStr, id, text)
     end
     sampev.onTextDrawSetString = setStrHook
 end
@@ -375,7 +401,7 @@ function M.setSpectating(on)
     else
         session.outbound = {}
         clearMenuColumnState()
-        vehicleHud.reset()
+        pcall(vehicleHud.reset)
         if cbResetMenuState then pcall(cbResetMenuState) end
     end
 end
@@ -487,7 +513,7 @@ function M.beginSession(id, nick, opts)
     session.targetId = id
     session.targetNick = nick
     if changed then
-        vehicleHud.reset()
+        pcall(vehicleHud.reset)
         if cbResetMenuSelection then pcall(cbResetMenuSelection)
         elseif cbResetMenuState then pcall(cbResetMenuState) end
     end
@@ -590,28 +616,31 @@ function M.installSampevHooks(sampev)
     if prev == playerHandler then prev = hookPrevPlayer end
     hookPrevPlayer = prev
     playerHandler = function(id)
-        id = tonumber(id)
-        if id and id >= 0 then
-            local nick = ''
-            pcall(function()
-                if deps.sampIsPlayerConnected and deps.sampIsPlayerConnected(id)
-                        and deps.sampGetPlayerNickname then
-                    nick = deps.sampGetPlayerNickname(id) or ''
-                end
-            end)
-            M.setSpectating(true)
-            if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-            M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
-            pcall(function()
-                local stats = package.loaded['report_desk_spectate_stats']
-                if stats and stats.onSpRefreshSpectatePlayer then
-                    stats.onSpRefreshSpectatePlayer(id)
-                end
-            end)
+        local ok, err = pcall(function()
+            id = tonumber(id)
+            if id and id >= 0 then
+                local nick = ''
+                pcall(function()
+                    if deps.sampIsPlayerConnected and deps.sampIsPlayerConnected(id)
+                            and deps.sampGetPlayerNickname then
+                        nick = deps.sampGetPlayerNickname(id) or ''
+                    end
+                end)
+                M.setSpectating(true)
+                if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
+                M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
+                pcall(function()
+                    local stats = package.loaded['report_desk_spectate_stats']
+                    if stats and stats.onSpRefreshSpectatePlayer then
+                        stats.onSpRefreshSpectatePlayer(id)
+                    end
+                end)
+            end
+        end)
+        if not ok then
+            print('[Report Desk] spectate player: ' .. tostring(err))
         end
-        if type(hookPrevPlayer) == 'function' then
-            return hookPrevPlayer(id)
-        end
+        return callHookPrev(hookPrevPlayer, id)
     end
     sampev.onSpectatePlayer = playerHandler
 
@@ -625,9 +654,7 @@ function M.installSampevHooks(sampev)
                 stats.onSpRefreshSpectateVehicle(vehicleId)
             end
         end)
-        if type(hookPrevVehicle) == 'function' then
-            return hookPrevVehicle(vehicleId)
-        end
+        return callHookPrev(hookPrevVehicle, vehicleId)
     end
     sampev.onSpectateVehicle = vehicleHandler
 end

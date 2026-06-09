@@ -81,9 +81,7 @@ function installDeskSpectateDialogHook()
             checkerHandled = true
         end
         if checkerHandled then return false end
-        if type(deskCache.hookPrevShowDialog) == 'function' then
-            return deskCache.hookPrevShowDialog(dialogId, style, title, button1, button2, text)
-        end
+        return deskCallHookPrev(deskCache.hookPrevShowDialog, dialogId, style, title, button1, button2, text)
     end
     sampev.onShowDialog = deskCache.specDialogHandler
 end
@@ -100,9 +98,7 @@ function installDeskServerMessageHook()
         if not ok then
             print('[Report Desk] server msg hook: ' .. tostring(err))
         end
-        if type(prev) == 'function' then
-            return prev(color, text)
-        end
+        return deskCallHookPrev(prev, color, text)
     end
     sampev.onServerMessage = deskCache.serverMsgHandler
 end
@@ -160,12 +156,15 @@ function installDeskGodmodeHealthHook()
     if prev == deskCache.gmHealthHandler then prev = nil end
     if deskCache.hookPrevSetPlayerHealth == nil then deskCache.hookPrevSetPlayerHealth = prev end
     deskCache.gmHealthHandler = function(health)
-        local block = cheatsOnSetPlayerHealth(health)
-        if block == false then return false end
-        local chain = deskCache.hookPrevSetPlayerHealth
-        if type(chain) == 'function' then
-            return chain(health)
+        local block
+        local okGm, errGm = pcall(function()
+            block = cheatsOnSetPlayerHealth(health)
+        end)
+        if not okGm then
+            print('[Report Desk] godmode hook: ' .. tostring(errGm))
         end
+        if block == false then return false end
+        return deskCallHookPrev(deskCache.hookPrevSetPlayerHealth, health)
     end
     sampev.onSetPlayerHealth = deskCache.gmHealthHandler
 end
@@ -186,9 +185,7 @@ function installDeskPlayerQuitHook()
     if deskCache.hookPrevPlayerQuit == nil then deskCache.hookPrevPlayerQuit = prev end
     deskCache.playerQuitHandler = function(playerId, reason)
         deskOnPlayerQuit(playerId, reason)
-        if type(prev) == 'function' then
-            return prev(playerId, reason)
-        end
+        return deskCallHookPrev(prev, playerId, reason)
     end
     sampev.onPlayerQuit = deskCache.playerQuitHandler
 end
@@ -212,9 +209,7 @@ function installDeskPlayerJoinHook()
     if deskCache.hookPrevPlayerJoin == nil then deskCache.hookPrevPlayerJoin = prev end
     deskCache.playerJoinHandler = function(playerId, color, isNpc, nickname)
         pcall(deskOnPlayerJoin, playerId, color, isNpc, nickname)
-        if type(prev) == 'function' then
-            return prev(playerId, color, isNpc, nickname)
-        end
+        return deskCallHookPrev(prev, playerId, color, isNpc, nickname)
     end
     sampev.onPlayerJoin = deskCache.playerJoinHandler
 end
@@ -236,9 +231,7 @@ function installDeskPlayerStreamInHook()
         if deskSpectateStats and deskSpectateStats.onSpRefreshStreamIn then
             pcall(deskSpectateStats.onSpRefreshStreamIn, playerId)
         end
-        if type(prev) == 'function' then
-            return prev(playerId, team, model, position, rotation, color, fightingStyle)
-        end
+        return deskCallHookPrev(prev, playerId, team, model, position, rotation, color, fightingStyle)
     end
     sampev.onPlayerStreamIn = deskCache.playerStreamInHandler
 end
@@ -256,9 +249,7 @@ function installDeskPlayerColorHook()
         if type(sampStorePlayerColor) == 'function' then
             pcall(sampStorePlayerColor, playerId, color)
         end
-        if type(prev) == 'function' then
-            return prev(playerId, color)
-        end
+        return deskCallHookPrev(prev, playerId, color)
     end
     sampev.onSetPlayerColor = deskCache.playerColorHandler
 end
@@ -282,9 +273,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshEnterVehicle then
                 pcall(deskSpectateStats.onSpRefreshEnterVehicle, playerId, vehicleId)
             end
-            if type(prevEnter) == 'function' then
-                return prevEnter(playerId, vehicleId, passenger)
-            end
+            return deskCallHookPrev(prevEnter, playerId, vehicleId, passenger)
         end
         sampev.onPlayerEnterVehicle = deskCache.spEnterHandler
     end
@@ -297,9 +286,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshExitVehicle then
                 pcall(deskSpectateStats.onSpRefreshExitVehicle, playerId, vehicleId)
             end
-            if type(prevExit) == 'function' then
-                return prevExit(playerId, vehicleId)
-            end
+            return deskCallHookPrev(prevExit, playerId, vehicleId)
         end
         sampev.onPlayerExitVehicle = deskCache.spExitHandler
     end
@@ -312,9 +299,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshSetInterior then
                 pcall(deskSpectateStats.onSpRefreshSetInterior, interior)
             end
-            if type(prevInterior) == 'function' then
-                return prevInterior(interior)
-            end
+            return deskCallHookPrev(prevInterior, interior)
         end
         sampev.onSetInterior = deskCache.spInteriorHandler
     end
@@ -327,9 +312,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshVehicleSync then
                 pcall(deskSpectateStats.onSpRefreshVehicleSync, playerId)
             end
-            if type(prevVehicle) == 'function' then
-                return prevVehicle(playerId, vehicleId, data)
-            end
+            return deskCallHookPrev(prevVehicle, playerId, vehicleId, data)
         end
         sampev.onVehicleSync = deskCache.spVehicleSyncHandler
     end
@@ -342,9 +325,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshPassengerSync then
                 pcall(deskSpectateStats.onSpRefreshPassengerSync, playerId)
             end
-            if type(prevPassenger) == 'function' then
-                return prevPassenger(playerId, vehicleId, data)
-            end
+            return deskCallHookPrev(prevPassenger, playerId, vehicleId, data)
         end
         sampev.onPassengerSync = deskCache.spPassengerSyncHandler
     end
@@ -357,9 +338,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshPlayerSync then
                 pcall(deskSpectateStats.onSpRefreshPlayerSync, playerId)
             end
-            if type(prevPlayer) == 'function' then
-                return prevPlayer(playerId, data)
-            end
+            return deskCallHookPrev(prevPlayer, playerId, data)
         end
         sampev.onPlayerSync = deskCache.spPlayerSyncHandler
     end
@@ -396,9 +375,7 @@ function installDeskSendChatHook()
             print('[Report Desk] send chat hook: ' .. tostring(err))
         end
         if blocked then return false end
-        if type(prev) == 'function' then
-            return prev(message)
-        end
+        return deskCallHookPrev(prev, message)
     end
     sampev.onSendChat = deskCache.sendChatHandler
 end
@@ -469,8 +446,7 @@ function installDeskSendCommandHook()
     deskCache.sendCommandHandler = function(command)
         command = trim(command or '')
         if command == '' then
-            if type(prev) == 'function' then return prev(command) end
-            return
+            return deskCallHookPrev(prev, command)
         end
         local blocked = false
         local ansHandled = false
@@ -499,9 +475,7 @@ function installDeskSendCommandHook()
         end
         if blocked then return false end
         if ansHandled then return end
-        if type(prev) == 'function' then
-            return prev(command)
-        end
+        return deskCallHookPrev(prev, command)
     end
     sampev.onSendCommand = deskCache.sendCommandHandler
 end
@@ -628,9 +602,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuInit(menuTitle, x, y, columns, menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuInit) == 'function' then
-            return deskCache.hookPrevSpMenuInit(menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuInit, menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
     end
     sampev.onInitMenu = deskCache.spMenuInitHandler
 
@@ -638,9 +610,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuShow(menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuShow) == 'function' then
-            return deskCache.hookPrevSpMenuShow(menuId)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuShow, menuId)
     end
     sampev.onShowMenu = deskCache.spMenuShowHandler
 
@@ -648,9 +618,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuHide(menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuHide) == 'function' then
-            return deskCache.hookPrevSpMenuHide(menuId)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuHide, menuId)
     end
     sampev.onHideMenu = deskCache.spMenuHideHandler
 end
@@ -750,7 +718,7 @@ function installDeskSpMenuRpcBlock()
     local okBs, bsIo = pcall(require, 'samp.events.bitstream_io')
     if not okBs then bsIo = nil end
 
-    addEventHandler('onReceiveRpc', function(rpcId, bs)
+    local handler = function(rpcId, bs)
         if rpcId ~= RPC_INIT_MENU and rpcId ~= RPC_SHOW_MENU and rpcId ~= RPC_HIDE_MENU then
             return
         end
@@ -775,8 +743,19 @@ function installDeskSpMenuRpcBlock()
         elseif rpcId == RPC_HIDE_MENU then
             if shouldBlockServerSpSamMenuHide(menuId) then return false end
         end
-    end, 2147483647)
+    end
+    deskCache.spMenuRpcHandler = handler
+    addEventHandler('onReceiveRpc', handler, 2147483647)
     deskCache.spMenuRpcRegistered = true
+end
+
+-- Снятие RPC-блока серверного меню /sp.
+function uninstallDeskSpMenuRpcBlock()
+    if deskCache.spMenuRpcHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onReceiveRpc', deskCache.spMenuRpcHandler)
+    end
+    deskCache.spMenuRpcHandler = nil
+    deskCache.spMenuRpcRegistered = false
 end
 
 -- Dev: лог нестандартных RPC во время окна /adms (settings.checker_dev_rpc_probe).
@@ -793,13 +772,24 @@ function installDeskCheckerRpcProbe()
         [RPC.UPDATESCORESPINGSIPS or 155] = true,
         [RPC.SETPLAYERCOLOR or 72] = true,
     }
-    addEventHandler('onReceiveRpc', function(rpcId)
+    local handler = function(rpcId)
         if settings.checker_dev_rpc_probe ~= true then return end
         if type(checkerIsAdmsSyncWindow) ~= 'function' or not checkerIsAdmsSyncWindow() then return end
         if skip[rpcId] then return end
         print(string.format('[Report Desk] checker rpc probe: id=%s during /adms sync', tostring(rpcId)))
-    end)
+    end
+    deskCache.checkerRpcProbeHandler = handler
+    addEventHandler('onReceiveRpc', handler)
     deskCache.checkerRpcProbeRegistered = true
+end
+
+-- Снятие dev RPC-probe checker.
+function uninstallDeskCheckerRpcProbe()
+    if deskCache.checkerRpcProbeHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onReceiveRpc', deskCache.checkerRpcProbeHandler)
+    end
+    deskCache.checkerRpcProbeHandler = nil
+    deskCache.checkerRpcProbeRegistered = false
 end
 
 -- Uninstall Desk Sp Menu Hooks
@@ -824,6 +814,43 @@ end
 
 -- Снятие всех desk hooks при terminate.
 function deskUninstall()
+    uninstallDeskSpMenuRpcBlock()
+    uninstallDeskCheckerRpcProbe()
+    if type(uninstallDeskUiFrames) == 'function' then
+        pcall(uninstallDeskUiFrames)
+    end
+    if type(uninstallDeskD3DHandlers) == 'function' then
+        pcall(uninstallDeskD3DHandlers)
+    end
+    if not sampev then
+        uninstallDeskSpMenuHooks()
+        if type(deskSpectateStats) == 'table' then
+            if type(deskSpectateStats.uninstallSpectatePlayerHook) == 'function' then
+                pcall(deskSpectateStats.uninstallSpectatePlayerHook)
+            end
+            if type(deskSpectateStats.uninstallSpSpectateOverlayFrame) == 'function' then
+                pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+            end
+        end
+        if type(uninstallCheckerHudFrame) == 'function' then
+            pcall(uninstallCheckerHudFrame)
+        end
+        if type(checkerDismissOpenSyncDialogOnUnload) == 'function' then
+            pcall(checkerDismissOpenSyncDialogOnUnload)
+        end
+        if type(deskLeaveSpectateMode) == 'function' then
+            pcall(deskLeaveSpectateMode)
+        end
+        pcall(function()
+            if deskWmDispatch and deskWmDispatch.uninstall then
+                deskWmDispatch.uninstall()
+            end
+        end)
+        if type(deskUninstallSampInputEnableHook) == 'function' then
+            pcall(deskUninstallSampInputEnableHook)
+        end
+        return
+    end
     if deskCache.serverMsgHandler and sampev.onServerMessage == deskCache.serverMsgHandler then
         sampev.onServerMessage = deskCache.hookPrevServerMsg
     end
@@ -892,9 +919,13 @@ function deskUninstall()
     deskCache.remoteChatQueue = {}
     deskCache.sampPlayerColors = {}
     uninstallDeskSpMenuHooks()
-    pcall(deskSpectateStats.uninstallSpectatePlayerHook)
-    if deskSpectateStats.uninstallSpSpectateOverlayFrame then
-        pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+    if type(deskSpectateStats) == 'table' then
+        if type(deskSpectateStats.uninstallSpectatePlayerHook) == 'function' then
+            pcall(deskSpectateStats.uninstallSpectatePlayerHook)
+        end
+        if type(deskSpectateStats.uninstallSpSpectateOverlayFrame) == 'function' then
+            pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+        end
     end
     if type(uninstallCheckerHudFrame) == 'function' then
         pcall(uninstallCheckerHudFrame)

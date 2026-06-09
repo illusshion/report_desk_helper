@@ -47,6 +47,7 @@ function main()
     if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
         print('[Report Desk] spectate module unavailable — spectate HUD disabled')
     else
+    local okSpInstall, errSpInstall = pcall(function()
     deskSpectateStats.install({
         trim = trim,
         stripTags = stripTags,
@@ -116,6 +117,10 @@ function main()
             return deskInputState.spectateUiModeActive == true
         end,
     })
+    end)
+    if not okSpInstall then
+        print('[Report Desk] spectate install: ' .. tostring(errSpInstall))
+    end
     end
     pcall(deskReinstallSpMenuHooks)
     pcall(installDeskSpMenuRpcBlock)
@@ -155,18 +160,18 @@ function main()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
-    installProfanityHooks()
-    installDeskServerMessageHook()
-    installDeskSpectateDialogHook()
-    installDeskSpectateToggleHook()
-    installDeskSendChatHook()
-    installDeskSendCommandHook()
-    installDeskPlayerQuitHook()
-    installDeskPlayerJoinHook()
-    installDeskPlayerStreamInHook()
-    installDeskPlayerColorHook()
+    pcall(installProfanityHooks)
+    pcall(installDeskServerMessageHook)
+    pcall(installDeskSpectateDialogHook)
+    pcall(installDeskSpectateToggleHook)
+    pcall(installDeskSendChatHook)
+    pcall(installDeskSendCommandHook)
+    pcall(installDeskPlayerQuitHook)
+    pcall(installDeskPlayerJoinHook)
+    pcall(installDeskPlayerStreamInHook)
+    pcall(installDeskPlayerColorHook)
     pcall(installDeskGodmodeHealthHook)
-    installDeskSpRefreshHooks()
+    pcall(installDeskSpRefreshHooks)
     pcall(sampSyncAllPlayerColors)
     sessionLive = true
     lastSettingsSave = os.clock()
@@ -340,18 +345,24 @@ function main()
                 pcall(flushCheckerCatalogNow)
             end
             if dirtySettings or dirtyThreads then
-                if saveConfig() then
+                local okSave, saved = pcall(saveConfig)
+                if okSave and saved then
                     lastSettingsSave = nowSave
                     lastThreadsSave = nowSave
+                elseif not okSave then
+                    print('[Report Desk] autosave: ' .. tostring(saved))
                 end
             else
                 lastSettingsSave = nowSave
                 lastThreadsSave = nowSave
             end
         elseif dirtyThreads and nowSave - lastThreadsSave >= AUTOSAVE_THREADS_INTERVAL then
-            if saveConfig() then
+            local okSave, saved = pcall(saveConfig)
+            if okSave and saved then
                 lastThreadsSave = nowSave
                 lastSettingsSave = nowSave
+            elseif not okSave then
+                print('[Report Desk] autosave threads: ' .. tostring(saved))
             end
         end
     end

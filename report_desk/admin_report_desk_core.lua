@@ -4016,6 +4016,16 @@ local M = {}
   TD пересоздаются каждый tick сервером.
 ]]
 
+local function callHookPrev(fn, ...)
+    if type(fn) ~= 'function' then return end
+    local results = {pcall(fn, ...)}
+    if not results[1] then
+        print('[Report Desk] sp hook chain: ' .. tostring(results[2]))
+        return
+    end
+    return unpack(results, 2)
+end
+
 local SP_MENU_MARKERS = {
     'exit', 'mute', 'slap', 'stats', 'stat', 'update',
     'weap', 'skick', 'info', 'freeze',
@@ -4348,8 +4358,16 @@ function M.installTextDrawHooks(sampev)
     hookPrevShowTd = prevShow
 
     showTdHook = function(id, data)
-        if M.onShowTextDraw(id, data) == false then return false end
-        if type(hookPrevShowTd) == 'function' then return hookPrevShowTd(id, data) end
+        local block = false
+        local ok, err = pcall(function()
+            block = M.onShowTextDraw(id, data) == false
+        end)
+        if not ok then
+            print('[Report Desk] sp td show: ' .. tostring(err))
+        elseif block then
+            return false
+        end
+        return callHookPrev(hookPrevShowTd, id, data)
     end
     sampev.onShowTextDraw = showTdHook
 
@@ -4358,8 +4376,16 @@ function M.installTextDrawHooks(sampev)
     hookPrevSetStr = prevSet
 
     setStrHook = function(id, text)
-        if M.onTextDrawSetString(id, text) == false then return false end
-        if type(hookPrevSetStr) == 'function' then return hookPrevSetStr(id, text) end
+        local block = false
+        local ok, err = pcall(function()
+            block = M.onTextDrawSetString(id, text) == false
+        end)
+        if not ok then
+            print('[Report Desk] sp td set: ' .. tostring(err))
+        elseif block then
+            return false
+        end
+        return callHookPrev(hookPrevSetStr, id, text)
     end
     sampev.onTextDrawSetString = setStrHook
 end
@@ -4384,7 +4410,7 @@ function M.setSpectating(on)
     else
         session.outbound = {}
         clearMenuColumnState()
-        vehicleHud.reset()
+        pcall(vehicleHud.reset)
         if cbResetMenuState then pcall(cbResetMenuState) end
     end
 end
@@ -4496,7 +4522,7 @@ function M.beginSession(id, nick, opts)
     session.targetId = id
     session.targetNick = nick
     if changed then
-        vehicleHud.reset()
+        pcall(vehicleHud.reset)
         if cbResetMenuSelection then pcall(cbResetMenuSelection)
         elseif cbResetMenuState then pcall(cbResetMenuState) end
     end
@@ -4599,28 +4625,31 @@ function M.installSampevHooks(sampev)
     if prev == playerHandler then prev = hookPrevPlayer end
     hookPrevPlayer = prev
     playerHandler = function(id)
-        id = tonumber(id)
-        if id and id >= 0 then
-            local nick = ''
-            pcall(function()
-                if deps.sampIsPlayerConnected and deps.sampIsPlayerConnected(id)
-                        and deps.sampGetPlayerNickname then
-                    nick = deps.sampGetPlayerNickname(id) or ''
-                end
-            end)
-            M.setSpectating(true)
-            if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
-            M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
-            pcall(function()
-                local stats = package.loaded['report_desk_spectate_stats']
-                if stats and stats.onSpRefreshSpectatePlayer then
-                    stats.onSpRefreshSpectatePlayer(id)
-                end
-            end)
+        local ok, err = pcall(function()
+            id = tonumber(id)
+            if id and id >= 0 then
+                local nick = ''
+                pcall(function()
+                    if deps.sampIsPlayerConnected and deps.sampIsPlayerConnected(id)
+                            and deps.sampGetPlayerNickname then
+                        nick = deps.sampGetPlayerNickname(id) or ''
+                    end
+                end)
+                M.setSpectating(true)
+                if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
+                M.beginSession(id, nick, { source = 'spectate_player', forceSync = true })
+                pcall(function()
+                    local stats = package.loaded['report_desk_spectate_stats']
+                    if stats and stats.onSpRefreshSpectatePlayer then
+                        stats.onSpRefreshSpectatePlayer(id)
+                    end
+                end)
+            end
+        end)
+        if not ok then
+            print('[Report Desk] spectate player: ' .. tostring(err))
         end
-        if type(hookPrevPlayer) == 'function' then
-            return hookPrevPlayer(id)
-        end
+        return callHookPrev(hookPrevPlayer, id)
     end
     sampev.onSpectatePlayer = playerHandler
 
@@ -4634,9 +4663,7 @@ function M.installSampevHooks(sampev)
                 stats.onSpRefreshSpectateVehicle(vehicleId)
             end
         end)
-        if type(hookPrevVehicle) == 'function' then
-            return hookPrevVehicle(vehicleId)
-        end
+        return callHookPrev(hookPrevVehicle, vehicleId)
     end
     sampev.onSpectateVehicle = vehicleHandler
 end
@@ -13767,6 +13794,11 @@ local deskCache = {
     mainPanelFrame = nil,
     deskWindowFrame = nil,
     catalogFlushFrame = nil,
+    deskUiFrames = nil,
+    spMenuRpcHandler = nil,
+    checkerRpcProbeHandler = nil,
+    d3dLostHandler = nil,
+    d3dResetHandler = nil,
     wm = {
         KEYDOWN = 0x0100,
         KEYUP = 0x0101,
@@ -13925,9 +13957,21 @@ function isUtf8Text(s)
     return type(s) == 'string' and s:find('[\208-\209][\128-\191]') ~= nil
 end
 
+-- Безопасный вызов предыдущего хука в цепочке SAMP (изоляция ошибок чужих скриптов).
+function deskCallHookPrev(fn, ...)
+    if type(fn) ~= 'function' then return end
+    local results = {pcall(fn, ...)}
+    if not results[1] then
+        print('[Report Desk] hook chain: ' .. tostring(results[2]))
+        return
+    end
+    return unpack(results, 2)
+end
+
 -- Повреждённая кодировка (UTF-8 replacement / «пїЅ» после двойной конвертации).
 function looksCorruptedConfigText(s)
-    if not s or s == '' then return false end
+    if type(s) ~= 'string' then s = tostring(s or '') end
+    if s == '' then return false end
     if s:find('\239\191\189', 1, true) then return true end
     local preview = cp1251ToUtf8(s)
     if preview:find('\239\191\189', 1, true) then return true end
@@ -13952,7 +13996,8 @@ function repairStoredConfigText(s, fallback)
 end
 
 function configStoreText(s)
-    if not s or s == '' then return '' end
+    if type(s) ~= 'string' then s = tostring(s or '') end
+    if s == '' then return '' end
     if looksCorruptedConfigText(s) then return '' end
     local u = cp1251ToUtf8(s)
     if looksCorruptedConfigText(u) then return s end
@@ -15175,6 +15220,7 @@ end
 
 --[[ Модуль: UI чата треда, bubbles, composer. ]]
 function installProfanityHooks()
+    if not sampev then return end
     if deskCache.profHooksInstalled then return end
     deskCache.profHooksInstalled = true
     local prevBubble = sampev.onPlayerChatBubble
@@ -15182,9 +15228,7 @@ function installProfanityHooks()
     deskCache.hookPrevProfBubble = prevBubble
     deskCache.profBubbleHandler = function(playerId, color, distance, duration, message)
         pcall(checkProfanityFromBubble, playerId, message, color)
-        if type(prevBubble) == 'function' then
-            return prevBubble(playerId, color, distance, duration, message)
-        end
+        return deskCallHookPrev(prevBubble, playerId, color, distance, duration, message)
     end
     sampev.onPlayerChatBubble = deskCache.profBubbleHandler
     local prevChat = sampev.onChatMessage
@@ -15201,6 +15245,8 @@ end
 
 -- Say
 function say(text)
+    if not isSampAvailable or not isSampAvailable() then return end
+    if not sampAddChatMessage then return end
     sampAddChatMessage(MSG_PREFIX .. text, 0xE8E8E8)
 end
 
@@ -19253,9 +19299,12 @@ function flushDirtyConfigNow()
         pcall(flushCheckerCatalogNow)
     end
     if dirtySettings or dirtyThreads then
-        if saveConfig() then
+        local okSave, saved = pcall(saveConfig)
+        if okSave and saved then
             lastSettingsSave = os.clock()
             lastThreadsSave = os.clock()
+        elseif not okSave then
+            print('[Report Desk] save: ' .. tostring(saved))
         end
     end
 end
@@ -23254,7 +23303,8 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         alignRight = false
     end
 
-    if opts.nickCol then
+    -- clist репортёра только для его входящих сообщений; «Вы» и админ — свои цвета
+    if opts.nickCol and dir == 'in' then
         subCol = opts.nickCol
     end
     if opts.profanityHighlight then
@@ -25272,17 +25322,31 @@ imgui.OnInitialize(function()
     pcall(ensureDeskCatalogWarmup)
 end)
 
-addEventHandler('onD3DDeviceLost', function()
+function uninstallDeskD3DHandlers()
+    if type(deskCache) ~= 'table' then return end
+    if deskCache.d3dLostHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onD3DDeviceLost', deskCache.d3dLostHandler)
+    end
+    if deskCache.d3dResetHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onD3DDeviceReset', deskCache.d3dResetHandler)
+    end
+    deskCache.d3dLostHandler = nil
+    deskCache.d3dResetHandler = nil
+end
+
+deskCache.d3dLostHandler = function()
     if not catWarmup.inited then return end
     pcall(deskTexPipeline.halt, deskTex)
     catWarmup.inited = false
-end)
+end
+addEventHandler('onD3DDeviceLost', deskCache.d3dLostHandler)
 
-addEventHandler('onD3DDeviceReset', function()
+deskCache.d3dResetHandler = function()
     pcall(ensureDeskCatalogWarmup)
     if skinUiTabActive then pcall(skinsOnTabEnter) end
     if deskVeh and deskVeh.tabActive then pcall(deskVeh.onTabEnter) end
-end)
+end
+addEventHandler('onD3DDeviceReset', deskCache.d3dResetHandler)
 
 -- Desk hook/helper.
 function deskPassesGameKey(wparam)
@@ -25338,11 +25402,35 @@ function deskSpSpectateOverlayVisible()
     return false
 end
 
+function uninstallDeskUiFrames()
+    if type(deskCache) ~= 'table' then return end
+    local frames = deskCache.deskUiFrames
+    if type(frames) == 'table' then
+        for i = 1, #frames do
+            local f = frames[i]
+            if f and type(f.Unsubscribe) == 'function' then
+                pcall(function() f:Unsubscribe() end)
+            end
+        end
+    end
+    deskCache.deskUiFrames = nil
+    deskCache.deskWindowFrame = nil
+    deskCache.catalogFlushFrame = nil
+end
+
 do
+    local function trackDeskUiFrame(frame)
+        if type(deskCache) == 'table' then
+            if type(deskCache.deskUiFrames) ~= 'table' then deskCache.deskUiFrames = {} end
+            deskCache.deskUiFrames[#deskCache.deskUiFrames + 1] = frame
+        end
+        return frame
+    end
+
     local function setupDeskFrame(frame, hideCursor, lockPlayer)
         frame.HideCursor = hideCursor and true or false
         frame.LockPlayer = lockPlayer and true or false
-        return frame
+        return trackDeskUiFrame(frame)
     end
 
     -- Превью каталога грузятся в drawSkinsTab / deskVeh.drawTab (лениво, по видимым ячейкам).
@@ -25973,6 +26061,7 @@ function main()
     if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
         print('[Report Desk] spectate module unavailable — spectate HUD disabled')
     else
+    local okSpInstall, errSpInstall = pcall(function()
     deskSpectateStats.install({
         trim = trim,
         stripTags = stripTags,
@@ -26042,6 +26131,10 @@ function main()
             return deskInputState.spectateUiModeActive == true
         end,
     })
+    end)
+    if not okSpInstall then
+        print('[Report Desk] spectate install: ' .. tostring(errSpInstall))
+    end
     end
     pcall(deskReinstallSpMenuHooks)
     pcall(installDeskSpMenuRpcBlock)
@@ -26081,18 +26174,18 @@ function main()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
-    installProfanityHooks()
-    installDeskServerMessageHook()
-    installDeskSpectateDialogHook()
-    installDeskSpectateToggleHook()
-    installDeskSendChatHook()
-    installDeskSendCommandHook()
-    installDeskPlayerQuitHook()
-    installDeskPlayerJoinHook()
-    installDeskPlayerStreamInHook()
-    installDeskPlayerColorHook()
+    pcall(installProfanityHooks)
+    pcall(installDeskServerMessageHook)
+    pcall(installDeskSpectateDialogHook)
+    pcall(installDeskSpectateToggleHook)
+    pcall(installDeskSendChatHook)
+    pcall(installDeskSendCommandHook)
+    pcall(installDeskPlayerQuitHook)
+    pcall(installDeskPlayerJoinHook)
+    pcall(installDeskPlayerStreamInHook)
+    pcall(installDeskPlayerColorHook)
     pcall(installDeskGodmodeHealthHook)
-    installDeskSpRefreshHooks()
+    pcall(installDeskSpRefreshHooks)
     pcall(sampSyncAllPlayerColors)
     sessionLive = true
     lastSettingsSave = os.clock()
@@ -26266,18 +26359,24 @@ function main()
                 pcall(flushCheckerCatalogNow)
             end
             if dirtySettings or dirtyThreads then
-                if saveConfig() then
+                local okSave, saved = pcall(saveConfig)
+                if okSave and saved then
                     lastSettingsSave = nowSave
                     lastThreadsSave = nowSave
+                elseif not okSave then
+                    print('[Report Desk] autosave: ' .. tostring(saved))
                 end
             else
                 lastSettingsSave = nowSave
                 lastThreadsSave = nowSave
             end
         elseif dirtyThreads and nowSave - lastThreadsSave >= AUTOSAVE_THREADS_INTERVAL then
-            if saveConfig() then
+            local okSave, saved = pcall(saveConfig)
+            if okSave and saved then
                 lastThreadsSave = nowSave
                 lastSettingsSave = nowSave
+            elseif not okSave then
+                print('[Report Desk] autosave threads: ' .. tostring(saved))
             end
         end
     end
@@ -26400,9 +26499,7 @@ function installDeskSpectateDialogHook()
             checkerHandled = true
         end
         if checkerHandled then return false end
-        if type(deskCache.hookPrevShowDialog) == 'function' then
-            return deskCache.hookPrevShowDialog(dialogId, style, title, button1, button2, text)
-        end
+        return deskCallHookPrev(deskCache.hookPrevShowDialog, dialogId, style, title, button1, button2, text)
     end
     sampev.onShowDialog = deskCache.specDialogHandler
 end
@@ -26419,9 +26516,7 @@ function installDeskServerMessageHook()
         if not ok then
             print('[Report Desk] server msg hook: ' .. tostring(err))
         end
-        if type(prev) == 'function' then
-            return prev(color, text)
-        end
+        return deskCallHookPrev(prev, color, text)
     end
     sampev.onServerMessage = deskCache.serverMsgHandler
 end
@@ -26479,12 +26574,15 @@ function installDeskGodmodeHealthHook()
     if prev == deskCache.gmHealthHandler then prev = nil end
     if deskCache.hookPrevSetPlayerHealth == nil then deskCache.hookPrevSetPlayerHealth = prev end
     deskCache.gmHealthHandler = function(health)
-        local block = cheatsOnSetPlayerHealth(health)
-        if block == false then return false end
-        local chain = deskCache.hookPrevSetPlayerHealth
-        if type(chain) == 'function' then
-            return chain(health)
+        local block
+        local okGm, errGm = pcall(function()
+            block = cheatsOnSetPlayerHealth(health)
+        end)
+        if not okGm then
+            print('[Report Desk] godmode hook: ' .. tostring(errGm))
         end
+        if block == false then return false end
+        return deskCallHookPrev(deskCache.hookPrevSetPlayerHealth, health)
     end
     sampev.onSetPlayerHealth = deskCache.gmHealthHandler
 end
@@ -26505,9 +26603,7 @@ function installDeskPlayerQuitHook()
     if deskCache.hookPrevPlayerQuit == nil then deskCache.hookPrevPlayerQuit = prev end
     deskCache.playerQuitHandler = function(playerId, reason)
         deskOnPlayerQuit(playerId, reason)
-        if type(prev) == 'function' then
-            return prev(playerId, reason)
-        end
+        return deskCallHookPrev(prev, playerId, reason)
     end
     sampev.onPlayerQuit = deskCache.playerQuitHandler
 end
@@ -26531,9 +26627,7 @@ function installDeskPlayerJoinHook()
     if deskCache.hookPrevPlayerJoin == nil then deskCache.hookPrevPlayerJoin = prev end
     deskCache.playerJoinHandler = function(playerId, color, isNpc, nickname)
         pcall(deskOnPlayerJoin, playerId, color, isNpc, nickname)
-        if type(prev) == 'function' then
-            return prev(playerId, color, isNpc, nickname)
-        end
+        return deskCallHookPrev(prev, playerId, color, isNpc, nickname)
     end
     sampev.onPlayerJoin = deskCache.playerJoinHandler
 end
@@ -26555,9 +26649,7 @@ function installDeskPlayerStreamInHook()
         if deskSpectateStats and deskSpectateStats.onSpRefreshStreamIn then
             pcall(deskSpectateStats.onSpRefreshStreamIn, playerId)
         end
-        if type(prev) == 'function' then
-            return prev(playerId, team, model, position, rotation, color, fightingStyle)
-        end
+        return deskCallHookPrev(prev, playerId, team, model, position, rotation, color, fightingStyle)
     end
     sampev.onPlayerStreamIn = deskCache.playerStreamInHandler
 end
@@ -26575,9 +26667,7 @@ function installDeskPlayerColorHook()
         if type(sampStorePlayerColor) == 'function' then
             pcall(sampStorePlayerColor, playerId, color)
         end
-        if type(prev) == 'function' then
-            return prev(playerId, color)
-        end
+        return deskCallHookPrev(prev, playerId, color)
     end
     sampev.onSetPlayerColor = deskCache.playerColorHandler
 end
@@ -26601,9 +26691,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshEnterVehicle then
                 pcall(deskSpectateStats.onSpRefreshEnterVehicle, playerId, vehicleId)
             end
-            if type(prevEnter) == 'function' then
-                return prevEnter(playerId, vehicleId, passenger)
-            end
+            return deskCallHookPrev(prevEnter, playerId, vehicleId, passenger)
         end
         sampev.onPlayerEnterVehicle = deskCache.spEnterHandler
     end
@@ -26616,9 +26704,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshExitVehicle then
                 pcall(deskSpectateStats.onSpRefreshExitVehicle, playerId, vehicleId)
             end
-            if type(prevExit) == 'function' then
-                return prevExit(playerId, vehicleId)
-            end
+            return deskCallHookPrev(prevExit, playerId, vehicleId)
         end
         sampev.onPlayerExitVehicle = deskCache.spExitHandler
     end
@@ -26631,9 +26717,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshSetInterior then
                 pcall(deskSpectateStats.onSpRefreshSetInterior, interior)
             end
-            if type(prevInterior) == 'function' then
-                return prevInterior(interior)
-            end
+            return deskCallHookPrev(prevInterior, interior)
         end
         sampev.onSetInterior = deskCache.spInteriorHandler
     end
@@ -26646,9 +26730,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshVehicleSync then
                 pcall(deskSpectateStats.onSpRefreshVehicleSync, playerId)
             end
-            if type(prevVehicle) == 'function' then
-                return prevVehicle(playerId, vehicleId, data)
-            end
+            return deskCallHookPrev(prevVehicle, playerId, vehicleId, data)
         end
         sampev.onVehicleSync = deskCache.spVehicleSyncHandler
     end
@@ -26661,9 +26743,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshPassengerSync then
                 pcall(deskSpectateStats.onSpRefreshPassengerSync, playerId)
             end
-            if type(prevPassenger) == 'function' then
-                return prevPassenger(playerId, vehicleId, data)
-            end
+            return deskCallHookPrev(prevPassenger, playerId, vehicleId, data)
         end
         sampev.onPassengerSync = deskCache.spPassengerSyncHandler
     end
@@ -26676,9 +26756,7 @@ function installDeskSpRefreshHooks()
             if deskSpectateStats and deskSpectateStats.onSpRefreshPlayerSync then
                 pcall(deskSpectateStats.onSpRefreshPlayerSync, playerId)
             end
-            if type(prevPlayer) == 'function' then
-                return prevPlayer(playerId, data)
-            end
+            return deskCallHookPrev(prevPlayer, playerId, data)
         end
         sampev.onPlayerSync = deskCache.spPlayerSyncHandler
     end
@@ -26715,9 +26793,7 @@ function installDeskSendChatHook()
             print('[Report Desk] send chat hook: ' .. tostring(err))
         end
         if blocked then return false end
-        if type(prev) == 'function' then
-            return prev(message)
-        end
+        return deskCallHookPrev(prev, message)
     end
     sampev.onSendChat = deskCache.sendChatHandler
 end
@@ -26788,8 +26864,7 @@ function installDeskSendCommandHook()
     deskCache.sendCommandHandler = function(command)
         command = trim(command or '')
         if command == '' then
-            if type(prev) == 'function' then return prev(command) end
-            return
+            return deskCallHookPrev(prev, command)
         end
         local blocked = false
         local ansHandled = false
@@ -26818,9 +26893,7 @@ function installDeskSendCommandHook()
         end
         if blocked then return false end
         if ansHandled then return end
-        if type(prev) == 'function' then
-            return prev(command)
-        end
+        return deskCallHookPrev(prev, command)
     end
     sampev.onSendCommand = deskCache.sendCommandHandler
 end
@@ -26947,9 +27020,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuInit(menuTitle, x, y, columns, menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuInit) == 'function' then
-            return deskCache.hookPrevSpMenuInit(menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuInit, menuId, menuTitle, x, y, twoColumns, columns, rows, menu)
     end
     sampev.onInitMenu = deskCache.spMenuInitHandler
 
@@ -26957,9 +27028,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuShow(menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuShow) == 'function' then
-            return deskCache.hookPrevSpMenuShow(menuId)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuShow, menuId)
     end
     sampev.onShowMenu = deskCache.spMenuShowHandler
 
@@ -26967,9 +27036,7 @@ function installDeskSpMenuHooks()
         if shouldBlockServerSpSamMenuHide(menuId) then
             return false
         end
-        if type(deskCache.hookPrevSpMenuHide) == 'function' then
-            return deskCache.hookPrevSpMenuHide(menuId)
-        end
+        return deskCallHookPrev(deskCache.hookPrevSpMenuHide, menuId)
     end
     sampev.onHideMenu = deskCache.spMenuHideHandler
 end
@@ -27069,7 +27136,7 @@ function installDeskSpMenuRpcBlock()
     local okBs, bsIo = pcall(require, 'samp.events.bitstream_io')
     if not okBs then bsIo = nil end
 
-    addEventHandler('onReceiveRpc', function(rpcId, bs)
+    local handler = function(rpcId, bs)
         if rpcId ~= RPC_INIT_MENU and rpcId ~= RPC_SHOW_MENU and rpcId ~= RPC_HIDE_MENU then
             return
         end
@@ -27094,8 +27161,19 @@ function installDeskSpMenuRpcBlock()
         elseif rpcId == RPC_HIDE_MENU then
             if shouldBlockServerSpSamMenuHide(menuId) then return false end
         end
-    end, 2147483647)
+    end
+    deskCache.spMenuRpcHandler = handler
+    addEventHandler('onReceiveRpc', handler, 2147483647)
     deskCache.spMenuRpcRegistered = true
+end
+
+-- Снятие RPC-блока серверного меню /sp.
+function uninstallDeskSpMenuRpcBlock()
+    if deskCache.spMenuRpcHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onReceiveRpc', deskCache.spMenuRpcHandler)
+    end
+    deskCache.spMenuRpcHandler = nil
+    deskCache.spMenuRpcRegistered = false
 end
 
 -- Dev: лог нестандартных RPC во время окна /adms (settings.checker_dev_rpc_probe).
@@ -27112,13 +27190,24 @@ function installDeskCheckerRpcProbe()
         [RPC.UPDATESCORESPINGSIPS or 155] = true,
         [RPC.SETPLAYERCOLOR or 72] = true,
     }
-    addEventHandler('onReceiveRpc', function(rpcId)
+    local handler = function(rpcId)
         if settings.checker_dev_rpc_probe ~= true then return end
         if type(checkerIsAdmsSyncWindow) ~= 'function' or not checkerIsAdmsSyncWindow() then return end
         if skip[rpcId] then return end
         print(string.format('[Report Desk] checker rpc probe: id=%s during /adms sync', tostring(rpcId)))
-    end)
+    end
+    deskCache.checkerRpcProbeHandler = handler
+    addEventHandler('onReceiveRpc', handler)
     deskCache.checkerRpcProbeRegistered = true
+end
+
+-- Снятие dev RPC-probe checker.
+function uninstallDeskCheckerRpcProbe()
+    if deskCache.checkerRpcProbeHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onReceiveRpc', deskCache.checkerRpcProbeHandler)
+    end
+    deskCache.checkerRpcProbeHandler = nil
+    deskCache.checkerRpcProbeRegistered = false
 end
 
 -- Uninstall Desk Sp Menu Hooks
@@ -27143,6 +27232,43 @@ end
 
 -- Снятие всех desk hooks при terminate.
 function deskUninstall()
+    uninstallDeskSpMenuRpcBlock()
+    uninstallDeskCheckerRpcProbe()
+    if type(uninstallDeskUiFrames) == 'function' then
+        pcall(uninstallDeskUiFrames)
+    end
+    if type(uninstallDeskD3DHandlers) == 'function' then
+        pcall(uninstallDeskD3DHandlers)
+    end
+    if not sampev then
+        uninstallDeskSpMenuHooks()
+        if type(deskSpectateStats) == 'table' then
+            if type(deskSpectateStats.uninstallSpectatePlayerHook) == 'function' then
+                pcall(deskSpectateStats.uninstallSpectatePlayerHook)
+            end
+            if type(deskSpectateStats.uninstallSpSpectateOverlayFrame) == 'function' then
+                pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+            end
+        end
+        if type(uninstallCheckerHudFrame) == 'function' then
+            pcall(uninstallCheckerHudFrame)
+        end
+        if type(checkerDismissOpenSyncDialogOnUnload) == 'function' then
+            pcall(checkerDismissOpenSyncDialogOnUnload)
+        end
+        if type(deskLeaveSpectateMode) == 'function' then
+            pcall(deskLeaveSpectateMode)
+        end
+        pcall(function()
+            if deskWmDispatch and deskWmDispatch.uninstall then
+                deskWmDispatch.uninstall()
+            end
+        end)
+        if type(deskUninstallSampInputEnableHook) == 'function' then
+            pcall(deskUninstallSampInputEnableHook)
+        end
+        return
+    end
     if deskCache.serverMsgHandler and sampev.onServerMessage == deskCache.serverMsgHandler then
         sampev.onServerMessage = deskCache.hookPrevServerMsg
     end
@@ -27211,9 +27337,13 @@ function deskUninstall()
     deskCache.remoteChatQueue = {}
     deskCache.sampPlayerColors = {}
     uninstallDeskSpMenuHooks()
-    pcall(deskSpectateStats.uninstallSpectatePlayerHook)
-    if deskSpectateStats.uninstallSpSpectateOverlayFrame then
-        pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+    if type(deskSpectateStats) == 'table' then
+        if type(deskSpectateStats.uninstallSpectatePlayerHook) == 'function' then
+            pcall(deskSpectateStats.uninstallSpectatePlayerHook)
+        end
+        if type(deskSpectateStats.uninstallSpSpectateOverlayFrame) == 'function' then
+            pcall(deskSpectateStats.uninstallSpSpectateOverlayFrame)
+        end
     end
     if type(uninstallCheckerHudFrame) == 'function' then
         pcall(uninstallCheckerHudFrame)

@@ -301,7 +301,8 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         alignRight = false
     end
 
-    if opts.nickCol then
+    -- clist репортёра только для его входящих сообщений; «Вы» и админ — свои цвета
+    if opts.nickCol and dir == 'in' then
         subCol = opts.nickCol
     end
     if opts.profanityHighlight then
@@ -2319,17 +2320,31 @@ imgui.OnInitialize(function()
     pcall(ensureDeskCatalogWarmup)
 end)
 
-addEventHandler('onD3DDeviceLost', function()
+function uninstallDeskD3DHandlers()
+    if type(deskCache) ~= 'table' then return end
+    if deskCache.d3dLostHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onD3DDeviceLost', deskCache.d3dLostHandler)
+    end
+    if deskCache.d3dResetHandler and removeEventHandler then
+        pcall(removeEventHandler, 'onD3DDeviceReset', deskCache.d3dResetHandler)
+    end
+    deskCache.d3dLostHandler = nil
+    deskCache.d3dResetHandler = nil
+end
+
+deskCache.d3dLostHandler = function()
     if not catWarmup.inited then return end
     pcall(deskTexPipeline.halt, deskTex)
     catWarmup.inited = false
-end)
+end
+addEventHandler('onD3DDeviceLost', deskCache.d3dLostHandler)
 
-addEventHandler('onD3DDeviceReset', function()
+deskCache.d3dResetHandler = function()
     pcall(ensureDeskCatalogWarmup)
     if skinUiTabActive then pcall(skinsOnTabEnter) end
     if deskVeh and deskVeh.tabActive then pcall(deskVeh.onTabEnter) end
-end)
+end
+addEventHandler('onD3DDeviceReset', deskCache.d3dResetHandler)
 
 -- Desk hook/helper.
 function deskPassesGameKey(wparam)
@@ -2385,11 +2400,35 @@ function deskSpSpectateOverlayVisible()
     return false
 end
 
+function uninstallDeskUiFrames()
+    if type(deskCache) ~= 'table' then return end
+    local frames = deskCache.deskUiFrames
+    if type(frames) == 'table' then
+        for i = 1, #frames do
+            local f = frames[i]
+            if f and type(f.Unsubscribe) == 'function' then
+                pcall(function() f:Unsubscribe() end)
+            end
+        end
+    end
+    deskCache.deskUiFrames = nil
+    deskCache.deskWindowFrame = nil
+    deskCache.catalogFlushFrame = nil
+end
+
 do
+    local function trackDeskUiFrame(frame)
+        if type(deskCache) == 'table' then
+            if type(deskCache.deskUiFrames) ~= 'table' then deskCache.deskUiFrames = {} end
+            deskCache.deskUiFrames[#deskCache.deskUiFrames + 1] = frame
+        end
+        return frame
+    end
+
     local function setupDeskFrame(frame, hideCursor, lockPlayer)
         frame.HideCursor = hideCursor and true or false
         frame.LockPlayer = lockPlayer and true or false
-        return frame
+        return trackDeskUiFrame(frame)
     end
 
     -- Превью каталога грузятся в drawSkinsTab / deskVeh.drawTab (лениво, по видимым ячейкам).

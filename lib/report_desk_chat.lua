@@ -1,5 +1,6 @@
 --[[ Модуль: UI чата треда, bubbles, composer. ]]
 function installProfanityHooks()
+    if not sampev then return end
     if deskCache.profHooksInstalled then return end
     deskCache.profHooksInstalled = true
     local prevBubble = sampev.onPlayerChatBubble
@@ -7,9 +8,7 @@ function installProfanityHooks()
     deskCache.hookPrevProfBubble = prevBubble
     deskCache.profBubbleHandler = function(playerId, color, distance, duration, message)
         pcall(checkProfanityFromBubble, playerId, message, color)
-        if type(prevBubble) == 'function' then
-            return prevBubble(playerId, color, distance, duration, message)
-        end
+        return deskCallHookPrev(prevBubble, playerId, color, distance, duration, message)
     end
     sampev.onPlayerChatBubble = deskCache.profBubbleHandler
     local prevChat = sampev.onChatMessage
@@ -26,6 +25,8 @@ end
 
 -- Say
 function say(text)
+    if not isSampAvailable or not isSampAvailable() then return end
+    if not sampAddChatMessage then return end
     sampAddChatMessage(MSG_PREFIX .. text, 0xE8E8E8)
 end
 

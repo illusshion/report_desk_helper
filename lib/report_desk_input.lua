@@ -814,9 +814,12 @@ function flushDirtyConfigNow()
         pcall(flushCheckerCatalogNow)
     end
     if dirtySettings or dirtyThreads then
-        if saveConfig() then
+        local okSave, saved = pcall(saveConfig)
+        if okSave and saved then
             lastSettingsSave = os.clock()
             lastThreadsSave = os.clock()
+        elseif not okSave then
+            print('[Report Desk] save: ' .. tostring(saved))
         end
     end
 end

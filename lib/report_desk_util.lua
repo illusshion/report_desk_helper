@@ -36,9 +36,21 @@ function isUtf8Text(s)
     return type(s) == 'string' and s:find('[\208-\209][\128-\191]') ~= nil
 end
 
+-- Безопасный вызов предыдущего хука в цепочке SAMP (изоляция ошибок чужих скриптов).
+function deskCallHookPrev(fn, ...)
+    if type(fn) ~= 'function' then return end
+    local results = {pcall(fn, ...)}
+    if not results[1] then
+        print('[Report Desk] hook chain: ' .. tostring(results[2]))
+        return
+    end
+    return unpack(results, 2)
+end
+
 -- Повреждённая кодировка (UTF-8 replacement / «пїЅ» после двойной конвертации).
 function looksCorruptedConfigText(s)
-    if not s or s == '' then return false end
+    if type(s) ~= 'string' then s = tostring(s or '') end
+    if s == '' then return false end
     if s:find('\239\191\189', 1, true) then return true end
     local preview = cp1251ToUtf8(s)
     if preview:find('\239\191\189', 1, true) then return true end
@@ -63,7 +75,8 @@ function repairStoredConfigText(s, fallback)
 end
 
 function configStoreText(s)
-    if not s or s == '' then return '' end
+    if type(s) ~= 'string' then s = tostring(s or '') end
+    if s == '' then return '' end
     if looksCorruptedConfigText(s) then return '' end
     local u = cp1251ToUtf8(s)
     if looksCorruptedConfigText(u) then return s end
