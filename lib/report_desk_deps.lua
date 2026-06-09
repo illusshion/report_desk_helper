@@ -85,10 +85,17 @@ function M.ensureAll(opts)
     end
 
     if autoupdate.ensureDependencies then
-        return autoupdate.ensureDependencies(manifest, {
+        local depOpts = {
             say = opts.say,
-            quietChat = opts.say == nil,
-        })
+            showOverlay = opts.showOverlay,
+            userFacing = opts.userFacing,
+        }
+        if opts.quietChat ~= nil then
+            depOpts.quietChat = opts.quietChat
+        elseif opts.say ~= nil then
+            depOpts.quietChat = false
+        end
+        return autoupdate.ensureDependencies(manifest, depOpts)
     end
 
     if M.hasMimgui() and M.canRequireMimgui() then

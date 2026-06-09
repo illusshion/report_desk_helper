@@ -1,7 +1,7 @@
 {
-    "tag":  "v1.0.29",
-    "version":  "1.0.29",
-    "built_at":  "2026-06-09T04:23:43.9156150+03:00",
+    "tag":  "v1.0.0",
+    "version":  "1.0.0",
+    "built_at":  "2026-06-09T04:35:52.3186550+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
@@ -11,14 +11,14 @@
                                  },
                       "bootstrap_file":  {
                                              "path":  "dist\\AdminDesk.luac",
-                                             "sha256":  "5725277e67b7bb4634ab4be07172dd85f6e514dc2f4791f8aa09dab4d27d3e5c",
-                                             "bytes":  8186
+                                             "sha256":  "8ac9fd16d5000487ed5031c1ad68e102583521efe726015423c9904f8718921d",
+                                             "bytes":  8020
                                          },
-                      "version":  "1.0.29",
+                      "version":  "1.0.0",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "01594a07e91197d939a103aec2bf80b1a03430e4cdfdd093bf8e0319b6d242e3",
-                                  "bytes":  57730997
+                                  "sha256":  "f85a4ae8990d38ebdceab1fd1240a6d97f4eb5fce5c6d1c44a68319c2af93221",
+                                  "bytes":  57739343
                               },
                       "bootstrap":  "AdminDesk.luac",
                       "core_asset":  "AdminDeskCore.luac",
@@ -31,13 +31,13 @@
                       "verified":  true,
                       "deps":  {
                                    "path":  "dist\\report_desk_deps.lua",
-                                   "sha256":  "d5332cef4e6cb2a3d447b40eb61363e257fc5d81c1f169474beff6116fba5527",
-                                   "bytes":  2638
+                                   "sha256":  "512e8ca1533f2f5bcf48af781a96f7883d69991d8e84cc98b190f219048765d5",
+                                   "bytes":  2886
                                },
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "cc879c1ce2c6c6beefcdad0db8a607d2acfbd0dc875e461c3b60dc3acf4c86f9",
-                                         "bytes":  52715
+                                         "sha256":  "2a74810c0b7d46b841a5e5cf2e565c37b4b38c0b97d656df22da5d983f5a7105",
+                                         "bytes":  60980
                                      }
                   },
     "verified":  true,

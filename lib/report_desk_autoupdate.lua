@@ -116,10 +116,105 @@ local function log(msg)
 end
 
 local function notify(msg, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     log(msg)
     if opts.quietChat or opts.say == false then return end
     M.chatSay(msg)
+end
+
+local OVERLAY_TITLE = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk'
+local OVERLAY_DOWNLOAD = '\xCA\xE0\xF7\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
+local OVERLAY_INSTALL = '\xD3\xF1\xF2\xE0\xED\xE0\xE2\xEB\xE8\xE2\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
+local OVERLAY_ASSETS = '\xCA\xE0\xF7\xE0\xE5\xEC \xEF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE8\xED\xEE\xE2 \xE8 \xD2\xD1...'
+local OVERLAY_DONE = '\xC3\xEE\xF2\xEE\xE2\xEE'
+
+-- Resolve User Notify Opts
+function M.resolveUserNotifyOpts(opts)
+    opts = opts or {}
+    if opts.userFacing then
+        if opts.quietChat == nil then
+            opts.quietChat = true
+        end
+        if opts.showOverlay == nil then
+            opts.showOverlay = true
+        end
+    end
+    return opts
+end
+
+-- Read Manifest Changelog
+function M.readManifestChangelog(manifest)
+    manifest = manifest or {}
+    local cl = manifest.changelog or manifest.release_notes or ''
+    cl = tostring(cl):gsub('^%s+', ''):gsub('%s+$', '')
+    if cl == '' then return '' end
+    if #cl > 180 then
+        cl = cl:sub(1, 177) .. '...'
+    end
+    return cl
+end
+
+-- Show Update Success Message
+function M.showUpdateSuccessMessage(manifest)
+    local ver = tostring(manifest and manifest.version or M.readLocalVersion() or '')
+    local cl = M.readManifestChangelog(manifest)
+    local msg
+    if cl ~= '' then
+        msg = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE: ' .. cl
+    elseif ver ~= '' and ver ~= '0.0.0' then
+        msg = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. ver .. ' \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE'
+    else
+        msg = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE'
+    end
+    M.chatSay(msg)
+end
+
+-- Show Update Fail Message
+function M.showUpdateFailMessage()
+    M.chatSay('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xE1\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair')
+end
+
+-- Show Welcome Message
+function M.showWelcomeMessage(manifest)
+    local ver = tostring(manifest and manifest.version or M.readLocalVersion() or '')
+    if ver == '' or ver == '0.0.0' then
+        ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
+    end
+    M.chatSay('Report Desk v' .. ver .. ' \xB7 F7, /deskupdate')
+end
+
+local function overlayProgressDetail(opts, step, total, fallback)
+    if opts and opts.userFacing then
+        if total and total > 0 then
+            return string.format('%d / %d', step, total)
+        end
+        return OVERLAY_DOWNLOAD
+    end
+    return fallback or OVERLAY_DOWNLOAD
+end
+
+local function finishUserFacingUpdate(manifest, opts)
+    opts = M.resolveUserNotifyOpts(opts or {})
+    if not opts.userFacing then return end
+    local cl = M.readManifestChangelog(manifest)
+    if overlayEnabled(opts) then
+        overlayShow(OVERLAY_TITLE, OVERLAY_DONE, opts)
+        overlayUpdate(cl ~= '' and cl or OVERLAY_DONE, 1.0, opts)
+        wait(1400)
+        overlayHide()
+    end
+    M.showUpdateSuccessMessage(manifest)
+end
+
+local function failUserFacingUpdate(opts, technical)
+    opts = M.resolveUserNotifyOpts(opts or {})
+    log(tostring(technical or 'update failed'))
+    overlayHide()
+    if opts.userFacing then
+        M.showUpdateFailMessage()
+    else
+        notify(tostring(technical or 'update failed'), opts)
+    end
 end
 
 -- Публичный API модуля.
@@ -756,7 +851,7 @@ local function buildUpdatePlan(manifest, opts)
 end
 
 local function downloadPlan(plan, manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     clearStaging()
     local staging = M.path(M.STAGING_DIR)
     local downloaded = {}
@@ -770,12 +865,17 @@ local function downloadPlan(plan, manifest, opts)
 
     for _, spec in ipairs(plan) do
         step = step + 1
-        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset
-        overlayUpdate(label, (step - 1) / totalSteps, opts)
+        local techLabel = 'download ' .. spec.asset
+        local overlayLabel = overlayProgressDetail(opts, step, totalSteps, techLabel)
+        overlayUpdate(overlayLabel, (step - 1) / totalSteps, opts)
+        if opts.userFacing then
+            log(techLabel)
+        else
+            notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset .. '...', opts)
+        end
         local tmp = staging .. '\\' .. spec.asset:gsub('[\\/]', '_')
-        notify(label .. '...', opts)
         local minBytes = spec.bytes > 0 and spec.bytes or 32
-        local ok, err = downloadWithRetry(spec.url, tmp, 180, minBytes, label)
+        local ok, err = downloadWithRetry(spec.url, tmp, 180, minBytes, techLabel)
         if not ok then
             return nil, 'download ' .. spec.asset .. ': ' .. tostring(err)
         end
@@ -791,10 +891,14 @@ local function downloadPlan(plan, manifest, opts)
         step = step + 1
         local spec = plan.runtime
         local tmp = staging .. '\\' .. spec.asset
-        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset
-        overlayUpdate(label, (step - 1) / totalSteps, opts)
-        notify(label .. '...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 120, 512, label)
+        local techLabel = 'download ' .. spec.asset
+        overlayUpdate(overlayProgressDetail(opts, step, totalSteps, techLabel), (step - 1) / totalSteps, opts)
+        if opts.userFacing then
+            log(techLabel)
+        else
+            notify('\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 ' .. spec.asset .. '...', opts)
+        end
+        local ok, err = downloadWithRetry(spec.url, tmp, 120, 512, techLabel)
         if not ok then
             return nil, 'download runtime: ' .. tostring(err)
         end
@@ -812,10 +916,14 @@ local function downloadPlan(plan, manifest, opts)
         step = step + 1
         local spec = plan.mimgui
         local tmp = staging .. '\\' .. spec.asset
-        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 mimgui'
-        overlayUpdate(label, (step - 1) / totalSteps, opts)
-        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 120, 1024, label)
+        local techLabel = 'download mimgui'
+        overlayUpdate(overlayProgressDetail(opts, step, totalSteps, techLabel), (step - 1) / totalSteps, opts)
+        if opts.userFacing then
+            log(techLabel)
+        else
+            notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
+        end
+        local ok, err = downloadWithRetry(spec.url, tmp, 120, 1024, techLabel)
         if not ok then
             return nil, 'download mimgui: ' .. tostring(err)
         end
@@ -833,10 +941,14 @@ local function downloadPlan(plan, manifest, opts)
         step = step + 1
         local spec = plan.iconv
         local tmp = staging .. '\\iconv.dll'
-        local label = '\xD1\xEA\xE0\xF7\xE8\xE2\xE0\xED\xE8\xE5 iconv.dll'
-        overlayUpdate(label, (step - 1) / totalSteps, opts)
-        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
-        local ok, err = downloadWithRetry(spec.url, tmp, 60, 4096, label)
+        local techLabel = 'download iconv.dll'
+        overlayUpdate(overlayProgressDetail(opts, step, totalSteps, techLabel), (step - 1) / totalSteps, opts)
+        if opts.userFacing then
+            log(techLabel)
+        else
+            notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
+        end
+        local ok, err = downloadWithRetry(spec.url, tmp, 60, 4096, techLabel)
         if not ok then
             return nil, 'download iconv: ' .. tostring(err)
         end
@@ -864,7 +976,9 @@ local function disableLegacyLauncher()
     end
 end
 
-local function commitPlan(downloaded, manifest, allFiles)
+local function commitPlan(downloaded, manifest, allFiles, opts)
+    opts = M.resolveUserNotifyOpts(opts or {})
+    local installLabel = opts.userFacing and OVERLAY_INSTALL or '\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xF4\xE0\xE9\xEB\xEE\xE2...'
     local stateFiles = {}
     for _, item in ipairs(downloaded) do
         local ok, err = installToDest(item.tmp, item.spec)
@@ -879,10 +993,10 @@ local function commitPlan(downloaded, manifest, allFiles)
 
     reloadDeskSupportModules()
 
-    overlayUpdate('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xF4\xE0\xE9\xEB\xEE\xE2...', 0.92)
+    overlayUpdate(installLabel, 0.92, opts)
 
     if downloaded.runtime then
-        overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 runtime...', 0.94)
+        overlayUpdate(opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 runtime...', 0.94, opts)
         if not M.installRuntimeLibsZip(downloaded.runtime) then
             return false, 'runtime unpack failed'
         end
@@ -890,7 +1004,7 @@ local function commitPlan(downloaded, manifest, allFiles)
     end
 
     if downloaded.mimgui then
-        overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...', 0.96)
+        overlayUpdate(opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...', 0.96, opts)
         if not M.installMimguiZip(downloaded.mimgui) then
             return false, 'mimgui unpack failed'
         end
@@ -940,7 +1054,7 @@ end
 
 --[[ returns: needsReload, status ]]
 function M.sync(manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     updatePhase = UPDATE_PHASE.FETCH
     if not manifest then
         updatePhase = UPDATE_PHASE.IDLE
@@ -979,36 +1093,49 @@ function M.sync(manifest, opts)
     end
 
     local remoteVer = tostring(manifest.version or '')
-    notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' files)...', opts)
+    if opts.userFacing then
+        log('sync ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' items)')
+    else
+        notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' files)...', opts)
+    end
 
     setOverlayContext(opts)
     if overlayEnabled(opts) then
-        overlayShow('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk', '\xC2\xE5\xF0\xF1\xE8\xFF ' .. remoteVer)
+        if opts.userFacing then
+            overlayShow(OVERLAY_TITLE, OVERLAY_DOWNLOAD, opts)
+        else
+            overlayShow('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk', '\xC2\xE5\xF0\xF1\xE8\xFF ' .. remoteVer, opts)
+        end
     end
 
     updatePhase = UPDATE_PHASE.STAGE
     local downloaded, dlErr = downloadPlan(plan, manifest, opts)
     if not downloaded then
         updatePhase = UPDATE_PHASE.IDLE
-        overlayHide()
         setOverlayContext(nil)
-        notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xE8\xEB\xEE\xF1\xFC: ' .. tostring(dlErr), opts)
+        failUserFacingUpdate(opts, 'download failed: ' .. tostring(dlErr))
         return false, 'fail'
     end
 
     updatePhase = UPDATE_PHASE.COMMIT
-    local ok, commitErr = commitPlan(downloaded, manifest, allFiles)
-    overlayHide()
-    setOverlayContext(nil)
+    local ok, commitErr = commitPlan(downloaded, manifest, allFiles, opts)
     if not ok then
         updatePhase = UPDATE_PHASE.IDLE
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8: ' .. tostring(commitErr), opts)
+        setOverlayContext(nil)
+        failUserFacingUpdate(opts, 'commit failed: ' .. tostring(commitErr))
         return false, 'fail'
     end
     updatePhase = UPDATE_PHASE.IDLE
 
-    overlayUpdate('\xC3\xE0\xE3\xEE\xE2\xEE', 1.0)
-    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer, opts)
+    log('installed ' .. remoteVer)
+    if opts.userFacing then
+        finishUserFacingUpdate(manifest, opts)
+    else
+        overlayUpdate('\xC3\xEE\xF2\xEE\xE2\xEE', 1.0, opts)
+        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE ' .. remoteVer, opts)
+        overlayHide()
+    end
+    setOverlayContext(nil)
     local needsPendingReload = false
     for _, item in ipairs(downloaded) do
         if item.spec.pending then
@@ -1337,7 +1464,7 @@ local function extractAssetsZip(zipPath)
 end
 
 function M.ensureAssets(manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     manifest = manifest or {}
     if not M.needsAssets(manifest) then
         return true, false
@@ -1345,22 +1472,38 @@ function M.ensureAssets(manifest, opts)
     local assets = manifest.assets
     if type(assets) ~= 'table' or not assets.url or assets.url == '' then
         if not assetMarkerOk() then
-            notify('\xCD\xE5\xF2 assets \xE2 manifest \xE8 \xED\xE5\xF2 skin-1.png', opts)
+            if opts.userFacing then
+                log('assets missing in manifest and no skin-1.png')
+            else
+                notify('\xCD\xE5\xF2 assets \xE2 manifest \xE8 \xED\xE5\xF2 skin-1.png', opts)
+            end
             return false, false
         end
         return true, false
     end
-    notify('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (assets)...', opts)
-    if overlayEnabled(opts) then
-        overlayShow('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE', '~50 \xCC\xE1')
+    if opts.userFacing then
+        log('downloading assets')
+        setOverlayContext(opts)
+        overlayShow(OVERLAY_TITLE, OVERLAY_ASSETS, opts)
+    else
+        notify('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (assets)...', opts)
+        if overlayEnabled(opts) then
+            overlayShow('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE', '~50 \xCC\xE1', opts)
+        end
     end
     local zipPath = M.path(M.ASSETS_CACHE_DIR .. '\\' .. M.ASSETS_ZIP)
     deskFs.ensureDirForFile(zipPath)
     local assetBytes = tonumber(assets.bytes) or 65536
-    local ok, err = downloadWithRetry(assets.url, zipPath, 300, assetBytes, '\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE')
+    local dlLabel = opts.userFacing and OVERLAY_ASSETS or '\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE'
+    local ok, err = downloadWithRetry(assets.url, zipPath, 300, assetBytes, dlLabel)
     if not ok then
         overlayHide()
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(err), opts)
+        setOverlayContext(nil)
+        if opts.userFacing then
+            log('assets download failed: ' .. tostring(err))
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(err), opts)
+        end
         return false, false
     end
     if assets.sha256 and assets.sha256 ~= '' then
@@ -1369,15 +1512,27 @@ function M.ensureAssets(manifest, opts)
             bytes = tonumber(assets.bytes) or 0,
         })
         if not verOk then
-            notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(verErr), opts)
+            if opts.userFacing then
+                log('assets verify failed: ' .. tostring(verErr))
+            else
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 assets: ' .. tostring(verErr), opts)
+            end
             pcall(os.remove, zipPath)
             return false, false
         end
     end
+    if opts.userFacing then
+        overlayUpdate(OVERLAY_INSTALL, 0.85, opts)
+    end
     local extracted, extractErr = extractAssetsZip(zipPath)
     if not extracted then
         overlayHide()
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 assets: ' .. tostring(extractErr), opts)
+        setOverlayContext(nil)
+        if opts.userFacing then
+            log('assets extract failed: ' .. tostring(extractErr))
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 assets: ' .. tostring(extractErr), opts)
+        end
         return false, false
     end
     local state = migrateLegacyState() or { files = {} }
@@ -1388,15 +1543,21 @@ function M.ensureAssets(manifest, opts)
         sha256 = tostring(assets.sha256 or ''):lower(),
         installed = true,
     })
-    overlayUpdate('\xC3\xE0\xE3\xEE\xE2\xEE', 1.0)
-    notify('assets OK', opts)
+    log('assets OK')
+    if opts.userFacing then
+        overlayUpdate(OVERLAY_DONE, 1.0, opts)
+        wait(800)
+    else
+        overlayUpdate('\xC3\xEE\xF2\xEE\xE2\xEE', 1.0, opts)
+        notify('assets OK', opts)
+    end
     overlayHide()
+    setOverlayContext(nil)
     return true, true
 end
 
 function M.deferAssets(manifest, opts)
-    opts = opts or {}
-    opts.showOverlay = opts.showOverlay ~= false
+    opts = M.resolveUserNotifyOpts(opts or {})
     manifest = manifest or {}
     if not M.needsAssets(manifest) then
         return false
@@ -1470,7 +1631,7 @@ function M.installAuxFile(url, relName)
 end
 
 function M.ensureIconvDll(manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     if doesFileExist(M.path(M.ICONV_DLL)) then
         return true, false
     end
@@ -1478,7 +1639,11 @@ function M.ensureIconvDll(manifest, opts)
     if spec.url == '' then
         return false, false
     end
-    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
+    if opts.userFacing then
+        log('installing iconv')
+    else
+        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 iconv...', opts)
+    end
     ensureDirFor(M.path(M.ICONV_DLL))
     if not doesDirectoryExist(M.path('lib')) then
         createDirectory(M.path('lib'))
@@ -1487,13 +1652,21 @@ function M.ensureIconvDll(manifest, opts)
     ensureDirFor(tmp)
     local ok, err = downloadWithRetry(spec.url, tmp, 45, 4096)
     if not ok then
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 iconv: ' .. tostring(err), opts)
+        if opts.userFacing then
+            log('iconv download failed: ' .. tostring(err))
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 iconv: ' .. tostring(err), opts)
+        end
         return false, false
     end
     if spec.sha256 ~= '' then
         local verOk, verErr = verifyFile(tmp, spec)
         if not verOk then
-            notify('\xCE\xF8\xE8\xE1\xEA\xE0 iconv: ' .. tostring(verErr), opts)
+            if opts.userFacing then
+                log('iconv verify failed: ' .. tostring(verErr))
+            else
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 iconv: ' .. tostring(verErr), opts)
+            end
             return false, false
         end
     end
@@ -1504,36 +1677,52 @@ function M.ensureIconvDll(manifest, opts)
 end
 
 function M.ensureRuntimeLibs(manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     if not needsRuntimeLibs() then
         return true, false
     end
     local spec = runtimeSpec(manifest or {})
-    notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 lib...', opts)
+    if opts.userFacing then
+        log('installing runtime libs')
+    else
+        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 lib...', opts)
+    end
     local zipPath = M.path('report_desk\\' .. M.RUNTIME_LIBS_ZIP)
     ensureDirFor(zipPath)
     local ok, err = downloadWithRetry(spec.url, zipPath, 90, 1024)
     if not ok then
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 lib: ' .. tostring(err), opts)
+        if opts.userFacing then
+            log('runtime download failed: ' .. tostring(err))
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 lib: ' .. tostring(err), opts)
+        end
         return false, false
     end
     if spec.sha256 ~= '' then
         local verOk, verErr = verifyFile(zipPath, spec)
         if not verOk then
-            notify('\xCE\xF8\xE8\xE1\xEA\xE0 lib: ' .. tostring(verErr), opts)
+            if opts.userFacing then
+                log('runtime verify failed: ' .. tostring(verErr))
+            else
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 lib: ' .. tostring(verErr), opts)
+            end
             return false, false
         end
     end
     if not M.installRuntimeLibsZip(zipPath) then
-        notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 lib', opts)
+        if opts.userFacing then
+            log('runtime unpack failed')
+        else
+            notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 lib', opts)
+        end
         return false, false
     end
-    notify('lib OK', opts)
+    log('runtime libs OK')
     return true, true
 end
 
 function M.ensureDependencies(manifest, opts)
-    opts = opts or {}
+    opts = M.resolveUserNotifyOpts(opts or {})
     manifest = manifest or {}
     local changed = false
 
@@ -1551,30 +1740,72 @@ function M.ensureDependencies(manifest, opts)
 
     if not M.hasMimgui() or not M.canRequireMimgui() then
         local spec = mimguiSpec(manifest)
-        notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
+        if opts.userFacing then
+            log('installing mimgui')
+            if overlayEnabled(opts) then
+                setOverlayContext(opts)
+                overlayShow(OVERLAY_TITLE, OVERLAY_DOWNLOAD, opts)
+            end
+        else
+            notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
+        end
         local zipPath = M.path('report_desk\\' .. spec.asset)
         deskFs.ensureDirForFile(zipPath)
-        local ok, err = downloadWithRetry(spec.url, zipPath, 120, 1024)
+        local ok, err = downloadWithRetry(spec.url, zipPath, 120, 1024, opts.userFacing and OVERLAY_DOWNLOAD or 'mimgui')
         if not ok then
-            notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(err), opts)
+            overlayHide()
+            setOverlayContext(nil)
+            if opts.userFacing then
+                log('mimgui download failed: ' .. tostring(err))
+            else
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(err), opts)
+            end
             return false, false
         end
         if spec.sha256 ~= '' then
             local verOk, verErr = verifyFile(zipPath, spec)
             if not verOk then
-                notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(verErr), opts)
+                overlayHide()
+                setOverlayContext(nil)
+                if opts.userFacing then
+                    log('mimgui verify failed: ' .. tostring(verErr))
+                else
+                    notify('\xCE\xF8\xE8\xE1\xEA\xE0 mimgui: ' .. tostring(verErr), opts)
+                end
                 return false, false
             end
         end
+        if opts.userFacing then
+            overlayUpdate(OVERLAY_INSTALL, 0.9, opts)
+        end
         if not M.installMimguiZip(zipPath) then
-            notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 mimgui', opts)
+            overlayHide()
+            setOverlayContext(nil)
+            if opts.userFacing then
+                log('mimgui unpack failed')
+            else
+                notify('\xCE\xF8\xE8\xE1\xEA\xE0 \xF0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE8 mimgui', opts)
+            end
             return false, false
         end
         package.loaded.mimgui = nil
         if not M.canRequireMimgui() then
-            notify('mimgui install failed (require)', opts)
+            overlayHide()
+            setOverlayContext(nil)
+            if opts.userFacing then
+                log('mimgui require failed after install')
+            else
+                notify('mimgui install failed (require)', opts)
+            end
             return false, false
         end
+        if opts.userFacing then
+            overlayUpdate(OVERLAY_DONE, 1.0, opts)
+            wait(600)
+            overlayHide()
+            setOverlayContext(nil)
+        end
+        log('mimgui OK')
         changed = true
     end
 

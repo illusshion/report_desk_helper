@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.29')
+script_version('1.0.0')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -269,8 +269,9 @@ local function registerUpdateCommands(autoupdate, chatSay)
         local willReload, status = autoupdate.repair()
         if willReload then
             clearDeskModuleCache()
-            if runInstallPipeline() then
-                loadAndRunCore()
+            local pipelineOk, updated = runInstallPipeline()
+            if pipelineOk then
+                loadAndRunCore(updated)
             end
             return
         end
@@ -293,7 +294,7 @@ local function bootstrapReload(reason)
     return false
 end
 
-local function loadAndRunCore()
+local function loadAndRunCore(skipWelcome)
     local autoupdate = requireAutoupdate()
     local fn, loadErr = loadCore()
     if not fn then
@@ -304,11 +305,8 @@ local function loadAndRunCore()
         return false
     end
 
-    local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
-    if autoupdate and autoupdate.chatSay then
-        local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
-        local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
-        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
+    if not skipWelcome and autoupdate and autoupdate.showWelcomeMessage then
+        autoupdate.showWelcomeMessage(nil)
     end
 
     fn()
@@ -318,42 +316,49 @@ end
 
 local function runInstallPipeline()
     if not bootstrapSeedUpdater() then
-        return false
+        return false, false
     end
 
     local autoupdate, autoupdateErr = requireAutoupdate()
     if not autoupdate then
         bootstrapSay(tostring(autoupdateErr or 'autoupdate missing'))
-        return false
+        return false, false
     end
 
     local chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
 
+    local userOpts = {
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+    }
+
     local manifest, manifestErr = autoupdate.fetchRemoteManifest()
     if not manifest then
         if corePresent() then
             print('[Report Desk] offline, using local core')
-            return true
+            return true, false
         end
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE: ' .. tostring(manifestErr))
-        return false
+        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
+        return false, false
     end
 
-    bootstrapSay('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEA\xEE\xEC\xEF\xEE\xED\xE5\xED\xF2\xEE\xE2...')
+    print('[Report Desk] checking for updates...')
     local willReload, syncStatus = autoupdate.sync(manifest, {
-        quietChat = false,
         mode = 'full',
         includeCore = true,
         reload = false,
+        quietChat = true,
+        userFacing = true,
         showOverlay = true,
     })
+    local sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending'
     if syncStatus == 'fail' then
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC (/deskrepair)')
-        return false
+        return false, false
     end
     if willReload then
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE, \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xFF\xE4\xF0\xE0...')
+        print('[Report Desk] update applied, loading core in same session')
         if autoupdate.applyPendingFiles then
             autoupdate.applyPendingFiles()
             clearDeskModuleCache()
@@ -370,29 +375,33 @@ local function runInstallPipeline()
     registerUpdateCommands(autoupdate, chatSay)
 
     if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
-        bootstrapSay('\xCF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xEF\xEE\xF1\xEB\xE5 \xF1\xEF\xE0\xE2\xED\xE0 (~50 \xCC\xE1)')
         if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, { quietChat = false, showOverlay = true })
+            autoupdate.deferAssets(manifest, userOpts)
         end
     end
 
     local deps = requireDeps()
     if not deps then
         bootstrapSay('deps module missing')
-        return false
+        return false, false
     end
-    local depsOk = select(1, deps.ensureAll({ say = chatSay, manifest = manifest }))
+    local depsOk = select(1, deps.ensureAll({
+        manifest = manifest,
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+    }))
     if not depsOk then
         bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
-        return false
+        return false, false
     end
 
     if not corePresent() then
         bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
-        return false
+        return false, false
     end
 
-    return true
+    return true, sessionUpdated
 end
 
 function main()
@@ -414,10 +423,11 @@ function main()
     end
 
     local ok, err = pcall(function()
-        if not runInstallPipeline() then
+        local pipelineOk, sessionUpdated = runInstallPipeline()
+        if not pipelineOk then
             return
         end
-        loadAndRunCore()
+        loadAndRunCore(sessionUpdated)
     end)
 
     if not ok then
