@@ -316,12 +316,14 @@ end
 -- Публичный API модуля.
 function M.createFromMemory(imgui, data)
     if not imgui or not data or #data <= 0 then return nil end
-    if imgui.CreateTextureFromFileInMemory then
-        local buf = ffi.new('char[?]', #data)
-        ffi.copy(buf, data, #data)
-        local ok, tex = pcall(imgui.CreateTextureFromFileInMemory, buf, #data)
-        if ok and tex then return tex end
-    end
+    if not imgui.CreateTextureFromFileInMemory then return nil end
+    local size = #data
+    local ok, tex = pcall(imgui.CreateTextureFromFileInMemory, ffi.cast('const char*', data), size)
+    if ok and tex then return tex end
+    local buf = ffi.new('char[?]', size)
+    ffi.copy(buf, data, size)
+    ok, tex = pcall(imgui.CreateTextureFromFileInMemory, buf, size)
+    if ok and tex then return tex end
     return nil
 end
 
@@ -967,13 +969,18 @@ function M.ensureIoWorker()
         return
     end
     ioWorkerStarted = true
+    local ioBurst = math.max(1, tonumber(CATALOG_IO_BURST) or 2)
     lua_thread.create(function()
         while not pipelineDead do
-            local ns, st, job = popIoJob()
-            if ns and job then
+            local processed = 0
+            while processed < ioBurst do
+                local ns, st, job = popIoJob()
+                if not job then break end
                 runIoJob(ns, st, job)
+                processed = processed + 1
                 wait(0)
-            else
+            end
+            if processed == 0 then
                 wait(ioIdleMs)
             end
         end
@@ -10327,7 +10334,6 @@ function M.drawTab()
 
     imgui.EndChild()
     popPanel()
-    pcall(deskCatalogTexTick)
 end
 
 return M
@@ -13170,9 +13176,13 @@ SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
 
 SKIN_TEX_CACHE_MAX = 72      -- макс. skin-текстур в GPU-кэше
 VEH_TEX_CACHE_MAX = 72       -- макс. vehicle-текстур в GPU-кэше
-TEX_STAGING_MAX = 16         -- очередь staging перед upload
-CATALOG_GPU_BUDGET = 5       -- текстур за tick каталога
-CATALOG_IO_IDLE_MS = 12      -- пауза IO-потока каталога, мс
+TEX_STAGING_MAX = 24         -- очередь staging перед upload
+CATALOG_GPU_BUDGET = 8       -- текстур за tick каталога
+CATALOG_GPU_BUDGET_BURST = 12 -- burst при большой очереди pending
+CATALOG_IO_IDLE_MS = 8       -- пауза IO-потока каталога, мс
+CATALOG_IO_BURST = 3         -- PNG-чтений за итерацию IO-потока
+SKIN_PREWARM_COUNT = 48      -- превью для фоновой загрузки после assets
+SKIN_PREWARM_GPU_BUDGET = 16 -- GPU upload/кадр во время prewarm
 SKIN_MAX_FILE_BYTES = 512000 -- лимит размера PNG скина, байт
 TEX_NS_SKIN = 'skin'         -- namespace tex pipeline для скинов
 SKIN_NEARBY_CACHE_SEC = 0.6  -- кэш списка игроков в радиусе, сек
@@ -13181,7 +13191,7 @@ SKIN_THUMB_W, SKIN_THUMB_H = 68, 85
 SKIN_THUMB_ASPECT = SKIN_THUMB_H / SKIN_THUMB_W
 SKIN_PREVIEW_W, SKIN_PREVIEW_H = 168, 210
 
-AUTOSAVE_SETTINGS_INTERVAL = 150  -- автосохранение настроек, сек
+AUTOSAVE_SETTINGS_INTERVAL = 60   -- автосохранение настроек, сек (дублирует debounce-flush)
 AUTOSAVE_THREADS_INTERVAL = 600   -- автосохранение тредов репортов, сек
 PRUNE_MAP_INTERVAL = 90           -- очистка timed maps (dedup/seen), сек
 INGEST_DEDUP_SEC = 3.0            -- dedup ingest одной строки, сек
@@ -13607,6 +13617,8 @@ local catWarmup = {
 }
 local cheatState = {
     godmode = false,
+    gmHealthPrimed = false,
+    gmHpCmdAt = 0,
     wallhack = false,
     hudDrag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 },
     hudHovered = false,
@@ -13722,6 +13734,8 @@ local deskCache = {
     quickBtn = {},
     quickBtnGen = -1,
     catalogTexFlushPending = false,
+    skinPrewarmActive = false,
+    skinPrewarmTarget = 0,
     skinFilterSig = '',
     skinGridLayoutCache = nil,
     skinGridLayoutSig = '',
@@ -14152,12 +14166,34 @@ function matchMessageVariants(body)
     return msg, msgAlt, msgTypo
 end
 
+function cancelScheduledConfigFlush()
+    if type(deskCache) == 'table' then deskCache.configFlushAt = 0 end
+end
+
+function scheduleDirtyConfigFlush()
+    if type(deskCache) == 'table' then
+        deskCache.configFlushAt = os.clock() + 4.0
+    end
+end
+
+function tickScheduledConfigFlush()
+    if type(deskCache) ~= 'table' then return end
+    local at = tonumber(deskCache.configFlushAt) or 0
+    if at <= 0 or os.clock() < at then return end
+    deskCache.configFlushAt = 0
+    if type(flushDirtyConfigNow) == 'function' then
+        pcall(flushDirtyConfigNow)
+    end
+end
+
 function markDirtySettings()
     dirtySettings = true
+    scheduleDirtyConfigFlush()
 end
 
 function markDirtyThreads()
     dirtyThreads = true
+    scheduleDirtyConfigFlush()
 end
 
 function invalidateUiCaches()
@@ -15955,6 +15991,16 @@ function cheatsApplyGodmode(on)
     end
 end
 
+-- Как AdminTools: первый SETPLAYERHEALTH пропускаем, дальше блокируем HP < 5.
+function cheatsOnSetPlayerHealth(health)
+    if not cheatState.godmode then return end
+    if not cheatState.gmHealthPrimed then
+        cheatState.gmHealthPrimed = true
+    elseif (tonumber(health) or 0) < 5 then
+        return false
+    end
+end
+
 -- Cheats Set Airbreak
 function cheatsSetAirbreak(on)
     ensureCheatsSettings()
@@ -16279,7 +16325,20 @@ function cheatsMaintain()
         cheatsStartupDone = true
         cheatsApplyStartup()
     end
-    if cheatState.godmode then cheatsApplyGodmode(true) end
+    if cheatState.godmode then
+        cheatsApplyGodmode(true)
+        local hp = tonumber(getCharHealth(PLAYER_PED)) or 100
+        if hp < 80 and type(sendChat) == 'function' and type(sampGetPlayerIdByCharHandle) == 'function' then
+            local now = os.clock()
+            if now - (tonumber(cheatState.gmHpCmdAt) or 0) > 10 then
+                local ok, myId = sampGetPlayerIdByCharHandle(PLAYER_PED)
+                if ok and myId then
+                    cheatState.gmHpCmdAt = now
+                    sendChat(string.format('hp %d 100', myId))
+                end
+            end
+        end
+    end
     if cheatState.wallhack then cheatsApplyWallhack(true) end
 end
 
@@ -16384,6 +16443,53 @@ function deskGetCarFreeSeat(car)
         return nil
     end
     return 0
+end
+
+--[[ /guns — набор оружия из AdminTools (Deagle, M4, MP5), без проверки admin_lvl. ]]
+local DESK_GUNS_KIT = {
+    { id = 24, ammo = 100 },
+    { id = 31, ammo = 500 },
+    { id = 29, ammo = 500 },
+}
+
+local function deskEnsureWeaponModel(weaponId)
+    if not getWeapontypeModel then return false end
+    local model = getWeapontypeModel(weaponId)
+    if not model or model == 0 then return false end
+    if hasModelLoaded(model) then return true end
+    requestModel(model)
+    if loadAllModelsNow then loadAllModelsNow() end
+    local deadline = os.clock() + 8
+    while not hasModelLoaded(model) and os.clock() < deadline do
+        wait(0)
+    end
+    return hasModelLoaded(model)
+end
+
+local function deskGiveWeapon(weaponId, ammo)
+    if not doesCharExist(PLAYER_PED) then return false end
+    if not deskEnsureWeaponModel(weaponId) then return false end
+    giveWeaponToChar(PLAYER_PED, weaponId, ammo)
+    setCurrentCharWeapon(PLAYER_PED, weaponId)
+    return true
+end
+
+function deskGiveGuns()
+    if sampIsLocalPlayerSpawned and not sampIsLocalPlayerSpawned() then
+        say('\xD1\xED\xE0\xF7\xE0\xEB\xE0 \xED\xF3\xE6\xED\xEE \xE1\xFB\xF2\xFC \xE2 \xE8\xE3\xF0\xE5.')
+        return
+    end
+    if not doesCharExist(PLAYER_PED) then return end
+    local run = function()
+        for _, spec in ipairs(DESK_GUNS_KIT) do
+            deskGiveWeapon(spec.id, spec.ammo)
+        end
+    end
+    if lua_thread and lua_thread.create then
+        lua_thread.create(run)
+    else
+        run()
+    end
 end
 
 --[[ /acar — 1:1 AdminTools getcar: RPC enter + warp + машина к игроку. ]]
@@ -16777,11 +16883,20 @@ local function cheatsClampHudPos(hx, hy, winW, winH)
 end
 
 -- Cheats Persist Hud Pos
-local function cheatsPersistHudPos(hx, hy, winW, winH)
+local function cheatsPersistHudPos(hx, hy, winW, winH, flushNow)
     hx, hy = cheatsClampHudPos(hx, hy, winW, winH)
-    settings.cheats.hud_x = math.floor(hx + 0.5)
-    settings.cheats.hud_y = math.floor(hy + 0.5)
+    local nx = math.floor(hx + 0.5)
+    local ny = math.floor(hy + 0.5)
+    local ox = math.floor(tonumber(settings.cheats.hud_x) or 12)
+    local oy = math.floor(tonumber(settings.cheats.hud_y) or 80)
+    cheatState.hudPlaced = true
+    if nx == ox and ny == oy then
+        return hx, hy
+    end
+    settings.cheats.hud_x = nx
+    settings.cheats.hud_y = ny
     if markDirtySettings then markDirtySettings() end
+    if flushNow and flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
     return hx, hy
 end
 
@@ -16832,7 +16947,7 @@ function drawCheatsHudOverlay()
     local hx, hy = cheatsClampHudPos(rawHx, rawHy, CHEATS_HUD_W, CHEATS_HUD_H)
     if not drag.active and not cheatState.hudPlaced
             and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5) or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
-        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H)
+        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H, true)
     end
     if drag.active then
         hx = drag.offX
@@ -16890,8 +17005,7 @@ function drawCheatsHudOverlay()
             drag.offX, drag.offY = cheatsClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
-            cheatsPersistHudPos(wp.x, wp.y, ww, wh)
-            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+            cheatsPersistHudPos(wp.x, wp.y, ww, wh, true)
         end
 
         imgui.End()
@@ -17722,15 +17836,27 @@ function skinsLoadCatalog()
         end
     end
     if #skinCatalog == 0 then
-        for id = 1, 311 do
-            if id ~= 74 then
-                local file = string.format('skin-%d.png', id)
-                if doesFileExist(SKINS_DIR .. file) then
-                    skinCatalog[#skinCatalog + 1] = { id = id, file = file }
+        local okLfs, lfs = pcall(require, 'lfs')
+        if okLfs and lfs and lfs.dir and doesDirectoryExist(SKINS_DIR) then
+            for entry in lfs.dir(SKINS_DIR) do
+                local id = tonumber(entry:match('^skin%-(%d+)%.png$'))
+                if id and id ~= 74 then
+                    skinCatalog[#skinCatalog + 1] = { id = id, file = entry }
                 end
             end
+            table.sort(skinCatalog, function(a, b) return a.id < b.id end)
         end
-        table.sort(skinCatalog, function(a, b) return a.id < b.id end)
+        if #skinCatalog == 0 then
+            for id = 1, 311 do
+                if id ~= 74 then
+                    local file = string.format('skin-%d.png', id)
+                    if doesFileExist(SKINS_DIR .. file) then
+                        skinCatalog[#skinCatalog + 1] = { id = id, file = file }
+                    end
+                end
+            end
+            table.sort(skinCatalog, function(a, b) return a.id < b.id end)
+        end
     end
     for _, e in ipairs(skinCatalog) do
         skinCatalogById[e.id] = e
@@ -17785,17 +17911,87 @@ end
 function skinsEnqueueVisible(firstIdx, lastIdx, items)
     if not deskTex then return end
     local ids = {}
+    local keep = {}
     for i = firstIdx, lastIdx do
         local e = items[i]
-        if e and e.id then ids[#ids + 1] = e.id end
+        if e and e.id then
+            ids[#ids + 1] = e.id
+            keep[e.id] = true
+        end
     end
+    if skinSelectedId then keep[skinSelectedId] = true end
     deskTexPipeline.syncVisible(TEX_NS_SKIN, ids, deskTex, { priority = { skinSelectedId } })
+    deskTex.trim(TEX_NS_SKIN, skinTexRelease, keep, true)
+end
+
+-- Skins Start Prewarm
+function skinsStartPrewarm(count)
+    if not doesFileExist(SKINS_DIR .. 'skin-1.png') then
+        return false
+    end
+    count = math.max(1, math.min(tonumber(count) or SKIN_PREWARM_COUNT or 48, 80))
+    skinsLoadCatalog()
+    if not skinCatalog or #skinCatalog == 0 then
+        return false
+    end
+    ensureDeskCatalogWarmup()
+    deskTexPipeline.activate(TEX_NS_SKIN)
+    local ids = {}
+    for i = 1, math.min(count, #skinCatalog) do
+        local e = skinCatalog[i]
+        if e and e.id then
+            ids[#ids + 1] = e.id
+        end
+    end
+    if #ids == 0 then
+        return false
+    end
+    deskCache.skinPrewarmTarget = #ids
+    deskCache.skinPrewarmActive = true
+    deskTexPipeline.syncVisible(TEX_NS_SKIN, ids, deskTex, {
+        priority = { ids[1], ids[2], ids[3] },
+    })
+    print('[Report Desk] skin prewarm: ' .. #ids .. ' thumbnails')
+    return true
+end
+
+-- Skins Prewarm Active
+function skinsPrewarmActive()
+    return deskCache and deskCache.skinPrewarmActive == true
+end
+
+-- Skins Prewarm Tick
+function skinsPrewarmTick()
+    if not deskCache.skinPrewarmActive then
+        return false
+    end
+    if not imgui or not deskTex then
+        return true
+    end
+    if deskTexPipeline.isDead and deskTexPipeline.isDead() then
+        deskCache.skinPrewarmActive = false
+        return false
+    end
+    local budget = SKIN_PREWARM_GPU_BUDGET or CATALOG_GPU_BUDGET_BURST or 12
+    deskTexPipeline.tick(imgui, deskTex, budget)
+    local pending = deskTexPipeline.pendingCount(TEX_NS_SKIN)
+    local loaded = deskTex.count(TEX_NS_SKIN)
+    local target = tonumber(deskCache.skinPrewarmTarget) or 0
+    if pending == 0 and (target <= 0 or loaded >= target) then
+        deskCache.skinPrewarmActive = false
+        print('[Report Desk] skin prewarm done: ' .. tostring(loaded) .. ' textures')
+        return false
+    end
+    return true
 end
 
 -- Skins On Tab Enter
 function skinsOnTabEnter()
     skinsLoadCatalog()
     deskTexPipeline.activate(TEX_NS_SKIN)
+    if deskCache.skinPrewarmActive then
+        deskCache.skinPrewarmActive = false
+    end
 end
 
 -- Skins On Tab Leave
@@ -17853,7 +18049,11 @@ function deskCatalogTexTick()
     if not deskCatalogTabActive() then return end
     if isPauseMenuActive and isPauseMenuActive() then return end
     if isGamePaused and isGamePaused() then return end
-    deskTexPipeline.tick(imgui, deskTex, CATALOG_GPU_BUDGET)
+    local budget = CATALOG_GPU_BUDGET
+    if deskTexPipeline.anyPending() then
+        budget = math.min(CATALOG_GPU_BUDGET_BURST or budget, budget + 4)
+    end
+    deskTexPipeline.tick(imgui, deskTex, budget)
 end
 
 -- Desk hook/helper.
@@ -17865,14 +18065,8 @@ end
 
 -- Skins Count Files
 function skinsCountFiles()
-    if not doesDirectoryExist or not doesDirectoryExist(SKINS_DIR) then return 0 end
-    local n = 0
-    for id = 1, 311 do
-        if id ~= 74 and doesFileExist(SKINS_DIR .. string.format('skin-%d.png', id)) then
-            n = n + 1
-        end
-    end
-    return n
+    skinsLoadCatalog()
+    return skinCatalog and #skinCatalog or 0
 end
 
 -- Skin Get Texture
@@ -18240,7 +18434,6 @@ function drawSkinsTab()
 
     imgui.EndChild()
     popPanelStyle()
-    pcall(deskCatalogTexTick)
 end
 
 
@@ -19053,6 +19246,9 @@ end
 
 -- Сброс/отправка очереди.
 function flushDirtyConfigNow()
+    if type(cancelScheduledConfigFlush) == 'function' then
+        cancelScheduledConfigFlush()
+    end
     if type(flushCheckerCatalogNow) == 'function' then
         pcall(flushCheckerCatalogNow)
     end
@@ -19069,6 +19265,9 @@ function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
     if not wasOpen then return end
+    if type(syncCmdBindEditorIfDirty) == 'function' then
+        pcall(syncCmdBindEditorIfDirty)
+    end
     deskResetHotkeyDebounce((type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7)
     finishDeskBindCapture()
     deskInputState.replyFocused = false
@@ -20759,8 +20958,13 @@ function loadConfig()
         checkerState.hudPosValidated = false
     end
     if type(data.report_colors) == 'table' then
+        settings.report_colors = {}
         for _, c in ipairs(data.report_colors) do
-            REPORT_COLORS[normColor(c)] = true
+            local nc = normColor(c)
+            if nc and nc ~= 0 then
+                REPORT_COLORS[nc] = true
+                settings.report_colors[#settings.report_colors + 1] = nc
+            end
         end
     end
     if type(data.rules) == 'table' and #data.rules > 0 then
@@ -21021,7 +21225,7 @@ function saveConfig()
     end
     if dirtySettings then
         if not saveUserConfig() then
-            return false
+            print('[Report Desk] user config save failed — continuing main config save')
         end
     end
 
@@ -21104,6 +21308,7 @@ function saveConfig()
     f:write(string.format('    checker_notify_sound = %s,\n', settings.checker_notify_sound ~= false and 'true' or 'false'))
     f:write(string.format('    checker_notify_leader_join = %s,\n', settings.checker_notify_leader_join == true and 'true' or 'false'))
     f:write(string.format('    checker_notify_leader_quit = %s,\n', settings.checker_notify_leader_quit == true and 'true' or 'false'))
+    f:write(string.format('    checker_notify_friend_join = %s,\n', settings.checker_notify_friend_join ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_sync = %s,\n', settings.checker_auto_sync == true and 'true' or 'false'))
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
@@ -25156,6 +25361,18 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return type(skinsPrewarmActive) == 'function' and skinsPrewarmActive()
+        end,
+        function(self)
+            pcall(skinsPrewarmTick)
+            self.HideCursor = true
+            self.LockPlayer = false
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
             pcall(ensureCheatsSettings)
@@ -25851,6 +26068,9 @@ function main()
     sampRegisterChatCommand('acar', function(arg)
         pcall(deskAcarEnter, arg)
     end)
+    sampRegisterChatCommand('guns', function()
+        pcall(deskGiveGuns)
+    end)
 
     refreshMyNick()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
@@ -25866,6 +26086,7 @@ function main()
     installDeskPlayerJoinHook()
     installDeskPlayerStreamInHook()
     installDeskPlayerColorHook()
+    pcall(installDeskGodmodeHealthHook)
     installDeskSpRefreshHooks()
     pcall(sampSyncAllPlayerColors)
     sessionLive = true
@@ -25939,6 +26160,7 @@ function main()
         if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
+        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 1 end
         if deskTexPipeline.anyPending() then return 1 end
         if cheatState.hudDrag.active then return 1 end
         if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 1 end
@@ -26031,6 +26253,7 @@ function main()
             end
         end)
         pcall(cheatsTickMarker)
+        pcall(tickScheduledConfigFlush)
 
         local nowSave = os.clock()
         if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
@@ -26239,6 +26462,31 @@ function deskOnPlayerQuit(playerId, reason)
     if not ok then
         print('[Report Desk] player quit: ' .. tostring(err))
     end
+end
+
+-- Godmode: как AdminTools — только onSetPlayerHealth.
+function installDeskGodmodeHealthHook()
+    if not sampev then return end
+    if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
+        return
+    end
+    local prev = sampev.onSetPlayerHealth
+    if prev == deskCache.gmHealthHandler then prev = nil end
+    if deskCache.hookPrevSetPlayerHealth == nil then deskCache.hookPrevSetPlayerHealth = prev end
+    deskCache.gmHealthHandler = function(health)
+        local block = cheatsOnSetPlayerHealth(health)
+        if block == false then return false end
+        local chain = deskCache.hookPrevSetPlayerHealth
+        if type(chain) == 'function' then
+            return chain(health)
+        end
+    end
+    sampev.onSetPlayerHealth = deskCache.gmHealthHandler
+end
+
+function deskGodmodeHooksActive()
+    if not sampev then return false end
+    return deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler
 end
 
 -- Quit игрока → checker, spectate exit, thread offline.
@@ -26755,6 +27003,9 @@ function deskEnsureAllHooks()
     end
     if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
         installDeskPlayerColorHook()
+    end
+    if not deskGodmodeHooksActive() then
+        installDeskGodmodeHealthHook()
     end
     if not deskCache.spEnterHandler or sampev.onPlayerEnterVehicle ~= deskCache.spEnterHandler
             or not deskCache.spExitHandler or sampev.onPlayerExitVehicle ~= deskCache.spExitHandler
@@ -31248,12 +31499,25 @@ function checkerGuardHudOffScreen(hx, hy, winW, winH)
 end
 
 -- Checker (admin HUD/catalog).
-function checkerPersistHudPos(hx, hy, winW, winH)
+function checkerPersistHudPos(hx, hy, winW, winH, flushNow)
     hx, hy = checkerClampHudPos(hx, hy, winW, winH)
-    settings.checker_hud_x = math.floor(hx + 0.5)
-    settings.checker_hud_y = math.floor(hy + 0.5)
-    settings.checker_hud_h = math.floor(math.max(48, tonumber(winH) or 120) + 0.5)
+    local nx = math.floor(hx + 0.5)
+    local ny = math.floor(hy + 0.5)
+    local nh = math.floor(math.max(48, tonumber(winH) or 120) + 0.5)
+    local ox = math.floor(tonumber(settings.checker_hud_x) or 8)
+    local oy = math.floor(tonumber(settings.checker_hud_y) or 8)
+    local oh = math.floor(tonumber(settings.checker_hud_h) or 160)
+    checkerState.hudPlaced = true
+    if nx == ox and ny == oy and nh == oh then
+        return
+    end
+    settings.checker_hud_x = nx
+    settings.checker_hud_y = ny
+    settings.checker_hud_h = nh
     markDirtySettings()
+    if flushNow and type(flushDirtyConfigNow) == 'function' then
+        SafeCall('flushDirtyConfigNow', flushDirtyConfigNow)
+    end
 end
 
 -- Checker (admin HUD/catalog).
@@ -31615,9 +31879,10 @@ function drawCheckerHudOverlay()
     if drag.active then
         hx = drag.offX
         hy = drag.offY
-    elseif math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
-            or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5) then
-        checkerPersistHudPos(hx, hy, CHECKER_HUD_W, hudH)
+    elseif not checkerState.hudPlaced
+            and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
+            or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
+        checkerPersistHudPos(hx, hy, CHECKER_HUD_W, hudH, true)
     end
 
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
@@ -31694,10 +31959,7 @@ function drawCheckerHudOverlay()
             drag.offX, drag.offY = checkerClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
-            checkerPersistHudPos(wp.x, wp.y, ww, wh)
-            if type(flushDirtyConfigNow) == 'function' then
-                SafeCall('flushDirtyConfigNow', flushDirtyConfigNow)
-            end
+            checkerPersistHudPos(wp.x, wp.y, ww, wh, true)
         end
 
         imgui.End()
@@ -31816,7 +32078,7 @@ do
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local CMD_BIND_RESERVED = {
-    ans = true, reps = true, reportdesk = true, hist = true, acar = true,
+    ans = true, reps = true, reportdesk = true, hist = true, acar = true, guns = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
     deskupdate = true, deskrepair = true, reload = true, r = true,
     c = true, cc = true, me = true, b = true, w = true, f = true, g = true,
