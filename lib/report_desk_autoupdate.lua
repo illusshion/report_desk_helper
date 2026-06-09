@@ -1094,9 +1094,14 @@ function M.repair()
     if not manifest then
         return false, err or 'no manifest'
     end
-    local willReload, status = M.sync(manifest, { mode = 'repair', force = true, includeCore = true })
+    local willReload, status = M.sync(manifest, { mode = 'repair', force = true, includeCore = true, reload = false })
+    if status == 'fail' then
+        return false, status
+    end
     if willReload then
-        return true, status
+        M.applyPendingFiles()
+        package.loaded['report_desk_autoupdate'] = nil
+        package.loaded['lib.report_desk_autoupdate'] = nil
     end
     if M.needsAssets(manifest) then
         local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = false })
