@@ -1,5 +1,24 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.3 (hotfix)
+
+**Fix: checker в релизе (ensureSyncSession)**
+
+- `ensureSyncSession` объявлен до первого вызова — исправлен краш `spawnCatalogSync` и сбой sync `/adms` на чистой установке.
+
+**Fix: сохранение user-config**
+
+- Перед записью `.tmp` удаляется старый файл — больше нет `File exists` при rename.
+
+**UX: установка / autoupdate**
+
+- Overlay сразу при старте: «Проверка обновлений...».
+- При загрузке файлов показывается шаг и имя: `(2/5) ядро`, `mimgui`, `превью` и т.д.
+
+**HUD: позиции по умолчанию**
+
+- Spectate, keys, checker HUD — дефолты как в dev-раскладке (не случайные координаты на чистой GTA).
+
 ## 1.0.2 (dev stable)
 
 **Fix: AdminDesk.luac не стартовал (devEntryPresent)**

@@ -1952,6 +1952,18 @@ local function checkerSyncServerKeyMismatch()
     return checkerGetServerKey() ~= key
 end
 
+local function ensureSyncSession()
+    if type(checkerState.syncSession) ~= 'table' then
+        checkerState.syncSession = {}
+    end
+    local s = checkerState.syncSession
+    if s.admsUntil == nil then s.admsUntil = 0 end
+    if s.leadersUntil == nil then s.leadersUntil = 0 end
+    if s.spawnAdmsRetries == nil then s.spawnAdmsRetries = 0 end
+    if s.lastAdmsResync == nil then s.lastAdmsResync = os.clock() end
+    return s
+end
+
 local function checkerMarkSyncAdmsSession(untilAt)
     local s = ensureSyncSession()
     s.admsUntil = untilAt
@@ -1970,19 +1982,6 @@ function checkerClearAdmsFlow()
     checkerState.admsFlowUntil = 0
     checkerState.syncServerKey = ''
     checkerClearSyncAdms()
-end
-
--- Checker (admin HUD/catalog).
-local function ensureSyncSession()
-    if type(checkerState.syncSession) ~= 'table' then
-        checkerState.syncSession = {}
-    end
-    local s = checkerState.syncSession
-    if s.admsUntil == nil then s.admsUntil = 0 end
-    if s.leadersUntil == nil then s.leadersUntil = 0 end
-    if s.spawnAdmsRetries == nil then s.spawnAdmsRetries = 0 end
-    if s.lastAdmsResync == nil then s.lastAdmsResync = os.clock() end
-    return s
 end
 
 -- После /reload os.clock() сбрасывается — не восстанавливать «вечный» sync из _G.

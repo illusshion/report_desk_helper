@@ -320,6 +320,7 @@ function saveUserConfig()
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
     local tmpPath = USER_CONFIG_TMP or (USER_CONFIG_PATH .. '.tmp')
+    pcall(os.remove, tmpPath)
     local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] user save: ' .. tostring(err))
@@ -470,6 +471,7 @@ function saveConfig()
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
     local tmpPath = CONFIG_TMP or (CONFIG_PATH .. '.tmp')
+    pcall(os.remove, tmpPath)
     local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] save: ' .. tostring(err))

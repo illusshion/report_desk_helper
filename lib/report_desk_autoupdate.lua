@@ -112,6 +112,12 @@ function M.hideUpdateOverlay()
     setOverlayContext(nil)
 end
 
+function M.showUpdateOverlay(title, detail, opts)
+    opts = opts or { showOverlay = true, userFacing = true }
+    setOverlayContext(opts)
+    overlayShow(title or OVERLAY_TITLE, detail or OVERLAY_CHECK, opts)
+end
+
 local function setOverlayContext(opts)
     activeOverlayOpts = opts
 end
@@ -128,10 +134,29 @@ local function notify(msg, opts)
 end
 
 local OVERLAY_TITLE = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk'
+local OVERLAY_CHECK = '\xCF\xF0\xEE\xE2\xE5\xF0\xEA\xE0 \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE9...'
 local OVERLAY_DOWNLOAD = '\xCA\xE0\xF7\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
 local OVERLAY_INSTALL = '\xD3\xF1\xF2\xE0\xED\xE0\xE2\xEB\xE8\xE2\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
 local OVERLAY_ASSETS = '\xCA\xE0\xF7\xE0\xE5\xEC \xEF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE8\xED\xEE\xE2 \xE8 \xD2\xD1...'
 local OVERLAY_DONE = '\xC3\xEE\xF2\xEE\xE2\xEE'
+
+local OVERLAY_ASSET_LABELS = {
+    ['AdminDeskCore.luac'] = '\xFF\xE4\xF0\xEE',
+    ['AdminDeskCore.lua'] = '\xFF\xE4\xF0\xEE',
+    ['AdminDesk.luac'] = 'launcher',
+    ['AdminDesk.lua'] = 'launcher',
+    ['report_desk_autoupdate.lua'] = '\xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF',
+    ['report_desk_deps.lua'] = '\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8',
+    ['report_desk_sha256.lua'] = 'sha256',
+    ['report_desk_zip.lua'] = 'zip',
+    ['report_desk_fs.lua'] = 'fs',
+    ['report_desk_update_overlay.lua'] = 'overlay',
+    ['report_desk_runtime_libs.zip'] = 'runtime',
+    ['mimgui-v1.7.1.zip'] = 'mimgui',
+    ['iconv.dll'] = 'iconv',
+    ['report_desk_assets.zip'] = '\xEF\xF0\xE5\xE2\xFC\xFE',
+    ['admin_report_desk.lua'] = 'launcher',
+}
 
 local function readDevEntryHead(path)
     if type(doesFileExist) ~= 'function' or not doesFileExist(path) then return nil end
@@ -264,10 +289,18 @@ function M.showWelcomeMessage(manifest)
     M.chatSay('Report Desk Beta 1 \xB7 F7, /deskupdate')
 end
 
+local function overlayAssetLabel(assetOrFallback)
+    local asset = tostring(assetOrFallback or '')
+    asset = asset:match('download%s+(.+)$') or asset
+    asset = asset:gsub('^%s+', ''):gsub('%s+$', '')
+    return OVERLAY_ASSET_LABELS[asset] or asset
+end
+
 local function overlayProgressDetail(opts, step, total, fallback)
     if opts and opts.userFacing then
         if total and total > 0 then
-            return string.format('%d / %d', step, total)
+            local label = overlayAssetLabel(fallback)
+            return string.format('(%d/%d) %s', step, total, label)
         end
         return OVERLAY_DOWNLOAD
     end

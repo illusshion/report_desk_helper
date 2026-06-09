@@ -13438,8 +13438,8 @@ settings = {
     spectate_auto_refresh = true,
     spectate_hud_persist = true,
     spectate_sp_menu_sound = false,
-    spectate_hud_x = 14,
-    spectate_hud_y = 120,
+    spectate_hud_x = -233,
+    spectate_hud_y = 369,
     spectate_sp_ui = true,
     spectate_sp_ui_x = -28,
     spectate_sp_ui_y = 0,
@@ -13450,9 +13450,9 @@ settings = {
     spectate_vehicle_hud_x = -12,
     spectate_vehicle_hud_y = -8,
     spectate_keys_hud = true,
-    spectate_keys_hud_x = nil,
-    spectate_keys_hud_y = -100,
-    spectate_keys_hud_custom = false,
+    spectate_keys_hud_x = 1234,
+    spectate_keys_hud_y = 925,
+    spectate_keys_hud_custom = true,
     spectate_vehicle_hud_custom = false,
     spectate_vehicle_hud_layout_v2 = true,
     spectate_vehicle_hud_layout_v3 = true,
@@ -13461,9 +13461,9 @@ settings = {
     spectate_vehicle_hud_layout_v6 = true,
     checker_hud = true,
     checker_hud_persist = true,
-    checker_hud_x = 8,
-    checker_hud_y = 8,
-    checker_hud_h = 160,
+    checker_hud_x = 32,
+    checker_hud_y = 468,
+    checker_hud_h = 244,
     checker_show_admins = true,
     checker_show_leaders = true,
     checker_show_friends = true,
@@ -21082,6 +21082,7 @@ function saveUserConfig()
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
     local tmpPath = USER_CONFIG_TMP or (USER_CONFIG_PATH .. '.tmp')
+    pcall(os.remove, tmpPath)
     local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] user save: ' .. tostring(err))
@@ -21232,6 +21233,7 @@ function saveConfig()
     local dir = getWorkingDirectory() .. '\\config'
     if not doesDirectoryExist(dir) then createDirectory(dir) end
     local tmpPath = CONFIG_TMP or (CONFIG_PATH .. '.tmp')
+    pcall(os.remove, tmpPath)
     local f, err = io.open(tmpPath, 'w')
     if not f then
         print('[Report Desk] save: ' .. tostring(err))
@@ -29827,6 +29829,18 @@ local function checkerSyncServerKeyMismatch()
     return checkerGetServerKey() ~= key
 end
 
+local function ensureSyncSession()
+    if type(checkerState.syncSession) ~= 'table' then
+        checkerState.syncSession = {}
+    end
+    local s = checkerState.syncSession
+    if s.admsUntil == nil then s.admsUntil = 0 end
+    if s.leadersUntil == nil then s.leadersUntil = 0 end
+    if s.spawnAdmsRetries == nil then s.spawnAdmsRetries = 0 end
+    if s.lastAdmsResync == nil then s.lastAdmsResync = os.clock() end
+    return s
+end
+
 local function checkerMarkSyncAdmsSession(untilAt)
     local s = ensureSyncSession()
     s.admsUntil = untilAt
@@ -29845,19 +29859,6 @@ function checkerClearAdmsFlow()
     checkerState.admsFlowUntil = 0
     checkerState.syncServerKey = ''
     checkerClearSyncAdms()
-end
-
--- Checker (admin HUD/catalog).
-local function ensureSyncSession()
-    if type(checkerState.syncSession) ~= 'table' then
-        checkerState.syncSession = {}
-    end
-    local s = checkerState.syncSession
-    if s.admsUntil == nil then s.admsUntil = 0 end
-    if s.leadersUntil == nil then s.leadersUntil = 0 end
-    if s.spawnAdmsRetries == nil then s.spawnAdmsRetries = 0 end
-    if s.lastAdmsResync == nil then s.lastAdmsResync = os.clock() end
-    return s
 end
 
 -- После /reload os.clock() сбрасывается — не восстанавливать «вечный» sync из _G.
