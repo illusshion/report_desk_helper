@@ -52,23 +52,7 @@ local function devEntryPresent()
 end
 
 local CORE_DIR = getWorkingDirectory() .. '\\report_desk'
-local POST_UPDATE_FLAG = CORE_DIR .. '\\_bootstrap_resume_core'
 local CORE_NAMES = { 'AdminDeskCore.luac', 'AdminDeskCore.lua', 'admin_report_desk_core.luac', 'admin_report_desk_core.lua' }
-
-local function markPostUpdateResume()
-    ensureDirFor(POST_UPDATE_FLAG)
-    local f = io.open(POST_UPDATE_FLAG, 'w')
-    if f then
-        f:write('1\n')
-        f:close()
-    end
-end
-
-local function consumePostUpdateResume()
-    if not doesFileExist(POST_UPDATE_FLAG) then return false end
-    pcall(os.remove, POST_UPDATE_FLAG)
-    return true
-end
 
 local function resolveCorePath()
     for _, name in ipairs(CORE_NAMES) do
@@ -255,17 +239,14 @@ end
 
 local function applyPendingBootstrap()
     if not updaterInstalled() then
-        return false
+        return
     end
     local autoupdate = requireAutoupdate()
-    if type(autoupdate) ~= 'table' then return false end
+    if type(autoupdate) ~= 'table' then return end
     if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles() then
-        print('[Report Desk] pending files applied — reload')
-        markPostUpdateResume()
-        bootstrapReload('pending files')
-        return true
+        clearDeskModuleCache()
+        print('[Report Desk] pending files applied')
     end
-    return false
 end
 
 local function registerUpdateCommands(autoupdate, chatSay)
@@ -286,7 +267,13 @@ local function registerUpdateCommands(autoupdate, chatSay)
             chatSay('\xCF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xE2\xE5\xF0\xF1\xE8\xE8...')
         end
         local willReload, status = autoupdate.repair()
-        if willReload then return end
+        if willReload then
+            clearDeskModuleCache()
+            if runInstallPipeline() then
+                loadAndRunCore()
+            end
+            return
+        end
         if status == 'fail' and chatSay then
             chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
         elseif status == 'uptodate' and chatSay then
@@ -329,26 +316,6 @@ local function loadAndRunCore()
     return true
 end
 
-local function ensureRuntimeAfterUpdate(manifest)
-    local deps = requireDeps()
-    if not deps then
-        bootstrapSay('deps module missing')
-        return false
-    end
-    local autoupdate = requireAutoupdate()
-    local chatSay = autoupdate and autoupdate.chatSay or bootstrapSay
-    local depsOk = select(1, deps.ensureAll({ say = chatSay, manifest = manifest }))
-    if not depsOk then
-        bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
-        return false
-    end
-    if not corePresent() then
-        bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
-        return false
-    end
-    return true
-end
-
 local function runInstallPipeline()
     if not bootstrapSeedUpdater() then
         return false
@@ -386,13 +353,11 @@ local function runInstallPipeline()
         return false
     end
     if willReload then
+        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE, \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xFF\xE4\xF0\xE0...')
         if autoupdate.applyPendingFiles then
             autoupdate.applyPendingFiles()
             clearDeskModuleCache()
         end
-        markPostUpdateResume()
-        bootstrapReload('sync pending')
-        return false
     end
 
     clearDeskModuleCache()
@@ -431,9 +396,6 @@ local function runInstallPipeline()
 end
 
 function main()
-    if devEntryPresent() then
-        return
-    end
     do
         local root = getWorkingDirectory()
         local legacy = root .. '\\admin_report_desk.lua'
@@ -443,31 +405,18 @@ function main()
             pcall(os.rename, legacy, off)
         end
     end
-    if applyPendingBootstrap() then
+    if devEntryPresent() then
         return
     end
+    applyPendingBootstrap()
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)
     end
 
     local ok, err = pcall(function()
-        local resumeAfterUpdate = consumePostUpdateResume() and corePresent()
-        if resumeAfterUpdate then
-            print('[Report Desk] resume after update — loading core')
-            if not bootstrapSeedUpdater() then return end
-            local autoupdate = requireAutoupdate()
-            if not autoupdate then return end
-            registerUpdateCommands(autoupdate, autoupdate.chatSay)
-            local manifest = select(1, autoupdate.fetchRemoteManifest())
-            if not ensureRuntimeAfterUpdate(manifest) then return end
-            loadAndRunCore()
-            return
-        end
-
         if not runInstallPipeline() then
             return
         end
-
         loadAndRunCore()
     end)
 
