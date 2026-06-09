@@ -9,6 +9,8 @@ script_moonloader(26)
 require 'lib.moonloader'
 require 'lib.sampfuncs'
 
+rawset(_G, '__REPORT_DESK_DEV', true)
+
 -- MoonLoader кэширует require между /reload — сброс spectate-модулей и bundle.
 local function prepareDeskReload()
     for _, name in ipairs({
@@ -16,7 +18,6 @@ local function prepareDeskReload()
         'report_desk_sp_ui',
         'report_desk_spectate_menu',
         'report_desk_spectate_session',
-        'report_desk_spectate_ans',
         'report_desk_spectate_camera',
         'report_desk_sp_theme',
         'report_desk_sp_vehicle_hud',

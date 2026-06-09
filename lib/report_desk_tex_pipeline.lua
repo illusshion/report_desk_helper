@@ -300,13 +300,18 @@ function M.ensureIoWorker()
         return
     end
     ioWorkerStarted = true
+    local ioBurst = math.max(1, tonumber(CATALOG_IO_BURST) or 2)
     lua_thread.create(function()
         while not pipelineDead do
-            local ns, st, job = popIoJob()
-            if ns and job then
+            local processed = 0
+            while processed < ioBurst do
+                local ns, st, job = popIoJob()
+                if not job then break end
                 runIoJob(ns, st, job)
+                processed = processed + 1
                 wait(0)
-            else
+            end
+            if processed == 0 then
                 wait(ioIdleMs)
             end
         end

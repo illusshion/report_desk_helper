@@ -123,6 +123,20 @@ local function nickPidLevelPatterns(plain)
     return nil
 end
 
+local function adminLevelRank(level)
+    level = math.floor(tonumber(level) or 0)
+    if level >= 200 then return 3000 + level end
+    if level >= CHECKER_LVL_SPECIAL_BASE then return 2000 + level end
+    if level >= 1 and level <= 7 then return 1000 + level end
+    return 0
+end
+
+local function pickBetterAdminLevel(a, b)
+    if not a then return b end
+    if not b then return a end
+    return adminLevelRank(a) >= adminLevelRank(b) and a or b
+end
+
 local function parseAdminLineCore(plain)
     if plain == '' then return nil end
     plain = stripAdminLineSuffix(plain)
@@ -166,14 +180,18 @@ local function parseAdminEntryFromNormalized(line, opts)
                 or colNick:match('(' .. NICK_CLASS .. ')%[%d+%]')
             pid = colNick:match('%[(%d+)%]')
             if nick then
+                local bestLevel = nil
                 for i = 2, #cols do
                     local cell = trim(cols[i] or '')
-                    level = M.parseAdminLevel(cell)
+                    local lv = M.parseAdminLevel(cell)
                         or M.parseAdminLevel(cell:match('([Ss]?%d+)%s*lvl'))
                         or M.parseAdminLevel(cell:match('([Ss]?%d+)'))
-                    if level then
-                        return { nick = nick, level = level, id = tonumber(pid) }
+                    if lv then
+                        bestLevel = pickBetterAdminLevel(bestLevel, lv)
                     end
+                end
+                if bestLevel then
+                    return { nick = nick, level = bestLevel, id = tonumber(pid) }
                 end
                 local lvlStr = colNick:match('%(([Ss]?%d*)%s*lvl%)')
                 level = M.parseAdminLevel(lvlStr)
@@ -206,6 +224,7 @@ function M.scanAdminsBlob(plain, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true
@@ -246,6 +265,7 @@ local function scanAdminsTabBlob(plain, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true
@@ -275,6 +295,7 @@ function M.parseAdminsDialog(text, style, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true

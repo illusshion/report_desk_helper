@@ -1,5 +1,42 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.2 (dev stable)
+
+**Fix: AdminDesk.luac не стартовал (devEntryPresent)**
+
+- Убрана ложная проверка `lib/report_desk_app.lua` — файл есть у всех после autoupdate, luac сразу выходил из `main()`.
+
+**Fix: сохранение настроек и позиций HUD**
+
+- `saveConfig` больше не отменяется при ошибке user-config (сценарии).
+- `report_colors` корректно восстанавливаются при загрузке.
+- Debounce-flush ~4 сек после изменений (не ждать 2.5 мин autosave).
+- HUD cheats/checker: сохранение только при реальном сдвиге + flush после drag.
+- Закрытие /reps сбрасывает несохранённый редактор cmd_binds.
+
+**Команда /guns**
+
+- Выдаёт Deagle (100), M4 (500), MP5 (500) — как в AdminTools, без проверки admin_lvl.
+
+**Fix: GodMode — 1:1 как AdminTools**
+
+- `setCharProofs` каждый кадр.
+- `onSetPlayerHealth`: первый пакет пропускаем, дальше блок HP < 5.
+- Auto `/hp <id> 100` при локальном HP < 80 (раз в 10 сек).
+
+**Первая загрузка скинов (новый админ)**
+
+- Assets zip качается **параллельно** с core/libs (не после).
+- Убрана пауза 2 сек + ожидание spawn перед download.
+- После распаковки — **фоновый prewarm** 48 превью (IO сразу, GPU в OnFrame).
+- Prewarm: 16 текстур/кадр пока админ в игре (до открытия /reps).
+- Распаковка zip быстрее (реже yield); PNG optimize при сборке (ImageMagick).
+
+**Оптимизация каталога (скролл)**
+
+- Убран двойной GPU-tick; `deskTex.trim` для скинов; IO burst 3; zero-copy decode.
+- Каталог: `lfs.dir` + обязательный `skins_index.lua` в assets zip.
+
 ## 1.0.1 (hotfix)
 
 **Fix: GTA не запускается с AdminDesk.luac на чистой установке**

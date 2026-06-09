@@ -135,12 +135,14 @@ end
 -- Публичный API модуля.
 function M.createFromMemory(imgui, data)
     if not imgui or not data or #data <= 0 then return nil end
-    if imgui.CreateTextureFromFileInMemory then
-        local buf = ffi.new('char[?]', #data)
-        ffi.copy(buf, data, #data)
-        local ok, tex = pcall(imgui.CreateTextureFromFileInMemory, buf, #data)
-        if ok and tex then return tex end
-    end
+    if not imgui.CreateTextureFromFileInMemory then return nil end
+    local size = #data
+    local ok, tex = pcall(imgui.CreateTextureFromFileInMemory, ffi.cast('const char*', data), size)
+    if ok and tex then return tex end
+    local buf = ffi.new('char[?]', size)
+    ffi.copy(buf, data, size)
+    ok, tex = pcall(imgui.CreateTextureFromFileInMemory, buf, size)
+    if ok and tex then return tex end
     return nil
 end
 

@@ -220,10 +220,9 @@ local filterMode = new.int(0)
 local searchBuf = new.char[96]()
 local replyBuf = new.char[512]()
 local cmdBuf = new.char[64]()
-local selectedId = -1
 local selectedKey = nil
 local focusReplyNext = false
-local chatScrollToBottom = true
+local focusReplyReason = nil  -- 'open' | 'select' | 'send'
 local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
@@ -239,11 +238,12 @@ local deskInputState = {
     panelOpenPrev = false,
     deskUiOpenPrev = false,
     sampChatHeldOff = false,
-    chatScrollFrames = 0,
-    chatSnapBottomKey = nil,
-    chatSnapAttempts = 0,
+    chatScrollUntil = 0,
     chatFollowBottom = true,
     chatLastScrollY = nil,
+    snapPending = false,
+    snapKey = nil,
+    hasUnseenMessages = false,
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -253,6 +253,8 @@ local catWarmup = {
 }
 local cheatState = {
     godmode = false,
+    gmHealthPrimed = false,
+    gmHpCmdAt = 0,
     wallhack = false,
     hudDrag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 },
     hudHovered = false,
@@ -368,6 +370,8 @@ local deskCache = {
     quickBtn = {},
     quickBtnGen = -1,
     catalogTexFlushPending = false,
+    skinPrewarmActive = false,
+    skinPrewarmTarget = 0,
     skinFilterSig = '',
     skinGridLayoutCache = nil,
     skinGridLayoutSig = '',

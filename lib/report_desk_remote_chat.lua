@@ -480,6 +480,17 @@ local function remoteChatFormatNickId(clistHex, nick, id)
     return string.format('{%s}%s', clistHex, nick)
 end
 
+local function remoteChatResolveClistHex(playerId)
+    playerId = tonumber(playerId) or -1
+    if playerId >= 0 and type(sampPlayerColorChatHex) == 'function' then
+        local hex = sampPlayerColorChatHex(playerId)
+        if hex and hex ~= '' then
+            return string.upper(hex)
+        end
+    end
+    return RC_SAMP_NICK
+end
+
 function remoteChatTryAppend(nick, id, body, source, lineKey, profanity, bubbleColor, embedHex)
     if settings.remote_chat_samp_mirror == false then return false end
     if not remoteChatAllowsSource(source) then return false end
@@ -501,12 +512,7 @@ function remoteChatTryAppend(nick, id, body, source, lineKey, profanity, bubbleC
     local colorHex = remoteChatBubbleToChatHex(bubbleColor, embedHex)
     if RC_BUBBLE_SKIP_HEX[colorHex] then return false end
 
-    local clistHex = RC_SAMP_NICK
-    local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[tonumber(id) or -1]
-    if cached and type(sampColorToChatHex) == 'function' then
-        clistHex = sampColorToChatHex(cached) or clistHex
-    end
-    clistHex = string.upper(clistHex)
+    local clistHex = remoteChatResolveClistHex(id)
 
     local q = deskCache.remoteChatQueue
     if #q >= RC_QUEUE_MAX then
@@ -566,10 +572,7 @@ function remoteChatPrintSampLine(nick, id, body, source, profanity, bubbleColor,
 
     clistHex = string.upper(tostring(clistHex or RC_SAMP_NICK))
     if clistHex == RC_SAMP_NICK then
-        local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[id]
-        if cached and type(sampColorToChatHex) == 'function' then
-            clistHex = string.upper(sampColorToChatHex(cached) or RC_SAMP_NICK)
-        end
+        clistHex = remoteChatResolveClistHex(id)
     end
     local bodyHex = remoteChatResolveBodyHex(source, colorHex, bubbleColor)
     if profanity then bodyHex = 'FF6666' end

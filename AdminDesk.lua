@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.28')
+script_version('1.0.1')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -12,21 +12,43 @@ script_moonloader(26)
 require 'lib.moonloader'
 require 'lib.sampfuncs'
 
-do
+local function readDevEntryHead(path)
+    if type(doesFileExist) ~= 'function' or not doesFileExist(path) then return nil end
+    local f = io.open(path, 'r')
+    if not f then return nil end
+    local head = f:read(8192) or ''
+    f:close()
+    return head
+end
+
+local function devEntryHeadLooksDev(head)
+    if not head or head == '' then return false end
+    return head:find('report_desk_app', 1, true) ~= nil
+        or head:find('__REPORT_DESK_DEV', 1, true) ~= nil
+end
+
+local function devEntryPresent()
+    if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
     local root = getWorkingDirectory()
-    for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
-        local path = root .. '\\' .. name
-        local off = path .. '.off'
-        if doesFileExist(path) then
-            pcall(os.remove, off)
-            pcall(os.rename, path, off)
+    for _, name in ipairs({ 'admin_report_desk.lua', 'admin_report_desk.lua.off' }) do
+        if devEntryHeadLooksDev(readDevEntryHead(root .. '\\' .. name)) then
+            return true
         end
     end
-    local legacy = root .. '\\admin_report_desk.lua'
-    local legacyOff = legacy .. '.off'
-    if doesFileExist(root .. '\\AdminDesk.luac') and doesFileExist(legacy) then
-        pcall(os.remove, legacyOff)
-        pcall(os.rename, legacy, legacyOff)
+    return false
+end
+
+do
+    if not devEntryPresent() then
+        local root = getWorkingDirectory()
+        for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
+            local path = root .. '\\' .. name
+            local off = path .. '.off'
+            if doesFileExist(path) then
+                pcall(os.remove, off)
+                pcall(os.rename, path, off)
+            end
+        end
     end
 end
 
@@ -38,18 +60,6 @@ local SEED_LIBS = {
     'report_desk_deps.lua',
     'report_desk_autoupdate.lua',
 }
-
-local function devEntryPresent()
-    if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
-    local path = getWorkingDirectory() .. '\\admin_report_desk.lua'
-    if not doesFileExist(path) then return false end
-    local f = io.open(path, 'r')
-    if not f then return false end
-    local head = f:read(8192) or ''
-    f:close()
-    return head:find('report_desk_app', 1, true) ~= nil
-        or head:find('__REPORT_DESK_DEV', 1, true) ~= nil
-end
 
 local CORE_DIR = getWorkingDirectory() .. '\\report_desk'
 local CORE_NAMES = { 'AdminDeskCore.luac', 'AdminDeskCore.lua', 'admin_report_desk_core.luac', 'admin_report_desk_core.lua' }
@@ -237,15 +247,28 @@ local function bootstrapSeedUpdater()
     return true
 end
 
+local function stageLauncherPendingOnDisk()
+    if not updaterInstalled() then
+        return
+    end
+    local autoupdate = requireAutoupdate()
+    if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
+        return
+    end
+    if autoupdate.applyLauncherPending() then
+        print('[Report Desk] launcher committed on disk (picked up on next game start)')
+    end
+end
+
 local function applyPendingBootstrap()
     if not updaterInstalled() then
         return
     end
     local autoupdate = requireAutoupdate()
     if type(autoupdate) ~= 'table' then return end
-    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles() then
+    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles({ includeLauncher = false }) then
         clearDeskModuleCache()
-        print('[Report Desk] pending files applied')
+        print('[Report Desk] pending module files applied')
     end
 end
 
@@ -269,8 +292,9 @@ local function registerUpdateCommands(autoupdate, chatSay)
         local willReload, status = autoupdate.repair()
         if willReload then
             clearDeskModuleCache()
-            if runInstallPipeline() then
-                loadAndRunCore()
+            local pipelineOk, updated = runInstallPipeline()
+            if pipelineOk then
+                loadAndRunCore(updated)
             end
             return
         end
@@ -293,7 +317,7 @@ local function bootstrapReload(reason)
     return false
 end
 
-local function loadAndRunCore()
+local function loadAndRunCore(skipWelcome)
     local autoupdate = requireAutoupdate()
     local fn, loadErr = loadCore()
     if not fn then
@@ -304,11 +328,8 @@ local function loadAndRunCore()
         return false
     end
 
-    local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
-    if autoupdate and autoupdate.chatSay then
-        local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
-        local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
-        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
+    if not skipWelcome and autoupdate and autoupdate.showWelcomeMessage then
+        autoupdate.showWelcomeMessage(nil)
     end
 
     fn()
@@ -318,44 +339,51 @@ end
 
 local function runInstallPipeline()
     if not bootstrapSeedUpdater() then
-        return false
+        return false, false
     end
 
     local autoupdate, autoupdateErr = requireAutoupdate()
     if not autoupdate then
         bootstrapSay(tostring(autoupdateErr or 'autoupdate missing'))
-        return false
+        return false, false
     end
 
     local chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
 
+    local userOpts = {
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+    }
+
     local manifest, manifestErr = autoupdate.fetchRemoteManifest()
     if not manifest then
         if corePresent() then
             print('[Report Desk] offline, using local core')
-            return true
+            return true, false
         end
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE: ' .. tostring(manifestErr))
-        return false
+        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
+        return false, false
     end
 
-    bootstrapSay('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEA\xEE\xEC\xEF\xEE\xED\xE5\xED\xF2\xEE\xE2...')
+    print('[Report Desk] checking for updates...')
     local willReload, syncStatus = autoupdate.sync(manifest, {
-        quietChat = false,
         mode = 'full',
         includeCore = true,
         reload = false,
+        quietChat = true,
+        userFacing = true,
         showOverlay = true,
     })
+    local sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending'
     if syncStatus == 'fail' then
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC (/deskrepair)')
-        return false
+        return false, false
     end
     if willReload then
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xEE, \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xFF\xE4\xF0\xE0...')
+        print('[Report Desk] update applied, loading core in same session')
         if autoupdate.applyPendingFiles then
-            autoupdate.applyPendingFiles()
+            autoupdate.applyPendingFiles({ includeLauncher = false })
             clearDeskModuleCache()
         end
     end
@@ -364,60 +392,61 @@ local function runInstallPipeline()
     autoupdate = requireAutoupdate()
     if not autoupdate then
         bootstrapSay('autoupdate lost after sync')
-        return false
+        return false, false
     end
     chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
 
     if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
-        bootstrapSay('\xCF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xEF\xEE\xF1\xEB\xE5 \xF1\xEF\xE0\xE2\xED\xE0 (~50 \xCC\xE1)')
         if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, { quietChat = false, showOverlay = true })
+            autoupdate.deferAssets(manifest, userOpts)
         end
     end
 
     local deps = requireDeps()
     if not deps then
         bootstrapSay('deps module missing')
-        return false
+        return false, false
     end
-    local depsOk = select(1, deps.ensureAll({ say = chatSay, manifest = manifest }))
+    local depsOk = select(1, deps.ensureAll({
+        manifest = manifest,
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+    }))
     if not depsOk then
         bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
-        return false
+        return false, false
     end
 
     if not corePresent() then
         bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
-        return false
+        return false, false
     end
 
-    return true
+    if autoupdate.hideUpdateOverlay then
+        pcall(autoupdate.hideUpdateOverlay)
+    end
+
+    return true, sessionUpdated
 end
 
 function main()
-    do
-        local root = getWorkingDirectory()
-        local legacy = root .. '\\admin_report_desk.lua'
-        local off = legacy .. '.off'
-        if doesFileExist(root .. '\\AdminDesk.luac') and doesFileExist(legacy) then
-            pcall(os.remove, off)
-            pcall(os.rename, legacy, off)
-        end
-    end
     if devEntryPresent() then
         return
     end
+    stageLauncherPendingOnDisk()
     applyPendingBootstrap()
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)
     end
 
     local ok, err = pcall(function()
-        if not runInstallPipeline() then
+        local pipelineOk, sessionUpdated = runInstallPipeline()
+        if not pipelineOk then
             return
         end
-        loadAndRunCore()
+        loadAndRunCore(sessionUpdated)
     end)
 
     if not ok then

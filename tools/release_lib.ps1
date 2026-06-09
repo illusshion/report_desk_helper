@@ -11,6 +11,14 @@ function Get-DeskFileSha256([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
 }
 
+function ConvertTo-DeskCp1251LuaEscapes([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $enc = [Text.Encoding]::GetEncoding(1251)
+    $bytes = $enc.GetBytes($Text)
+    $parts = foreach ($b in $bytes) { '\x{0:X2}' -f $b }
+    return ($parts -join '')
+}
+
 function Clear-DeskGitIndexFlags([string]$MoonloaderRoot, [string[]]$RelPaths) {
     Push-Location $MoonloaderRoot
     try {
@@ -39,6 +47,25 @@ function Resolve-DeskLuajit([string]$MoonloaderRoot, [string]$ScriptRoot) {
     return $null
 }
 
+function Test-DeskLuacLoadable([string]$LuajitExe, [string]$LuacPath) {
+    if (-not (Test-Path $LuajitExe) -or -not (Test-Path $LuacPath)) {
+        return $false
+    }
+    $luajitDir = Split-Path $LuajitExe -Parent
+    $pathEsc = $LuacPath.Replace('\', '\\')
+    $snippet = "local f,e=loadfile('$pathEsc'); if not f then io.stderr:write(tostring(e)); os.exit(1) end"
+    Push-Location $luajitDir
+    try {
+        $out = & $LuajitExe -e $snippet 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0 -or $out -match 'incompatible bytecode') {
+            throw "Bytecode not loadable: $LuacPath ($out)"
+        }
+        return $true
+    } finally {
+        Pop-Location
+    }
+}
+
 function Invoke-DeskLuajitCompile([string]$LuajitExe, [string]$Src, [string]$Dst) {
     if (-not (Test-Path $LuajitExe)) {
         throw "LuaJIT not found: $LuajitExe"
@@ -49,7 +76,8 @@ function Invoke-DeskLuajitCompile([string]$LuajitExe, [string]$Src, [string]$Dst
     $luajitDir = Split-Path $LuajitExe -Parent
     Push-Location $luajitDir
     try {
-        & $LuajitExe -b $Src $Dst
+        # -bg: debug info required for MoonLoader 0.26+ bytecode compatibility
+        & $LuajitExe -bg $Src $Dst
         if (-not (Test-Path $Dst)) {
             throw "LuaJIT compile failed: $Src"
         }
@@ -57,6 +85,7 @@ function Invoke-DeskLuajitCompile([string]$LuajitExe, [string]$Src, [string]$Dst
         if ($head.Length -lt 3 -or $head[0] -ne 0x1b -or $head[1] -ne 0x4c -or $head[2] -ne 0x4a) {
             throw "Not LuaJIT bytecode (expected 1b 4c 4a header): $Dst"
         }
+        Test-DeskLuacLoadable $LuajitExe $Dst | Out-Null
     } finally {
         Pop-Location
     }
@@ -130,6 +159,11 @@ function Build-DeskAssetsZip {
     )
     $skinsRoot = Resolve-DeskPreviewAssetsRoot $MoonloaderRoot 'res\report_desk_skins'
     $vehRoot = Resolve-DeskPreviewAssetsRoot $MoonloaderRoot 'res\report_desk_vehicles'
+    $optScript = Join-Path $MoonloaderRoot 'tools\optimize_skins.ps1'
+    if ((Test-Path $optScript) -and (Get-Command magick -ErrorAction SilentlyContinue)) {
+        Write-Host 'Optimizing skin PNGs (max 256px)...'
+        & $optScript -SkinsDir $skinsRoot -Force
+    }
     $skinN = @(Get-ChildItem $skinsRoot -Filter 'skin-*.png' -ErrorAction SilentlyContinue).Count
     $vehN = @(Get-ChildItem $vehRoot -Filter '*.png' -ErrorAction SilentlyContinue).Count
     if ($skinN -lt $MinSkins) {
@@ -147,6 +181,10 @@ function Build-DeskAssetsZip {
     New-Item -ItemType Directory -Path $vehDst -Force | Out-Null
     Copy-Item (Join-Path $skinsRoot '*') $skinsDst -Recurse -Force
     Copy-Item (Join-Path $vehRoot '*') $vehDst -Recurse -Force
+    $skinsIndex = Join-Path $skinsDst 'skins_index.lua'
+    if (-not (Test-Path $skinsIndex)) {
+        throw "Assets build failed: missing skins_index.lua in $skinsRoot (run tools/download_adv_skins.ps1)"
+    }
     if (Test-Path $OutPath) { Remove-Item $OutPath -Force }
     Write-DeskStoreZip -SourceDir $stage -OutPath $OutPath
     Remove-Item $stage -Recurse -Force
@@ -232,6 +270,7 @@ function Build-DeskVersionJson {
     $fileSpecs = @(
         @{ key = $BootstrapAssetName; dest = $BootstrapAssetName; pending = $true; path = "dist\$BootstrapAssetName" },
         @{ key = 'report_desk_autoupdate.lua'; dest = 'lib/report_desk_autoupdate.lua'; pending = $true; path = 'dist\report_desk_autoupdate.lua' },
+        @{ key = 'report_desk_update_overlay.lua'; dest = 'lib/report_desk_update_overlay.lua'; pending = $false; path = 'dist\report_desk_update_overlay.lua' },
         @{ key = 'report_desk_deps.lua'; dest = 'lib/report_desk_deps.lua'; pending = $false; path = 'dist\report_desk_deps.lua' },
         @{ key = 'report_desk_sha256.lua'; dest = 'lib/report_desk_sha256.lua'; pending = $false; path = 'dist\report_desk_sha256.lua' },
         @{ key = 'report_desk_zip.lua'; dest = 'lib/report_desk_zip.lua'; pending = $false; path = 'dist\report_desk_zip.lua' },
@@ -275,6 +314,7 @@ function Build-DeskVersionJson {
         manifest_version = 3
         version          = $Version
         changelog        = $Changelog
+        changelog_cp1251 = (ConvertTo-DeskCp1251LuaEscapes $Changelog)
         release_base     = $base
         files            = $files
         runtime_libs     = @{
@@ -326,6 +366,7 @@ function Test-DeskReleaseArtifacts {
     $bootstrapPath = Join-Path $MoonloaderRoot "dist\$BootstrapAssetName"
     $versionPath = Join-Path $MoonloaderRoot 'release\version.json'
     $autoupdatePath = Join-Path $MoonloaderRoot 'dist\report_desk_autoupdate.lua'
+    $overlayPath = Join-Path $MoonloaderRoot 'dist\report_desk_update_overlay.lua'
     $depsPath = Join-Path $MoonloaderRoot 'dist\report_desk_deps.lua'
     $assetsZipPath = Join-Path $MoonloaderRoot 'dist\report_desk_assets.zip'
 
@@ -334,7 +375,7 @@ function Test-DeskReleaseArtifacts {
     $fsModPath = Join-Path $MoonloaderRoot 'dist\report_desk_fs.lua'
     $mimguiZipPath = Join-Path $MoonloaderRoot 'dist\mimgui-v1.7.1.zip'
 
-    foreach ($p in @($distCore, $distCoreLua, $repoCore, $zipPath, $bootstrapPath, $versionPath, $autoupdatePath, $depsPath, $assetsZipPath, $sha256Path, $zipModPath, $fsModPath, $mimguiZipPath)) {
+    foreach ($p in @($distCore, $distCoreLua, $repoCore, $zipPath, $bootstrapPath, $versionPath, $autoupdatePath, $overlayPath, $depsPath, $assetsZipPath, $sha256Path, $zipModPath, $fsModPath, $mimguiZipPath)) {
         if (-not (Test-Path $p)) {
             throw "Release verify failed: missing artifact $p"
         }
@@ -373,6 +414,7 @@ function Test-DeskReleaseArtifacts {
         'lib\vector3d.lua',
         'lib\report_desk_deps.lua',
         'lib\report_desk_autoupdate.lua',
+        'lib\report_desk_update_overlay.lua',
         'lib\report_desk_sha256.lua',
         'lib\report_desk_zip.lua',
         'lib\report_desk_fs.lua',

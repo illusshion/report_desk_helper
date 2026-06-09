@@ -443,7 +443,6 @@ function M.drawTab()
 
     imgui.EndChild()
     popPanel()
-    pcall(deskCatalogTexTick)
 end
 
 return M

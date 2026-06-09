@@ -152,9 +152,6 @@ function M.isDevEnvironment()
     if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
     if type(getWorkingDirectory) ~= 'function' then return false end
     local root = getWorkingDirectory()
-    if type(doesFileExist) == 'function' and doesFileExist(root .. '\\lib\\report_desk_app.lua') then
-        return true
-    end
     for _, name in ipairs({ 'admin_report_desk.lua', 'admin_report_desk.lua.off' }) do
         if devEntryHeadLooksDev(readDevEntryHead(root .. '\\' .. name)) then
             return true
@@ -1687,7 +1684,7 @@ local function extractAssetsZip(zipPath)
     local destRoot = M.root()
     local estFiles = 520
     local ok, err = deskZip.extract(zipPath, destRoot, {
-        yieldEvery = 20,
+        yieldEvery = 64,
         onProgress = function(count)
             overlayUpdate('\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (' .. tostring(count) .. ')', math.min(count / estFiles, 0.99))
         end,
@@ -1791,6 +1788,9 @@ function M.ensureAssets(manifest, opts)
     end
     overlayHide()
     setOverlayContext(nil)
+    if type(skinsStartPrewarm) == 'function' then
+        pcall(skinsStartPrewarm, SKIN_PREWARM_COUNT or 48)
+    end
     return true, true
 end
 
@@ -1807,15 +1807,6 @@ function M.deferAssets(manifest, opts)
         return M.ensureAssets(manifest, opts)
     end
     lua_thread.create(function()
-        while true do
-            if isSampAvailable and isSampAvailable() then
-                if sampIsLocalPlayerSpawned and sampIsLocalPlayerSpawned() then
-                    break
-                end
-            end
-            wait(500)
-        end
-        wait(2000)
         pcall(function()
             setOverlayContext(opts)
             M.ensureAssets(manifest, opts)

@@ -1,12 +1,11 @@
---[[ Модуль: glue session + menu + ans для /sp UI. ]]
+--[[ Модуль: glue session + menu для /sp UI. ]]
 local M = {}
 
 local session = require 'report_desk_spectate_session'
 local menu = require 'report_desk_spectate_menu'
-local specAns = require 'report_desk_spectate_ans'
 
 local deps = {}
-local ansDepsWired, menuDepsWired = false, false
+local menuDepsWired = false
 local clickHandler, toggleHandler
 local hookPrevClick, hookPrevToggle
 local deskWmDispatch = require 'report_desk_wm_dispatch'
@@ -116,56 +115,6 @@ local function reinstallSampevInputHooks()
     sampev.onToggleSelectTextDraw = toggleHandler
 end
 
--- On Ans Input Changed
-local function onAnsInputChanged()
-    if specAns.isOpen() then
-        if deps.rememberSpectateCursor then pcall(deps.rememberSpectateCursor) end
-        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, true) end
-    else
-        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, false) end
-        if deps.onAnsBarClosed then pcall(deps.onAnsBarClosed) end
-    end
-    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
-end
-
--- Wire Ans Deps
-local function wireAnsDeps()
-    if ansDepsWired then return end
-    ansDepsWired = true
-    specAns.install({
-        trim = deps.trim,
-        uiText = deps.uiText,
-        readInputBuf = deps.readInputBuf,
-        utf8ToCp1251 = deps.utf8ToCp1251,
-        getSettings = getSettings,
-        getTargetId = deps.getTargetId or M.getTargetId,
-        getTargetNick = deps.getTargetNick,
-        isSpectating = spectatingNow,
-        isGameTextInputActive = deps.isGameTextInputActive,
-        isDeskTypingActive = deps.isDeskTypingActive,
-        getShowWindow = deps.getShowWindow,
-        vkeys = deps.vkeys,
-        isVkDown = deps.isVkDown,
-        getPlayerSpectating = deps.getPlayerSpectating,
-        col_accent = deps.col_accent,
-        col_accent_dim = deps.col_accent_dim,
-        col_muted2 = deps.col_muted2,
-        col_label = deps.col_label,
-        sampIsPlayerConnected = deps.sampIsPlayerConnected,
-        sampGetPlayerNickname = deps.sampGetPlayerNickname,
-        sendChat = deps.sendChat,
-        sendMenuOutbound = deps.sendMenuOutbound,
-        transmitAns = deps.transmitAns,
-        enableSpectateCursor = deps.enableSpectateCursor,
-        rememberSpectateCursor = deps.rememberSpectateCursor,
-        setSpectateUiMode = deps.setSpectateUiMode,
-        updateInputPassthrough = deps.updateInputPassthrough,
-        onAnsBarClosed = deps.onAnsBarClosed,
-        markTypingActive = deps.markTypingActive,
-        onInputChanged = onAnsInputChanged,
-    })
-end
-
 -- Wire Menu Deps
 local function wireMenuDeps()
     if menuDepsWired then return end
@@ -179,7 +128,6 @@ local function wireMenuDeps()
         isSpectating = spectatingNow,
         isGameTextInputActive = deps.isGameTextInputActive,
         isDeskTypingActive = deps.isDeskTypingActive,
-        isAnsBarOpen = function() return specAns.isOpen() end,
         getShowWindow = deps.getShowWindow,
         vkeys = deps.vkeys,
         isVkDown = deps.isVkDown,
@@ -215,36 +163,9 @@ local function wireMenuDeps()
 end
 
 -- Публичный API модуля.
-function M.isAnsLayoutSwitch()
-    return false
-end
-
--- Публичный API модуля.
-function M.isAnsBarOpen()
-    return specAns.isOpen()
-end
-
--- Публичный API модуля.
-function M.wantsAnsInput()
-    return specAns.wantsInput()
-end
-
--- Публичный API модуля.
-function M.drawAnsBar(settings)
-    if M.getTargetId() < 0 then
-        if specAns.isOpen() then specAns.reset() end
-        return
-    end
-    if not specAns.isOpen() then return end
-    pcall(specAns.draw, settings or getSettings())
-end
-
--- Публичный API модуля.
 function M.install(cfg)
     deps = cfg or deps or {}
-    ansDepsWired = false
     menuDepsWired = false
-    wireAnsDeps()
     wireMenuDeps()
     session.install({
         trim = deps.trim,
@@ -298,7 +219,6 @@ function M.onToggleSpectating(toggle)
     session.markAwaitingSpectate(false)
     session.setSpectating(false)
     session.endSession()
-    specAns.reset()
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
     if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
 end
@@ -309,7 +229,6 @@ function M.onSpCommandOff()
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
     session.setSpectating(false)
     session.endSession()
-    specAns.reset()
     if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
 end
 
@@ -344,19 +263,15 @@ local function installWmHandler()
     uninstallWmHandler()
     deskWmDispatch.register('sp_ui', 85, function(msg, wparam, lparam)
         if deps.captureActive and deps.captureActive() then return end
-        if specAns.handleWindowMessage(msg, wparam, lparam) then
-            consumeWindowMessage(true, true, true)
-            return true
-        end
         if msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN then
-            if not specAns.isOpen() and M.handleMenuKey(wparam) then
+            if M.handleMenuKey(wparam) then
                 consumeWindowMessage(true, true, true)
                 return true
             end
         end
         if msg == WM.KEYUP or msg == WM.SYSKEYUP then
             local vkeys = deps.vkeys
-            if vkeys and not specAns.isOpen() and menu.menuCapturesKeyboard() then
+            if vkeys and menu.menuCapturesKeyboard() then
                 if wparam == vkeys.VK_UP or wparam == vkeys.VK_DOWN
                         or wparam == vkeys.VK_W or wparam == vkeys.VK_S
                         or wparam == vkeys.VK_NUMPAD8 or wparam == vkeys.VK_NUMPAD2 then
@@ -376,10 +291,8 @@ end
 function M.installInputHooks(cfg)
     if cfg then
         deps = cfg
-        ansDepsWired = false
         menuDepsWired = false
     end
-    wireAnsDeps()
     wireMenuDeps()
     ensureTdHooks()
     ensureSpectateSampevHook()

@@ -836,7 +836,16 @@ end
 -- Trim Messages
 function trimMessages(msgs)
     local limit = DEFAULT_HISTORY_LIMIT
-    while #msgs > limit do
+    local removeCount = #msgs - limit
+    if removeCount <= 0 then return end
+    for i = 1, removeCount do
+        local msg = msgs[i]
+        if msg then
+            msg._cachedWrapW = nil
+            msg._cachedLines = nil
+        end
+    end
+    for _ = 1, removeCount do
         table.remove(msgs, 1)
     end
 end

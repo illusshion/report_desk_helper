@@ -150,6 +150,31 @@ function deskOnPlayerQuit(playerId, reason)
     end
 end
 
+-- Godmode: как AdminTools — только onSetPlayerHealth.
+function installDeskGodmodeHealthHook()
+    if not sampev then return end
+    if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
+        return
+    end
+    local prev = sampev.onSetPlayerHealth
+    if prev == deskCache.gmHealthHandler then prev = nil end
+    if deskCache.hookPrevSetPlayerHealth == nil then deskCache.hookPrevSetPlayerHealth = prev end
+    deskCache.gmHealthHandler = function(health)
+        local block = cheatsOnSetPlayerHealth(health)
+        if block == false then return false end
+        local chain = deskCache.hookPrevSetPlayerHealth
+        if type(chain) == 'function' then
+            return chain(health)
+        end
+    end
+    sampev.onSetPlayerHealth = deskCache.gmHealthHandler
+end
+
+function deskGodmodeHooksActive()
+    if not sampev then return false end
+    return deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler
+end
+
 -- Quit игрока → checker, spectate exit, thread offline.
 function installDeskPlayerQuitHook()
     if not sampev then return end
@@ -664,6 +689,9 @@ function deskEnsureAllHooks()
     end
     if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
         installDeskPlayerColorHook()
+    end
+    if not deskGodmodeHooksActive() then
+        installDeskGodmodeHealthHook()
     end
     if not deskCache.spEnterHandler or sampev.onPlayerEnterVehicle ~= deskCache.spEnterHandler
             or not deskCache.spExitHandler or sampev.onPlayerExitVehicle ~= deskCache.spExitHandler

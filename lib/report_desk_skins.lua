@@ -14,15 +14,27 @@ function skinsLoadCatalog()
         end
     end
     if #skinCatalog == 0 then
-        for id = 1, 311 do
-            if id ~= 74 then
-                local file = string.format('skin-%d.png', id)
-                if doesFileExist(SKINS_DIR .. file) then
-                    skinCatalog[#skinCatalog + 1] = { id = id, file = file }
+        local okLfs, lfs = pcall(require, 'lfs')
+        if okLfs and lfs and lfs.dir and doesDirectoryExist(SKINS_DIR) then
+            for entry in lfs.dir(SKINS_DIR) do
+                local id = tonumber(entry:match('^skin%-(%d+)%.png$'))
+                if id and id ~= 74 then
+                    skinCatalog[#skinCatalog + 1] = { id = id, file = entry }
                 end
             end
+            table.sort(skinCatalog, function(a, b) return a.id < b.id end)
         end
-        table.sort(skinCatalog, function(a, b) return a.id < b.id end)
+        if #skinCatalog == 0 then
+            for id = 1, 311 do
+                if id ~= 74 then
+                    local file = string.format('skin-%d.png', id)
+                    if doesFileExist(SKINS_DIR .. file) then
+                        skinCatalog[#skinCatalog + 1] = { id = id, file = file }
+                    end
+                end
+            end
+            table.sort(skinCatalog, function(a, b) return a.id < b.id end)
+        end
     end
     for _, e in ipairs(skinCatalog) do
         skinCatalogById[e.id] = e
@@ -77,17 +89,87 @@ end
 function skinsEnqueueVisible(firstIdx, lastIdx, items)
     if not deskTex then return end
     local ids = {}
+    local keep = {}
     for i = firstIdx, lastIdx do
         local e = items[i]
-        if e and e.id then ids[#ids + 1] = e.id end
+        if e and e.id then
+            ids[#ids + 1] = e.id
+            keep[e.id] = true
+        end
     end
+    if skinSelectedId then keep[skinSelectedId] = true end
     deskTexPipeline.syncVisible(TEX_NS_SKIN, ids, deskTex, { priority = { skinSelectedId } })
+    deskTex.trim(TEX_NS_SKIN, skinTexRelease, keep, true)
+end
+
+-- Skins Start Prewarm
+function skinsStartPrewarm(count)
+    if not doesFileExist(SKINS_DIR .. 'skin-1.png') then
+        return false
+    end
+    count = math.max(1, math.min(tonumber(count) or SKIN_PREWARM_COUNT or 48, 80))
+    skinsLoadCatalog()
+    if not skinCatalog or #skinCatalog == 0 then
+        return false
+    end
+    ensureDeskCatalogWarmup()
+    deskTexPipeline.activate(TEX_NS_SKIN)
+    local ids = {}
+    for i = 1, math.min(count, #skinCatalog) do
+        local e = skinCatalog[i]
+        if e and e.id then
+            ids[#ids + 1] = e.id
+        end
+    end
+    if #ids == 0 then
+        return false
+    end
+    deskCache.skinPrewarmTarget = #ids
+    deskCache.skinPrewarmActive = true
+    deskTexPipeline.syncVisible(TEX_NS_SKIN, ids, deskTex, {
+        priority = { ids[1], ids[2], ids[3] },
+    })
+    print('[Report Desk] skin prewarm: ' .. #ids .. ' thumbnails')
+    return true
+end
+
+-- Skins Prewarm Active
+function skinsPrewarmActive()
+    return deskCache and deskCache.skinPrewarmActive == true
+end
+
+-- Skins Prewarm Tick
+function skinsPrewarmTick()
+    if not deskCache.skinPrewarmActive then
+        return false
+    end
+    if not imgui or not deskTex then
+        return true
+    end
+    if deskTexPipeline.isDead and deskTexPipeline.isDead() then
+        deskCache.skinPrewarmActive = false
+        return false
+    end
+    local budget = SKIN_PREWARM_GPU_BUDGET or CATALOG_GPU_BUDGET_BURST or 12
+    deskTexPipeline.tick(imgui, deskTex, budget)
+    local pending = deskTexPipeline.pendingCount(TEX_NS_SKIN)
+    local loaded = deskTex.count(TEX_NS_SKIN)
+    local target = tonumber(deskCache.skinPrewarmTarget) or 0
+    if pending == 0 and (target <= 0 or loaded >= target) then
+        deskCache.skinPrewarmActive = false
+        print('[Report Desk] skin prewarm done: ' .. tostring(loaded) .. ' textures')
+        return false
+    end
+    return true
 end
 
 -- Skins On Tab Enter
 function skinsOnTabEnter()
     skinsLoadCatalog()
     deskTexPipeline.activate(TEX_NS_SKIN)
+    if deskCache.skinPrewarmActive then
+        deskCache.skinPrewarmActive = false
+    end
 end
 
 -- Skins On Tab Leave
@@ -145,7 +227,11 @@ function deskCatalogTexTick()
     if not deskCatalogTabActive() then return end
     if isPauseMenuActive and isPauseMenuActive() then return end
     if isGamePaused and isGamePaused() then return end
-    deskTexPipeline.tick(imgui, deskTex, CATALOG_GPU_BUDGET)
+    local budget = CATALOG_GPU_BUDGET
+    if deskTexPipeline.anyPending() then
+        budget = math.min(CATALOG_GPU_BUDGET_BURST or budget, budget + 4)
+    end
+    deskTexPipeline.tick(imgui, deskTex, budget)
 end
 
 -- Desk hook/helper.
@@ -157,14 +243,8 @@ end
 
 -- Skins Count Files
 function skinsCountFiles()
-    if not doesDirectoryExist or not doesDirectoryExist(SKINS_DIR) then return 0 end
-    local n = 0
-    for id = 1, 311 do
-        if id ~= 74 and doesFileExist(SKINS_DIR .. string.format('skin-%d.png', id)) then
-            n = n + 1
-        end
-    end
-    return n
+    skinsLoadCatalog()
+    return skinCatalog and #skinCatalog or 0
 end
 
 -- Skin Get Texture
@@ -532,6 +612,5 @@ function drawSkinsTab()
 
     imgui.EndChild()
     popPanelStyle()
-    pcall(deskCatalogTexTick)
 end
 

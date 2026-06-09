@@ -21,9 +21,13 @@ SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
 
 SKIN_TEX_CACHE_MAX = 72      -- макс. skin-текстур в GPU-кэше
 VEH_TEX_CACHE_MAX = 72       -- макс. vehicle-текстур в GPU-кэше
-TEX_STAGING_MAX = 16         -- очередь staging перед upload
-CATALOG_GPU_BUDGET = 5       -- текстур за tick каталога
-CATALOG_IO_IDLE_MS = 12      -- пауза IO-потока каталога, мс
+TEX_STAGING_MAX = 24         -- очередь staging перед upload
+CATALOG_GPU_BUDGET = 8       -- текстур за tick каталога
+CATALOG_GPU_BUDGET_BURST = 12 -- burst при большой очереди pending
+CATALOG_IO_IDLE_MS = 8       -- пауза IO-потока каталога, мс
+CATALOG_IO_BURST = 3         -- PNG-чтений за итерацию IO-потока
+SKIN_PREWARM_COUNT = 48      -- превью для фоновой загрузки после assets
+SKIN_PREWARM_GPU_BUDGET = 16 -- GPU upload/кадр во время prewarm
 SKIN_MAX_FILE_BYTES = 512000 -- лимит размера PNG скина, байт
 TEX_NS_SKIN = 'skin'         -- namespace tex pipeline для скинов
 SKIN_NEARBY_CACHE_SEC = 0.6  -- кэш списка игроков в радиусе, сек
@@ -32,7 +36,7 @@ SKIN_THUMB_W, SKIN_THUMB_H = 68, 85
 SKIN_THUMB_ASPECT = SKIN_THUMB_H / SKIN_THUMB_W
 SKIN_PREVIEW_W, SKIN_PREVIEW_H = 168, 210
 
-AUTOSAVE_SETTINGS_INTERVAL = 150  -- автосохранение настроек, сек
+AUTOSAVE_SETTINGS_INTERVAL = 60   -- автосохранение настроек, сек (дублирует debounce-flush)
 AUTOSAVE_THREADS_INTERVAL = 600   -- автосохранение тредов репортов, сек
 PRUNE_MAP_INTERVAL = 90           -- очистка timed maps (dedup/seen), сек
 INGEST_DEDUP_SEC = 3.0            -- dedup ingest одной строки, сек

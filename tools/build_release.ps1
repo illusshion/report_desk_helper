@@ -123,7 +123,7 @@ Copy-Item (Join-Path $distDir 'report_desk') (Join-Path $stage 'report_desk') -R
 $libStage = Join-Path $stage 'lib'
 New-Item -ItemType Directory -Path $libStage -Force | Out-Null
 Copy-Item (Join-Path $distDir 'report_desk_autoupdate.lua') (Join-Path $libStage 'report_desk_autoupdate.lua') -Force
-foreach ($aux in @('report_desk_deps.lua', 'report_desk_sha256.lua', 'report_desk_zip.lua', 'report_desk_fs.lua')) {
+foreach ($aux in @('report_desk_deps.lua', 'report_desk_sha256.lua', 'report_desk_zip.lua', 'report_desk_fs.lua', 'report_desk_update_overlay.lua')) {
     $src = Join-Path $MoonloaderRoot "lib\$aux"
     if (-not (Test-Path $src)) { Write-Error "Missing lib\$aux" }
     Copy-Item $src (Join-Path $libStage $aux) -Force

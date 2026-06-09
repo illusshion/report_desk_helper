@@ -196,8 +196,13 @@ function loadConfig()
         checkerState.hudPosValidated = false
     end
     if type(data.report_colors) == 'table' then
+        settings.report_colors = {}
         for _, c in ipairs(data.report_colors) do
-            REPORT_COLORS[normColor(c)] = true
+            local nc = normColor(c)
+            if nc and nc ~= 0 then
+                REPORT_COLORS[nc] = true
+                settings.report_colors[#settings.report_colors + 1] = nc
+            end
         end
     end
     if type(data.rules) == 'table' and #data.rules > 0 then
@@ -458,7 +463,7 @@ function saveConfig()
     end
     if dirtySettings then
         if not saveUserConfig() then
-            return false
+            print('[Report Desk] user config save failed — continuing main config save')
         end
     end
 
@@ -541,6 +546,7 @@ function saveConfig()
     f:write(string.format('    checker_notify_sound = %s,\n', settings.checker_notify_sound ~= false and 'true' or 'false'))
     f:write(string.format('    checker_notify_leader_join = %s,\n', settings.checker_notify_leader_join == true and 'true' or 'false'))
     f:write(string.format('    checker_notify_leader_quit = %s,\n', settings.checker_notify_leader_quit == true and 'true' or 'false'))
+    f:write(string.format('    checker_notify_friend_join = %s,\n', settings.checker_notify_friend_join ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_sync = %s,\n', settings.checker_auto_sync == true and 'true' or 'false'))
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))

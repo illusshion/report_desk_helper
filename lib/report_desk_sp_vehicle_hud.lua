@@ -523,10 +523,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
-        return drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return drag.active == true
     end
     if drag.active then return true end
@@ -1231,8 +1228,12 @@ local function drawVehicleHudInner(settings)
         hy = math.max(HUD_MARGIN, math.min(hy, sh - panelSz - HUD_MARGIN))
     end
 
+    local wantInput = M.wantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
         + imgui.WindowFlags.NoScrollbar
+    if not wantInput and imgui.WindowFlags.NoInputs then
+        flags = flags + imgui.WindowFlags.NoInputs
+    end
     if imgui.WindowFlags.NoScrollWithMouse then
         flags = flags + imgui.WindowFlags.NoScrollWithMouse
     end

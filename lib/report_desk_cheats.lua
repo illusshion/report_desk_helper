@@ -49,8 +49,12 @@ function deskSyncInputFocusState()
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
-    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard))
-        or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
+    local anyActive = imgui.IsAnyItemActive and imgui.IsAnyItemActive()
+    -- /sp HUD рисуется в том же кадре — IsAnyItemActive не считаем «печатью в desk».
+    if anyActive and deskSpectatingNow and deskSpectatingNow() and not deskInputState.replyInputActive then
+        anyActive = false
+    end
+    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard)) or anyActive
     if typing then
         deskInputState.replyFocused = true
         deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
@@ -80,7 +84,6 @@ end
 
 -- Desk hook/helper.
 function deskImguiTypingActive()
-    if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
     if deskInputState.replyInputActive then return true end
@@ -228,6 +231,16 @@ function cheatsApplyGodmode(on)
     if isCharInAnyCar(PLAYER_PED) then
         local car = storeCarCharIsInNoSave(PLAYER_PED)
         if car then setCarProofs(car, proofs, proofs, proofs, proofs, proofs) end
+    end
+end
+
+-- Как AdminTools: первый SETPLAYERHEALTH пропускаем, дальше блокируем HP < 5.
+function cheatsOnSetPlayerHealth(health)
+    if not cheatState.godmode then return end
+    if not cheatState.gmHealthPrimed then
+        cheatState.gmHealthPrimed = true
+    elseif (tonumber(health) or 0) < 5 then
+        return false
     end
 end
 
@@ -555,7 +568,20 @@ function cheatsMaintain()
         cheatsStartupDone = true
         cheatsApplyStartup()
     end
-    if cheatState.godmode then cheatsApplyGodmode(true) end
+    if cheatState.godmode then
+        cheatsApplyGodmode(true)
+        local hp = tonumber(getCharHealth(PLAYER_PED)) or 100
+        if hp < 80 and type(sendChat) == 'function' and type(sampGetPlayerIdByCharHandle) == 'function' then
+            local now = os.clock()
+            if now - (tonumber(cheatState.gmHpCmdAt) or 0) > 10 then
+                local ok, myId = sampGetPlayerIdByCharHandle(PLAYER_PED)
+                if ok and myId then
+                    cheatState.gmHpCmdAt = now
+                    sendChat(string.format('hp %d 100', myId))
+                end
+            end
+        end
+    end
     if cheatState.wallhack then cheatsApplyWallhack(true) end
 end
 
@@ -660,6 +686,53 @@ function deskGetCarFreeSeat(car)
         return nil
     end
     return 0
+end
+
+--[[ /guns — набор оружия из AdminTools (Deagle, M4, MP5), без проверки admin_lvl. ]]
+local DESK_GUNS_KIT = {
+    { id = 24, ammo = 100 },
+    { id = 31, ammo = 500 },
+    { id = 29, ammo = 500 },
+}
+
+local function deskEnsureWeaponModel(weaponId)
+    if not getWeapontypeModel then return false end
+    local model = getWeapontypeModel(weaponId)
+    if not model or model == 0 then return false end
+    if hasModelLoaded(model) then return true end
+    requestModel(model)
+    if loadAllModelsNow then loadAllModelsNow() end
+    local deadline = os.clock() + 8
+    while not hasModelLoaded(model) and os.clock() < deadline do
+        wait(0)
+    end
+    return hasModelLoaded(model)
+end
+
+local function deskGiveWeapon(weaponId, ammo)
+    if not doesCharExist(PLAYER_PED) then return false end
+    if not deskEnsureWeaponModel(weaponId) then return false end
+    giveWeaponToChar(PLAYER_PED, weaponId, ammo)
+    setCurrentCharWeapon(PLAYER_PED, weaponId)
+    return true
+end
+
+function deskGiveGuns()
+    if sampIsLocalPlayerSpawned and not sampIsLocalPlayerSpawned() then
+        say('\xD1\xED\xE0\xF7\xE0\xEB\xE0 \xED\xF3\xE6\xED\xEE \xE1\xFB\xF2\xFC \xE2 \xE8\xE3\xF0\xE5.')
+        return
+    end
+    if not doesCharExist(PLAYER_PED) then return end
+    local run = function()
+        for _, spec in ipairs(DESK_GUNS_KIT) do
+            deskGiveWeapon(spec.id, spec.ammo)
+        end
+    end
+    if lua_thread and lua_thread.create then
+        lua_thread.create(run)
+    else
+        run()
+    end
 end
 
 --[[ /acar — 1:1 AdminTools getcar: RPC enter + warp + машина к игроку. ]]
@@ -1053,11 +1126,20 @@ local function cheatsClampHudPos(hx, hy, winW, winH)
 end
 
 -- Cheats Persist Hud Pos
-local function cheatsPersistHudPos(hx, hy, winW, winH)
+local function cheatsPersistHudPos(hx, hy, winW, winH, flushNow)
     hx, hy = cheatsClampHudPos(hx, hy, winW, winH)
-    settings.cheats.hud_x = math.floor(hx + 0.5)
-    settings.cheats.hud_y = math.floor(hy + 0.5)
+    local nx = math.floor(hx + 0.5)
+    local ny = math.floor(hy + 0.5)
+    local ox = math.floor(tonumber(settings.cheats.hud_x) or 12)
+    local oy = math.floor(tonumber(settings.cheats.hud_y) or 80)
+    cheatState.hudPlaced = true
+    if nx == ox and ny == oy then
+        return hx, hy
+    end
+    settings.cheats.hud_x = nx
+    settings.cheats.hud_y = ny
     if markDirtySettings then markDirtySettings() end
+    if flushNow and flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
     return hx, hy
 end
 
@@ -1108,7 +1190,7 @@ function drawCheatsHudOverlay()
     local hx, hy = cheatsClampHudPos(rawHx, rawHy, CHEATS_HUD_W, CHEATS_HUD_H)
     if not drag.active and not cheatState.hudPlaced
             and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5) or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
-        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H)
+        hx, hy = cheatsPersistHudPos(hx, hy, CHEATS_HUD_W, CHEATS_HUD_H, true)
     end
     if drag.active then
         hx = drag.offX
@@ -1166,8 +1248,7 @@ function drawCheatsHudOverlay()
             drag.offX, drag.offY = cheatsClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
-            cheatsPersistHudPos(wp.x, wp.y, ww, wh)
-            if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+            cheatsPersistHudPos(wp.x, wp.y, ww, wh, true)
         end
 
         imgui.End()

@@ -157,15 +157,18 @@ end
 function deskSpectateCameraOwnsInput()
     if not deskSpectatingNow() then return false end
     if showWindow[0] then return false end
-    if type(deskSpectateStats) == 'table'
-            and type(deskSpectateStats.isAnsBarOpen) == 'function'
-            and deskSpectateStats.isAnsBarOpen() then
-        return false
-    end
     return true
 end
 
 _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput
+
+function deskSpectateOverlayInputAllowed()
+    if showWindow[0] then return false end
+    if deskSpectateCameraOwnsInput() then return false end
+    return true
+end
+
+_G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed
 
 -- Desk hook/helper.
 function deskSyncSpectateState(force)
@@ -194,13 +197,6 @@ function deskImguiNeedsInput()
     if deskSpectateCameraOwnsInput() then
         return false
     end
-    if type(deskSpectateStats) == 'table' then
-        local sp = deskSpectateStats
-        if sp.isAnsBarOpen and sp.isAnsBarOpen() then
-            if sp.isAnsLayoutSwitch and sp.isAnsLayoutSwitch() then return false end
-            return true
-        end
-    end
     if cheatState.marker.active then return true end
     if not sessionLive then return false end
     if type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput() then
@@ -219,9 +215,10 @@ function deskImguiNeedsInput()
         local sp = deskSpectateStats
         if sp.isHudDragActive and sp.isHudDragActive() then return true end
         if sp.wantsHudInput and sp.wantsHudInput() then return true end
+        if sp.isKeysHudDragActive and sp.isKeysHudDragActive() then return true end
+        if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
         if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
         if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
-        if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
     end
     return false
 end
@@ -264,6 +261,8 @@ end
 -- Desk hook/helper.
 function deskSpectateHudWantsInput()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
+    if deskSpectateStats.isKeysHudDragActive and deskSpectateStats.isKeysHudDragActive() then return true end
+    if deskSpectateStats.wantsKeysHudInput and deskSpectateStats.wantsKeysHudInput() then return true end
     return false
 end
 
@@ -347,11 +346,9 @@ function deskEnsureCameraAfterPanelClose()
     updateMimguiGameInputPassthrough()
 end
 
--- mimgui HideCursor: курсор только у открытого desk / ans / hover HUD вне /sp.
+-- mimgui HideCursor: курсор только у открытого desk / hover HUD вне /sp.
 function deskMimguiHideCursor(wantsHudCursor)
     if showWindow[0] then return false end
-    -- Ans bar — только клавиатура; курсор не нужен и дергает SP HUD при движении мыши.
-    if deskAnsBarBlocksSampChat() then return true end
     if wantsHudCursor and not deskSpectatingNow() then return false end
     return true
 end
@@ -416,9 +413,10 @@ function deskGameCursorActive()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
     if deskSpectateStats.isHudHovered and deskSpectateStats.isHudHovered() then return true end
     if deskSpectateStats.wantsHudInput and deskSpectateStats.wantsHudInput() then return true end
+    if deskSpectateStats.isKeysHudDragActive and deskSpectateStats.isKeysHudDragActive() then return true end
+    if deskSpectateStats.wantsKeysHudInput and deskSpectateStats.wantsKeysHudInput() then return true end
     if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then return true end
     if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then return true end
-    if deskSpectateStats.wantsAnsInput and deskSpectateStats.wantsAnsInput() then return true end
     return false
 end
 
@@ -479,17 +477,8 @@ function deskApplyInputPolicy()
 end
 
 -- Desk hook/helper.
-function deskAnsBarBlocksSampChat()
-    return type(deskSpectateStats) == 'table'
-        and type(deskSpectateStats.isAnsBarOpen) == 'function'
-        and deskSpectateStats.isAnsBarOpen()
-end
-
-_G.deskAnsBarBlocksSampChat = deskAnsBarBlocksSampChat
-
--- Desk hook/helper.
 function deskDeskOrAnsUiOpen()
-    return showWindow[0] or deskAnsBarBlocksSampChat()
+    return showWindow[0]
 end
 
 -- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
@@ -682,17 +671,13 @@ function deskShouldBlockSampChatKey(msg, wparam)
     local vkReturn = (vkeys and vkeys.VK_RETURN) or 0x0D
     if wparam == vkReturn or wparam == 0x0D then return false end
     if deskSampTextMsgs[msg] then
-        if showWindow[0] then return true end
-        -- ans bar: WM_CHAR нужен mimgui для InputText; SAMP чат уже держим через hook.
-        if deskAnsBarBlocksSampChat() then return false end
-        return true
+        return showWindow[0] == true
     end
     local wm = deskCache.wm
     if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN or msg == wm.KEYUP or msg == wm.SYSKEYUP then
         if type(deskPassesGameKey) == 'function' and deskPassesGameKey(wparam) then return false end
         if wm.CHAT_KEYS[wparam] then return true end
         if showWindow[0] then return true end
-        -- ans bar: печать идёт в imgui; блокируем только SAMP chat hotkeys (CHAT_KEYS выше).
     end
     return false
 end
@@ -715,7 +700,7 @@ end
 
 -- Desk hook/helper.
 function deskOverlayTextInputActive()
-    return deskAnsBarBlocksSampChat()
+    return false
 end
 
 -- Desk hook/helper.
@@ -738,7 +723,13 @@ function updateMimguiGameInputPassthrough()
     if not imgui or imgui.DisableInput == nil then return end
 
     if deskSpectateCameraOwnsInput() then
-        imgui.DisableInput = true
+        local allow = false
+        if type(deskSpectateStats) == 'table' then
+            local sp = deskSpectateStats
+            if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then allow = true end
+            if sp.isKeysHudDragActive and sp.isKeysHudDragActive() then allow = true end
+        end
+        imgui.DisableInput = not allow
         return
     end
 
@@ -816,6 +807,9 @@ end
 
 -- Сброс/отправка очереди.
 function flushDirtyConfigNow()
+    if type(cancelScheduledConfigFlush) == 'function' then
+        cancelScheduledConfigFlush()
+    end
     if type(flushCheckerCatalogNow) == 'function' then
         pcall(flushCheckerCatalogNow)
     end
@@ -832,6 +826,9 @@ function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
     if not wasOpen then return end
+    if type(syncCmdBindEditorIfDirty) == 'function' then
+        pcall(syncCmdBindEditorIfDirty)
+    end
     deskResetHotkeyDebounce((type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7)
     finishDeskBindCapture()
     deskInputState.replyFocused = false

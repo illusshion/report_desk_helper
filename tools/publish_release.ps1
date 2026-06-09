@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [string]$Changelog = '',
+    [string]$ReleaseTitle = '',
     [switch]$SkipLuac,
     [switch]$GitCommit,
     [switch]$Publish,
@@ -41,6 +42,7 @@ $buildManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 $runtimeZipPath = Join-Path $distDir 'report_desk_runtime_libs.zip'
 $iconvPath = Join-Path $distDir 'iconv.dll'
 $autoupdatePath = Join-Path $distDir 'report_desk_autoupdate.lua'
+$overlayPath = Join-Path $distDir 'report_desk_update_overlay.lua'
 $depsPath = Join-Path $distDir 'report_desk_deps.lua'
 $bootstrapPath = Join-Path $distDir $bootstrapAsset
 $launcherPath = Join-Path $distDir 'admin_report_desk.lua'
@@ -92,6 +94,7 @@ if ($Publish) {
     $fsModPath = Join-Path $distDir 'report_desk_fs.lua'
     $mimguiZipPath = Join-Path $distDir 'mimgui-v1.7.1.zip'
 
+    $bootstrapLuaPath = Join-Path $distDir 'AdminDesk.lua'
     $releaseAssets = @(
         $bootstrapPath,
         $corePath,
@@ -100,6 +103,7 @@ if ($Publish) {
         $runtimeZipPath,
         $iconvPath,
         $autoupdatePath,
+        $overlayPath,
         $depsPath,
         $sha256Path,
         $zipModPath,
@@ -108,6 +112,9 @@ if ($Publish) {
     )
     if (Test-Path $launcherPath) {
         $releaseAssets += $launcherPath
+    }
+    if ((Test-Path $bootstrapLuaPath) -and $bootstrapAsset -ne 'AdminDesk.lua') {
+        $releaseAssets += $bootstrapLuaPath
     }
     foreach ($asset in $releaseAssets) {
         if (-not (Test-Path $asset)) {
@@ -133,9 +140,10 @@ if ($Publish) {
             Write-Host "  uploaded: $(Split-Path $asset -Leaf)" -ForegroundColor Green
         }
     } else {
+        $ghTitle = if ($ReleaseTitle -ne '') { $ReleaseTitle } else { "Report Desk $Version" }
         gh release create $tag `
             --repo "$owner/$repoName" `
-            --title "Report Desk $Version" `
+            --title $ghTitle `
             --notes $notes `
             $releaseAssets
         if ($LASTEXITCODE -ne 0) {

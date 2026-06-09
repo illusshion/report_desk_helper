@@ -144,6 +144,29 @@ function sampColorToChatHex(c)
     return string.format('%06X', math.floor(c / 256) % 0x1000000)
 end
 
+function chatHexToImVec4(hex)
+    hex = tostring(hex or ''):gsub('[{}%s]', ''):upper()
+    if #hex ~= 6 then return nil end
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    if not r or not g or not b then return nil end
+    if not imgui or not imgui.ImVec4 then return nil end
+    return imgui.ImVec4(r / 255, g / 255, b / 255, 1.0)
+end
+
+function sampColorToImVec4(color)
+    color = normColor(color)
+    if color == 0 then return nil end
+    if not imgui or not imgui.ImVec4 then return nil end
+    local bb = bit.band(color, 0xFF)
+    local gg = bit.band(bit.rshift(color, 8), 0xFF)
+    local rr = bit.band(bit.rshift(color, 16), 0xFF)
+    local aa = bit.band(bit.rshift(color, 24), 0xFF)
+    if aa == 0 then aa = 255 end
+    return imgui.ImVec4(rr / 255, gg / 255, bb / 255, aa / 255)
+end
+
 -- Кэш clist: onPlayerJoin / onSetPlayerColor / onPlayerStreamIn (как в TAB).
 function sampStorePlayerColor(playerId, color)
     if type(deskCache) ~= 'table' then return end
@@ -254,12 +277,34 @@ function matchMessageVariants(body)
     return msg, msgAlt, msgTypo
 end
 
+function cancelScheduledConfigFlush()
+    if type(deskCache) == 'table' then deskCache.configFlushAt = 0 end
+end
+
+function scheduleDirtyConfigFlush()
+    if type(deskCache) == 'table' then
+        deskCache.configFlushAt = os.clock() + 4.0
+    end
+end
+
+function tickScheduledConfigFlush()
+    if type(deskCache) ~= 'table' then return end
+    local at = tonumber(deskCache.configFlushAt) or 0
+    if at <= 0 or os.clock() < at then return end
+    deskCache.configFlushAt = 0
+    if type(flushDirtyConfigNow) == 'function' then
+        pcall(flushDirtyConfigNow)
+    end
+end
+
 function markDirtySettings()
     dirtySettings = true
+    scheduleDirtyConfigFlush()
 end
 
 function markDirtyThreads()
     dirtyThreads = true
+    scheduleDirtyConfigFlush()
 end
 
 function invalidateUiCaches()

@@ -14,6 +14,7 @@ local capAnim = {}
 local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
 local hovered = false
 local hudRect = nil
+local hudLastW, hudLastH = 320, 80
 
 local sampevRef
 local hookPrevPlayerSync
@@ -254,76 +255,88 @@ local function drawVehicleLayout(stateKeys)
     imgui.EndGroup()
 end
 
--- Resolve Pos
-local function resolvePos(settings, sw, sh)
-    local custom = settings and settings.spectate_keys_hud_custom == true
-    local rawX = settings and tonumber(settings.spectate_keys_hud_x)
-    local rawY = settings and tonumber(settings.spectate_keys_hud_y)
-    local pivotX, pivotY = 0.5, 0.5
-    local hx, hy
-    if custom and rawX ~= nil then
-        hx = rawX
-        pivotX = 0
-        if hx < 0 then
-            hx = sw + hx
-            pivotX = 1
-        end
-    else
-        hx = sw * 0.5
-        pivotX = 0.5
-    end
-    if custom and rawY ~= nil then
-        hy = rawY
-        pivotY = 0
-        if hy < 0 then
-            hy = sh + hy
-            pivotY = 1
-        end
-    else
-        hy = sh - 100
-        pivotY = 0.5
-    end
-    hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
-    hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
-    return hx, hy, pivotX, pivotY
-end
-
--- Save Drag Pos
-local function saveDragPos(settings, wp, ww, wh, sw, sh)
-    if not settings or not wp then return end
-    local nx = wp.x or wp[1] or 0
-    local ny = wp.y or wp[2] or 0
-    settings.spectate_keys_hud_custom = true
-    if nx + (ww or 0) > sw * 0.55 then
-        settings.spectate_keys_hud_x = math.floor(nx + (ww or 0) - sw + 0.5)
-    else
-        settings.spectate_keys_hud_x = math.floor(nx + 0.5)
-    end
-    if ny + (wh or 0) > sh * 0.55 then
-        settings.spectate_keys_hud_y = math.floor(ny + (wh or 0) - sh + 0.5)
-    else
-        settings.spectate_keys_hud_y = math.floor(ny + 0.5)
-    end
-    if markDirtySettings then markDirtySettings() end
-    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
-end
-
--- Draw Inner
-local function drawKeysHudInner(settings)
+-- Screen Size
+local function screenSize()
     local sw, sh = 1280, 720
     if getScreenResolution then
         local rw, rh = getScreenResolution()
         if rw and rw > 0 then sw = rw end
         if rh and rh > 0 then sh = rh end
     end
+    return sw, sh
+end
 
-    local hx, hy, pivotX, pivotY = resolvePos(settings, sw, sh)
+-- Default Pos
+local function defaultHudPos(sw, sh, winW, winH)
+    winW = math.max(200, tonumber(winW) or hudLastW or 320)
+    winH = math.max(48, tonumber(winH) or hudLastH or 80)
+    return math.floor(sw * 0.5 - winW * 0.5 + 0.5), math.floor(sh - winH - 100 + 0.5)
+end
+
+-- Clamp Hud Pos
+local function clampHudPos(hx, hy, winW, winH)
+    local sw, sh = screenSize()
+    winW = math.max(200, tonumber(winW) or hudLastW or 320)
+    winH = math.max(48, tonumber(winH) or hudLastH or 80)
+    hx = math.max(HUD_MARGIN, math.min(hx, sw - winW - HUD_MARGIN))
+    hy = math.max(HUD_MARGIN, math.min(hy, sh - winH - HUD_MARGIN))
+    return hx, hy
+end
+
+-- Resolve Pos
+local function resolvePos(settings, winW, winH)
+    local sw, sh = screenSize()
+    local rawX = settings and tonumber(settings.spectate_keys_hud_x)
+    local rawY = settings and tonumber(settings.spectate_keys_hud_y)
+    local custom = settings and settings.spectate_keys_hud_custom == true
+    local hx, hy
+    if custom and rawX ~= nil and rawY ~= nil then
+        hx, hy = rawX, rawY
+    else
+        hx, hy = defaultHudPos(sw, sh, winW, winH)
+    end
+    return clampHudPos(hx, hy, winW, winH)
+end
+
+-- Persist Hud Pos
+local function persistHudPos(settings, hx, hy, winW, winH)
+    if not settings then return end
+    hx, hy = clampHudPos(hx, hy, winW, winH)
+    settings.spectate_keys_hud_custom = true
+    settings.spectate_keys_hud_x = math.floor(hx + 0.5)
+    settings.spectate_keys_hud_y = math.floor(hy + 0.5)
+    if markDirtySettings then markDirtySettings() end
+end
+
+-- Pointer In Hud Rect
+local function pointerInHudRect(r)
+    if not r then return false end
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin and pin(r) then return true end
+    if imgui and type(imgui.GetIO) == 'function' then
+        local ok, io = pcall(imgui.GetIO)
+        if ok and io and io.MousePos then
+            local mp = io.MousePos
+            return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+        end
+    end
+    return false
+end
+
+-- Draw Inner
+local function drawKeysHudInner(settings)
+    local estW = hudLastW or 320
+    local estH = hudLastH or 80
+    local rawHx = settings and tonumber(settings.spectate_keys_hud_x)
+    local rawHy = settings and tonumber(settings.spectate_keys_hud_y)
+    local hx, hy = resolvePos(settings, estW, estH)
     if drag.active then
-        hx = drag.offX
-        hy = drag.offY
-        pivotX, pivotY = 0, 0
-        hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
-        hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
+        hx, hy = drag.offX, drag.offY
+    elseif rawHx ~= nil and rawHy ~= nil
+            and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
+                or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
+        persistHudPos(settings, hx, hy, estW, estH)
     end
 
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
@@ -331,8 +344,11 @@ local function drawKeysHudInner(settings)
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
+    end
 
-    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, pivotY))
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
     spTheme.pushHudChrome()
     if not imgui.Begin('###desk_sp_keys_hud', nil, flags) then
         spTheme.popHudChrome()
@@ -355,27 +371,6 @@ local function drawKeysHudInner(settings)
     local headerH = imgui.GetCursorPosY() - headerY
     if headerH < 18 then headerH = 18 end
 
-    imgui.SetCursorPos(imgui.ImVec2(0, headerY))
-    imgui.InvisibleButton('##keys_hud_drag', imgui.ImVec2(-1, headerH))
-    if imgui.IsItemHovered() or imgui.IsItemActive() then hovered = true end
-    if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
-        local delta = imgui.GetMouseDragDelta(0)
-        local wp = imgui.GetWindowPos()
-        if not drag.active then
-            drag.active = true
-            drag.startX = wp.x
-            drag.startY = wp.y
-            imgui.ResetMouseDragDelta(0)
-            delta = imgui.GetMouseDragDelta(0)
-        end
-        drag.offX = drag.startX + delta.x
-        drag.offY = drag.startY + delta.y
-    elseif drag.active and not imgui.IsMouseDown(0) then
-        drag.active = false
-        local wp = imgui.GetWindowPos()
-        saveDragPos(settings, wp, imgui.GetWindowWidth() or 320, imgui.GetWindowHeight() or 80, sw, sh)
-    end
-
     imgui.SetCursorPosY(headerY + headerH)
     spTheme.drawHeaderRule(col_accent)
 
@@ -396,7 +391,32 @@ local function drawKeysHudInner(settings)
     local wp = imgui.GetWindowPos()
     local ww = imgui.GetWindowWidth() or 320
     local wh = imgui.GetWindowHeight() or 80
+    hudLastW = ww
+    hudLastH = wh
     hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
+
+    imgui.SetCursorPos(imgui.ImVec2(0, 0))
+    imgui.InvisibleButton('##keys_hud_drag', imgui.ImVec2(-1, -1))
+    if imgui.IsItemHovered() or imgui.IsItemActive() or drag.active then
+        hovered = true
+    end
+    if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
+        local delta = imgui.GetMouseDragDelta(0)
+        if not drag.active then
+            drag.active = true
+            drag.startX = wp.x
+            drag.startY = wp.y
+            imgui.ResetMouseDragDelta(0)
+            delta = imgui.GetMouseDragDelta(0)
+        end
+        drag.offX = drag.startX + delta.x
+        drag.offY = drag.startY + delta.y
+        drag.offX, drag.offY = clampHudPos(drag.offX, drag.offY, ww, wh)
+    elseif drag.active and not imgui.IsMouseDown(0) then
+        drag.active = false
+        persistHudPos(settings, wp.x, wp.y, ww, wh)
+        if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    end
 
     imgui.End()
     spTheme.popHudChrome()
@@ -433,17 +453,18 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
-        return drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
-        return drag.active == true
-    end
     if drag.active then return true end
     if hovered then return true end
-    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
-        or type(deskPointerInRect) == 'function' and deskPointerInRect
-    if pin then return pin(hudRect) end
+    if pointerInHudRect(hudRect) then return true end
+    local settings = getSettings()
+    if settings then
+        local estW = hudLastW or 320
+        local estH = hudLastH or 80
+        local hx, hy = resolvePos(settings, estW, estH)
+        if pointerInHudRect({ x0 = hx, y0 = hy, x1 = hx + estW, y1 = hy + estH }) then
+            return true
+        end
+    end
     return false
 end
 
@@ -499,18 +520,18 @@ end
 
 -- Публичный API модуля.
 function M.configure(deps)
-    deps = deps or {}
-    uiText = deps.uiText or function(s) return s end
-    toU32 = deps.toU32
-    col_accent = deps.col_accent
-    col_accent_dim = deps.col_accent_dim
-    col_muted = deps.col_muted
-    col_muted2 = deps.col_muted2
-    markDirtySettings = deps.markDirtySettings
-    flushDirtyConfigNow = deps.flushDirtyConfigNow
-    getSettingsFn = deps.getSettings
-    getSpectateTargetId = deps.getSpectateTargetId
-    isSpectatingFn = deps.isSpectating
+    if type(deps) ~= 'table' then return end
+    if deps.uiText ~= nil then uiText = deps.uiText end
+    if deps.toU32 ~= nil then toU32 = deps.toU32 end
+    if deps.col_accent ~= nil then col_accent = deps.col_accent end
+    if deps.col_accent_dim ~= nil then col_accent_dim = deps.col_accent_dim end
+    if deps.col_muted ~= nil then col_muted = deps.col_muted end
+    if deps.col_muted2 ~= nil then col_muted2 = deps.col_muted2 end
+    if deps.markDirtySettings ~= nil then markDirtySettings = deps.markDirtySettings end
+    if deps.flushDirtyConfigNow ~= nil then flushDirtyConfigNow = deps.flushDirtyConfigNow end
+    if deps.getSettings ~= nil then getSettingsFn = deps.getSettings end
+    if deps.getSpectateTargetId ~= nil then getSpectateTargetId = deps.getSpectateTargetId end
+    if deps.isSpectating ~= nil then isSpectatingFn = deps.isSpectating end
 end
 
 return M

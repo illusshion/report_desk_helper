@@ -48,7 +48,7 @@ local function drawPanel()
     local panelW = math.min(460, math.max(320, sw - 80))
     local panelH = 118
     local x = math.floor((sw - panelW) * 0.5)
-    local y = math.floor((sh - panelH) * 0.42)
+    local y = sh - panelH - 28
 
     renderDrawBox(x, y, panelW, panelH, COL_PANEL, true)
     renderDrawBox(x, y, panelW, 2, COL_PANEL_BORDER, true)

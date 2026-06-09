@@ -63,7 +63,6 @@ local flushScheduled = false
 
 -- Menu Input Blocked
 local function menuInputBlocked()
-    if deps.isAnsBarOpen and deps.isAnsBarOpen() then return true end
     if deps.isGameTextInputActive and deps.isGameTextInputActive() then return true end
     if deps.isDeskTypingActive and deps.getShowWindow and deps.getShowWindow()
             and deps.isDeskTypingActive() then
@@ -301,10 +300,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if deps.isAnsBarOpen and deps.isAnsBarOpen() then
-        return menuState.drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return menuState.drag.active == true
     end
     if menuState.drag.active then return true end
@@ -741,8 +737,7 @@ function M.drawMenu(settings, force)
         menuState.menuRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
         menuState.hovered = false
 
-        if not (deps.isAnsBarOpen and deps.isAnsBarOpen())
-                and not (type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput()) then
+        if not (type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput()) then
             local posFn = type(_G.deskWin32MousePos) == 'function' and _G.deskWin32MousePos
                 or type(deskWin32MousePos) == 'function' and deskWin32MousePos
             local mx, my = posFn and posFn()

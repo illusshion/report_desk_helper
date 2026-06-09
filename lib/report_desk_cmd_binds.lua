@@ -2,7 +2,7 @@
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local CMD_BIND_RESERVED = {
-    ans = true, reps = true, reportdesk = true, hist = true, acar = true,
+    ans = true, reps = true, reportdesk = true, hist = true, acar = true, guns = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
     deskupdate = true, deskrepair = true, reload = true, r = true,
     c = true, cc = true, me = true, b = true, w = true, f = true, g = true,

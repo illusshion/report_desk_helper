@@ -21,6 +21,24 @@ config/mimgui/
 # Сборка релиза (артефакты — в GitHub Releases, не в git)
 dist/
 
+# Prod-артефакты в dev-папке moonloader (релиз тестируется в другой GTA)
+AdminDesk.luac
+report_desk/*.luac
+
+# Autoupdate cache (скачивается launcher'ом, не хранить в dev)
+config/AdminDesk/
+
+# Dev-заметки (не для репозитория)
+REPORT_DESK_*.md
+
+# Бэкапы и отключённые скрипты
+tools/_release_backup/
+*.lua.off
+vehicle_unstack.lua*
+
+# LuaJIT compiler (скачать: blast.hk/moonloader → luajit-210-compiler.zip)
+tools/luajit-compiler/
+
 # Dev-копии и восстановленные дубликаты (не участвуют в runtime)
 _desk_dev_stash/
 _desk_dev_backup_*/
@@ -57,7 +75,44 @@ luac51.exe
 
 # Временные / аналитика
 tools/_*.json
-tools/_*.ps1
+
+# Сторонние moonloader-библиотеки (не source Report Desk)
+lib/MoonImGui.dll
+lib/aeslua.lua
+lib/aeslua/
+lib/base64.dll
+lib/bitex.lua
+lib/cjson.dll
+lib/cjson/
+lib/colorize.lua
+lib/colorize_core.dll
+lib/des56.dll
+lib/dkjson.lua
+lib/game/
+lib/iconv/
+lib/imgui.lua
+lib/json2lua.lua
+lib/lanes.lua
+lib/lanes/
+lib/lfs.dll
+lib/lockbox.lua
+lib/lockbox/
+lib/ltn12.lua
+lib/lua2json.lua
+lib/lub/
+lib/matrix3x3.lua
+lib/md5.lua
+lib/md5/
+lib/mime.lua
+lib/mime/
+lib/requests.lua
+lib/socket.lua
+lib/socket/
+lib/ssl.dll
+lib/ssl.lua
+lib/ssl/
+lib/windows/
+lib/xml/
 
 # OS
 Thumbs.db

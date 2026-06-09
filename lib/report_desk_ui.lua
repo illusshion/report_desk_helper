@@ -421,7 +421,23 @@ end
 
 -- Chat Header Nick Color
 function chatHeaderNickColor(pid, online)
+    pid = tonumber(pid) or -1
     if online and pid >= 0 then
+        if type(sampPlayerColorChatHex) == 'function' then
+            local hex = sampPlayerColorChatHex(pid)
+            if hex and hex ~= '' and type(chatHexToImVec4) == 'function' then
+                local c = chatHexToImVec4(hex)
+                if c then return c end
+            end
+        end
+        if type(sampGetPlayerColor) == 'function' and sampIsPlayerConnected
+                and sampIsPlayerConnected(pid) then
+            local ok, raw = pcall(sampGetPlayerColor, pid)
+            if ok and raw and type(sampColorToImVec4) == 'function' then
+                local c = sampColorToImVec4(raw)
+                if c then return c end
+            end
+        end
         if deskSpectateStats.getEntry and deskSpectateStats.nickColorFor then
             local e = deskSpectateStats.getEntry(pid)
             if e then
@@ -739,6 +755,7 @@ function drawComposer(composerH, quickItems)
         deskInputState.keyboardStickyUntil = os.clock() + 2.0
         deskInputState.replyFocused = true
         focusReplyNext = false
+        focusReplyReason = nil
     end
 
     local canSend = getSelectedThread() ~= nil
@@ -808,6 +825,7 @@ function drawComposer(composerH, quickItems)
         if sendReplyToSelected() then
             ffi.copy(replyBuf, '')
             focusReplyNext = true
+            focusReplyReason = 'send'
             deskInputState.replyFocused = true
         end
     end
@@ -842,12 +860,11 @@ function drawThreadRow(t, key, sel)
             totalUnread = math.max(0, totalUnread - unread)
         end
         selectedKey = key
-        selectedId = t.id
         t.unread = 0
-        chatScrollToBottom = false
         deskInputState.chatFollowBottom = true
         requestChatSnapBottom(key)
         focusReplyNext = true
+        focusReplyReason = 'select'
         markDirtyThreads()
     end
 
@@ -1546,45 +1563,65 @@ end
 -- Apply Chat Scroll If Needed
 function applyChatScrollIfNeeded(msgCount)
     msgCount = tonumber(msgCount) or 0
-    -- Автоскролл забирает фокус у поля ответа — не трогаем лог, пока пользователь печатает.
-    if deskInputState.replyInputActive or deskInputState.replyFocused then return end
-    if focusReplyNext then return end
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return end
-    local snapKey = deskInputState.chatSnapBottomKey
-    local wantSnap = snapKey and snapKey == selectedKey and msgCount > 0
-    local wantFollow = not snapKey
-        and (chatScrollToBottom or (deskInputState.chatScrollFrames or 0) > 0)
 
-    if not wantSnap and not wantFollow then return end
-
-    imgui.Dummy(imgui.ImVec2(0, 1))
-    if imgui.SetScrollHereY then
-        imgui.SetScrollHereY(1.0)
-    end
-    local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
-    if maxY > 0 and imgui.SetScrollY then
-        imgui.SetScrollY(maxY)
-    end
-
-    if wantSnap then
-        if maxY <= 0 then
-            deskInputState.chatSnapAttempts = (tonumber(deskInputState.chatSnapAttempts) or 0) + 1
-            if deskInputState.chatSnapAttempts >= 6 then
-                deskInputState.chatSnapBottomKey = nil
-                deskInputState.chatSnapAttempts = 0
-            end
-            return
+    -- Snap всегда первым: должен отработать даже когда ##reply в фокусе.
+    if deskInputState.snapPending and deskInputState.snapKey == selectedKey then
+        local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
+        if maxY > 0 and imgui.SetScrollY then
+            imgui.SetScrollY(maxY)
+            deskInputState.snapPending = false
+            deskInputState.snapKey = nil
         end
-        deskInputState.chatSnapBottomKey = nil
-        deskInputState.chatSnapAttempts = 0
         return
     end
 
-    local fr = tonumber(deskInputState.chatScrollFrames) or 0
-    if fr > 0 then
-        deskInputState.chatScrollFrames = fr - 1
-    elseif chatScrollToBottom then
-        chatScrollToBottom = false
+    -- SetScrollY не забирает фокус у ##reply (в отличие от SetScrollHereY).
+    if focusReplyNext and focusReplyReason ~= 'send' then return end
+
+    local wantFollow = (not deskInputState.snapPending)
+        and (os.clock() < (deskInputState.chatScrollUntil or 0))
+    if not wantFollow then return end
+
+    -- SetScrollHereY забирает клавиатурный фокус у ##reply (см. REPORT_DESK_CHAT_UI.md).
+    imgui.Dummy(imgui.ImVec2(0, 1))
+    local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
+    if maxY > 0 and imgui.SetScrollY then
+        imgui.SetScrollY(maxY)
+    else
+        deskInputState.chatScrollUntil = os.clock() + 0.12
+    end
+end
+
+-- Draw Chat New Message Button
+function drawChatNewMessageButton()
+    if deskInputState.chatFollowBottom or not deskInputState.hasUnseenMessages then return end
+    local btnW, btnH = 160, 32
+    local inset = 12
+    local wPos = imgui.GetWindowPos()
+    local wSize = imgui.GetWindowSize()
+    local btnX = wPos.x + wSize.x - btnW - inset
+    local btnY = wPos.y + wSize.y - btnH - inset
+    imgui.SetCursorScreenPos(imgui.ImVec2(btnX, btnY))
+    local clicked = imgui.InvisibleButton('##chat_new_msg', imgui.ImVec2(btnW, btnH))
+    local hovered = imgui.IsItemHovered and imgui.IsItemHovered()
+    local dl = imgui.GetWindowDrawList()
+    local bgCol = hovered and col_accent or col_accent_dim
+    local r = btnH * 0.5
+    dl:AddRectFilled(imgui.ImVec2(btnX, btnY), imgui.ImVec2(btnX + btnW, btnY + btnH), toU32(bgCol), r)
+    local label = uiText('\xCD\xEE\xE2\xEE\xE5 \xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5')
+    local arrow = '\xE2\x86\x93'
+    local arrowSz = imgui.CalcTextSize(arrow)
+    local labelSz = imgui.CalcTextSize(label)
+    local gap = 6
+    local totalW = arrowSz.x + gap + labelSz.x
+    local textX = btnX + (btnW - totalW) * 0.5
+    local textY = btnY + (btnH - labelSz.y) * 0.5
+    dl:AddText(imgui.ImVec2(textX, textY), toU32(col_label), arrow)
+    dl:AddText(imgui.ImVec2(textX + arrowSz.x + gap, textY), toU32(col_label), label)
+    if clicked then
+        deskInputState.chatFollowBottom = true
+        deskInputState.hasUnseenMessages = false
+        requestChatScrollBottom()
     end
 end
 
@@ -1598,9 +1635,10 @@ function updateChatFollowBottom()
         deskInputState.chatLastScrollY = scrollY
         return
     end
-    local atBottom = (scrollMax - scrollY) < 48
+    local atBottom = (scrollMax - scrollY) < 80
     if atBottom then
         deskInputState.chatFollowBottom = true
+        deskInputState.hasUnseenMessages = false
     elseif imgui.IsWindowHovered and imgui.IsWindowHovered() then
         local io = imgui.GetIO()
         if io and io.MouseWheel and io.MouseWheel > 0 then
@@ -1667,10 +1705,6 @@ function drawChatPanel()
         imgui.Dummy(imgui.ImVec2(0, 6))
         local renderFrom = 1
         local chatRenderMax = CHAT_UI_RENDER_MAX
-        local openSince = tonumber(deskInputState.windowOpenSince) or 0
-        if openSince > 0 and (os.clock() - openSince) < 0.3 then
-            chatRenderMax = math.min(30, CHAT_UI_RENDER_MAX)
-        end
         if #msgs > chatRenderMax then
             renderFrom = #msgs - chatRenderMax + 1
             imgui.TextColored(col_muted2, uiText(string.format(
@@ -1680,6 +1714,9 @@ function drawChatPanel()
         end
         local lastDay = nil
         local scenarioBtnIdx = findLastPlayerScenarioMsgIdx(msgs, renderFrom)
+        local threadPid = tonumber(t.id) or -1
+        local threadOnline = t.online ~= false
+        local threadNickCol = chatHeaderNickColor(threadPid, threadOnline)
         imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
         for i = renderFrom, #msgs do
             local m = msgs[i]
@@ -1694,12 +1731,14 @@ function drawChatPanel()
                 showAuthor = not groupedWithPrev,
                 compactSpacing = groupedWithPrev,
                 noQuickButtons = scenarioBtnIdx ~= i,
+                nickCol = threadNickCol,
             })
         end
         imgui.PopStyleVar()
     end
     updateChatFollowBottom()
     applyChatScrollIfNeeded(#msgs)
+    drawChatNewMessageButton()
     imgui.EndChild()
 
     drawComposer(composerH, quickItems)
@@ -2063,7 +2102,6 @@ function drawSettingsTab()
         deskCache.threadStructRev = 0
         deskCache.threadMsgRev = 0
         deskCache.threadRev = 0
-        selectedId = -1
         selectedKey = nil
         chatLogReady = false
         totalUnread = 0
@@ -2105,11 +2143,16 @@ function toggleWindow()
     rulesUiSynced = false
     settingsUiSynced = false
     scenariosUiSynced = false
-    focusReplyNext = getSelectedThread() ~= nil
+    local selThread = getSelectedThread()
+    focusReplyNext = selThread ~= nil
+    focusReplyReason = selThread ~= nil and 'open' or nil
     deskInputState.windowOpenSince = os.clock()
-    if getSelectedThread() ~= nil then
-        deskInputState.replyFocused = true
+    if selThread ~= nil then
+        deskInputState.replyInputActive = false
         deskInputState.keyboardStickyUntil = os.clock() + 2.0
+        if selectedKey then
+            requestChatSnapBottom(selectedKey)
+        end
     else
         deskInputState.keyboardStickyUntil = 0
     end
@@ -2117,6 +2160,7 @@ function toggleWindow()
     refreshMyNick()
     deskInputState.wasOpen = true
     deskApplyInputPolicy()
+    updateDeskInputCapture()
 end
 
 -- Draw Main Window
@@ -2367,22 +2411,17 @@ do
         end
     ), true, false)
 
-    deskCache.deskWindowFrame = setupDeskFrame(imgui.OnFrame(
+    setupDeskFrame(imgui.OnFrame(
         function()
-            if not sessionLive then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            return showWindow[0]
+            return type(skinsPrewarmActive) == 'function' and skinsPrewarmActive()
         end,
         function(self)
-            self.LockPlayer = deskOpenLocksPlayer()
-            self.HideCursor = false
-            local ok, err = pcall(drawMainWindow)
-            if not ok then
-                print('[Report Desk] UI: ' .. tostring(err))
-                closeDeskWindow()
-            end
+            pcall(skinsPrewarmTick)
+            self.HideCursor = true
+            self.LockPlayer = false
         end
-    ), false, false)
+    ), true, false)
 
     setupDeskFrame(imgui.OnFrame(
         function()
@@ -2433,7 +2472,9 @@ do
             if deskSpectateStats.drawKeysHud then
                 pcall(deskSpectateStats.drawKeysHud, settings)
             end
-            self.HideCursor = deskMimguiHideCursor()
+            self.HideCursor = deskMimguiHideCursor(
+                type(deskSpectateStats.wantsKeysHudInput) == 'function'
+                    and deskSpectateStats.wantsKeysHudInput())
             self.LockPlayer = false
         end
     ), true, false)
@@ -2451,17 +2492,19 @@ do
         end
     ), true, false)
 
-    setupDeskFrame(imgui.OnFrame(
+    deskCache.deskWindowFrame = setupDeskFrame(imgui.OnFrame(
         function()
-            if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.isAnsBarOpen then return false end
-            local okOpen, open = pcall(deskSpectateStats.isAnsBarOpen)
-            return okOpen and open == true
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return showWindow[0]
         end,
         function(self)
-            self.HideCursor = deskMimguiHideCursor()
-            self.LockPlayer = false
-            if deskSpectateStats.drawSpAns then
-                pcall(deskSpectateStats.drawSpAns, settings)
+            self.LockPlayer = deskOpenLocksPlayer()
+            self.HideCursor = false
+            local ok, err = pcall(drawMainWindow)
+            if not ok then
+                print('[Report Desk] UI: ' .. tostring(err))
+                closeDeskWindow()
             end
         end
     ), false, false)

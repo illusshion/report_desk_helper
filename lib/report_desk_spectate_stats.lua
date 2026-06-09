@@ -2045,10 +2045,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsHudInput()
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then
-        return state.hudDrag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return state.hudDrag.active == true
     end
     if state.hudDrag.active then return true end
@@ -2095,7 +2092,7 @@ function M.isSpectating()
     return specPlayerActive()
 end
 
--- Сборка deps для sp_ui (session, menu, ans).
+-- Сборка deps для sp_ui (session, menu).
 local function buildSpUiDeps(deps)
     return {
         sampev = deps and deps.sampev,
@@ -2176,26 +2173,10 @@ local function buildSpUiDeps(deps)
         captureActive = specCaptureActive,
         consumeMenuShieldKey = M.consumeSpectateMenuKey,
         isMenuShieldActive = specMenuShieldActive,
-        transmitAns = function(id, body)
-            id = tonumber(id)
-            body = trim and trim(body) or body
-            if not id or body == '' then return end
-            if transmitAnsWire then
-                pcall(transmitAnsWire, id, body, {})
-            elseif sendChat then
-                pcall(sendChat, string.format('ans %d %s', id, body))
-            end
-        end,
         enableSpectateCursor = deps and deps.enableSpectateCursor,
         rememberSpectateCursor = deps and deps.rememberSpectateCursor,
         setSpectateUiMode = deps and deps.setSpectateUiMode,
         updateInputPassthrough = deps and deps.updateInputPassthrough,
-        onAnsBarClosed = deps and deps.onAnsBarClosed,
-        markTypingActive = function()
-            if deps and deps.markAnsTypingActive then
-                pcall(deps.markAnsTypingActive)
-            end
-        end,
     }
 end
 
@@ -2266,14 +2247,12 @@ local function specWheelBlocked()
     end
     if M.isHudDragActive and M.isHudDragActive() then return true end
     if specDeskCapturesMouse() then return true end
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
     return false
 end
 
 local function specUiBlocksCameraMaintain()
     if not specIsSpectating() then return true end
     if specDeskCapturesMouse() then return true end
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
     return false
 end
 
@@ -2331,7 +2310,6 @@ end
 
 -- Публичный API модуля.
 function M.consumeSpectateMenuKey(msg, wparam)
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return false end
     if not specMenuShieldActive() then return false end
     if msg ~= WM.KEYDOWN and msg ~= WM.SYSKEYDOWN and msg ~= WM.KEYUP and msg ~= WM.SYSKEYUP then
         return false
@@ -2464,6 +2442,10 @@ function M.installInputHooks(deps)
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
     pcall(keysHud.installSampev, deps.sampev)
+    keysHud.configure({
+        isVkDown = deps.isVkDown,
+        vkeys = deps.vkeys,
+    })
     if wmHandlerInstalled then
         return
     end
@@ -2506,12 +2488,6 @@ function M.drawSpMenu(settings)
     end
 end
 
--- Публичный API модуля.
-function M.drawSpAns(settings)
-    if spUi.drawAnsBar then
-        pcall(spUi.drawAnsBar, settings or (getSettings and getSettings()))
-    end
-end
 
 -- Публичный API модуля.
 function M.drawVehicleHud(settings)
@@ -2541,6 +2517,11 @@ function M.wantsKeysHudInput()
 end
 
 -- Публичный API модуля.
+function M.isKeysHudDragActive()
+    return keysHud.isDragActive and keysHud.isDragActive() or false
+end
+
+-- Публичный API модуля.
 -- Публичный API модуля.
 function M.wantsSpMenuInput()
     return specMenuMod.wantsInput and specMenuMod.wantsInput() or false
@@ -2549,20 +2530,6 @@ function M.wantsVehicleHudInput()
     return vehicleHud.wantsInput and vehicleHud.wantsInput() or false
 end
 
--- Публичный API модуля.
-function M.isAnsLayoutSwitch()
-    return spUi.isAnsLayoutSwitch and spUi.isAnsLayoutSwitch() or false
-end
-
--- Публичный API модуля.
-function M.isAnsBarOpen()
-    return spUi.isAnsBarOpen and spUi.isAnsBarOpen() or false
-end
-
--- Публичный API модуля.
-function M.wantsAnsInput()
-    return spUi.wantsAnsInput and spUi.wantsAnsInput() or false
-end
 
 -- Публичный API модуля.
 function M.notifyTargetQuit(playerId)

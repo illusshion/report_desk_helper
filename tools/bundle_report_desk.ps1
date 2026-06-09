@@ -214,14 +214,12 @@ $libModules = @(
     @{ Name = 'report_desk_sp_keys_hud'; File = 'report_desk_sp_keys_hud.lua' },
     @{ Name = 'report_desk_spectate_camera'; File = 'report_desk_spectate_camera.lua' },
     @{ Name = 'report_desk_spectate_session'; File = 'report_desk_spectate_session.lua' },
-    @{ Name = 'report_desk_spectate_ans'; File = 'report_desk_spectate_ans.lua' },
     @{ Name = 'report_desk_spectate_menu'; File = 'report_desk_spectate_menu.lua' },
     @{ Name = 'report_desk_sp_ui'; File = 'report_desk_sp_ui.lua' },
     @{ Name = 'report_desk_sp_refresh'; File = 'report_desk_sp_refresh.lua' },
     @{ Name = 'report_desk_spectate_stats'; File = 'report_desk_spectate_stats.lua' },
     @{ Name = 'report_desk_checker_parser'; File = 'report_desk_checker_parser.lua' },
     @{ Name = 'report_desk_checker_catalog'; File = 'report_desk_checker_catalog.lua' },
-    @{ Name = 'report_desk_checker_spawn_fsm'; File = 'report_desk_checker_spawn_fsm.lua' },
     @{ Name = 'report_desk_wm_dispatch'; File = 'report_desk_wm_dispatch.lua' },
     @{ Name = 'report_desk_spectate_fsm'; File = 'report_desk_spectate_fsm.lua' },
 
@@ -301,14 +299,12 @@ $allBundleInputs = @(
     'report_desk_sp_keys_hud.lua',
     'report_desk_spectate_camera.lua',
     'report_desk_spectate_session.lua',
-    'report_desk_spectate_ans.lua',
     'report_desk_spectate_menu.lua',
     'report_desk_sp_ui.lua',
     'report_desk_sp_refresh.lua',
     'report_desk_spectate_stats.lua',
     'report_desk_checker_parser.lua',
     'report_desk_checker_catalog.lua',
-    'report_desk_checker_spawn_fsm.lua',
     'report_desk_wm_dispatch.lua',
     'report_desk_spectate_fsm.lua',
     'report_desk_vehicles.lua',
@@ -456,8 +452,7 @@ $mustHave = @(
     "package.preload['lib.samp.events']",
     "package.preload['encoding']",
     'report_desk_wm_dispatch',
-    'report_desk_spectate_fsm',
-    'report_desk_checker_spawn_fsm'
+    'report_desk_spectate_fsm'
 )
 $missing = @($mustHave | Where-Object { $coreText -notmatch [regex]::Escape($_) })
 if ($missing.Count -gt 0) {
@@ -522,6 +517,13 @@ if (-not (Test-Path $autoupdateSrc)) {
     Write-Error "Missing lib\report_desk_autoupdate.lua"
 }
 Copy-Item $autoupdateSrc $distDir -Force
+
+$overlaySrc = Join-Path $libDir 'report_desk_update_overlay.lua'
+if (-not (Test-Path $overlaySrc)) {
+    Write-Error "Missing lib\report_desk_update_overlay.lua"
+}
+Copy-Item $overlaySrc $distDir -Force
+Write-Host "Wrote dist\report_desk_update_overlay.lua"
 
 $depsSrc = Join-Path $libDir 'report_desk_deps.lua'
 if (-not (Test-Path $depsSrc)) {

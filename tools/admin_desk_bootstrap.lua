@@ -29,7 +29,6 @@ end
 local function devEntryPresent()
     if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
     local root = getWorkingDirectory()
-    if doesFileExist(root .. '\\lib\\report_desk_app.lua') then return true end
     for _, name in ipairs({ 'admin_report_desk.lua', 'admin_report_desk.lua.off' }) do
         if devEntryHeadLooksDev(readDevEntryHead(root .. '\\' .. name)) then
             return true
@@ -398,6 +397,12 @@ local function runInstallPipeline()
         return false, false
     end
 
+    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
+        if autoupdate.deferAssets then
+            autoupdate.deferAssets(manifest, userOpts)
+        end
+    end
+
     print('[Report Desk] checking for updates...')
     local willReload, syncStatus = autoupdate.sync(manifest, {
         mode = 'full',
@@ -427,12 +432,6 @@ local function runInstallPipeline()
     end
     chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
-
-    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) then
-        if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, userOpts)
-        end
-    end
 
     local deps = requireDeps()
     if not deps then

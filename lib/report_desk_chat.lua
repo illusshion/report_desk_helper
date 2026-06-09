@@ -133,11 +133,13 @@ function bubbleWrapLayout(m, rawLine, wrapW)
     if m then
         if m._wrapSrc ~= src then
             m._wrapSrc = src
-            m._wrapByW = nil
+            m._cachedWrapW = nil
+            m._cachedLines = nil
         end
-        m._wrapByW = m._wrapByW or {}
-        local hit = m._wrapByW[wrapW]
-        if hit then return hit.lines, hit.lineH, hit.w, hit.h end
+        if m._cachedWrapW == wrapW and m._cachedLines then
+            local hit = m._cachedLines
+            return hit.lines, hit.lineH, hit.w, hit.h
+        end
     end
     local display = cp1251ToUtf8(src)
     local lines, lineH = wrapTextLinesUtf8(display, wrapW)
@@ -152,7 +154,8 @@ function bubbleWrapLayout(m, rawLine, wrapW)
     if w < 1 then w = 40 end
     if h < lineH then h = lineH end
     if m then
-        m._wrapByW[wrapW] = { lines = lines, lineH = lineH, w = w, h = h }
+        m._cachedWrapW = wrapW
+        m._cachedLines = { lines = lines, lineH = lineH, w = w, h = h }
     end
     return lines, lineH, w, h
 end

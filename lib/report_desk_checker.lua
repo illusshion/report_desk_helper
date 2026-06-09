@@ -182,6 +182,7 @@ local CheckerParser = require 'report_desk_checker_parser'
 local CheckerCatalogStore = require 'report_desk_checker_catalog'
 local CHECKER_HUD_W = checkerSpTheme.HUD_LIST_W or 218
 local CHECKER_ADMINS_FLOW_T = 30.0
+local CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC = 10.0
 local CHECKER_SPAWN_ADMS_MAX_RETRIES = 2
 local CHECKER_ADMS_RESYNC_INTERVAL = 240.0
 local CHECKER_ADMS_PARSE_DUMP_LEN = 500
@@ -223,12 +224,17 @@ do
     s.lastRebuild = tonumber(s.lastRebuild) or 0
     s.lastAfkPoll = tonumber(s.lastAfkPoll) or 0
     s.uiSynced = s.uiSynced == true
-    s.adminsFlowUntil = tonumber(s.adminsFlowUntil) or 0
     s.leadersFlowUntil = tonumber(s.leadersFlowUntil) or 0
-    s.admsAwaitDialog = s.admsAwaitDialog == true
-    s.admsAwaitUntil = tonumber(s.admsAwaitUntil) or 0
+    s.admsFlowUntil = tonumber(s.admsFlowUntil) or tonumber(s.admsAwaitUntil) or tonumber(s.adminsFlowUntil) or 0
+    if s.admsFlow == nil and s.admsSyncOutbound == true then
+        s.admsFlow = 'outbound'
+    end
+    if s.admsFlow ~= 'outbound' and s.admsFlow ~= 'parsing' and s.admsFlow ~= 'done' then
+        s.admsFlow = nil
+    end
+    s.admsDialogSyncedAt = tonumber(s.admsDialogSyncedAt) or 0
     s.admsChatMuteUntil = tonumber(s.admsChatMuteUntil) or 0
-    s.admsSyncOutbound = s.admsSyncOutbound == true
+    s.syncServerKey = type(s.syncServerKey) == 'string' and s.syncServerKey or ''
     s.leadersSyncOutbound = s.leadersSyncOutbound == true
     s.spawnCatalogSyncAt = tonumber(s.spawnCatalogSyncAt)
     s.spawnCatalogSyncDone = s.spawnCatalogSyncDone == true
@@ -1246,6 +1252,40 @@ function checkerIsChiefLevel(level)
     return level == CHECKER_LVL_CHIEF_GA or level == CHECKER_LVL_CHIEF_ZGA
 end
 
+-- Checker (admin HUD/catalog): допустимые уровни каталога (1–7, S1–S9, ГА/ЗГА).
+function checkerIsValidAdminLevel(level)
+    level = math.floor(tonumber(level) or 0)
+    if level >= ADMIN_LEVEL_1 and level <= ADMIN_LEVEL_7 then return true end
+    if checkerIsSpecialLevel(level) then return true end
+    if checkerIsChiefLevel(level) then return true end
+    return false
+end
+
+-- Checker (admin HUD/catalog): ранг в роли лидера ([10] Padrone) не должен попадать в admins.
+function checkerLeaderRoleConflictsAdminLevel(nick, level)
+    local leader = Catalog.getLeader(nick)
+    if not leader then return false end
+    level = math.floor(tonumber(level) or 0)
+    local role = trim(leader.role or '')
+    local rank = role:match('%[(%d+)%]')
+    if not rank then return false end
+    return math.floor(tonumber(rank) or 0) == level
+end
+
+-- Checker (admin HUD/catalog): не понижать S/chief до обычного lvl из чата/promote.
+function checkerShouldApplyAdminLevelUpdate(oldLevel, newLevel)
+    oldLevel = math.floor(tonumber(oldLevel) or 0)
+    newLevel = math.floor(tonumber(newLevel) or 0)
+    if not checkerIsValidAdminLevel(newLevel) then return false end
+    if checkerIsChiefLevel(oldLevel) and not checkerIsChiefLevel(newLevel) then return false end
+    if checkerIsSpecialLevel(oldLevel)
+            and not checkerIsSpecialLevel(newLevel)
+            and not checkerIsChiefLevel(newLevel) then
+        return false
+    end
+    return true
+end
+
 -- Checker (admin HUD/catalog).
 function checkerChiefList()
     local list, seen = {}, {}
@@ -1442,6 +1482,7 @@ function checkerParserOpts()
     return {
         resolveChief = checkerResolveChief,
         effectiveLevel = checkerEffectiveAdminLevel,
+        isValidLevel = checkerIsValidAdminLevel,
         splitCols = checkerLeadersSplitCols,
         isAdminsHeaderRow = checkerIsAdminsHeaderRow,
     }
@@ -1664,11 +1705,16 @@ function checkerMergeAdminsIntoCatalog(list)
         local nick = trim(e.nick or '')
         if nick ~= '' then
             local lv = checkerEffectiveAdminLevel(nick, e.level)
+            if not checkerIsValidAdminLevel(lv) then goto continue end
+            if checkerLeaderRoleConflictsAdminLevel(nick, lv) then goto continue end
             local ex = Catalog.getAdmin(nick)
             if ex then
-                if math.floor(tonumber(ex.level) or 0) ~= lv then
-                    ex.level = lv
-                    changed = true
+                local old = math.floor(tonumber(ex.level) or 0)
+                if old ~= lv then
+                    if checkerShouldApplyAdminLevelUpdate(old, lv) then
+                        ex.level = lv
+                        changed = true
+                    end
                 end
             else
                 checkerCatalog.admins[#checkerCatalog.admins + 1] = {
@@ -1678,6 +1724,7 @@ function checkerMergeAdminsIntoCatalog(list)
                 changed = true
             end
         end
+        ::continue::
     end
     checkerMergeChiefCatalog(checkerCatalog.admins)
     checkerSortCatalogAdmins(checkerCatalog.admins)
@@ -1697,10 +1744,13 @@ function checkerApplyAdmsOnlineSnapshot(parsedList)
                 level = checkerEffectiveAdminLevel(nick, e.level),
             }
             checkerIndexOnePlayer(id, nick)
-            if not Catalog.getAdmin(nick) then
+            local lv = byId[id].level
+            if not Catalog.getAdmin(nick)
+                    and checkerIsValidAdminLevel(lv)
+                    and not checkerLeaderRoleConflictsAdminLevel(nick, lv) then
                 checkerCatalog.admins[#checkerCatalog.admins + 1] = {
                     nick = nick,
-                    level = byId[id].level,
+                    level = lv,
                 }
                 checkerMarkCatalogDirty()
             end
@@ -1725,10 +1775,11 @@ function checkerApplyAdminsDialogSync(list)
         changed = true
     end
     checkerState.syncInFlight = false
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.admsChatMuteUntil = os.clock() + 2.0
+    local now = os.clock()
+    checkerState.admsDialogSyncedAt = now
+    checkerState.admsChatMuteUntil = now + CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC
     if changed then checkerMarkCatalogDirty() end
+    checkerSanitizeAdminCatalog()
     checkerApplyAdmsOnlineSnapshot(list)
     SafeCall('rebuildOnlineAfterAdms', checkerRebuildOnline, true)
     print(string.format('[Report Desk] checker: dialog sync %d admins (merge, catalog %d -> %d)',
@@ -1801,8 +1852,17 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerApplyLeadersSync(rows)
-    if not rows or #rows == 0 then return false end
+    if not rows or #rows == 0 then
+        checkerLog('leaders parse returned empty — catalog NOT replaced')
+        return false
+    end
     ensureCheckerCatalog()
+    local prevCount = #checkerCatalog.leaders
+    if prevCount > 0 and #rows < math.max(3, math.floor(prevCount * 0.3)) then
+        checkerLog(string.format('leaders list suspiciously short (%d vs %d), skipping',
+            #rows, prevCount))
+        return false
+    end
     local prevByNick = {}
     for _, e in ipairs(checkerCatalog.leaders) do
         local pk = checkerLeaderHiddenKey(e.nick)
@@ -1866,6 +1926,52 @@ end
 local SYNC_SESSION_KEY = '__desk_checkerSyncSession'
 local CHECKER_SYNC_RESTORE_MAX_SEC = 90.0
 
+local function checkerGetServerKey()
+    if type(sampGetCurrentServerAddress) == 'function' then
+        return sampGetCurrentServerAddress() or ''
+    end
+    if type(sampGetServerSettingsPtr) == 'function' then
+        local ptr = sampGetServerSettingsPtr()
+        if ptr and ptr ~= 0 then return tostring(ptr) end
+    end
+    return ''
+end
+
+local function checkerAdmsFlowIsOutbound()
+    return checkerState.admsFlow == 'outbound'
+end
+
+local function checkerAdmsFlowIsActive(now)
+    now = now or os.clock()
+    return checkerState.admsFlow ~= nil and now < (checkerState.admsFlowUntil or 0)
+end
+
+local function checkerSyncServerKeyMismatch()
+    local key = checkerState.syncServerKey
+    if not key or key == '' then return false end
+    return checkerGetServerKey() ~= key
+end
+
+local function checkerMarkSyncAdmsSession(untilAt)
+    local s = ensureSyncSession()
+    s.admsUntil = untilAt
+    checkerPersistSyncSession()
+end
+
+function checkerBeginAdmsFlow(untilAt)
+    checkerState.admsFlow = 'outbound'
+    checkerState.admsFlowUntil = untilAt
+    checkerState.syncServerKey = checkerGetServerKey()
+    checkerMarkSyncAdmsSession(untilAt)
+end
+
+function checkerClearAdmsFlow()
+    checkerState.admsFlow = nil
+    checkerState.admsFlowUntil = 0
+    checkerState.syncServerKey = ''
+    checkerClearSyncAdms()
+end
+
 -- Checker (admin HUD/catalog).
 local function ensureSyncSession()
     if type(checkerState.syncSession) ~= 'table' then
@@ -1892,11 +1998,10 @@ function checkerSanitizeSyncSession()
     clampUntil('admsUntil')
     clampUntil('leadersUntil')
     if (tonumber(s.admsUntil) or 0) <= now then
-        if (checkerState.adminsFlowUntil or 0) <= now
-                or (checkerState.adminsFlowUntil or 0) - now > CHECKER_SYNC_RESTORE_MAX_SEC then
-            checkerState.admsAwaitDialog = false
-            checkerState.admsAwaitUntil = 0
-            checkerState.adminsFlowUntil = 0
+        if (checkerState.admsFlowUntil or 0) <= now
+                or (checkerState.admsFlowUntil or 0) - now > CHECKER_SYNC_RESTORE_MAX_SEC then
+            checkerState.admsFlow = nil
+            checkerState.admsFlowUntil = 0
         end
     end
     if (tonumber(s.leadersUntil) or 0) <= now then
@@ -1933,9 +2038,8 @@ function checkerRestoreSyncSession()
     end
 
     restoreUntil('admsUntil', function(untilAt)
-        checkerState.admsAwaitDialog = true
-        checkerState.admsAwaitUntil = untilAt
-        checkerState.adminsFlowUntil = untilAt
+        checkerState.admsFlow = 'outbound'
+        checkerState.admsFlowUntil = untilAt
     end)
     restoreUntil('leadersUntil', function(untilAt)
         checkerState.leadersFlowUntil = untilAt
@@ -1948,9 +2052,7 @@ end
 function checkerSyncAdmsActive(now)
     now = now or os.clock()
     local s = ensureSyncSession()
-    return now < (s.admsUntil or 0)
-        or (checkerState.admsAwaitDialog and now < (checkerState.admsAwaitUntil or 0))
-        or (checkerState.adminsFlowUntil or 0) > now
+    return now < (s.admsUntil or 0) or checkerAdmsFlowIsActive(now)
 end
 
 -- Checker (admin HUD/catalog).
@@ -1962,12 +2064,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerMarkSyncAdms(untilAt)
-    local s = ensureSyncSession()
-    s.admsUntil = untilAt
-    checkerState.adminsFlowUntil = untilAt
-    checkerState.admsAwaitDialog = true
-    checkerState.admsAwaitUntil = untilAt
-    checkerPersistSyncSession()
+    checkerMarkSyncAdmsSession(untilAt)
 end
 
 -- Checker (admin HUD/catalog).
@@ -1982,10 +2079,6 @@ end
 function checkerClearSyncAdms()
     local s = ensureSyncSession()
     s.admsUntil = 0
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.adminsFlowUntil = 0
-    checkerState.admsSyncOutbound = false
     checkerPersistSyncSession()
 end
 
@@ -1995,12 +2088,15 @@ function checkerClearSyncLeaders()
     s.leadersUntil = 0
     checkerState.leadersFlowUntil = 0
     checkerState.leadersSyncOutbound = false
+    if not checkerAdmsFlowIsOutbound() then
+        checkerState.syncServerKey = ''
+    end
     checkerPersistSyncSession()
 end
 
 -- Checker (admin HUD/catalog).
 function checkerClearPendingSyncDialogs()
-    checkerClearSyncAdms()
+    checkerClearAdmsFlow()
     checkerClearSyncLeaders()
 end
 
@@ -2062,12 +2158,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerClearSyncFlowFlags()
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.adminsFlowUntil = 0
     checkerState.leadersFlowUntil = 0
-    checkerState.spawnAdmsHandled = false
-    checkerState.spawnLeadersHandled = false
 end
 
 -- После reload onShowDialog не приходит для уже открытого окна — только UI-close активного диалога.
@@ -2076,7 +2167,7 @@ function checkerDismissStaleSyncDialog()
         checkerClearPendingSyncDialogs()
         return
     end
-    if not checkerState.admsSyncOutbound and not checkerState.leadersSyncOutbound then
+    if not checkerAdmsFlowIsOutbound() and not checkerState.leadersSyncOutbound then
         return
     end
     checkerDeferCloseVisibleDialog(nil, nil)
@@ -2090,13 +2181,18 @@ end
 -- Игнорировать echo /admins в чат (диалог — единственный источник при автосинхе).
 function checkerIsAdmsChatMuted(now)
     now = now or os.clock()
-    if checkerState.admsAwaitDialog and now < (checkerState.admsAwaitUntil or 0) then return true end
+    if checkerAdmsFlowIsActive(now) then return true end
     if now < (checkerState.admsChatMuteUntil or 0) then return true end
     return false
 end
 
 -- /admins в чат: только актуализировать уровень админа, который уже есть в каталоге.
 function checkerRefreshAdminLevelFromChat(plain)
+    if checkerState.admsDialogSyncedAt
+        and checkerState.admsDialogSyncedAt > 0
+        and (os.clock() - checkerState.admsDialogSyncedAt) < CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC then
+        return false
+    end
     if Parser.isAdminsListNoise(plain) then return false end
     local nick, level = Parser.parseAdminLine(plain)
     if nick and not level then
@@ -2108,8 +2204,10 @@ function checkerRefreshAdminLevelFromChat(plain)
     local ex = Catalog.getAdmin(nick)
     if not ex then return false end
     level = checkerEffectiveAdminLevel(nick, level)
+    if not checkerIsValidAdminLevel(level) then return false end
     local old = math.floor(tonumber(ex.level) or 0)
     if old == level then return false end
+    if not checkerShouldApplyAdminLevelUpdate(old, level) then return false end
     ex.level = level
     checkerSortCatalogAdmins(checkerCatalog.admins)
     checkerMarkCatalogDirty()
@@ -2119,11 +2217,15 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
-    local now = os.clock()
-    local isAdminsDlg = checkerIsAdminsDialog(title) or checkerDialogLooksLikeAdmins(text, style)
-    local isLeadersDlg = checkerIsLeadersDialog(title) or checkerDialogLooksLikeLeaders(text, style)
+    local titleMatch = checkerIsAdminsDialog(title)
+    local isAdminsDlg = titleMatch
+        or (checkerAdmsFlowIsOutbound() and checkerDialogLooksLikeAdmins(text, style))
+    local leadersTitleMatch = checkerIsLeadersDialog(title)
+    local isLeadersDlg = leadersTitleMatch
+        or (checkerState.leadersSyncOutbound and checkerDialogLooksLikeLeaders(text, style))
 
-    if isAdminsDlg and checkerState.admsSyncOutbound then
+    if isAdminsDlg and checkerAdmsFlowIsOutbound() then
+        if checkerSyncServerKeyMismatch() then return false end
         local list = checkerParseAdminsDialog(text, style)
         if #list > 0 then
             SafeCall('checkerApplyAdminsDialogSync', checkerApplyAdminsDialogSync, list)
@@ -2139,7 +2241,12 @@ function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
                 checkerScheduleSpawnAdmsRetry()
             end
         end
-        checkerClearSyncAdms()
+        checkerClearAdmsFlow()
+        if checkerState.spawnCatalogSyncRunning then
+            checkerDeferCloseVisibleDialog(button1, button2)
+        else
+            checkerCloseVisibleDialog(button1, button2)
+        end
         return true
     end
 
@@ -2154,10 +2261,16 @@ function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
             end
         end
         if checkerState.leadersSyncOutbound then
+            if checkerSyncServerKeyMismatch() then return false end
             if checkerState.spawnCatalogSyncRunning and applied then
                 checkerState.spawnLeadersHandled = true
             end
             checkerClearSyncLeaders()
+            if checkerState.spawnCatalogSyncRunning then
+                checkerDeferCloseVisibleDialog(button1, button2)
+            else
+                checkerCloseVisibleDialog(button1, button2)
+            end
             return true
         end
         return false
@@ -2193,9 +2306,7 @@ function checkerWaitSpawnDialogFlow(isAdmins, maxSec)
         end
         local now = os.clock()
         if isAdmins then
-            local pending = checkerState.admsAwaitDialog
-                and now < (checkerState.admsAwaitUntil or 0)
-            if not pending and (checkerState.adminsFlowUntil or 0) <= now then
+            if not checkerAdmsFlowIsActive(now) then
                 return true
             end
         elseif (checkerState.leadersFlowUntil or 0) <= now then
@@ -2234,13 +2345,9 @@ function checkerRequestAdmsSync(forSpawn)
     local now = os.clock()
     local flowT = forSpawn and CHECKER_SPAWN_DIALOG_WAIT_SEC or CHECKER_ADMINS_FLOW_T
     checkerState.pendingAdminMode = 'replace'
-    checkerState.adminsFlowUntil = now + flowT
-    checkerState.admsAwaitDialog = true
-    checkerState.admsAwaitUntil = now + flowT
-    checkerState.admsSyncOutbound = true
-    checkerMarkSyncAdms(now + flowT)
+    checkerBeginAdmsFlow(now + flowT)
     local ok = checkerTrySendSyncChat('/adms', forSpawn)
-    if not ok then checkerState.admsSyncOutbound = false end
+    if not ok then checkerClearAdmsFlow() end
     return ok
 end
 
@@ -2255,6 +2362,9 @@ function checkerRequestLeadersSync(forSpawn)
     local flowT = forSpawn and CHECKER_SPAWN_DIALOG_WAIT_SEC or CHECKER_LEADERS_FLOW_T
     local now = os.clock()
     checkerState.leadersSyncOutbound = true
+    if checkerState.syncServerKey == '' then
+        checkerState.syncServerKey = checkerGetServerKey()
+    end
     checkerMarkSyncLeaders(now + flowT)
     local ok = checkerTrySendSyncChat('/leaders', forSpawn)
     if ok then
@@ -2316,10 +2426,15 @@ function checkerStartSpawnCatalogSyncThread()
             end
         end
 
+        local admsHandled = checkerState.spawnAdmsHandled
+        local leadersHandled = checkerState.spawnLeadersHandled
         checkerState.spawnCatalogSyncRunning = false
+        checkerClearAdmsFlow()
         checkerClearSyncFlowFlags()
-        local admsOk = checkerState.spawnAdmsHandled or #checkerCatalog.admins > 0
-        local leadersOk = checkerState.spawnLeadersHandled
+        checkerState.spawnAdmsHandled = false
+        checkerState.spawnLeadersHandled = false
+        local admsOk = admsHandled or #checkerCatalog.admins > 0
+        local leadersOk = leadersHandled
         if admsOk and leadersOk then
             checkerState.spawnCatalogSyncDone = true
             ensureSyncSession().spawnAdmsRetries = 0
@@ -2337,11 +2452,25 @@ function checkerStartSpawnCatalogSyncThread()
 end
 
 -- Checker (admin HUD/catalog).
-function checkerScheduleSpawnCatalogSync()
+function checkerScheduleSpawnCatalogSync(delaySec)
     if settings.checker_auto_sync == false then return end
     if checkerState.spawnCatalogSyncDone then return end
-    if checkerState.spawnCatalogSyncAt then return end
-    checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_DELAY
+    delaySec = tonumber(delaySec) or CHECKER_SPAWN_SYNC_DELAY
+    checkerState.spawnCatalogSyncAt = os.clock() + delaySec
+end
+
+-- Возобновить spawn catalog sync после закрытия /reps.
+function checkerOnDeskWindowClosed()
+    if settings.checker_auto_sync == false then return end
+    if checkerState.spawnCatalogSyncDone then return end
+    if checkerState.spawnCatalogSyncRunning then return end
+    if checkerState.spawnAdmsHandled and checkerState.spawnLeadersHandled then return end
+    local s = ensureSyncSession()
+    if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
+        s.spawnAdmsRetries = 0
+        checkerPersistSyncSession()
+    end
+    checkerScheduleSpawnCatalogSync(1.5)
 end
 
 -- Checker (admin HUD/catalog).
@@ -2446,8 +2575,8 @@ function checkerOnSendCommand(command)
         if checkerState.leadersSyncOutbound then return end
         checkerClearSyncLeaders()
     elseif lc == 'adms' or lc == 'admins' then
-        if checkerState.admsSyncOutbound then return end
-        checkerClearSyncAdms()
+        if checkerAdmsFlowIsOutbound() then return end
+        checkerClearAdmsFlow()
     end
 end
 
@@ -2557,6 +2686,7 @@ function checkerApplyCatalogSnapshot(c)
     if checkerEnsureChiefCatalog() then
         changed = true
     end
+    checkerSanitizeAdminCatalog()
     return changed
 end
 
@@ -2775,7 +2905,8 @@ function checkerRebuildOnline(force)
     local byNick = checkerState.onlineNickIndex and checkerState.onlineNickIndex.byNick
     local admins, leaders, friends = {}, {}, {}
     for _, e in ipairs(checkerCatalog.admins) do
-        if e and e.nick then
+        if e and e.nick and checkerIsValidAdminLevel(e.level)
+                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level) then
             local id = checkerLookupOnlineId(e.nick)
             if id then
                 local prev = OnlineIndex.getById('admin', id)
@@ -3054,6 +3185,9 @@ function checkerOnServerMessage(color, text)
     plain = Parser.normalizeAdminListLine(stripTags(text))
     local nick, level, pid = Parser.parseAdminLine(plain)
     if not nick or not level then return end
+    level = checkerEffectiveAdminLevel(nick, level)
+    if not checkerIsValidAdminLevel(level) then return end
+    if checkerLeaderRoleConflictsAdminLevel(nick, level) then return end
     if type(isValidPlayerNick) == 'function' and not isValidPlayerNick(nick) then return end
     if not nick:find('_', 1, true) then return end
     local myNick = ''
@@ -3070,8 +3204,8 @@ function checkerOnServerMessage(color, text)
     local existing = Catalog.getAdmin(nick)
     if existing then
         local old = math.floor(tonumber(existing.level) or 0)
-        local newLevel = checkerEffectiveAdminLevel(nick, level)
-        if old ~= newLevel then
+        local newLevel = level
+        if old ~= newLevel and checkerShouldApplyAdminLevelUpdate(old, newLevel) then
             existing.level = newLevel
             checkerMarkCatalogDirty()
         end
@@ -3079,7 +3213,7 @@ function checkerOnServerMessage(color, text)
     end
     checkerCatalog.admins[#checkerCatalog.admins + 1] = {
         nick = nick,
-        level = checkerEffectiveAdminLevel(nick, level),
+        level = level,
     }
     checkerSortCatalogAdmins(checkerCatalog.admins)
     checkerMarkCatalogDirty()
@@ -3207,7 +3341,7 @@ function checkerTick()
     if not checkerSampReady() then
         if checkerState.hudDrag then checkerState.hudDrag.active = false end
         checkerState.syncInFlight = false
-        checkerState.adminsFlowUntil = 0
+        checkerClearAdmsFlow()
         checkerState.leadersFlowUntil = 0
         checkerState.spawnCatalogSyncRunning = false
         return
@@ -3249,6 +3383,29 @@ local function checkerNormalizeLeaderCatalogOrg()
 end
 
 -- Убрать битые записи лидеров (org id без org_name — типичный мусор после сбоя синка).
+-- Убрать из admins невалидные уровни и ложные записи (ранг лидера ≠ admin lvl).
+function checkerSanitizeAdminCatalog()
+    local out, changed = {}, false
+    for _, e in ipairs(checkerCatalog.admins or {}) do
+        local nick = trim(e and e.nick or '')
+        local level = math.floor(tonumber(e and e.level) or 0)
+        if nick == '' then
+            changed = true
+        elseif not checkerIsValidAdminLevel(level) then
+            changed = true
+        elseif checkerLeaderRoleConflictsAdminLevel(nick, level) then
+            changed = true
+        else
+            out[#out + 1] = e
+        end
+    end
+    if changed then
+        checkerCatalog.admins = out
+        checkerSortCatalogAdmins(checkerCatalog.admins)
+        checkerMarkCatalogDirty()
+    end
+end
+
 local function checkerSanitizeLeaderCatalog()
     local out, changed = {}, false
     for _, e in ipairs(checkerCatalog.leaders or {}) do
@@ -3288,6 +3445,7 @@ function checkerInit()
             rawset(_G, '__desk_pendingCheckerCatalog', nil)
         end
         Catalog.rebuildIndex()
+        checkerSanitizeAdminCatalog()
         checkerSanitizeLeaderCatalog()
         checkerNormalizeLeaderCatalogOrg()
         if not checkerSampReady() then
@@ -3299,11 +3457,11 @@ function checkerInit()
         checkerState.lastOnlineCatalogRev = -1
         checkerState.lastOnlineRev = -1
         checkerState.syncInFlight = false
-        checkerState.adminsFlowUntil = 0
+        checkerState.admsFlow = nil
+        checkerState.admsFlowUntil = 0
+        checkerState.admsDialogSyncedAt = 0
+        checkerState.syncServerKey = ''
         checkerState.leadersFlowUntil = 0
-        checkerState.admsAwaitDialog = false
-        checkerState.admsAwaitUntil = 0
-        checkerState.admsSyncOutbound = false
         checkerState.leadersSyncOutbound = false
         checkerState.leadersOnlineSnapshot = nil
         checkerState.spawnCatalogSyncRunning = false
@@ -3466,12 +3624,25 @@ function checkerGuardHudOffScreen(hx, hy, winW, winH)
 end
 
 -- Checker (admin HUD/catalog).
-function checkerPersistHudPos(hx, hy, winW, winH)
+function checkerPersistHudPos(hx, hy, winW, winH, flushNow)
     hx, hy = checkerClampHudPos(hx, hy, winW, winH)
-    settings.checker_hud_x = math.floor(hx + 0.5)
-    settings.checker_hud_y = math.floor(hy + 0.5)
-    settings.checker_hud_h = math.floor(math.max(48, tonumber(winH) or 120) + 0.5)
+    local nx = math.floor(hx + 0.5)
+    local ny = math.floor(hy + 0.5)
+    local nh = math.floor(math.max(48, tonumber(winH) or 120) + 0.5)
+    local ox = math.floor(tonumber(settings.checker_hud_x) or 8)
+    local oy = math.floor(tonumber(settings.checker_hud_y) or 8)
+    local oh = math.floor(tonumber(settings.checker_hud_h) or 160)
+    checkerState.hudPlaced = true
+    if nx == ox and ny == oy and nh == oh then
+        return
+    end
+    settings.checker_hud_x = nx
+    settings.checker_hud_y = ny
+    settings.checker_hud_h = nh
     markDirtySettings()
+    if flushNow and type(flushDirtyConfigNow) == 'function' then
+        SafeCall('flushDirtyConfigNow', flushDirtyConfigNow)
+    end
 end
 
 -- Checker (admin HUD/catalog).
@@ -3516,9 +3687,11 @@ function checkerHudWantsInput()
     return false
 end
 
--- HUD-строка: только текст, без hover и кликов.
+-- HUD-строка: одна линия, без переноса (уровень/тег не уезжает на строку ниже).
 local function drawCheckerHudRow(label, col)
+    imgui.PushTextWrapPos(0)
     imgui.TextColored(col, uiText(label))
+    imgui.PopTextWrapPos()
 end
 
 -- Checker (admin HUD/catalog).
@@ -3552,9 +3725,6 @@ function drawCheckerAdminsBlock()
     local executive, regular, special = checkerSplitAdminLists(list)
     local shown = 0
     if #executive > 0 then
-        checkerSpTheme.drawSectionLabel(
-            '\xD0\xF3\xEA\xEE\xE2\xEE\xE4\xF1\xF2\xE2\xEE:',
-            col_muted2, uiText)
         for _, e in ipairs(executive) do
             shown = shown + 1
             drawCheckerAdminRow(e, shown, 'adm_e_', 0)
@@ -3612,11 +3782,7 @@ function drawCheckerLeadersBlock()
     for _, e in ipairs(list) do
         shown = shown + 1
         local col = checkerSafePlayerColor(e.id) or col_accent
-        local role = checkerLeaderDisplayRole(e)
         local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
-        if role ~= '' then
-            label = label .. '  \xB7  ' .. role
-        end
         drawCheckerHudRow(label, col)
     end
 end
@@ -3838,9 +4004,10 @@ function drawCheckerHudOverlay()
     if drag.active then
         hx = drag.offX
         hy = drag.offY
-    elseif math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
-            or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5) then
-        checkerPersistHudPos(hx, hy, CHECKER_HUD_W, hudH)
+    elseif not checkerState.hudPlaced
+            and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
+            or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
+        checkerPersistHudPos(hx, hy, CHECKER_HUD_W, hudH, true)
     end
 
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
@@ -3917,10 +4084,7 @@ function drawCheckerHudOverlay()
             drag.offX, drag.offY = checkerClampHudPos(drag.offX, drag.offY, ww, wh)
         elseif drag.active and not imgui.IsMouseDown(0) then
             drag.active = false
-            checkerPersistHudPos(wp.x, wp.y, ww, wh)
-            if type(flushDirtyConfigNow) == 'function' then
-                SafeCall('flushDirtyConfigNow', flushDirtyConfigNow)
-            end
+            checkerPersistHudPos(wp.x, wp.y, ww, wh, true)
         end
 
         imgui.End()

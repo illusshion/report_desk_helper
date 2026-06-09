@@ -110,13 +110,16 @@ end
 -- Get Selected Thread
 function getSelectedThread()
     if selectedKey and threads[selectedKey] then
-        local t = threads[selectedKey]
-        selectedId = tonumber(t.id) or -1
-        return t, selectedKey
+        return threads[selectedKey], selectedKey
     end
     selectedKey = nil
-    selectedId = -1
     return nil, nil
+end
+
+-- Get Selected Id
+function getSelectedId()
+    local t = getSelectedThread()
+    return t and tonumber(t.id) or -1
 end
 
 -- Resolve Thread For Player Id
@@ -259,16 +262,15 @@ end
 
 -- Request Chat Scroll Bottom
 function requestChatScrollBottom()
-    if deskInputState.chatFollowBottom == false then return end
-    chatScrollToBottom = true
-    deskInputState.chatScrollFrames = 5
+    if not deskInputState.chatFollowBottom then return end
+    deskInputState.chatScrollUntil = os.clock() + 0.35
 end
 
 -- Request Chat Snap Bottom
-function requestChatSnapBottom(threadKey)
-    if not threadKey then return end
-    deskInputState.chatSnapBottomKey = threadKey
-    deskInputState.chatSnapAttempts = 0
+function requestChatSnapBottom(key)
+    if not key then return end
+    deskInputState.snapPending = true
+    deskInputState.snapKey = key
     deskInputState.chatFollowBottom = true
 end
 
@@ -296,7 +298,11 @@ function addMessageToKey(key, msg)
     bumpThreadMsgRev()
     bumpThreadInFilterCache(key)
     if key == selectedKey then
-        requestChatScrollForThread(key)
+        if deskInputState.chatFollowBottom then
+            requestChatScrollForThread(key)
+        else
+            deskInputState.hasUnseenMessages = true
+        end
     end
 end
 

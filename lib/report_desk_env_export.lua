@@ -72,6 +72,7 @@ do
     if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
     if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
     if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
+    if deskSpectateOverlayInputAllowed then _G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed end
     if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
     if deskCache then _G.deskCache = deskCache end
 end

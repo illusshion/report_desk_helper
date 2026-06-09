@@ -115,16 +115,6 @@ function main()
         getSpectateUiModeActive = function()
             return deskInputState.spectateUiModeActive == true
         end,
-        onAnsBarClosed = function()
-            deskReleaseImguiCapture()
-            if deskSpectatingNow() and not showWindow[0] then
-                deskRestoreSpectateCamera()
-            end
-            updateMimguiGameInputPassthrough()
-        end,
-        markAnsTypingActive = function()
-            deskInputState.keyboardStickyUntil = os.clock() + 1.5
-        end,
     })
     end
     pcall(deskReinstallSpMenuHooks)
@@ -157,6 +147,9 @@ function main()
     sampRegisterChatCommand('acar', function(arg)
         pcall(deskAcarEnter, arg)
     end)
+    sampRegisterChatCommand('guns', function()
+        pcall(deskGiveGuns)
+    end)
 
     refreshMyNick()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
@@ -172,6 +165,7 @@ function main()
     installDeskPlayerJoinHook()
     installDeskPlayerStreamInHook()
     installDeskPlayerColorHook()
+    pcall(installDeskGodmodeHealthHook)
     installDeskSpRefreshHooks()
     pcall(sampSyncAllPlayerColors)
     sessionLive = true
@@ -245,6 +239,7 @@ function main()
         if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
+        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 1 end
         if deskTexPipeline.anyPending() then return 1 end
         if cheatState.hudDrag.active then return 1 end
         if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 1 end
@@ -337,6 +332,7 @@ function main()
             end
         end)
         pcall(cheatsTickMarker)
+        pcall(tickScheduledConfigFlush)
 
         local nowSave = os.clock()
         if nowSave - lastSettingsSave >= AUTOSAVE_SETTINGS_INTERVAL then
