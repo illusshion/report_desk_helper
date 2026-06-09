@@ -36,6 +36,13 @@ res/report_desk_skins/*.jpg
 res/report_desk_vehicles/*.png
 res/report_desk_vehicles/*.jpg
 
+# Локальные утилиты / чужие скрипты (не часть Report Desk)
+collect_faction_clist.lua
+vehicle_unstack.lua
+reload_all.lua
+config/arp_helper_config.lua
+res/res/
+
 # Чужие скрипты в общей папке moonloader
 arp_helper.lua
 sp_plus.lua

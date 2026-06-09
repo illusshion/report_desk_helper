@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0.27
+
+- **Checker:** clist-цвета фракций, HUD руководства/админов/друзей, настройки лидеров по группам, sync `/leaders`.
+- **UI:** строка поиска на вкладке ТС как на Скинах (без метки «Поиск», кнопка «Очистить» не вылезает).
+- **Core:** модули fs/sha256/zip/wm_dispatch/cmd_binds/spectate_fsm, атомарное сохранение config, cleanup при reload.
+- **Repo:** runtime-зависимости (mimgui, samp, encoding, iconv) в git — клон репозитория работает без ручной докачки.
+
 ## 1.0.14
 
 - **Autoupdate v2 (критично):** manifest v2 с SHA256 каждого файла — обновление по хешам, не по версии launcher.
