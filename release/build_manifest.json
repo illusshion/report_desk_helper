@@ -1,7 +1,7 @@
 {
-    "tag":  "v1.0.2",
-    "version":  "1.0.2",
-    "built_at":  "2026-06-09T19:20:43.8958059+03:00",
+    "tag":  "v1.0.0",
+    "version":  "1.0.0",
+    "built_at":  "2026-06-09T19:29:31.7248859+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
@@ -11,14 +11,14 @@
                                  },
                       "bootstrap_file":  {
                                              "path":  "dist\\AdminDesk.luac",
-                                             "sha256":  "a2c17d7c48f3120c1f57505897b7c4258c1f3b841fc0bb19714f53d17c5a95e1",
-                                             "bytes":  8435
+                                             "sha256":  "78450dd67ef0f096803a2627ef05a08b93973a4957d84fef02a1dbe4ecdfa4fe",
+                                             "bytes":  9038
                                          },
-                      "version":  "1.0.2",
+                      "version":  "1.0.0",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "fe947a54db2db40e678e2115950190950502928c163a3cd27db009131605e586",
-                                  "bytes":  57677610
+                                  "sha256":  "b912c1c7990fbef3504c98b9a10f4fb2b4e27bbd58287b479f50b43f808afc4c",
+                                  "bytes":  57680709
                               },
                       "bootstrap":  "AdminDesk.luac",
                       "core_asset":  "AdminDeskCore.luac",
@@ -36,8 +36,8 @@
                                },
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "781ba764d7bc07f4219ccae06b32526059a6484757c4613eaf1353c945b9d10d",
-                                         "bytes":  67279
+                                         "sha256":  "809d47c4d82c27c6fd809f8bd277ee47ea852dde4647424c013bf6d330205ab6",
+                                         "bytes":  69775
                                      }
                   },
     "verified":  true,

@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.2')
+script_version('1.0.0')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -312,6 +312,27 @@ local function registerUpdateCommands(autoupdate, chatSay)
     end)
 end
 
+local function isLuaBytecodeFile(path)
+    if not doesFileExist(path) then return false end
+    local f = io.open(path, 'rb')
+    if not f then return false end
+    local h1, h2, h3 = f:read(1), f:read(1), f:read(1)
+    local size = f:seek('end') or 0
+    f:close()
+    if size < 128 then return false end
+    if not h1 or not h2 or not h3 then return false end
+    return h1:byte() == 0x1b and h2:byte() == 0x4c and h3:byte() == 0x4a
+end
+
+local function purgeBrokenLauncherPending()
+    local root = getWorkingDirectory()
+    local pending = root .. '\\AdminDesk.luac.pending'
+    if doesFileExist(pending) and not isLuaBytecodeFile(pending) then
+        pcall(os.remove, pending)
+        print('[Report Desk] removed broken AdminDesk.luac.pending')
+    end
+end
+
 local function bootstrapReload(reason)
     print('[Report Desk] reload: ' .. tostring(reason))
     bootstrapSay('\xCF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xF1\xEA\xF0\xE8\xEF\xF2\xE0 (~2 \xF1\xE5\xEA)...')
@@ -443,6 +464,7 @@ function main()
     if devEntryPresent() then
         return
     end
+    purgeBrokenLauncherPending()
     pcall(applyPendingBootstrap)
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)

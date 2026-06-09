@@ -890,6 +890,72 @@ local function copyFileAtomic(src, dest)
     return doesFileExist(dest)
 end
 
+local function copyFilePreserveSrc(src, dest)
+    ensureDirFor(dest)
+    local f = io.open(src, 'rb')
+    if not f then return false end
+    local data = f:read('*a')
+    f:close()
+    local out = io.open(dest, 'wb')
+    if not out then return false end
+    out:write(data)
+    out:close()
+    return doesFileExist(dest)
+end
+
+local function replaceFileVerified(src, dest, opts)
+    opts = opts or {}
+    if not doesFileExist(src) then return false end
+    local tmp = dest .. '.new'
+    local bak = dest .. '.bak'
+    pcall(os.remove, tmp)
+    if not copyFilePreserveSrc(src, tmp) then
+        pcall(os.remove, tmp)
+        return false
+    end
+    if opts.luac and not isValidLuaBytecode(tmp) then
+        pcall(os.remove, tmp)
+        return false
+    end
+    if opts.sha256 and opts.sha256 ~= '' then
+        local hash = M.sha256File(tmp)
+        if not hash or hash:lower() ~= opts.sha256:lower() then
+            pcall(os.remove, tmp)
+            return false
+        end
+    end
+    if doesFileExist(dest) then
+        pcall(os.remove, bak)
+        if not os.rename(dest, bak) then
+            pcall(os.remove, tmp)
+            return false
+        end
+    end
+    if not os.rename(tmp, dest) then
+        if doesFileExist(bak) then
+            pcall(os.rename, bak, dest)
+        end
+        pcall(os.remove, tmp)
+        return false
+    end
+    pcall(os.remove, bak)
+    return doesFileExist(dest)
+end
+
+local function launcherPendingExpected(destPath)
+    local state = M.readState()
+    if not state or type(state.files) ~= 'table' then return nil end
+    local want = tostring(destPath or ''):gsub('/', '\\'):lower()
+    local wantName = want:match('[^\\]+$') or want
+    for path, meta in pairs(state.files) do
+        local norm = tostring(path):gsub('/', '\\'):lower()
+        if norm == want or norm:match('[^\\]+$') == wantName then
+            return meta
+        end
+    end
+    return nil
+end
+
 local function installToDest(src, spec)
     local dest = M.path(spec.dest)
     local finalDest = dest
@@ -1451,12 +1517,13 @@ end
 -- Публичный API модуля.
 function M.applyLauncherPending()
     local root = M.root()
-    local pairs = {
+    local specs = {
         { pending = root .. '\\AdminDesk.luac.pending', dest = root .. '\\AdminDesk.luac', luac = true },
         { pending = root .. '\\AdminDesk.lua.pending', dest = root .. '\\AdminDesk.lua', luac = false },
     }
-    for _, spec in ipairs(pairs) do
-        if doesFileExist(spec.pending) then
+    for _, spec in ipairs(specs) do
+        if not doesFileExist(spec.pending) then
+        else
             if spec.luac and not isValidLuaBytecode(spec.pending) then
                 log('skip invalid launcher pending (bad bytecode): ' .. spec.pending)
                 pcall(os.remove, spec.pending)
@@ -1468,7 +1535,15 @@ function M.applyLauncherPending()
                 pcall(os.remove, spec.pending)
                 return false
             end
-            if spec.luac and doesFileExist(spec.dest) and isValidLuaBytecode(spec.dest) then
+            local expected = launcherPendingExpected(spec.dest)
+            if expected and expected.sha256 and expected.sha256 ~= '' then
+                local hash = M.sha256File(spec.pending)
+                if not hash or hash:lower() ~= expected.sha256:lower() then
+                    log('skip launcher pending (sha256 mismatch): ' .. spec.pending)
+                    pcall(os.remove, spec.pending)
+                    return false
+                end
+            elseif spec.luac and doesFileExist(spec.dest) and isValidLuaBytecode(spec.dest) then
                 local destBytes = fileBytes(spec.dest) or 0
                 if pendingBytes < destBytes * 0.5 then
                     log('skip suspicious launcher pending (smaller than installed): ' .. spec.pending)
@@ -1476,16 +1551,17 @@ function M.applyLauncherPending()
                     return false
                 end
             end
-            pcall(os.remove, spec.dest)
-            if os.rename(spec.pending, spec.dest) then
-                if spec.luac and not isValidLuaBytecode(spec.dest) then
-                    log('launcher pending produced invalid bytecode, rolling back')
-                    pcall(os.remove, spec.dest)
-                    return false
-                end
-                log('applied launcher pending: ' .. spec.dest)
-                return true
+            if not replaceFileVerified(spec.pending, spec.dest, {
+                luac = spec.luac,
+                sha256 = expected and expected.sha256 or '',
+            }) then
+                log('launcher pending replace failed, kept existing: ' .. spec.dest)
+                pcall(os.remove, spec.pending)
+                return false
             end
+            pcall(os.remove, spec.pending)
+            log('applied launcher pending: ' .. spec.dest)
+            return true
         end
     end
     return false
