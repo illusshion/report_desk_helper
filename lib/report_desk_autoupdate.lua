@@ -507,7 +507,9 @@ end
 
 local function localFileMatches(spec)
     local path = M.path(spec.dest)
-    if not doesFileExist(path) then
+    if spec.pending and doesFileExist(path .. '.pending') then
+        path = path .. '.pending'
+    elseif not doesFileExist(path) then
         return false, 'missing'
     end
     local bytes = fileBytes(path) or 0
@@ -977,7 +979,7 @@ function M.sync(manifest, opts)
     end
 
     local remoteVer = tostring(manifest.version or '')
-    notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' \xF4\xE0\xE9\xEB\xEE\xE2)...', opts)
+    notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' files)...', opts)
 
     setOverlayContext(opts)
     if overlayEnabled(opts) then
@@ -1018,6 +1020,8 @@ function M.sync(manifest, opts)
         if opts.reload == false then
             return true, 'pending'
         end
+        notify('\xCF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xF1\xEA\xF0\xE8\xEF\xF2\xE0 (~2 \xF1\xE5\xEA)...', opts)
+        wait(2000)
         if thisScript and thisScript().reload then
             thisScript():reload()
             return true, 'reload'

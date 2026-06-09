@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.27')
+script_version('1.0.28')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -52,7 +52,23 @@ local function devEntryPresent()
 end
 
 local CORE_DIR = getWorkingDirectory() .. '\\report_desk'
+local POST_UPDATE_FLAG = CORE_DIR .. '\\_bootstrap_resume_core'
 local CORE_NAMES = { 'AdminDeskCore.luac', 'AdminDeskCore.lua', 'admin_report_desk_core.luac', 'admin_report_desk_core.lua' }
+
+local function markPostUpdateResume()
+    ensureDirFor(POST_UPDATE_FLAG)
+    local f = io.open(POST_UPDATE_FLAG, 'w')
+    if f then
+        f:write('1\n')
+        f:close()
+    end
+end
+
+local function consumePostUpdateResume()
+    if not doesFileExist(POST_UPDATE_FLAG) then return false end
+    pcall(os.remove, POST_UPDATE_FLAG)
+    return true
+end
 
 local function resolveCorePath()
     for _, name in ipairs(CORE_NAMES) do
@@ -245,10 +261,9 @@ local function applyPendingBootstrap()
     if type(autoupdate) ~= 'table' then return false end
     if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles() then
         print('[Report Desk] pending files applied — reload')
-        if thisScript and thisScript().reload then
-            thisScript():reload()
-            return true
-        end
+        markPostUpdateResume()
+        bootstrapReload('pending files')
+        return true
     end
     return false
 end
@@ -282,11 +297,56 @@ end
 
 local function bootstrapReload(reason)
     print('[Report Desk] reload: ' .. tostring(reason))
+    bootstrapSay('\xCF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xF1\xEA\xF0\xE8\xEF\xF2\xE0 (~2 \xF1\xE5\xEA)...')
+    wait(2000)
     if thisScript and thisScript().reload then
         thisScript():reload()
         return true
     end
     return false
+end
+
+local function loadAndRunCore()
+    local autoupdate = requireAutoupdate()
+    local fn, loadErr = loadCore()
+    if not fn then
+        bootstrapSay(tostring(loadErr))
+        if autoupdate and autoupdate.repair then
+            bootstrapReload('core load fail')
+        end
+        return false
+    end
+
+    local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
+    if autoupdate and autoupdate.chatSay then
+        local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
+        local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
+        autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
+    end
+
+    fn()
+    main()
+    return true
+end
+
+local function ensureRuntimeAfterUpdate(manifest)
+    local deps = requireDeps()
+    if not deps then
+        bootstrapSay('deps module missing')
+        return false
+    end
+    local autoupdate = requireAutoupdate()
+    local chatSay = autoupdate and autoupdate.chatSay or bootstrapSay
+    local depsOk = select(1, deps.ensureAll({ say = chatSay, manifest = manifest }))
+    if not depsOk then
+        bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
+        return false
+    end
+    if not corePresent() then
+        bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
+        return false
+    end
+    return true
 end
 
 local function runInstallPipeline()
@@ -330,6 +390,7 @@ local function runInstallPipeline()
             autoupdate.applyPendingFiles()
             clearDeskModuleCache()
         end
+        markPostUpdateResume()
         bootstrapReload('sync pending')
         return false
     end
@@ -390,29 +451,24 @@ function main()
     end
 
     local ok, err = pcall(function()
+        local resumeAfterUpdate = consumePostUpdateResume() and corePresent()
+        if resumeAfterUpdate then
+            print('[Report Desk] resume after update — loading core')
+            if not bootstrapSeedUpdater() then return end
+            local autoupdate = requireAutoupdate()
+            if not autoupdate then return end
+            registerUpdateCommands(autoupdate, autoupdate.chatSay)
+            local manifest = select(1, autoupdate.fetchRemoteManifest())
+            if not ensureRuntimeAfterUpdate(manifest) then return end
+            loadAndRunCore()
+            return
+        end
+
         if not runInstallPipeline() then
             return
         end
 
-        local autoupdate = requireAutoupdate()
-        local fn, loadErr = loadCore()
-        if not fn then
-            bootstrapSay(tostring(loadErr))
-            if autoupdate and autoupdate.repair then
-                bootstrapReload('core load fail')
-            end
-            return
-        end
-
-        local ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
-        if autoupdate and autoupdate.chatSay then
-            local coreVer = autoupdate.readInstalledCoreVersion and autoupdate.readInstalledCoreVersion() or ''
-            local label = coreVer ~= '' and ('\xFF\xE4\xF0\xEE v' .. coreVer) or ('bootstrap v' .. ver)
-            autoupdate.chatSay('\xC7\xE0\xE3\xF0\xF3\xE6\xE5\xED ' .. label .. ' (F7, /deskupdate)')
-        end
-
-        fn()
-        main()
+        loadAndRunCore()
     end)
 
     if not ok then
