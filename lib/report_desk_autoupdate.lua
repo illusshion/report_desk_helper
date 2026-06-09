@@ -107,6 +107,11 @@ local function overlayHide()
     if ov and ov.hide then ov.hide() end
 end
 
+function M.hideUpdateOverlay()
+    overlayHide()
+    setOverlayContext(nil)
+end
+
 local function setOverlayContext(opts)
     activeOverlayOpts = opts
 end
@@ -127,6 +132,36 @@ local OVERLAY_DOWNLOAD = '\xCA\xE0\xF7\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\
 local OVERLAY_INSTALL = '\xD3\xF1\xF2\xE0\xED\xE0\xE2\xEB\xE8\xE2\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
 local OVERLAY_ASSETS = '\xCA\xE0\xF7\xE0\xE5\xEC \xEF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE8\xED\xEE\xE2 \xE8 \xD2\xD1...'
 local OVERLAY_DONE = '\xC3\xEE\xF2\xEE\xE2\xEE'
+
+local function readDevEntryHead(path)
+    if type(doesFileExist) ~= 'function' or not doesFileExist(path) then return nil end
+    local f = io.open(path, 'r')
+    if not f then return nil end
+    local head = f:read(8192) or ''
+    f:close()
+    return head
+end
+
+local function devEntryHeadLooksDev(head)
+    if not head or head == '' then return false end
+    return head:find('report_desk_app', 1, true) ~= nil
+        or head:find('__REPORT_DESK_DEV', 1, true) ~= nil
+end
+
+function M.isDevEnvironment()
+    if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
+    if type(getWorkingDirectory) ~= 'function' then return false end
+    local root = getWorkingDirectory()
+    if type(doesFileExist) == 'function' and doesFileExist(root .. '\\lib\\report_desk_app.lua') then
+        return true
+    end
+    for _, name in ipairs({ 'admin_report_desk.lua', 'admin_report_desk.lua.off' }) do
+        if devEntryHeadLooksDev(readDevEntryHead(root .. '\\' .. name)) then
+            return true
+        end
+    end
+    return false
+end
 
 -- Resolve User Notify Opts
 function M.resolveUserNotifyOpts(opts)
@@ -244,14 +279,19 @@ end
 
 local function finishUserFacingUpdate(manifest, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
-    if not opts.userFacing then return end
+    if not opts.userFacing then
+        overlayHide()
+        setOverlayContext(nil)
+        return
+    end
     local cl = M.readManifestChangelog(manifest)
     if overlayEnabled(opts) then
         overlayShow(OVERLAY_TITLE, OVERLAY_DONE, opts)
         overlayUpdate(cl ~= '' and cl or OVERLAY_DONE, 1.0, opts)
         wait(1400)
-        overlayHide()
     end
+    overlayHide()
+    setOverlayContext(nil)
     M.showUpdateSuccessMessage(manifest)
 end
 
@@ -1104,6 +1144,9 @@ end
 --[[ returns: needsReload, status ]]
 function M.sync(manifest, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
+    if M.isDevEnvironment() then
+        return false, 'dev'
+    end
     updatePhase = UPDATE_PHASE.FETCH
     if not manifest then
         updatePhase = UPDATE_PHASE.IDLE
@@ -1113,6 +1156,8 @@ function M.sync(manifest, opts)
     local fileCount = #plan
     local hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil or plan.mimgui ~= nil
     if fileCount == 0 and not hasExtra then
+        overlayHide()
+        setOverlayContext(nil)
         return false, 'uptodate'
     end
 
@@ -1137,6 +1182,8 @@ function M.sync(manifest, opts)
         fileCount = #plan
         hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil
         if fileCount == 0 and not hasExtra then
+            overlayHide()
+            setOverlayContext(nil)
             return false, 'uptodate'
         end
     end
@@ -1631,6 +1678,9 @@ function M.ensureAssets(manifest, opts)
 end
 
 function M.deferAssets(manifest, opts)
+    if M.isDevEnvironment() then
+        return false
+    end
     opts = M.resolveUserNotifyOpts(opts or {})
     manifest = manifest or {}
     if not M.needsAssets(manifest) then
@@ -1649,8 +1699,11 @@ function M.deferAssets(manifest, opts)
             wait(500)
         end
         wait(2000)
-        setOverlayContext(opts)
-        M.ensureAssets(manifest, opts)
+        pcall(function()
+            setOverlayContext(opts)
+            M.ensureAssets(manifest, opts)
+        end)
+        overlayHide()
         setOverlayContext(nil)
     end)
     return true
@@ -1883,6 +1936,8 @@ function M.ensureDependencies(manifest, opts)
         changed = true
     end
 
+    overlayHide()
+    setOverlayContext(nil)
     return true, changed
 end
 

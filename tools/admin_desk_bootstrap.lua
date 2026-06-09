@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.0')
+script_version('1.0.1')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -12,21 +12,44 @@ script_moonloader(26)
 require 'lib.moonloader'
 require 'lib.sampfuncs'
 
-do
+local function readDevEntryHead(path)
+    if type(doesFileExist) ~= 'function' or not doesFileExist(path) then return nil end
+    local f = io.open(path, 'r')
+    if not f then return nil end
+    local head = f:read(8192) or ''
+    f:close()
+    return head
+end
+
+local function devEntryHeadLooksDev(head)
+    if not head or head == '' then return false end
+    return head:find('report_desk_app', 1, true) ~= nil
+        or head:find('__REPORT_DESK_DEV', 1, true) ~= nil
+end
+
+local function devEntryPresent()
+    if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
     local root = getWorkingDirectory()
-    for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
-        local path = root .. '\\' .. name
-        local off = path .. '.off'
-        if doesFileExist(path) then
-            pcall(os.remove, off)
-            pcall(os.rename, path, off)
+    if doesFileExist(root .. '\\lib\\report_desk_app.lua') then return true end
+    for _, name in ipairs({ 'admin_report_desk.lua', 'admin_report_desk.lua.off' }) do
+        if devEntryHeadLooksDev(readDevEntryHead(root .. '\\' .. name)) then
+            return true
         end
     end
-    local legacy = root .. '\\admin_report_desk.lua'
-    local legacyOff = legacy .. '.off'
-    if doesFileExist(root .. '\\AdminDesk.luac') and doesFileExist(legacy) then
-        pcall(os.remove, legacyOff)
-        pcall(os.rename, legacy, legacyOff)
+    return false
+end
+
+do
+    if not devEntryPresent() then
+        local root = getWorkingDirectory()
+        for _, name in ipairs({ 'report_desk_deps.lua', 'report_desk_autoupdate.lua' }) do
+            local path = root .. '\\' .. name
+            local off = path .. '.off'
+            if doesFileExist(path) then
+                pcall(os.remove, off)
+                pcall(os.rename, path, off)
+            end
+        end
     end
 end
 
@@ -38,18 +61,6 @@ local SEED_LIBS = {
     'report_desk_deps.lua',
     'report_desk_autoupdate.lua',
 }
-
-local function devEntryPresent()
-    if rawget(_G, '__REPORT_DESK_DEV') == true then return true end
-    local path = getWorkingDirectory() .. '\\admin_report_desk.lua'
-    if not doesFileExist(path) then return false end
-    local f = io.open(path, 'r')
-    if not f then return false end
-    local head = f:read(8192) or ''
-    f:close()
-    return head:find('report_desk_app', 1, true) ~= nil
-        or head:find('__REPORT_DESK_DEV', 1, true) ~= nil
-end
 
 local CORE_DIR = getWorkingDirectory() .. '\\report_desk'
 local CORE_NAMES = { 'AdminDeskCore.luac', 'AdminDeskCore.lua', 'admin_report_desk_core.luac', 'admin_report_desk_core.lua' }
@@ -414,19 +425,14 @@ local function runInstallPipeline()
         return false, false
     end
 
+    if autoupdate.hideUpdateOverlay then
+        pcall(autoupdate.hideUpdateOverlay)
+    end
+
     return true, sessionUpdated
 end
 
 function main()
-    do
-        local root = getWorkingDirectory()
-        local legacy = root .. '\\admin_report_desk.lua'
-        local off = legacy .. '.off'
-        if doesFileExist(root .. '\\AdminDesk.luac') and doesFileExist(legacy) then
-            pcall(os.remove, off)
-            pcall(os.rename, legacy, off)
-        end
-    end
     if devEntryPresent() then
         return
     end

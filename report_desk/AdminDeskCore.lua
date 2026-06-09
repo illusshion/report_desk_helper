@@ -2404,10 +2404,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
-        return drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return drag.active == true
     end
     if drag.active then return true end
@@ -3112,8 +3109,12 @@ local function drawVehicleHudInner(settings)
         hy = math.max(HUD_MARGIN, math.min(hy, sh - panelSz - HUD_MARGIN))
     end
 
+    local wantInput = M.wantsInput()
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
         + imgui.WindowFlags.NoScrollbar
+    if not wantInput and imgui.WindowFlags.NoInputs then
+        flags = flags + imgui.WindowFlags.NoInputs
+    end
     if imgui.WindowFlags.NoScrollWithMouse then
         flags = flags + imgui.WindowFlags.NoScrollWithMouse
     end
@@ -3255,6 +3256,7 @@ local capAnim = {}
 local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
 local hovered = false
 local hudRect = nil
+local hudLastW, hudLastH = 320, 80
 
 local sampevRef
 local hookPrevPlayerSync
@@ -3495,76 +3497,88 @@ local function drawVehicleLayout(stateKeys)
     imgui.EndGroup()
 end
 
--- Resolve Pos
-local function resolvePos(settings, sw, sh)
-    local custom = settings and settings.spectate_keys_hud_custom == true
-    local rawX = settings and tonumber(settings.spectate_keys_hud_x)
-    local rawY = settings and tonumber(settings.spectate_keys_hud_y)
-    local pivotX, pivotY = 0.5, 0.5
-    local hx, hy
-    if custom and rawX ~= nil then
-        hx = rawX
-        pivotX = 0
-        if hx < 0 then
-            hx = sw + hx
-            pivotX = 1
-        end
-    else
-        hx = sw * 0.5
-        pivotX = 0.5
-    end
-    if custom and rawY ~= nil then
-        hy = rawY
-        pivotY = 0
-        if hy < 0 then
-            hy = sh + hy
-            pivotY = 1
-        end
-    else
-        hy = sh - 100
-        pivotY = 0.5
-    end
-    hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
-    hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
-    return hx, hy, pivotX, pivotY
-end
-
--- Save Drag Pos
-local function saveDragPos(settings, wp, ww, wh, sw, sh)
-    if not settings or not wp then return end
-    local nx = wp.x or wp[1] or 0
-    local ny = wp.y or wp[2] or 0
-    settings.spectate_keys_hud_custom = true
-    if nx + (ww or 0) > sw * 0.55 then
-        settings.spectate_keys_hud_x = math.floor(nx + (ww or 0) - sw + 0.5)
-    else
-        settings.spectate_keys_hud_x = math.floor(nx + 0.5)
-    end
-    if ny + (wh or 0) > sh * 0.55 then
-        settings.spectate_keys_hud_y = math.floor(ny + (wh or 0) - sh + 0.5)
-    else
-        settings.spectate_keys_hud_y = math.floor(ny + 0.5)
-    end
-    if markDirtySettings then markDirtySettings() end
-    if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
-end
-
--- Draw Inner
-local function drawKeysHudInner(settings)
+-- Screen Size
+local function screenSize()
     local sw, sh = 1280, 720
     if getScreenResolution then
         local rw, rh = getScreenResolution()
         if rw and rw > 0 then sw = rw end
         if rh and rh > 0 then sh = rh end
     end
+    return sw, sh
+end
 
-    local hx, hy, pivotX, pivotY = resolvePos(settings, sw, sh)
+-- Default Pos
+local function defaultHudPos(sw, sh, winW, winH)
+    winW = math.max(200, tonumber(winW) or hudLastW or 320)
+    winH = math.max(48, tonumber(winH) or hudLastH or 80)
+    return math.floor(sw * 0.5 - winW * 0.5 + 0.5), math.floor(sh - winH - 100 + 0.5)
+end
+
+-- Clamp Hud Pos
+local function clampHudPos(hx, hy, winW, winH)
+    local sw, sh = screenSize()
+    winW = math.max(200, tonumber(winW) or hudLastW or 320)
+    winH = math.max(48, tonumber(winH) or hudLastH or 80)
+    hx = math.max(HUD_MARGIN, math.min(hx, sw - winW - HUD_MARGIN))
+    hy = math.max(HUD_MARGIN, math.min(hy, sh - winH - HUD_MARGIN))
+    return hx, hy
+end
+
+-- Resolve Pos
+local function resolvePos(settings, winW, winH)
+    local sw, sh = screenSize()
+    local rawX = settings and tonumber(settings.spectate_keys_hud_x)
+    local rawY = settings and tonumber(settings.spectate_keys_hud_y)
+    local custom = settings and settings.spectate_keys_hud_custom == true
+    local hx, hy
+    if custom and rawX ~= nil and rawY ~= nil then
+        hx, hy = rawX, rawY
+    else
+        hx, hy = defaultHudPos(sw, sh, winW, winH)
+    end
+    return clampHudPos(hx, hy, winW, winH)
+end
+
+-- Persist Hud Pos
+local function persistHudPos(settings, hx, hy, winW, winH)
+    if not settings then return end
+    hx, hy = clampHudPos(hx, hy, winW, winH)
+    settings.spectate_keys_hud_custom = true
+    settings.spectate_keys_hud_x = math.floor(hx + 0.5)
+    settings.spectate_keys_hud_y = math.floor(hy + 0.5)
+    if markDirtySettings then markDirtySettings() end
+end
+
+-- Pointer In Hud Rect
+local function pointerInHudRect(r)
+    if not r then return false end
+    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
+        or type(deskPointerInRect) == 'function' and deskPointerInRect
+    if pin and pin(r) then return true end
+    if imgui and type(imgui.GetIO) == 'function' then
+        local ok, io = pcall(imgui.GetIO)
+        if ok and io and io.MousePos then
+            local mp = io.MousePos
+            return mp.x >= r.x0 and mp.x < r.x1 and mp.y >= r.y0 and mp.y < r.y1
+        end
+    end
+    return false
+end
+
+-- Draw Inner
+local function drawKeysHudInner(settings)
+    local estW = hudLastW or 320
+    local estH = hudLastH or 80
+    local rawHx = settings and tonumber(settings.spectate_keys_hud_x)
+    local rawHy = settings and tonumber(settings.spectate_keys_hud_y)
+    local hx, hy = resolvePos(settings, estW, estH)
     if drag.active then
-        hx = drag.offX
-        hy = drag.offY
-        pivotX, pivotY = 0, 0
-        hx = math.max(HUD_MARGIN, math.min(hx, sw - HUD_MARGIN))
-        hy = math.max(HUD_MARGIN, math.min(hy, sh - HUD_MARGIN))
+        hx, hy = drag.offX, drag.offY
+    elseif rawHx ~= nil and rawHy ~= nil
+            and (math.floor(hx + 0.5) ~= math.floor(rawHx + 0.5)
+                or math.floor(hy + 0.5) ~= math.floor(rawHy + 0.5)) then
+        persistHudPos(settings, hx, hy, estW, estH)
     end
 
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoNav
@@ -3572,8 +3586,11 @@ local function drawKeysHudInner(settings)
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
+    end
 
-    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always, imgui.ImVec2(pivotX, pivotY))
+    imgui.SetNextWindowPos(imgui.ImVec2(hx, hy), imgui.Cond.Always)
     spTheme.pushHudChrome()
     if not imgui.Begin('###desk_sp_keys_hud', nil, flags) then
         spTheme.popHudChrome()
@@ -3596,27 +3613,6 @@ local function drawKeysHudInner(settings)
     local headerH = imgui.GetCursorPosY() - headerY
     if headerH < 18 then headerH = 18 end
 
-    imgui.SetCursorPos(imgui.ImVec2(0, headerY))
-    imgui.InvisibleButton('##keys_hud_drag', imgui.ImVec2(-1, headerH))
-    if imgui.IsItemHovered() or imgui.IsItemActive() then hovered = true end
-    if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
-        local delta = imgui.GetMouseDragDelta(0)
-        local wp = imgui.GetWindowPos()
-        if not drag.active then
-            drag.active = true
-            drag.startX = wp.x
-            drag.startY = wp.y
-            imgui.ResetMouseDragDelta(0)
-            delta = imgui.GetMouseDragDelta(0)
-        end
-        drag.offX = drag.startX + delta.x
-        drag.offY = drag.startY + delta.y
-    elseif drag.active and not imgui.IsMouseDown(0) then
-        drag.active = false
-        local wp = imgui.GetWindowPos()
-        saveDragPos(settings, wp, imgui.GetWindowWidth() or 320, imgui.GetWindowHeight() or 80, sw, sh)
-    end
-
     imgui.SetCursorPosY(headerY + headerH)
     spTheme.drawHeaderRule(col_accent)
 
@@ -3637,7 +3633,32 @@ local function drawKeysHudInner(settings)
     local wp = imgui.GetWindowPos()
     local ww = imgui.GetWindowWidth() or 320
     local wh = imgui.GetWindowHeight() or 80
+    hudLastW = ww
+    hudLastH = wh
     hudRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
+
+    imgui.SetCursorPos(imgui.ImVec2(0, 0))
+    imgui.InvisibleButton('##keys_hud_drag', imgui.ImVec2(-1, -1))
+    if imgui.IsItemHovered() or imgui.IsItemActive() or drag.active then
+        hovered = true
+    end
+    if imgui.IsItemActive() and imgui.IsMouseDragging(0) then
+        local delta = imgui.GetMouseDragDelta(0)
+        if not drag.active then
+            drag.active = true
+            drag.startX = wp.x
+            drag.startY = wp.y
+            imgui.ResetMouseDragDelta(0)
+            delta = imgui.GetMouseDragDelta(0)
+        end
+        drag.offX = drag.startX + delta.x
+        drag.offY = drag.startY + delta.y
+        drag.offX, drag.offY = clampHudPos(drag.offX, drag.offY, ww, wh)
+    elseif drag.active and not imgui.IsMouseDown(0) then
+        drag.active = false
+        persistHudPos(settings, wp.x, wp.y, ww, wh)
+        if flushDirtyConfigNow then pcall(flushDirtyConfigNow) end
+    end
 
     imgui.End()
     spTheme.popHudChrome()
@@ -3674,17 +3695,18 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if type(_G.deskAnsBarBlocksSampChat) == 'function' and _G.deskAnsBarBlocksSampChat() then
-        return drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
-        return drag.active == true
-    end
     if drag.active then return true end
     if hovered then return true end
-    local pin = type(_G.deskPointerInRect) == 'function' and _G.deskPointerInRect
-        or type(deskPointerInRect) == 'function' and deskPointerInRect
-    if pin then return pin(hudRect) end
+    if pointerInHudRect(hudRect) then return true end
+    local settings = getSettings()
+    if settings then
+        local estW = hudLastW or 320
+        local estH = hudLastH or 80
+        local hx, hy = resolvePos(settings, estW, estH)
+        if pointerInHudRect({ x0 = hx, y0 = hy, x1 = hx + estW, y1 = hy + estH }) then
+            return true
+        end
+    end
     return false
 end
 
@@ -3740,18 +3762,18 @@ end
 
 -- Публичный API модуля.
 function M.configure(deps)
-    deps = deps or {}
-    uiText = deps.uiText or function(s) return s end
-    toU32 = deps.toU32
-    col_accent = deps.col_accent
-    col_accent_dim = deps.col_accent_dim
-    col_muted = deps.col_muted
-    col_muted2 = deps.col_muted2
-    markDirtySettings = deps.markDirtySettings
-    flushDirtyConfigNow = deps.flushDirtyConfigNow
-    getSettingsFn = deps.getSettings
-    getSpectateTargetId = deps.getSpectateTargetId
-    isSpectatingFn = deps.isSpectating
+    if type(deps) ~= 'table' then return end
+    if deps.uiText ~= nil then uiText = deps.uiText end
+    if deps.toU32 ~= nil then toU32 = deps.toU32 end
+    if deps.col_accent ~= nil then col_accent = deps.col_accent end
+    if deps.col_accent_dim ~= nil then col_accent_dim = deps.col_accent_dim end
+    if deps.col_muted ~= nil then col_muted = deps.col_muted end
+    if deps.col_muted2 ~= nil then col_muted2 = deps.col_muted2 end
+    if deps.markDirtySettings ~= nil then markDirtySettings = deps.markDirtySettings end
+    if deps.flushDirtyConfigNow ~= nil then flushDirtyConfigNow = deps.flushDirtyConfigNow end
+    if deps.getSettings ~= nil then getSettingsFn = deps.getSettings end
+    if deps.getSpectateTargetId ~= nil then getSpectateTargetId = deps.getSpectateTargetId end
+    if deps.isSpectating ~= nil then isSpectatingFn = deps.isSpectating end
 end
 
 return M
@@ -4784,489 +4806,6 @@ end
 
 
 
-package.preload['report_desk_spectate_ans'] = function()
-
-    local fn, err = loadstring([=[
-
---[[ Модуль: быстрый /ans bar в spectate (клавиша C). ]]
-local M = {}
-
-local ffi = require 'ffi'
-local imgui = require 'mimgui'
-local spTheme = require 'report_desk_sp_theme'
-
-local deps = {}
-local ANS_BUF_SIZE = 384
-local ansBuf = imgui.new.char[ANS_BUF_SIZE]()
-
--- Полный цикл KEYDOWN/KEYUP для C и Enter; без os.clock/debounce/grace.
-local state = {
-    open = false,
-    focusPending = false,
-    waitChatRelease = false,
-    waitEnterRelease = false,
-}
-
-local BAR_W = 460
-local BAR_H = 92
-local BAR_BOTTOM_INSET = 28
-
-local WM_KEYDOWN = 0x0100
-local WM_SYSKEYDOWN = 0x0104
-local WM_KEYUP = 0x0101
-local WM_SYSKEYUP = 0x0105
-local WM_CHAR = 0x0102
-
-local SAMP_CHAT_KEYS = {
-    [0x54] = true, [0x49] = true, [0x59] = true, [0x42] = true,
-    [0x4F] = true, [0x50] = true, [0x4E] = true, [0xC0] = true,
-    [0x75] = true, [0x7A] = true,
-}
-
-local function resetKeyLatch()
-    state.waitChatRelease = false
-    state.waitEnterRelease = false
-    state.focusPending = false
-end
-
--- Только SAMP chat hotkeys (T/I/Y/…); WM_CHAR не трогаем — его нужен mimgui InputText.
-local function blockSampChatHotkey(msg, wparam)
-    if not state.open then return false end
-    msg = tonumber(msg) or 0
-    if msg ~= WM_KEYDOWN and msg ~= WM_SYSKEYDOWN then return false end
-    return SAMP_CHAT_KEYS[tonumber(wparam) or 0] == true
-end
-
--- Пока C не отпущена после открытия — не пускаем WM_CHAR в ImGui (остаток от клавиши C).
-local function blockOpeningKeyLeak(msg)
-    if not state.open or not state.waitChatRelease then return false end
-    msg = tonumber(msg) or 0
-    return msg == WM_CHAR
-end
-
-local function isKeyDownMsg(msg)
-    msg = tonumber(msg) or 0
-    return msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN
-end
-
-local function isKeyUpMsg(msg)
-    msg = tonumber(msg) or 0
-    return msg == WM_KEYUP or msg == WM_SYSKEYUP
-end
-
-local function isKeyRepeat(lparam)
-    lparam = tonumber(lparam) or 0
-    if bit and bit.band then
-        return bit.band(lparam, 0x40000000) ~= 0
-    end
-    return false
-end
-
-local function chatKeyVk()
-    local vkeys = deps.vkeys or {}
-    return vkeys.VK_C or 0x43
-end
-
-local function isChatKey(wparam)
-    return (tonumber(wparam) or 0) == chatKeyVk()
-end
-
-local function isEnterKey(wparam)
-    wparam = tonumber(wparam) or 0
-    local vkeys = deps.vkeys or {}
-    return wparam == (vkeys.VK_RETURN or 0x0D) or wparam == 0x0D
-end
-
-local function modifierBlocksChat()
-    if not deps.isVkDown or not deps.vkeys then return false end
-    local v = deps.vkeys
-    if deps.isVkDown(v.VK_CONTROL or 0x11) then return true end
-    if deps.isVkDown(v.VK_LCONTROL or 0xA2) then return true end
-    if deps.isVkDown(v.VK_RCONTROL or 0xA3) then return true end
-    return false
-end
-
-local function trim(s)
-    if deps.trim then return deps.trim(s) end
-    return tostring(s or ''):match('^%s*(.-)%s*$') or ''
-end
-
-local function uiText(s)
-    if deps.uiText then return deps.uiText(s) end
-    return s or ''
-end
-
-local function screenSize()
-    local sw, sh = 1280, 720
-    if imgui.GetIO then
-        local io = imgui.GetIO()
-        if io and io.DisplaySize and io.DisplaySize.x > 0 then
-            sw = io.DisplaySize.x
-            sh = io.DisplaySize.y
-        end
-    end
-    if getScreenResolution then
-        local rw, rh = getScreenResolution()
-        if rw and rw > 0 then sw = rw end
-        if rh and rh > 0 then sh = rh end
-    end
-    return sw, sh
-end
-
-local function spectatingWithTarget()
-    local id = deps.getTargetId and tonumber(deps.getTargetId()) or -1
-    if id < 0 then return false end
-    if deps.isSpectating then
-        local ok, v = pcall(deps.isSpectating)
-        if ok and v then return true end
-    end
-    if deps.getPlayerSpectating then
-        local ok, v = pcall(deps.getPlayerSpectating)
-        if ok and v then return true end
-    end
-    return true
-end
-
-local function inputBlocked()
-    if deps.isGameTextInputActive and deps.isGameTextInputActive() then return true end
-    if deps.isDeskTypingActive and deps.getShowWindow and deps.getShowWindow()
-            and deps.isDeskTypingActive() then
-        return true
-    end
-    return false
-end
-
-local function notifyInputChanged()
-    if deps.onInputChanged then pcall(deps.onInputChanged) end
-end
-
-local function releaseInputCapture()
-    if type(deskReleaseImguiCapture) == 'function' then
-        pcall(deskReleaseImguiCapture)
-    else
-        if imgui.CaptureKeyboardFromApp then pcall(imgui.CaptureKeyboardFromApp, false) end
-        if imgui.CaptureMouseFromApp then pcall(imgui.CaptureMouseFromApp, false) end
-    end
-    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
-end
-
-local function syncInputCapture()
-    if not state.open then return end
-    if imgui.CaptureKeyboardFromApp then imgui.CaptureKeyboardFromApp(true) end
-    if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
-end
-
--- KEYUP C иногда не доходит до lua-хендлера; дублируем через isVkDown в draw.
-local function chatKeyReleased()
-    if not deps.isVkDown then return true end
-    local ok, down = pcall(deps.isVkDown, chatKeyVk())
-    if not ok then return true end
-    return down ~= true
-end
-
-local function armInputFocus()
-    state.waitChatRelease = false
-    state.focusPending = true
-    if deps.markTypingActive then pcall(deps.markTypingActive) end
-end
-
-function M.isOpen()
-    return state.open == true
-end
-
-function M.wantsInput()
-    return state.open == true
-end
-
-function M.close()
-    if not state.open then return end
-    state.open = false
-    state.focusPending = false
-    state.waitChatRelease = false
-    if type(deskInputState) == 'table' then
-        deskInputState.keyboardStickyUntil = 0
-    end
-    releaseInputCapture()
-    notifyInputChanged()
-end
-
-function M.reset()
-    resetKeyLatch()
-    M.close()
-    ansBuf[0] = 0
-end
-
-function M.open()
-    if not spectatingWithTarget() or inputBlocked() then return false end
-    state.open = true
-    state.focusPending = false
-    state.waitChatRelease = true
-    if type(deskHoldSampChatInput) == 'function' then
-        pcall(deskHoldSampChatInput)
-    end
-    if deps.markTypingActive then pcall(deps.markTypingActive) end
-    notifyInputChanged()
-    syncInputCapture()
-    return true
-end
-
-local function readAnsBuf()
-    if deps.readInputBuf then
-        local ok, s = pcall(deps.readInputBuf, ansBuf)
-        if ok and s then return trim(s) end
-    end
-    local ok, s = pcall(function()
-        return ffi.string(ansBuf):match('^[^%z]*') or ''
-    end)
-    s = ok and trim(s) or ''
-    if deps.utf8ToCp1251 then
-        local ok2, out = pcall(deps.utf8ToCp1251, s)
-        if ok2 and out then return out end
-    end
-    return s
-end
-
-local function sendAns(text)
-    if text == nil or text == '' then
-        text = readAnsBuf()
-    else
-        text = trim(text)
-        if deps.utf8ToCp1251 then
-            local ok, out = pcall(deps.utf8ToCp1251, text)
-            if ok and out then text = out end
-        end
-    end
-    if text == '' then
-        M.close()
-        return false
-    end
-    local id = deps.getTargetId and tonumber(deps.getTargetId()) or -1
-    if id < 0 then return false end
-    if deps.transmitAns then
-        pcall(deps.transmitAns, id, text)
-    elseif deps.sendMenuOutbound then
-        pcall(deps.sendMenuOutbound, 'ans ' .. tostring(id) .. ' ' .. text)
-    elseif deps.sendChat then
-        pcall(deps.sendChat, 'ans ' .. tostring(id) .. ' ' .. text)
-    else
-        return false
-    end
-    ansBuf[0] = 0
-    M.close()
-    return true
-end
-
-function M.handleWindowMessage(msg, wparam, lparam)
-    if not spectatingWithTarget() or inputBlocked() then return false end
-
-    msg = tonumber(msg) or 0
-    wparam = tonumber(wparam) or 0
-
-    if blockSampChatHotkey(msg, wparam) then return true end
-    if blockOpeningKeyLeak(msg) then return true end
-
-    local keyDown = isKeyDownMsg(msg)
-    local keyUp = isKeyUpMsg(msg)
-    if not keyDown and not keyUp then return false end
-    if keyDown and isKeyRepeat(lparam) then return false end
-
-    local vkeys = deps.vkeys
-    if not vkeys then return false end
-    local vkEsc = vkeys.VK_ESCAPE or 0x1B
-
-    -- Enter KEYUP: сброс latch после отправки/закрытия.
-    if keyUp and isEnterKey(wparam) then
-        if state.waitEnterRelease then
-            state.waitEnterRelease = false
-            return true
-        end
-        return false
-    end
-
-    -- C KEYUP: отпускание клавиши открытия → можно ставить фокус в поле.
-    if keyUp and isChatKey(wparam) then
-        if state.waitChatRelease and state.open then
-            armInputFocus()
-            return true
-        end
-        return false
-    end
-
-    if not keyDown then return false end
-
-    -- Открытие на C KEYDOWN (только чистое нажатие, без залипшего Enter).
-    if not state.open then
-        if not isChatKey(wparam) or modifierBlocksChat() then return false end
-        if state.waitChatRelease or state.waitEnterRelease then return true end
-        if M.open() then return true end
-        return false
-    end
-
-    -- Панель открыта.
-    if wparam == vkEsc then
-        M.close()
-        return true
-    end
-
-    if isChatKey(wparam) then
-        return true
-    end
-
-    if isEnterKey(wparam) then
-        if state.waitChatRelease or state.waitEnterRelease then return true end
-        sendAns()
-        state.waitEnterRelease = true
-        return true
-    end
-
-    return false
-end
-
-function M.draw(settings)
-    if not state.open or not spectatingWithTarget() then
-        return
-    end
-    if imgui and imgui.DisableInput ~= nil then
-        imgui.DisableInput = false
-    end
-    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
-
-    settings = settings or (deps.getSettings and deps.getSettings()) or {}
-    if settings.spectate_sp_ans == false then
-        M.close()
-        return
-    end
-
-    local targetId = tonumber(deps.getTargetId and deps.getTargetId()) or -1
-    if targetId < 0 then
-        M.close()
-        return
-    end
-
-    local nick = ''
-    if deps.getTargetNick then
-        local ok, nk = pcall(deps.getTargetNick)
-        if ok and nk then nick = trim(nk) end
-    end
-    if nick == '' and deps.sampGetPlayerNickname and deps.sampIsPlayerConnected then
-        pcall(function()
-            if deps.sampIsPlayerConnected(targetId) then
-                nick = trim(deps.sampGetPlayerNickname(targetId) or '')
-            end
-        end)
-    end
-
-    local col_accent = deps.col_accent or imgui.ImVec4(0.62, 0.44, 0.86, 1.0)
-    local col_accent_dim = deps.col_accent_dim or imgui.ImVec4(0.52, 0.36, 0.78, 1.0)
-    local col_muted2 = deps.col_muted2 or imgui.ImVec4(0.55, 0.55, 0.62, 0.85)
-    local col_label = deps.col_label or imgui.ImVec4(0.95, 0.95, 0.98, 1.0)
-
-    local sw, sh = screenSize()
-    local posX = math.max(8, (sw - BAR_W) * 0.5)
-    local posY = math.max(8, sh - BAR_H - BAR_BOTTOM_INSET)
-
-    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoMove
-        + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoNav
-        + imgui.WindowFlags.NoCollapse
-
-    imgui.SetNextWindowBgAlpha(0.96)
-    imgui.SetNextWindowSize(imgui.ImVec2(BAR_W, BAR_H), imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(posX, posY), imgui.Cond.Always)
-
-    spTheme.pushOverlayChrome(0.96)
-    local began = imgui.Begin('###desk_sp_ans_bar', nil, flags)
-    if began then
-        spTheme.drawHeaderAccent(col_accent)
-
-        local who = nick ~= '' and nick or ('ID ' .. tostring(targetId))
-        imgui.TextColored(col_muted2, uiText('\xCE\xF2\xE2\xE5\xF2 \xE2'))
-        imgui.SameLine(0, 4)
-        imgui.TextColored(col_label, uiText(who))
-        imgui.SameLine(0, 4)
-        imgui.TextColored(col_muted2, uiText('[' .. tostring(targetId) .. ']'))
-        imgui.SameLine(0, 8)
-        imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.52, 0.75), uiText('Enter / Esc'))
-
-        imgui.Dummy(imgui.ImVec2(0, 6))
-
-        if state.waitChatRelease and chatKeyReleased() then
-            armInputFocus()
-        end
-
-        local sendW = 84
-        local gap = 8
-        local inputW = math.max(140, imgui.GetContentRegionAvail().x - sendW - gap)
-
-        imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 8))
-        imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
-        imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
-        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.48, 0.36, 0.72, 0.55))
-        imgui.PushStyleColor(imgui.Col.Text, col_label)
-
-        if state.focusPending and imgui.SetKeyboardFocusHere then
-            imgui.SetKeyboardFocusHere(0)
-        end
-
-        imgui.PushItemWidth(inputW)
-        local hint = uiText('\xD1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xE4\xEB\xFF /ans...')
-        if imgui.InputTextWithHint then
-            imgui.InputTextWithHint('##sp_ans_input', hint, ansBuf, ANS_BUF_SIZE)
-        else
-            imgui.InputText('##sp_ans_input', ansBuf, ANS_BUF_SIZE)
-        end
-        imgui.PopItemWidth()
-
-        if type(deskKeepInputOnActiveItem) == 'function' then
-            pcall(deskKeepInputOnActiveItem)
-        end
-        if state.focusPending and imgui.IsItemFocused and imgui.IsItemFocused() then
-            state.focusPending = false
-        end
-
-        imgui.PopStyleColor(3)
-        imgui.PopStyleVar(2)
-
-        imgui.SameLine(0, gap)
-        imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.44, 0.30, 0.66, 1.0))
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-        if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
-        local clicked = imgui.Button(uiText('\xCE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC'), imgui.ImVec2(sendW, 0))
-        if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
-        imgui.PopStyleColor(4)
-
-        if clicked and not state.waitChatRelease then
-            sendAns()
-        end
-
-        syncInputCapture()
-        imgui.End()
-    end
-    spTheme.popOverlayChrome()
-end
-
-function M.install(installDeps)
-    if type(installDeps) == 'table' then
-        for k, v in pairs(installDeps) do
-            deps[k] = v
-        end
-    end
-end
-
-return M
-
-
-]=], '@report_desk_spectate_ans')
-
-    if not fn then error(err or 'bundle load failed: report_desk_spectate_ans') end
-
-    return fn()
-
-end
-
-
-
 package.preload['report_desk_spectate_menu'] = function()
 
     local fn, err = loadstring([=[
@@ -5336,7 +4875,6 @@ local flushScheduled = false
 
 -- Menu Input Blocked
 local function menuInputBlocked()
-    if deps.isAnsBarOpen and deps.isAnsBarOpen() then return true end
     if deps.isGameTextInputActive and deps.isGameTextInputActive() then return true end
     if deps.isDeskTypingActive and deps.getShowWindow and deps.getShowWindow()
             and deps.isDeskTypingActive() then
@@ -5574,10 +5112,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsInput()
-    if deps.isAnsBarOpen and deps.isAnsBarOpen() then
-        return menuState.drag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return menuState.drag.active == true
     end
     if menuState.drag.active then return true end
@@ -6014,8 +5549,7 @@ function M.drawMenu(settings, force)
         menuState.menuRect = { x0 = wp.x, y0 = wp.y, x1 = wp.x + ww, y1 = wp.y + wh }
         menuState.hovered = false
 
-        if not (deps.isAnsBarOpen and deps.isAnsBarOpen())
-                and not (type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput()) then
+        if not (type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput()) then
             local posFn = type(_G.deskWin32MousePos) == 'function' and _G.deskWin32MousePos
                 or type(deskWin32MousePos) == 'function' and deskWin32MousePos
             local mx, my = posFn and posFn()
@@ -6135,15 +5669,14 @@ package.preload['report_desk_sp_ui'] = function()
 
     local fn, err = loadstring([=[
 
---[[ Модуль: glue session + menu + ans для /sp UI. ]]
+--[[ Модуль: glue session + menu для /sp UI. ]]
 local M = {}
 
 local session = require 'report_desk_spectate_session'
 local menu = require 'report_desk_spectate_menu'
-local specAns = require 'report_desk_spectate_ans'
 
 local deps = {}
-local ansDepsWired, menuDepsWired = false, false
+local menuDepsWired = false
 local clickHandler, toggleHandler
 local hookPrevClick, hookPrevToggle
 local deskWmDispatch = require 'report_desk_wm_dispatch'
@@ -6253,56 +5786,6 @@ local function reinstallSampevInputHooks()
     sampev.onToggleSelectTextDraw = toggleHandler
 end
 
--- On Ans Input Changed
-local function onAnsInputChanged()
-    if specAns.isOpen() then
-        if deps.rememberSpectateCursor then pcall(deps.rememberSpectateCursor) end
-        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, true) end
-    else
-        if deps.setSpectateUiMode then pcall(deps.setSpectateUiMode, false) end
-        if deps.onAnsBarClosed then pcall(deps.onAnsBarClosed) end
-    end
-    if deps.updateInputPassthrough then pcall(deps.updateInputPassthrough) end
-end
-
--- Wire Ans Deps
-local function wireAnsDeps()
-    if ansDepsWired then return end
-    ansDepsWired = true
-    specAns.install({
-        trim = deps.trim,
-        uiText = deps.uiText,
-        readInputBuf = deps.readInputBuf,
-        utf8ToCp1251 = deps.utf8ToCp1251,
-        getSettings = getSettings,
-        getTargetId = deps.getTargetId or M.getTargetId,
-        getTargetNick = deps.getTargetNick,
-        isSpectating = spectatingNow,
-        isGameTextInputActive = deps.isGameTextInputActive,
-        isDeskTypingActive = deps.isDeskTypingActive,
-        getShowWindow = deps.getShowWindow,
-        vkeys = deps.vkeys,
-        isVkDown = deps.isVkDown,
-        getPlayerSpectating = deps.getPlayerSpectating,
-        col_accent = deps.col_accent,
-        col_accent_dim = deps.col_accent_dim,
-        col_muted2 = deps.col_muted2,
-        col_label = deps.col_label,
-        sampIsPlayerConnected = deps.sampIsPlayerConnected,
-        sampGetPlayerNickname = deps.sampGetPlayerNickname,
-        sendChat = deps.sendChat,
-        sendMenuOutbound = deps.sendMenuOutbound,
-        transmitAns = deps.transmitAns,
-        enableSpectateCursor = deps.enableSpectateCursor,
-        rememberSpectateCursor = deps.rememberSpectateCursor,
-        setSpectateUiMode = deps.setSpectateUiMode,
-        updateInputPassthrough = deps.updateInputPassthrough,
-        onAnsBarClosed = deps.onAnsBarClosed,
-        markTypingActive = deps.markTypingActive,
-        onInputChanged = onAnsInputChanged,
-    })
-end
-
 -- Wire Menu Deps
 local function wireMenuDeps()
     if menuDepsWired then return end
@@ -6316,7 +5799,6 @@ local function wireMenuDeps()
         isSpectating = spectatingNow,
         isGameTextInputActive = deps.isGameTextInputActive,
         isDeskTypingActive = deps.isDeskTypingActive,
-        isAnsBarOpen = function() return specAns.isOpen() end,
         getShowWindow = deps.getShowWindow,
         vkeys = deps.vkeys,
         isVkDown = deps.isVkDown,
@@ -6352,36 +5834,9 @@ local function wireMenuDeps()
 end
 
 -- Публичный API модуля.
-function M.isAnsLayoutSwitch()
-    return false
-end
-
--- Публичный API модуля.
-function M.isAnsBarOpen()
-    return specAns.isOpen()
-end
-
--- Публичный API модуля.
-function M.wantsAnsInput()
-    return specAns.wantsInput()
-end
-
--- Публичный API модуля.
-function M.drawAnsBar(settings)
-    if M.getTargetId() < 0 then
-        if specAns.isOpen() then specAns.reset() end
-        return
-    end
-    if not specAns.isOpen() then return end
-    pcall(specAns.draw, settings or getSettings())
-end
-
--- Публичный API модуля.
 function M.install(cfg)
     deps = cfg or deps or {}
-    ansDepsWired = false
     menuDepsWired = false
-    wireAnsDeps()
     wireMenuDeps()
     session.install({
         trim = deps.trim,
@@ -6435,7 +5890,6 @@ function M.onToggleSpectating(toggle)
     session.markAwaitingSpectate(false)
     session.setSpectating(false)
     session.endSession()
-    specAns.reset()
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
     if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
 end
@@ -6446,7 +5900,6 @@ function M.onSpCommandOff()
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
     session.setSpectating(false)
     session.endSession()
-    specAns.reset()
     if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
 end
 
@@ -6481,19 +5934,15 @@ local function installWmHandler()
     uninstallWmHandler()
     deskWmDispatch.register('sp_ui', 85, function(msg, wparam, lparam)
         if deps.captureActive and deps.captureActive() then return end
-        if specAns.handleWindowMessage(msg, wparam, lparam) then
-            consumeWindowMessage(true, true, true)
-            return true
-        end
         if msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN then
-            if not specAns.isOpen() and M.handleMenuKey(wparam) then
+            if M.handleMenuKey(wparam) then
                 consumeWindowMessage(true, true, true)
                 return true
             end
         end
         if msg == WM.KEYUP or msg == WM.SYSKEYUP then
             local vkeys = deps.vkeys
-            if vkeys and not specAns.isOpen() and menu.menuCapturesKeyboard() then
+            if vkeys and menu.menuCapturesKeyboard() then
                 if wparam == vkeys.VK_UP or wparam == vkeys.VK_DOWN
                         or wparam == vkeys.VK_W or wparam == vkeys.VK_S
                         or wparam == vkeys.VK_NUMPAD8 or wparam == vkeys.VK_NUMPAD2 then
@@ -6513,10 +5962,8 @@ end
 function M.installInputHooks(cfg)
     if cfg then
         deps = cfg
-        ansDepsWired = false
         menuDepsWired = false
     end
-    wireAnsDeps()
     wireMenuDeps()
     ensureTdHooks()
     ensureSpectateSampevHook()
@@ -9045,10 +8492,7 @@ end
 
 -- Публичный API модуля.
 function M.wantsHudInput()
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then
-        return state.hudDrag.active == true
-    end
-    if type(_G.deskSpectateCameraOwnsInput) == 'function' and _G.deskSpectateCameraOwnsInput() then
+    if type(_G.deskSpectateOverlayInputAllowed) == 'function' and not _G.deskSpectateOverlayInputAllowed() then
         return state.hudDrag.active == true
     end
     if state.hudDrag.active then return true end
@@ -9095,7 +8539,7 @@ function M.isSpectating()
     return specPlayerActive()
 end
 
--- Сборка deps для sp_ui (session, menu, ans).
+-- Сборка deps для sp_ui (session, menu).
 local function buildSpUiDeps(deps)
     return {
         sampev = deps and deps.sampev,
@@ -9176,26 +8620,10 @@ local function buildSpUiDeps(deps)
         captureActive = specCaptureActive,
         consumeMenuShieldKey = M.consumeSpectateMenuKey,
         isMenuShieldActive = specMenuShieldActive,
-        transmitAns = function(id, body)
-            id = tonumber(id)
-            body = trim and trim(body) or body
-            if not id or body == '' then return end
-            if transmitAnsWire then
-                pcall(transmitAnsWire, id, body, {})
-            elseif sendChat then
-                pcall(sendChat, string.format('ans %d %s', id, body))
-            end
-        end,
         enableSpectateCursor = deps and deps.enableSpectateCursor,
         rememberSpectateCursor = deps and deps.rememberSpectateCursor,
         setSpectateUiMode = deps and deps.setSpectateUiMode,
         updateInputPassthrough = deps and deps.updateInputPassthrough,
-        onAnsBarClosed = deps and deps.onAnsBarClosed,
-        markTypingActive = function()
-            if deps and deps.markAnsTypingActive then
-                pcall(deps.markAnsTypingActive)
-            end
-        end,
     }
 end
 
@@ -9266,14 +8694,12 @@ local function specWheelBlocked()
     end
     if M.isHudDragActive and M.isHudDragActive() then return true end
     if specDeskCapturesMouse() then return true end
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
     return false
 end
 
 local function specUiBlocksCameraMaintain()
     if not specIsSpectating() then return true end
     if specDeskCapturesMouse() then return true end
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return true end
     return false
 end
 
@@ -9331,7 +8757,6 @@ end
 
 -- Публичный API модуля.
 function M.consumeSpectateMenuKey(msg, wparam)
-    if spUi.isAnsBarOpen and spUi.isAnsBarOpen() then return false end
     if not specMenuShieldActive() then return false end
     if msg ~= WM.KEYDOWN and msg ~= WM.SYSKEYDOWN and msg ~= WM.KEYUP and msg ~= WM.SYSKEYUP then
         return false
@@ -9464,6 +8889,10 @@ function M.installInputHooks(deps)
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
     pcall(keysHud.installSampev, deps.sampev)
+    keysHud.configure({
+        isVkDown = deps.isVkDown,
+        vkeys = deps.vkeys,
+    })
     if wmHandlerInstalled then
         return
     end
@@ -9506,12 +8935,6 @@ function M.drawSpMenu(settings)
     end
 end
 
--- Публичный API модуля.
-function M.drawSpAns(settings)
-    if spUi.drawAnsBar then
-        pcall(spUi.drawAnsBar, settings or (getSettings and getSettings()))
-    end
-end
 
 -- Публичный API модуля.
 function M.drawVehicleHud(settings)
@@ -9541,6 +8964,11 @@ function M.wantsKeysHudInput()
 end
 
 -- Публичный API модуля.
+function M.isKeysHudDragActive()
+    return keysHud.isDragActive and keysHud.isDragActive() or false
+end
+
+-- Публичный API модуля.
 -- Публичный API модуля.
 function M.wantsSpMenuInput()
     return specMenuMod.wantsInput and specMenuMod.wantsInput() or false
@@ -9549,20 +8977,6 @@ function M.wantsVehicleHudInput()
     return vehicleHud.wantsInput and vehicleHud.wantsInput() or false
 end
 
--- Публичный API модуля.
-function M.isAnsLayoutSwitch()
-    return spUi.isAnsLayoutSwitch and spUi.isAnsLayoutSwitch() or false
-end
-
--- Публичный API модуля.
-function M.isAnsBarOpen()
-    return spUi.isAnsBarOpen and spUi.isAnsBarOpen() or false
-end
-
--- Публичный API модуля.
-function M.wantsAnsInput()
-    return spUi.wantsAnsInput and spUi.wantsAnsInput() or false
-end
 
 -- Публичный API модуля.
 function M.notifyTargetQuit(playerId)
@@ -9850,6 +9264,20 @@ local function nickPidLevelPatterns(plain)
     return nil
 end
 
+local function adminLevelRank(level)
+    level = math.floor(tonumber(level) or 0)
+    if level >= 200 then return 3000 + level end
+    if level >= CHECKER_LVL_SPECIAL_BASE then return 2000 + level end
+    if level >= 1 and level <= 7 then return 1000 + level end
+    return 0
+end
+
+local function pickBetterAdminLevel(a, b)
+    if not a then return b end
+    if not b then return a end
+    return adminLevelRank(a) >= adminLevelRank(b) and a or b
+end
+
 local function parseAdminLineCore(plain)
     if plain == '' then return nil end
     plain = stripAdminLineSuffix(plain)
@@ -9893,14 +9321,18 @@ local function parseAdminEntryFromNormalized(line, opts)
                 or colNick:match('(' .. NICK_CLASS .. ')%[%d+%]')
             pid = colNick:match('%[(%d+)%]')
             if nick then
+                local bestLevel = nil
                 for i = 2, #cols do
                     local cell = trim(cols[i] or '')
-                    level = M.parseAdminLevel(cell)
+                    local lv = M.parseAdminLevel(cell)
                         or M.parseAdminLevel(cell:match('([Ss]?%d+)%s*lvl'))
                         or M.parseAdminLevel(cell:match('([Ss]?%d+)'))
-                    if level then
-                        return { nick = nick, level = level, id = tonumber(pid) }
+                    if lv then
+                        bestLevel = pickBetterAdminLevel(bestLevel, lv)
                     end
+                end
+                if bestLevel then
+                    return { nick = nick, level = bestLevel, id = tonumber(pid) }
                 end
                 local lvlStr = colNick:match('%(([Ss]?%d*)%s*lvl%)')
                 level = M.parseAdminLevel(lvlStr)
@@ -9933,6 +9365,7 @@ function M.scanAdminsBlob(plain, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true
@@ -9973,6 +9406,7 @@ local function scanAdminsTabBlob(plain, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true
@@ -10002,6 +9436,7 @@ function M.parseAdminsDialog(text, style, opts)
         if type(opts.effectiveLevel) == 'function' then
             level = opts.effectiveLevel(nick, level)
         end
+        if type(opts.isValidLevel) == 'function' and not opts.isValidLevel(level) then return end
         local key = nick:lower()
         if key == '' or seen[key] then return end
         seen[key] = true
@@ -10243,123 +9678,6 @@ return M
 ]=], '@report_desk_checker_catalog')
 
     if not fn then error(err or 'bundle load failed: report_desk_checker_catalog') end
-
-    return fn()
-
-end
-
-
-
-package.preload['report_desk_checker_spawn_fsm'] = function()
-
-    local fn, err = loadstring([=[
-
---[[ Конечный автомат spawn catalog sync checker (/adms + /leaders). ]]
-local M = {}
-
-local PHASE = {
-    NOT_SYNCED = 'not_synced',
-    AWAITING_ADMS = 'awaiting_adms',
-    AWAITING_LEADERS = 'awaiting_leaders',
-    SYNCED = 'synced',
-    RETRYING = 'retrying',
-    FAILED = 'failed',
-}
-
-local phase = PHASE.NOT_SYNCED
-local retryCount = 0
-local retryAt = nil
-
-function M.getPhase()
-    return phase
-end
-
-function M.isSynced()
-    return phase == PHASE.SYNCED
-end
-
-function M.isRunning()
-    return phase == PHASE.AWAITING_ADMS
-        or phase == PHASE.AWAITING_LEADERS
-        or phase == PHASE.RETRYING
-end
-
-function M.markSynced()
-    phase = PHASE.SYNCED
-    retryCount = 0
-    retryAt = nil
-end
-
-function M.beginAdms()
-    phase = PHASE.AWAITING_ADMS
-end
-
-function M.beginLeaders()
-    phase = PHASE.AWAITING_LEADERS
-end
-
-function M.scheduleRetry(at, count)
-    phase = PHASE.RETRYING
-    retryAt = at
-    retryCount = tonumber(count) or retryCount
-end
-
-function M.markFailed()
-    phase = PHASE.FAILED
-end
-
-function M.shouldRunRetry(now)
-    if phase ~= PHASE.RETRYING then return false end
-    return retryAt ~= nil and now >= retryAt
-end
-
-function M.getRetryCount()
-    return retryCount
-end
-
-function M.reset()
-    phase = PHASE.NOT_SYNCED
-    retryCount = 0
-    retryAt = nil
-end
-
-function M.syncFromCheckerState(st)
-    if not st then return end
-    if st.spawnCatalogSyncDone then
-        M.markSynced()
-        return
-    end
-    if st.spawnCatalogSyncRunning then
-        if st.spawnAdmsHandled and not st.spawnLeadersHandled then
-            phase = PHASE.AWAITING_LEADERS
-        else
-            phase = PHASE.AWAITING_ADMS
-        end
-        return
-    end
-    if st.spawnCatalogSyncAt then
-        M.scheduleRetry(st.spawnCatalogSyncAt, st.spawnAdmsRetries)
-        return
-    end
-    if phase ~= PHASE.SYNCED then
-        phase = PHASE.NOT_SYNCED
-    end
-end
-
-function M.applyToCheckerState(st)
-    if not st then return end
-    st.spawnCatalogSyncDone = phase == PHASE.SYNCED
-    st.spawnCatalogSyncRunning = phase == PHASE.AWAITING_ADMS or phase == PHASE.AWAITING_LEADERS
-    st.spawnCatalogSyncAt = retryAt
-    st.spawnAdmsRetries = retryCount
-end
-
-return M
-
-
-]=], '@report_desk_checker_spawn_fsm')
-
-    if not fn then error(err or 'bundle load failed: report_desk_checker_spawn_fsm') end
 
     return fn()
 
@@ -14256,10 +13574,9 @@ local filterMode = new.int(0)
 local searchBuf = new.char[96]()
 local replyBuf = new.char[512]()
 local cmdBuf = new.char[64]()
-local selectedId = -1
 local selectedKey = nil
 local focusReplyNext = false
-local chatScrollToBottom = true
+local focusReplyReason = nil  -- 'open' | 'select' | 'send'
 local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
@@ -14275,11 +13592,12 @@ local deskInputState = {
     panelOpenPrev = false,
     deskUiOpenPrev = false,
     sampChatHeldOff = false,
-    chatScrollFrames = 0,
-    chatSnapBottomKey = nil,
-    chatSnapAttempts = 0,
+    chatScrollUntil = 0,
     chatFollowBottom = true,
     chatLastScrollY = nil,
+    snapPending = false,
+    snapKey = nil,
+    hasUnseenMessages = false,
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -14699,6 +14017,29 @@ function sampColorToChatHex(c)
         return string.format('%06X', bit.band(bit.rshift(c, 8), 0xFFFFFF))
     end
     return string.format('%06X', math.floor(c / 256) % 0x1000000)
+end
+
+function chatHexToImVec4(hex)
+    hex = tostring(hex or ''):gsub('[{}%s]', ''):upper()
+    if #hex ~= 6 then return nil end
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    if not r or not g or not b then return nil end
+    if not imgui or not imgui.ImVec4 then return nil end
+    return imgui.ImVec4(r / 255, g / 255, b / 255, 1.0)
+end
+
+function sampColorToImVec4(color)
+    color = normColor(color)
+    if color == 0 then return nil end
+    if not imgui or not imgui.ImVec4 then return nil end
+    local bb = bit.band(color, 0xFF)
+    local gg = bit.band(bit.rshift(color, 8), 0xFF)
+    local rr = bit.band(bit.rshift(color, 16), 0xFF)
+    local aa = bit.band(bit.rshift(color, 24), 0xFF)
+    if aa == 0 then aa = 255 end
+    return imgui.ImVec4(rr / 255, gg / 255, bb / 255, aa / 255)
 end
 
 -- Кэш clist: onPlayerJoin / onSetPlayerColor / onPlayerStreamIn (как в TAB).
@@ -15931,11 +15272,13 @@ function bubbleWrapLayout(m, rawLine, wrapW)
     if m then
         if m._wrapSrc ~= src then
             m._wrapSrc = src
-            m._wrapByW = nil
+            m._cachedWrapW = nil
+            m._cachedLines = nil
         end
-        m._wrapByW = m._wrapByW or {}
-        local hit = m._wrapByW[wrapW]
-        if hit then return hit.lines, hit.lineH, hit.w, hit.h end
+        if m._cachedWrapW == wrapW and m._cachedLines then
+            local hit = m._cachedLines
+            return hit.lines, hit.lineH, hit.w, hit.h
+        end
     end
     local display = cp1251ToUtf8(src)
     local lines, lineH = wrapTextLinesUtf8(display, wrapW)
@@ -15950,7 +15293,8 @@ function bubbleWrapLayout(m, rawLine, wrapW)
     if w < 1 then w = 40 end
     if h < lineH then h = lineH end
     if m then
-        m._wrapByW[wrapW] = { lines = lines, lineH = lineH, w = w, h = h }
+        m._cachedWrapW = wrapW
+        m._cachedLines = { lines = lines, lineH = lineH, w = w, h = h }
     end
     return lines, lineH, w, h
 end
@@ -16426,8 +15770,12 @@ function deskSyncInputFocusState()
         return
     end
     local io = imgui.GetIO and imgui.GetIO()
-    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard))
-        or (imgui.IsAnyItemActive and imgui.IsAnyItemActive())
+    local anyActive = imgui.IsAnyItemActive and imgui.IsAnyItemActive()
+    -- /sp HUD рисуется в том же кадре — IsAnyItemActive не считаем «печатью в desk».
+    if anyActive and deskSpectatingNow and deskSpectatingNow() and not deskInputState.replyInputActive then
+        anyActive = false
+    end
+    local typing = (io and (io.WantTextInput or io.WantCaptureKeyboard)) or anyActive
     if typing then
         deskInputState.replyFocused = true
         deskInputState.keyboardStickyUntil = os.clock() + DESK_REPLY_STICKY_SEC
@@ -16457,7 +15805,6 @@ end
 
 -- Desk hook/helper.
 function deskImguiTypingActive()
-    if deskAnsBarBlocksSampChat() then return true end
     if not showWindow[0] then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
     if deskInputState.replyInputActive then return true end
@@ -19056,15 +18403,18 @@ end
 function deskSpectateCameraOwnsInput()
     if not deskSpectatingNow() then return false end
     if showWindow[0] then return false end
-    if type(deskSpectateStats) == 'table'
-            and type(deskSpectateStats.isAnsBarOpen) == 'function'
-            and deskSpectateStats.isAnsBarOpen() then
-        return false
-    end
     return true
 end
 
 _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput
+
+function deskSpectateOverlayInputAllowed()
+    if showWindow[0] then return false end
+    if deskSpectateCameraOwnsInput() then return false end
+    return true
+end
+
+_G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed
 
 -- Desk hook/helper.
 function deskSyncSpectateState(force)
@@ -19093,13 +18443,6 @@ function deskImguiNeedsInput()
     if deskSpectateCameraOwnsInput() then
         return false
     end
-    if type(deskSpectateStats) == 'table' then
-        local sp = deskSpectateStats
-        if sp.isAnsBarOpen and sp.isAnsBarOpen() then
-            if sp.isAnsLayoutSwitch and sp.isAnsLayoutSwitch() then return false end
-            return true
-        end
-    end
     if cheatState.marker.active then return true end
     if not sessionLive then return false end
     if type(cheatsHudWantsInput) == 'function' and cheatsHudWantsInput() then
@@ -19118,9 +18461,10 @@ function deskImguiNeedsInput()
         local sp = deskSpectateStats
         if sp.isHudDragActive and sp.isHudDragActive() then return true end
         if sp.wantsHudInput and sp.wantsHudInput() then return true end
+        if sp.isKeysHudDragActive and sp.isKeysHudDragActive() then return true end
+        if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
         if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
         if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
-        if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
     end
     return false
 end
@@ -19163,6 +18507,8 @@ end
 -- Desk hook/helper.
 function deskSpectateHudWantsInput()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
+    if deskSpectateStats.isKeysHudDragActive and deskSpectateStats.isKeysHudDragActive() then return true end
+    if deskSpectateStats.wantsKeysHudInput and deskSpectateStats.wantsKeysHudInput() then return true end
     return false
 end
 
@@ -19246,11 +18592,9 @@ function deskEnsureCameraAfterPanelClose()
     updateMimguiGameInputPassthrough()
 end
 
--- mimgui HideCursor: курсор только у открытого desk / ans / hover HUD вне /sp.
+-- mimgui HideCursor: курсор только у открытого desk / hover HUD вне /sp.
 function deskMimguiHideCursor(wantsHudCursor)
     if showWindow[0] then return false end
-    -- Ans bar — только клавиатура; курсор не нужен и дергает SP HUD при движении мыши.
-    if deskAnsBarBlocksSampChat() then return true end
     if wantsHudCursor and not deskSpectatingNow() then return false end
     return true
 end
@@ -19315,9 +18659,10 @@ function deskGameCursorActive()
     if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
     if deskSpectateStats.isHudHovered and deskSpectateStats.isHudHovered() then return true end
     if deskSpectateStats.wantsHudInput and deskSpectateStats.wantsHudInput() then return true end
+    if deskSpectateStats.isKeysHudDragActive and deskSpectateStats.isKeysHudDragActive() then return true end
+    if deskSpectateStats.wantsKeysHudInput and deskSpectateStats.wantsKeysHudInput() then return true end
     if type(checkerIsHudDragActive) == 'function' and checkerIsHudDragActive() then return true end
     if type(checkerHudWantsInput) == 'function' and checkerHudWantsInput() then return true end
-    if deskSpectateStats.wantsAnsInput and deskSpectateStats.wantsAnsInput() then return true end
     return false
 end
 
@@ -19378,17 +18723,8 @@ function deskApplyInputPolicy()
 end
 
 -- Desk hook/helper.
-function deskAnsBarBlocksSampChat()
-    return type(deskSpectateStats) == 'table'
-        and type(deskSpectateStats.isAnsBarOpen) == 'function'
-        and deskSpectateStats.isAnsBarOpen()
-end
-
-_G.deskAnsBarBlocksSampChat = deskAnsBarBlocksSampChat
-
--- Desk hook/helper.
 function deskDeskOrAnsUiOpen()
-    return showWindow[0] or deskAnsBarBlocksSampChat()
+    return showWindow[0]
 end
 
 -- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
@@ -19581,17 +18917,13 @@ function deskShouldBlockSampChatKey(msg, wparam)
     local vkReturn = (vkeys and vkeys.VK_RETURN) or 0x0D
     if wparam == vkReturn or wparam == 0x0D then return false end
     if deskSampTextMsgs[msg] then
-        if showWindow[0] then return true end
-        -- ans bar: WM_CHAR нужен mimgui для InputText; SAMP чат уже держим через hook.
-        if deskAnsBarBlocksSampChat() then return false end
-        return true
+        return showWindow[0] == true
     end
     local wm = deskCache.wm
     if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN or msg == wm.KEYUP or msg == wm.SYSKEYUP then
         if type(deskPassesGameKey) == 'function' and deskPassesGameKey(wparam) then return false end
         if wm.CHAT_KEYS[wparam] then return true end
         if showWindow[0] then return true end
-        -- ans bar: печать идёт в imgui; блокируем только SAMP chat hotkeys (CHAT_KEYS выше).
     end
     return false
 end
@@ -19614,7 +18946,7 @@ end
 
 -- Desk hook/helper.
 function deskOverlayTextInputActive()
-    return deskAnsBarBlocksSampChat()
+    return false
 end
 
 -- Desk hook/helper.
@@ -19637,7 +18969,13 @@ function updateMimguiGameInputPassthrough()
     if not imgui or imgui.DisableInput == nil then return end
 
     if deskSpectateCameraOwnsInput() then
-        imgui.DisableInput = true
+        local allow = false
+        if type(deskSpectateStats) == 'table' then
+            local sp = deskSpectateStats
+            if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then allow = true end
+            if sp.isKeysHudDragActive and sp.isKeysHudDragActive() then allow = true end
+        end
+        imgui.DisableInput = not allow
         return
     end
 
@@ -20631,7 +19969,16 @@ end
 -- Trim Messages
 function trimMessages(msgs)
     local limit = DEFAULT_HISTORY_LIMIT
-    while #msgs > limit do
+    local removeCount = #msgs - limit
+    if removeCount <= 0 then return end
+    for i = 1, removeCount do
+        local msg = msgs[i]
+        if msg then
+            msg._cachedWrapW = nil
+            msg._cachedLines = nil
+        end
+    end
+    for _ = 1, removeCount do
         table.remove(msgs, 1)
     end
 end
@@ -20939,13 +20286,16 @@ end
 -- Get Selected Thread
 function getSelectedThread()
     if selectedKey and threads[selectedKey] then
-        local t = threads[selectedKey]
-        selectedId = tonumber(t.id) or -1
-        return t, selectedKey
+        return threads[selectedKey], selectedKey
     end
     selectedKey = nil
-    selectedId = -1
     return nil, nil
+end
+
+-- Get Selected Id
+function getSelectedId()
+    local t = getSelectedThread()
+    return t and tonumber(t.id) or -1
 end
 
 -- Resolve Thread For Player Id
@@ -21088,16 +20438,15 @@ end
 
 -- Request Chat Scroll Bottom
 function requestChatScrollBottom()
-    if deskInputState.chatFollowBottom == false then return end
-    chatScrollToBottom = true
-    deskInputState.chatScrollFrames = 5
+    if not deskInputState.chatFollowBottom then return end
+    deskInputState.chatScrollUntil = os.clock() + 0.35
 end
 
 -- Request Chat Snap Bottom
-function requestChatSnapBottom(threadKey)
-    if not threadKey then return end
-    deskInputState.chatSnapBottomKey = threadKey
-    deskInputState.chatSnapAttempts = 0
+function requestChatSnapBottom(key)
+    if not key then return end
+    deskInputState.snapPending = true
+    deskInputState.snapKey = key
     deskInputState.chatFollowBottom = true
 end
 
@@ -21125,7 +20474,11 @@ function addMessageToKey(key, msg)
     bumpThreadMsgRev()
     bumpThreadInFilterCache(key)
     if key == selectedKey then
-        requestChatScrollForThread(key)
+        if deskInputState.chatFollowBottom then
+            requestChatScrollForThread(key)
+        else
+            deskInputState.hasUnseenMessages = true
+        end
     end
 end
 
@@ -23811,7 +23164,23 @@ end
 
 -- Chat Header Nick Color
 function chatHeaderNickColor(pid, online)
+    pid = tonumber(pid) or -1
     if online and pid >= 0 then
+        if type(sampPlayerColorChatHex) == 'function' then
+            local hex = sampPlayerColorChatHex(pid)
+            if hex and hex ~= '' and type(chatHexToImVec4) == 'function' then
+                local c = chatHexToImVec4(hex)
+                if c then return c end
+            end
+        end
+        if type(sampGetPlayerColor) == 'function' and sampIsPlayerConnected
+                and sampIsPlayerConnected(pid) then
+            local ok, raw = pcall(sampGetPlayerColor, pid)
+            if ok and raw and type(sampColorToImVec4) == 'function' then
+                local c = sampColorToImVec4(raw)
+                if c then return c end
+            end
+        end
         if deskSpectateStats.getEntry and deskSpectateStats.nickColorFor then
             local e = deskSpectateStats.getEntry(pid)
             if e then
@@ -24129,6 +23498,7 @@ function drawComposer(composerH, quickItems)
         deskInputState.keyboardStickyUntil = os.clock() + 2.0
         deskInputState.replyFocused = true
         focusReplyNext = false
+        focusReplyReason = nil
     end
 
     local canSend = getSelectedThread() ~= nil
@@ -24198,6 +23568,7 @@ function drawComposer(composerH, quickItems)
         if sendReplyToSelected() then
             ffi.copy(replyBuf, '')
             focusReplyNext = true
+            focusReplyReason = 'send'
             deskInputState.replyFocused = true
         end
     end
@@ -24232,12 +23603,11 @@ function drawThreadRow(t, key, sel)
             totalUnread = math.max(0, totalUnread - unread)
         end
         selectedKey = key
-        selectedId = t.id
         t.unread = 0
-        chatScrollToBottom = false
         deskInputState.chatFollowBottom = true
         requestChatSnapBottom(key)
         focusReplyNext = true
+        focusReplyReason = 'select'
         markDirtyThreads()
     end
 
@@ -24936,45 +24306,65 @@ end
 -- Apply Chat Scroll If Needed
 function applyChatScrollIfNeeded(msgCount)
     msgCount = tonumber(msgCount) or 0
-    -- Автоскролл забирает фокус у поля ответа — не трогаем лог, пока пользователь печатает.
-    if deskInputState.replyInputActive or deskInputState.replyFocused then return end
-    if focusReplyNext then return end
-    if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return end
-    local snapKey = deskInputState.chatSnapBottomKey
-    local wantSnap = snapKey and snapKey == selectedKey and msgCount > 0
-    local wantFollow = not snapKey
-        and (chatScrollToBottom or (deskInputState.chatScrollFrames or 0) > 0)
 
-    if not wantSnap and not wantFollow then return end
-
-    imgui.Dummy(imgui.ImVec2(0, 1))
-    if imgui.SetScrollHereY then
-        imgui.SetScrollHereY(1.0)
-    end
-    local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
-    if maxY > 0 and imgui.SetScrollY then
-        imgui.SetScrollY(maxY)
-    end
-
-    if wantSnap then
-        if maxY <= 0 then
-            deskInputState.chatSnapAttempts = (tonumber(deskInputState.chatSnapAttempts) or 0) + 1
-            if deskInputState.chatSnapAttempts >= 6 then
-                deskInputState.chatSnapBottomKey = nil
-                deskInputState.chatSnapAttempts = 0
-            end
-            return
+    -- Snap всегда первым: должен отработать даже когда ##reply в фокусе.
+    if deskInputState.snapPending and deskInputState.snapKey == selectedKey then
+        local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
+        if maxY > 0 and imgui.SetScrollY then
+            imgui.SetScrollY(maxY)
+            deskInputState.snapPending = false
+            deskInputState.snapKey = nil
         end
-        deskInputState.chatSnapBottomKey = nil
-        deskInputState.chatSnapAttempts = 0
         return
     end
 
-    local fr = tonumber(deskInputState.chatScrollFrames) or 0
-    if fr > 0 then
-        deskInputState.chatScrollFrames = fr - 1
-    elseif chatScrollToBottom then
-        chatScrollToBottom = false
+    -- SetScrollY не забирает фокус у ##reply (в отличие от SetScrollHereY).
+    if focusReplyNext and focusReplyReason ~= 'send' then return end
+
+    local wantFollow = (not deskInputState.snapPending)
+        and (os.clock() < (deskInputState.chatScrollUntil or 0))
+    if not wantFollow then return end
+
+    -- SetScrollHereY забирает клавиатурный фокус у ##reply (см. REPORT_DESK_CHAT_UI.md).
+    imgui.Dummy(imgui.ImVec2(0, 1))
+    local maxY = (imgui.GetScrollMaxY and imgui.GetScrollMaxY()) or 0
+    if maxY > 0 and imgui.SetScrollY then
+        imgui.SetScrollY(maxY)
+    else
+        deskInputState.chatScrollUntil = os.clock() + 0.12
+    end
+end
+
+-- Draw Chat New Message Button
+function drawChatNewMessageButton()
+    if deskInputState.chatFollowBottom or not deskInputState.hasUnseenMessages then return end
+    local btnW, btnH = 160, 32
+    local inset = 12
+    local wPos = imgui.GetWindowPos()
+    local wSize = imgui.GetWindowSize()
+    local btnX = wPos.x + wSize.x - btnW - inset
+    local btnY = wPos.y + wSize.y - btnH - inset
+    imgui.SetCursorScreenPos(imgui.ImVec2(btnX, btnY))
+    local clicked = imgui.InvisibleButton('##chat_new_msg', imgui.ImVec2(btnW, btnH))
+    local hovered = imgui.IsItemHovered and imgui.IsItemHovered()
+    local dl = imgui.GetWindowDrawList()
+    local bgCol = hovered and col_accent or col_accent_dim
+    local r = btnH * 0.5
+    dl:AddRectFilled(imgui.ImVec2(btnX, btnY), imgui.ImVec2(btnX + btnW, btnY + btnH), toU32(bgCol), r)
+    local label = uiText('\xCD\xEE\xE2\xEE\xE5 \xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5')
+    local arrow = '\xE2\x86\x93'
+    local arrowSz = imgui.CalcTextSize(arrow)
+    local labelSz = imgui.CalcTextSize(label)
+    local gap = 6
+    local totalW = arrowSz.x + gap + labelSz.x
+    local textX = btnX + (btnW - totalW) * 0.5
+    local textY = btnY + (btnH - labelSz.y) * 0.5
+    dl:AddText(imgui.ImVec2(textX, textY), toU32(col_label), arrow)
+    dl:AddText(imgui.ImVec2(textX + arrowSz.x + gap, textY), toU32(col_label), label)
+    if clicked then
+        deskInputState.chatFollowBottom = true
+        deskInputState.hasUnseenMessages = false
+        requestChatScrollBottom()
     end
 end
 
@@ -24988,9 +24378,10 @@ function updateChatFollowBottom()
         deskInputState.chatLastScrollY = scrollY
         return
     end
-    local atBottom = (scrollMax - scrollY) < 48
+    local atBottom = (scrollMax - scrollY) < 80
     if atBottom then
         deskInputState.chatFollowBottom = true
+        deskInputState.hasUnseenMessages = false
     elseif imgui.IsWindowHovered and imgui.IsWindowHovered() then
         local io = imgui.GetIO()
         if io and io.MouseWheel and io.MouseWheel > 0 then
@@ -25057,10 +24448,6 @@ function drawChatPanel()
         imgui.Dummy(imgui.ImVec2(0, 6))
         local renderFrom = 1
         local chatRenderMax = CHAT_UI_RENDER_MAX
-        local openSince = tonumber(deskInputState.windowOpenSince) or 0
-        if openSince > 0 and (os.clock() - openSince) < 0.3 then
-            chatRenderMax = math.min(30, CHAT_UI_RENDER_MAX)
-        end
         if #msgs > chatRenderMax then
             renderFrom = #msgs - chatRenderMax + 1
             imgui.TextColored(col_muted2, uiText(string.format(
@@ -25070,6 +24457,9 @@ function drawChatPanel()
         end
         local lastDay = nil
         local scenarioBtnIdx = findLastPlayerScenarioMsgIdx(msgs, renderFrom)
+        local threadPid = tonumber(t.id) or -1
+        local threadOnline = t.online ~= false
+        local threadNickCol = chatHeaderNickColor(threadPid, threadOnline)
         imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
         for i = renderFrom, #msgs do
             local m = msgs[i]
@@ -25084,12 +24474,14 @@ function drawChatPanel()
                 showAuthor = not groupedWithPrev,
                 compactSpacing = groupedWithPrev,
                 noQuickButtons = scenarioBtnIdx ~= i,
+                nickCol = threadNickCol,
             })
         end
         imgui.PopStyleVar()
     end
     updateChatFollowBottom()
     applyChatScrollIfNeeded(#msgs)
+    drawChatNewMessageButton()
     imgui.EndChild()
 
     drawComposer(composerH, quickItems)
@@ -25453,7 +24845,6 @@ function drawSettingsTab()
         deskCache.threadStructRev = 0
         deskCache.threadMsgRev = 0
         deskCache.threadRev = 0
-        selectedId = -1
         selectedKey = nil
         chatLogReady = false
         totalUnread = 0
@@ -25495,11 +24886,16 @@ function toggleWindow()
     rulesUiSynced = false
     settingsUiSynced = false
     scenariosUiSynced = false
-    focusReplyNext = getSelectedThread() ~= nil
+    local selThread = getSelectedThread()
+    focusReplyNext = selThread ~= nil
+    focusReplyReason = selThread ~= nil and 'open' or nil
     deskInputState.windowOpenSince = os.clock()
-    if getSelectedThread() ~= nil then
-        deskInputState.replyFocused = true
+    if selThread ~= nil then
+        deskInputState.replyInputActive = false
         deskInputState.keyboardStickyUntil = os.clock() + 2.0
+        if selectedKey then
+            requestChatSnapBottom(selectedKey)
+        end
     else
         deskInputState.keyboardStickyUntil = 0
     end
@@ -25507,6 +24903,7 @@ function toggleWindow()
     refreshMyNick()
     deskInputState.wasOpen = true
     deskApplyInputPolicy()
+    updateDeskInputCapture()
 end
 
 -- Draw Main Window
@@ -25757,23 +25154,6 @@ do
         end
     ), true, false)
 
-    deskCache.deskWindowFrame = setupDeskFrame(imgui.OnFrame(
-        function()
-            if not sessionLive then return false end
-            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            return showWindow[0]
-        end,
-        function(self)
-            self.LockPlayer = deskOpenLocksPlayer()
-            self.HideCursor = false
-            local ok, err = pcall(drawMainWindow)
-            if not ok then
-                print('[Report Desk] UI: ' .. tostring(err))
-                closeDeskWindow()
-            end
-        end
-    ), false, false)
-
     setupDeskFrame(imgui.OnFrame(
         function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
@@ -25823,7 +25203,9 @@ do
             if deskSpectateStats.drawKeysHud then
                 pcall(deskSpectateStats.drawKeysHud, settings)
             end
-            self.HideCursor = deskMimguiHideCursor()
+            self.HideCursor = deskMimguiHideCursor(
+                type(deskSpectateStats.wantsKeysHudInput) == 'function'
+                    and deskSpectateStats.wantsKeysHudInput())
             self.LockPlayer = false
         end
     ), true, false)
@@ -25841,17 +25223,19 @@ do
         end
     ), true, false)
 
-    setupDeskFrame(imgui.OnFrame(
+    deskCache.deskWindowFrame = setupDeskFrame(imgui.OnFrame(
         function()
-            if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.isAnsBarOpen then return false end
-            local okOpen, open = pcall(deskSpectateStats.isAnsBarOpen)
-            return okOpen and open == true
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return showWindow[0]
         end,
         function(self)
-            self.HideCursor = deskMimguiHideCursor()
-            self.LockPlayer = false
-            if deskSpectateStats.drawSpAns then
-                pcall(deskSpectateStats.drawSpAns, settings)
+            self.LockPlayer = deskOpenLocksPlayer()
+            self.HideCursor = false
+            local ok, err = pcall(drawMainWindow)
+            if not ok then
+                print('[Report Desk] UI: ' .. tostring(err))
+                closeDeskWindow()
             end
         end
     ), false, false)
@@ -26313,6 +25697,7 @@ do
     if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
     if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
     if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
+    if deskSpectateOverlayInputAllowed then _G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed end
     if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
     if deskCache then _G.deskCache = deskCache end
 end
@@ -26433,16 +25818,6 @@ function main()
         end,
         getSpectateUiModeActive = function()
             return deskInputState.spectateUiModeActive == true
-        end,
-        onAnsBarClosed = function()
-            deskReleaseImguiCapture()
-            if deskSpectatingNow() and not showWindow[0] then
-                deskRestoreSpectateCamera()
-            end
-            updateMimguiGameInputPassthrough()
-        end,
-        markAnsTypingActive = function()
-            deskInputState.keyboardStickyUntil = os.clock() + 1.5
         end,
     })
     end
@@ -28103,6 +27478,17 @@ local function remoteChatFormatNickId(clistHex, nick, id)
     return string.format('{%s}%s', clistHex, nick)
 end
 
+local function remoteChatResolveClistHex(playerId)
+    playerId = tonumber(playerId) or -1
+    if playerId >= 0 and type(sampPlayerColorChatHex) == 'function' then
+        local hex = sampPlayerColorChatHex(playerId)
+        if hex and hex ~= '' then
+            return string.upper(hex)
+        end
+    end
+    return RC_SAMP_NICK
+end
+
 function remoteChatTryAppend(nick, id, body, source, lineKey, profanity, bubbleColor, embedHex)
     if settings.remote_chat_samp_mirror == false then return false end
     if not remoteChatAllowsSource(source) then return false end
@@ -28124,12 +27510,7 @@ function remoteChatTryAppend(nick, id, body, source, lineKey, profanity, bubbleC
     local colorHex = remoteChatBubbleToChatHex(bubbleColor, embedHex)
     if RC_BUBBLE_SKIP_HEX[colorHex] then return false end
 
-    local clistHex = RC_SAMP_NICK
-    local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[tonumber(id) or -1]
-    if cached and type(sampColorToChatHex) == 'function' then
-        clistHex = sampColorToChatHex(cached) or clistHex
-    end
-    clistHex = string.upper(clistHex)
+    local clistHex = remoteChatResolveClistHex(id)
 
     local q = deskCache.remoteChatQueue
     if #q >= RC_QUEUE_MAX then
@@ -28189,10 +27570,7 @@ function remoteChatPrintSampLine(nick, id, body, source, profanity, bubbleColor,
 
     clistHex = string.upper(tostring(clistHex or RC_SAMP_NICK))
     if clistHex == RC_SAMP_NICK then
-        local cached = deskCache.sampPlayerColors and deskCache.sampPlayerColors[id]
-        if cached and type(sampColorToChatHex) == 'function' then
-            clistHex = string.upper(sampColorToChatHex(cached) or RC_SAMP_NICK)
-        end
+        clistHex = remoteChatResolveClistHex(id)
     end
     local bodyHex = remoteChatResolveBodyHex(source, colorHex, bubbleColor)
     if profanity then bodyHex = 'FF6666' end
@@ -28428,6 +27806,7 @@ local CheckerParser = require 'report_desk_checker_parser'
 local CheckerCatalogStore = require 'report_desk_checker_catalog'
 local CHECKER_HUD_W = checkerSpTheme.HUD_LIST_W or 218
 local CHECKER_ADMINS_FLOW_T = 30.0
+local CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC = 10.0
 local CHECKER_SPAWN_ADMS_MAX_RETRIES = 2
 local CHECKER_ADMS_RESYNC_INTERVAL = 240.0
 local CHECKER_ADMS_PARSE_DUMP_LEN = 500
@@ -28469,12 +27848,17 @@ do
     s.lastRebuild = tonumber(s.lastRebuild) or 0
     s.lastAfkPoll = tonumber(s.lastAfkPoll) or 0
     s.uiSynced = s.uiSynced == true
-    s.adminsFlowUntil = tonumber(s.adminsFlowUntil) or 0
     s.leadersFlowUntil = tonumber(s.leadersFlowUntil) or 0
-    s.admsAwaitDialog = s.admsAwaitDialog == true
-    s.admsAwaitUntil = tonumber(s.admsAwaitUntil) or 0
+    s.admsFlowUntil = tonumber(s.admsFlowUntil) or tonumber(s.admsAwaitUntil) or tonumber(s.adminsFlowUntil) or 0
+    if s.admsFlow == nil and s.admsSyncOutbound == true then
+        s.admsFlow = 'outbound'
+    end
+    if s.admsFlow ~= 'outbound' and s.admsFlow ~= 'parsing' and s.admsFlow ~= 'done' then
+        s.admsFlow = nil
+    end
+    s.admsDialogSyncedAt = tonumber(s.admsDialogSyncedAt) or 0
     s.admsChatMuteUntil = tonumber(s.admsChatMuteUntil) or 0
-    s.admsSyncOutbound = s.admsSyncOutbound == true
+    s.syncServerKey = type(s.syncServerKey) == 'string' and s.syncServerKey or ''
     s.leadersSyncOutbound = s.leadersSyncOutbound == true
     s.spawnCatalogSyncAt = tonumber(s.spawnCatalogSyncAt)
     s.spawnCatalogSyncDone = s.spawnCatalogSyncDone == true
@@ -29492,6 +28876,40 @@ function checkerIsChiefLevel(level)
     return level == CHECKER_LVL_CHIEF_GA or level == CHECKER_LVL_CHIEF_ZGA
 end
 
+-- Checker (admin HUD/catalog): допустимые уровни каталога (1–7, S1–S9, ГА/ЗГА).
+function checkerIsValidAdminLevel(level)
+    level = math.floor(tonumber(level) or 0)
+    if level >= ADMIN_LEVEL_1 and level <= ADMIN_LEVEL_7 then return true end
+    if checkerIsSpecialLevel(level) then return true end
+    if checkerIsChiefLevel(level) then return true end
+    return false
+end
+
+-- Checker (admin HUD/catalog): ранг в роли лидера ([10] Padrone) не должен попадать в admins.
+function checkerLeaderRoleConflictsAdminLevel(nick, level)
+    local leader = Catalog.getLeader(nick)
+    if not leader then return false end
+    level = math.floor(tonumber(level) or 0)
+    local role = trim(leader.role or '')
+    local rank = role:match('%[(%d+)%]')
+    if not rank then return false end
+    return math.floor(tonumber(rank) or 0) == level
+end
+
+-- Checker (admin HUD/catalog): не понижать S/chief до обычного lvl из чата/promote.
+function checkerShouldApplyAdminLevelUpdate(oldLevel, newLevel)
+    oldLevel = math.floor(tonumber(oldLevel) or 0)
+    newLevel = math.floor(tonumber(newLevel) or 0)
+    if not checkerIsValidAdminLevel(newLevel) then return false end
+    if checkerIsChiefLevel(oldLevel) and not checkerIsChiefLevel(newLevel) then return false end
+    if checkerIsSpecialLevel(oldLevel)
+            and not checkerIsSpecialLevel(newLevel)
+            and not checkerIsChiefLevel(newLevel) then
+        return false
+    end
+    return true
+end
+
 -- Checker (admin HUD/catalog).
 function checkerChiefList()
     local list, seen = {}, {}
@@ -29688,6 +29106,7 @@ function checkerParserOpts()
     return {
         resolveChief = checkerResolveChief,
         effectiveLevel = checkerEffectiveAdminLevel,
+        isValidLevel = checkerIsValidAdminLevel,
         splitCols = checkerLeadersSplitCols,
         isAdminsHeaderRow = checkerIsAdminsHeaderRow,
     }
@@ -29910,11 +29329,16 @@ function checkerMergeAdminsIntoCatalog(list)
         local nick = trim(e.nick or '')
         if nick ~= '' then
             local lv = checkerEffectiveAdminLevel(nick, e.level)
+            if not checkerIsValidAdminLevel(lv) then goto continue end
+            if checkerLeaderRoleConflictsAdminLevel(nick, lv) then goto continue end
             local ex = Catalog.getAdmin(nick)
             if ex then
-                if math.floor(tonumber(ex.level) or 0) ~= lv then
-                    ex.level = lv
-                    changed = true
+                local old = math.floor(tonumber(ex.level) or 0)
+                if old ~= lv then
+                    if checkerShouldApplyAdminLevelUpdate(old, lv) then
+                        ex.level = lv
+                        changed = true
+                    end
                 end
             else
                 checkerCatalog.admins[#checkerCatalog.admins + 1] = {
@@ -29924,6 +29348,7 @@ function checkerMergeAdminsIntoCatalog(list)
                 changed = true
             end
         end
+        ::continue::
     end
     checkerMergeChiefCatalog(checkerCatalog.admins)
     checkerSortCatalogAdmins(checkerCatalog.admins)
@@ -29943,10 +29368,13 @@ function checkerApplyAdmsOnlineSnapshot(parsedList)
                 level = checkerEffectiveAdminLevel(nick, e.level),
             }
             checkerIndexOnePlayer(id, nick)
-            if not Catalog.getAdmin(nick) then
+            local lv = byId[id].level
+            if not Catalog.getAdmin(nick)
+                    and checkerIsValidAdminLevel(lv)
+                    and not checkerLeaderRoleConflictsAdminLevel(nick, lv) then
                 checkerCatalog.admins[#checkerCatalog.admins + 1] = {
                     nick = nick,
-                    level = byId[id].level,
+                    level = lv,
                 }
                 checkerMarkCatalogDirty()
             end
@@ -29971,10 +29399,11 @@ function checkerApplyAdminsDialogSync(list)
         changed = true
     end
     checkerState.syncInFlight = false
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.admsChatMuteUntil = os.clock() + 2.0
+    local now = os.clock()
+    checkerState.admsDialogSyncedAt = now
+    checkerState.admsChatMuteUntil = now + CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC
     if changed then checkerMarkCatalogDirty() end
+    checkerSanitizeAdminCatalog()
     checkerApplyAdmsOnlineSnapshot(list)
     SafeCall('rebuildOnlineAfterAdms', checkerRebuildOnline, true)
     print(string.format('[Report Desk] checker: dialog sync %d admins (merge, catalog %d -> %d)',
@@ -30047,8 +29476,17 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerApplyLeadersSync(rows)
-    if not rows or #rows == 0 then return false end
+    if not rows or #rows == 0 then
+        checkerLog('leaders parse returned empty — catalog NOT replaced')
+        return false
+    end
     ensureCheckerCatalog()
+    local prevCount = #checkerCatalog.leaders
+    if prevCount > 0 and #rows < math.max(3, math.floor(prevCount * 0.3)) then
+        checkerLog(string.format('leaders list suspiciously short (%d vs %d), skipping',
+            #rows, prevCount))
+        return false
+    end
     local prevByNick = {}
     for _, e in ipairs(checkerCatalog.leaders) do
         local pk = checkerLeaderHiddenKey(e.nick)
@@ -30112,6 +29550,52 @@ end
 local SYNC_SESSION_KEY = '__desk_checkerSyncSession'
 local CHECKER_SYNC_RESTORE_MAX_SEC = 90.0
 
+local function checkerGetServerKey()
+    if type(sampGetCurrentServerAddress) == 'function' then
+        return sampGetCurrentServerAddress() or ''
+    end
+    if type(sampGetServerSettingsPtr) == 'function' then
+        local ptr = sampGetServerSettingsPtr()
+        if ptr and ptr ~= 0 then return tostring(ptr) end
+    end
+    return ''
+end
+
+local function checkerAdmsFlowIsOutbound()
+    return checkerState.admsFlow == 'outbound'
+end
+
+local function checkerAdmsFlowIsActive(now)
+    now = now or os.clock()
+    return checkerState.admsFlow ~= nil and now < (checkerState.admsFlowUntil or 0)
+end
+
+local function checkerSyncServerKeyMismatch()
+    local key = checkerState.syncServerKey
+    if not key or key == '' then return false end
+    return checkerGetServerKey() ~= key
+end
+
+local function checkerMarkSyncAdmsSession(untilAt)
+    local s = ensureSyncSession()
+    s.admsUntil = untilAt
+    checkerPersistSyncSession()
+end
+
+function checkerBeginAdmsFlow(untilAt)
+    checkerState.admsFlow = 'outbound'
+    checkerState.admsFlowUntil = untilAt
+    checkerState.syncServerKey = checkerGetServerKey()
+    checkerMarkSyncAdmsSession(untilAt)
+end
+
+function checkerClearAdmsFlow()
+    checkerState.admsFlow = nil
+    checkerState.admsFlowUntil = 0
+    checkerState.syncServerKey = ''
+    checkerClearSyncAdms()
+end
+
 -- Checker (admin HUD/catalog).
 local function ensureSyncSession()
     if type(checkerState.syncSession) ~= 'table' then
@@ -30138,11 +29622,10 @@ function checkerSanitizeSyncSession()
     clampUntil('admsUntil')
     clampUntil('leadersUntil')
     if (tonumber(s.admsUntil) or 0) <= now then
-        if (checkerState.adminsFlowUntil or 0) <= now
-                or (checkerState.adminsFlowUntil or 0) - now > CHECKER_SYNC_RESTORE_MAX_SEC then
-            checkerState.admsAwaitDialog = false
-            checkerState.admsAwaitUntil = 0
-            checkerState.adminsFlowUntil = 0
+        if (checkerState.admsFlowUntil or 0) <= now
+                or (checkerState.admsFlowUntil or 0) - now > CHECKER_SYNC_RESTORE_MAX_SEC then
+            checkerState.admsFlow = nil
+            checkerState.admsFlowUntil = 0
         end
     end
     if (tonumber(s.leadersUntil) or 0) <= now then
@@ -30179,9 +29662,8 @@ function checkerRestoreSyncSession()
     end
 
     restoreUntil('admsUntil', function(untilAt)
-        checkerState.admsAwaitDialog = true
-        checkerState.admsAwaitUntil = untilAt
-        checkerState.adminsFlowUntil = untilAt
+        checkerState.admsFlow = 'outbound'
+        checkerState.admsFlowUntil = untilAt
     end)
     restoreUntil('leadersUntil', function(untilAt)
         checkerState.leadersFlowUntil = untilAt
@@ -30194,9 +29676,7 @@ end
 function checkerSyncAdmsActive(now)
     now = now or os.clock()
     local s = ensureSyncSession()
-    return now < (s.admsUntil or 0)
-        or (checkerState.admsAwaitDialog and now < (checkerState.admsAwaitUntil or 0))
-        or (checkerState.adminsFlowUntil or 0) > now
+    return now < (s.admsUntil or 0) or checkerAdmsFlowIsActive(now)
 end
 
 -- Checker (admin HUD/catalog).
@@ -30208,12 +29688,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerMarkSyncAdms(untilAt)
-    local s = ensureSyncSession()
-    s.admsUntil = untilAt
-    checkerState.adminsFlowUntil = untilAt
-    checkerState.admsAwaitDialog = true
-    checkerState.admsAwaitUntil = untilAt
-    checkerPersistSyncSession()
+    checkerMarkSyncAdmsSession(untilAt)
 end
 
 -- Checker (admin HUD/catalog).
@@ -30228,10 +29703,6 @@ end
 function checkerClearSyncAdms()
     local s = ensureSyncSession()
     s.admsUntil = 0
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.adminsFlowUntil = 0
-    checkerState.admsSyncOutbound = false
     checkerPersistSyncSession()
 end
 
@@ -30241,12 +29712,15 @@ function checkerClearSyncLeaders()
     s.leadersUntil = 0
     checkerState.leadersFlowUntil = 0
     checkerState.leadersSyncOutbound = false
+    if not checkerAdmsFlowIsOutbound() then
+        checkerState.syncServerKey = ''
+    end
     checkerPersistSyncSession()
 end
 
 -- Checker (admin HUD/catalog).
 function checkerClearPendingSyncDialogs()
-    checkerClearSyncAdms()
+    checkerClearAdmsFlow()
     checkerClearSyncLeaders()
 end
 
@@ -30308,12 +29782,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerClearSyncFlowFlags()
-    checkerState.admsAwaitDialog = false
-    checkerState.admsAwaitUntil = 0
-    checkerState.adminsFlowUntil = 0
     checkerState.leadersFlowUntil = 0
-    checkerState.spawnAdmsHandled = false
-    checkerState.spawnLeadersHandled = false
 end
 
 -- После reload onShowDialog не приходит для уже открытого окна — только UI-close активного диалога.
@@ -30322,7 +29791,7 @@ function checkerDismissStaleSyncDialog()
         checkerClearPendingSyncDialogs()
         return
     end
-    if not checkerState.admsSyncOutbound and not checkerState.leadersSyncOutbound then
+    if not checkerAdmsFlowIsOutbound() and not checkerState.leadersSyncOutbound then
         return
     end
     checkerDeferCloseVisibleDialog(nil, nil)
@@ -30336,13 +29805,18 @@ end
 -- Игнорировать echo /admins в чат (диалог — единственный источник при автосинхе).
 function checkerIsAdmsChatMuted(now)
     now = now or os.clock()
-    if checkerState.admsAwaitDialog and now < (checkerState.admsAwaitUntil or 0) then return true end
+    if checkerAdmsFlowIsActive(now) then return true end
     if now < (checkerState.admsChatMuteUntil or 0) then return true end
     return false
 end
 
 -- /admins в чат: только актуализировать уровень админа, который уже есть в каталоге.
 function checkerRefreshAdminLevelFromChat(plain)
+    if checkerState.admsDialogSyncedAt
+        and checkerState.admsDialogSyncedAt > 0
+        and (os.clock() - checkerState.admsDialogSyncedAt) < CHECKER_ADMS_DIALOG_CHAT_GUARD_SEC then
+        return false
+    end
     if Parser.isAdminsListNoise(plain) then return false end
     local nick, level = Parser.parseAdminLine(plain)
     if nick and not level then
@@ -30354,8 +29828,10 @@ function checkerRefreshAdminLevelFromChat(plain)
     local ex = Catalog.getAdmin(nick)
     if not ex then return false end
     level = checkerEffectiveAdminLevel(nick, level)
+    if not checkerIsValidAdminLevel(level) then return false end
     local old = math.floor(tonumber(ex.level) or 0)
     if old == level then return false end
+    if not checkerShouldApplyAdminLevelUpdate(old, level) then return false end
     ex.level = level
     checkerSortCatalogAdmins(checkerCatalog.admins)
     checkerMarkCatalogDirty()
@@ -30365,11 +29841,15 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
-    local now = os.clock()
-    local isAdminsDlg = checkerIsAdminsDialog(title) or checkerDialogLooksLikeAdmins(text, style)
-    local isLeadersDlg = checkerIsLeadersDialog(title) or checkerDialogLooksLikeLeaders(text, style)
+    local titleMatch = checkerIsAdminsDialog(title)
+    local isAdminsDlg = titleMatch
+        or (checkerAdmsFlowIsOutbound() and checkerDialogLooksLikeAdmins(text, style))
+    local leadersTitleMatch = checkerIsLeadersDialog(title)
+    local isLeadersDlg = leadersTitleMatch
+        or (checkerState.leadersSyncOutbound and checkerDialogLooksLikeLeaders(text, style))
 
-    if isAdminsDlg and checkerState.admsSyncOutbound then
+    if isAdminsDlg and checkerAdmsFlowIsOutbound() then
+        if checkerSyncServerKeyMismatch() then return false end
         local list = checkerParseAdminsDialog(text, style)
         if #list > 0 then
             SafeCall('checkerApplyAdminsDialogSync', checkerApplyAdminsDialogSync, list)
@@ -30385,7 +29865,12 @@ function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
                 checkerScheduleSpawnAdmsRetry()
             end
         end
-        checkerClearSyncAdms()
+        checkerClearAdmsFlow()
+        if checkerState.spawnCatalogSyncRunning then
+            checkerDeferCloseVisibleDialog(button1, button2)
+        else
+            checkerCloseVisibleDialog(button1, button2)
+        end
         return true
     end
 
@@ -30400,10 +29885,16 @@ function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
             end
         end
         if checkerState.leadersSyncOutbound then
+            if checkerSyncServerKeyMismatch() then return false end
             if checkerState.spawnCatalogSyncRunning and applied then
                 checkerState.spawnLeadersHandled = true
             end
             checkerClearSyncLeaders()
+            if checkerState.spawnCatalogSyncRunning then
+                checkerDeferCloseVisibleDialog(button1, button2)
+            else
+                checkerCloseVisibleDialog(button1, button2)
+            end
             return true
         end
         return false
@@ -30439,9 +29930,7 @@ function checkerWaitSpawnDialogFlow(isAdmins, maxSec)
         end
         local now = os.clock()
         if isAdmins then
-            local pending = checkerState.admsAwaitDialog
-                and now < (checkerState.admsAwaitUntil or 0)
-            if not pending and (checkerState.adminsFlowUntil or 0) <= now then
+            if not checkerAdmsFlowIsActive(now) then
                 return true
             end
         elseif (checkerState.leadersFlowUntil or 0) <= now then
@@ -30480,13 +29969,9 @@ function checkerRequestAdmsSync(forSpawn)
     local now = os.clock()
     local flowT = forSpawn and CHECKER_SPAWN_DIALOG_WAIT_SEC or CHECKER_ADMINS_FLOW_T
     checkerState.pendingAdminMode = 'replace'
-    checkerState.adminsFlowUntil = now + flowT
-    checkerState.admsAwaitDialog = true
-    checkerState.admsAwaitUntil = now + flowT
-    checkerState.admsSyncOutbound = true
-    checkerMarkSyncAdms(now + flowT)
+    checkerBeginAdmsFlow(now + flowT)
     local ok = checkerTrySendSyncChat('/adms', forSpawn)
-    if not ok then checkerState.admsSyncOutbound = false end
+    if not ok then checkerClearAdmsFlow() end
     return ok
 end
 
@@ -30501,6 +29986,9 @@ function checkerRequestLeadersSync(forSpawn)
     local flowT = forSpawn and CHECKER_SPAWN_DIALOG_WAIT_SEC or CHECKER_LEADERS_FLOW_T
     local now = os.clock()
     checkerState.leadersSyncOutbound = true
+    if checkerState.syncServerKey == '' then
+        checkerState.syncServerKey = checkerGetServerKey()
+    end
     checkerMarkSyncLeaders(now + flowT)
     local ok = checkerTrySendSyncChat('/leaders', forSpawn)
     if ok then
@@ -30562,10 +30050,15 @@ function checkerStartSpawnCatalogSyncThread()
             end
         end
 
+        local admsHandled = checkerState.spawnAdmsHandled
+        local leadersHandled = checkerState.spawnLeadersHandled
         checkerState.spawnCatalogSyncRunning = false
+        checkerClearAdmsFlow()
         checkerClearSyncFlowFlags()
-        local admsOk = checkerState.spawnAdmsHandled or #checkerCatalog.admins > 0
-        local leadersOk = checkerState.spawnLeadersHandled
+        checkerState.spawnAdmsHandled = false
+        checkerState.spawnLeadersHandled = false
+        local admsOk = admsHandled or #checkerCatalog.admins > 0
+        local leadersOk = leadersHandled
         if admsOk and leadersOk then
             checkerState.spawnCatalogSyncDone = true
             ensureSyncSession().spawnAdmsRetries = 0
@@ -30583,11 +30076,25 @@ function checkerStartSpawnCatalogSyncThread()
 end
 
 -- Checker (admin HUD/catalog).
-function checkerScheduleSpawnCatalogSync()
+function checkerScheduleSpawnCatalogSync(delaySec)
     if settings.checker_auto_sync == false then return end
     if checkerState.spawnCatalogSyncDone then return end
-    if checkerState.spawnCatalogSyncAt then return end
-    checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_DELAY
+    delaySec = tonumber(delaySec) or CHECKER_SPAWN_SYNC_DELAY
+    checkerState.spawnCatalogSyncAt = os.clock() + delaySec
+end
+
+-- Возобновить spawn catalog sync после закрытия /reps.
+function checkerOnDeskWindowClosed()
+    if settings.checker_auto_sync == false then return end
+    if checkerState.spawnCatalogSyncDone then return end
+    if checkerState.spawnCatalogSyncRunning then return end
+    if checkerState.spawnAdmsHandled and checkerState.spawnLeadersHandled then return end
+    local s = ensureSyncSession()
+    if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
+        s.spawnAdmsRetries = 0
+        checkerPersistSyncSession()
+    end
+    checkerScheduleSpawnCatalogSync(1.5)
 end
 
 -- Checker (admin HUD/catalog).
@@ -30692,8 +30199,8 @@ function checkerOnSendCommand(command)
         if checkerState.leadersSyncOutbound then return end
         checkerClearSyncLeaders()
     elseif lc == 'adms' or lc == 'admins' then
-        if checkerState.admsSyncOutbound then return end
-        checkerClearSyncAdms()
+        if checkerAdmsFlowIsOutbound() then return end
+        checkerClearAdmsFlow()
     end
 end
 
@@ -30803,6 +30310,7 @@ function checkerApplyCatalogSnapshot(c)
     if checkerEnsureChiefCatalog() then
         changed = true
     end
+    checkerSanitizeAdminCatalog()
     return changed
 end
 
@@ -31021,7 +30529,8 @@ function checkerRebuildOnline(force)
     local byNick = checkerState.onlineNickIndex and checkerState.onlineNickIndex.byNick
     local admins, leaders, friends = {}, {}, {}
     for _, e in ipairs(checkerCatalog.admins) do
-        if e and e.nick then
+        if e and e.nick and checkerIsValidAdminLevel(e.level)
+                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level) then
             local id = checkerLookupOnlineId(e.nick)
             if id then
                 local prev = OnlineIndex.getById('admin', id)
@@ -31300,6 +30809,9 @@ function checkerOnServerMessage(color, text)
     plain = Parser.normalizeAdminListLine(stripTags(text))
     local nick, level, pid = Parser.parseAdminLine(plain)
     if not nick or not level then return end
+    level = checkerEffectiveAdminLevel(nick, level)
+    if not checkerIsValidAdminLevel(level) then return end
+    if checkerLeaderRoleConflictsAdminLevel(nick, level) then return end
     if type(isValidPlayerNick) == 'function' and not isValidPlayerNick(nick) then return end
     if not nick:find('_', 1, true) then return end
     local myNick = ''
@@ -31316,8 +30828,8 @@ function checkerOnServerMessage(color, text)
     local existing = Catalog.getAdmin(nick)
     if existing then
         local old = math.floor(tonumber(existing.level) or 0)
-        local newLevel = checkerEffectiveAdminLevel(nick, level)
-        if old ~= newLevel then
+        local newLevel = level
+        if old ~= newLevel and checkerShouldApplyAdminLevelUpdate(old, newLevel) then
             existing.level = newLevel
             checkerMarkCatalogDirty()
         end
@@ -31325,7 +30837,7 @@ function checkerOnServerMessage(color, text)
     end
     checkerCatalog.admins[#checkerCatalog.admins + 1] = {
         nick = nick,
-        level = checkerEffectiveAdminLevel(nick, level),
+        level = level,
     }
     checkerSortCatalogAdmins(checkerCatalog.admins)
     checkerMarkCatalogDirty()
@@ -31453,7 +30965,7 @@ function checkerTick()
     if not checkerSampReady() then
         if checkerState.hudDrag then checkerState.hudDrag.active = false end
         checkerState.syncInFlight = false
-        checkerState.adminsFlowUntil = 0
+        checkerClearAdmsFlow()
         checkerState.leadersFlowUntil = 0
         checkerState.spawnCatalogSyncRunning = false
         return
@@ -31495,6 +31007,29 @@ local function checkerNormalizeLeaderCatalogOrg()
 end
 
 -- Убрать битые записи лидеров (org id без org_name — типичный мусор после сбоя синка).
+-- Убрать из admins невалидные уровни и ложные записи (ранг лидера ≠ admin lvl).
+function checkerSanitizeAdminCatalog()
+    local out, changed = {}, false
+    for _, e in ipairs(checkerCatalog.admins or {}) do
+        local nick = trim(e and e.nick or '')
+        local level = math.floor(tonumber(e and e.level) or 0)
+        if nick == '' then
+            changed = true
+        elseif not checkerIsValidAdminLevel(level) then
+            changed = true
+        elseif checkerLeaderRoleConflictsAdminLevel(nick, level) then
+            changed = true
+        else
+            out[#out + 1] = e
+        end
+    end
+    if changed then
+        checkerCatalog.admins = out
+        checkerSortCatalogAdmins(checkerCatalog.admins)
+        checkerMarkCatalogDirty()
+    end
+end
+
 local function checkerSanitizeLeaderCatalog()
     local out, changed = {}, false
     for _, e in ipairs(checkerCatalog.leaders or {}) do
@@ -31534,6 +31069,7 @@ function checkerInit()
             rawset(_G, '__desk_pendingCheckerCatalog', nil)
         end
         Catalog.rebuildIndex()
+        checkerSanitizeAdminCatalog()
         checkerSanitizeLeaderCatalog()
         checkerNormalizeLeaderCatalogOrg()
         if not checkerSampReady() then
@@ -31545,11 +31081,11 @@ function checkerInit()
         checkerState.lastOnlineCatalogRev = -1
         checkerState.lastOnlineRev = -1
         checkerState.syncInFlight = false
-        checkerState.adminsFlowUntil = 0
+        checkerState.admsFlow = nil
+        checkerState.admsFlowUntil = 0
+        checkerState.admsDialogSyncedAt = 0
+        checkerState.syncServerKey = ''
         checkerState.leadersFlowUntil = 0
-        checkerState.admsAwaitDialog = false
-        checkerState.admsAwaitUntil = 0
-        checkerState.admsSyncOutbound = false
         checkerState.leadersSyncOutbound = false
         checkerState.leadersOnlineSnapshot = nil
         checkerState.spawnCatalogSyncRunning = false
@@ -31762,9 +31298,11 @@ function checkerHudWantsInput()
     return false
 end
 
--- HUD-строка: только текст, без hover и кликов.
+-- HUD-строка: одна линия, без переноса (уровень/тег не уезжает на строку ниже).
 local function drawCheckerHudRow(label, col)
+    imgui.PushTextWrapPos(0)
     imgui.TextColored(col, uiText(label))
+    imgui.PopTextWrapPos()
 end
 
 -- Checker (admin HUD/catalog).
@@ -31798,9 +31336,6 @@ function drawCheckerAdminsBlock()
     local executive, regular, special = checkerSplitAdminLists(list)
     local shown = 0
     if #executive > 0 then
-        checkerSpTheme.drawSectionLabel(
-            '\xD0\xF3\xEA\xEE\xE2\xEE\xE4\xF1\xF2\xE2\xEE:',
-            col_muted2, uiText)
         for _, e in ipairs(executive) do
             shown = shown + 1
             drawCheckerAdminRow(e, shown, 'adm_e_', 0)
@@ -31858,11 +31393,7 @@ function drawCheckerLeadersBlock()
     for _, e in ipairs(list) do
         shown = shown + 1
         local col = checkerSafePlayerColor(e.id) or col_accent
-        local role = checkerLeaderDisplayRole(e)
         local label = string.format('%i. %s [%i]%s', shown, e.nick, e.id, checkerOnlineTags(e))
-        if role ~= '' then
-            label = label .. '  \xB7  ' .. role
-        end
         drawCheckerHudRow(label, col)
     end
 end

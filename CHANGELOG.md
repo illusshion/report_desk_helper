@@ -1,5 +1,16 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.0 BETA (1.0.1)
+
+**Первая более менее рабочая версия**
+
+- **Fix:** HUD загрузки обновления корректно скрывается после установки (`report_desk_update_overlay.lua` в релизе + `hideUpdateOverlay`).
+- **Fix:** перетаскивание HUD клавиатуры в `/sp` как у чекера (imgui drag + сохранение позиции).
+- **Fix:** цвета ников в bubble-чате (clist / live color).
+- **Checker:** HUD админов/лидеров/друзей, clist-цвета фракций.
+- **/sp:** меню, статистика, HUD клавиатуры и ТС.
+- **UX:** тихие обновления, прогресс в overlay снизу экрана.
+
 ## 1.0.0 (Beta 1)
 
 **Первая стабильная версия хелпера.**
@@ -11,7 +22,3 @@
 - **Fix (критично):** не применять launcher pending mid-session — убран краш `ensureDirFor` / Script terminated.
 - **Checker:** clist-цвета фракций, HUD руководства/админов/друзей, sync `/leaders`.
 - **UI:** вкладка ТС, атомарное сохранение config, runtime-зависимости в manifest.
-
-## 1.0.29
-
-- **Fix (критично):** после autoupdate bootstrap больше не делает reload — сразу грузит ядро в той же сессии. Раньше reload убивал скрипт и F7 не работал.
