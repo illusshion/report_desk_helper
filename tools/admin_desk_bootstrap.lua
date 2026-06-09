@@ -4,13 +4,12 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.0')
+script_version('1.0.1')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
 
 require 'lib.moonloader'
-require 'lib.sampfuncs'
 
 local function readDevEntryHead(path)
     if type(doesFileExist) ~= 'function' or not doesFileExist(path) then return nil end
@@ -62,17 +61,21 @@ local SEED_LIBS = {
     'report_desk_autoupdate.lua',
 }
 
-local CORE_DIR = getWorkingDirectory() .. '\\report_desk'
 local CORE_NAMES = { 'AdminDeskCore.luac', 'AdminDeskCore.lua', 'admin_report_desk_core.luac', 'admin_report_desk_core.lua' }
 
+local function coreDir()
+    return getWorkingDirectory() .. '\\report_desk'
+end
+
 local function resolveCorePath()
+    local dir = coreDir()
     for _, name in ipairs(CORE_NAMES) do
-        local path = CORE_DIR .. '\\' .. name
+        local path = dir .. '\\' .. name
         if doesFileExist(path) then
             return path
         end
     end
-    return CORE_DIR .. '\\AdminDeskCore.luac'
+    return dir .. '\\AdminDeskCore.luac'
 end
 
 local function loadCore()
@@ -88,8 +91,9 @@ local function loadCore()
 end
 
 local function corePresent()
+    local dir = coreDir()
     for _, name in ipairs(CORE_NAMES) do
-        if doesFileExist(CORE_DIR .. '\\' .. name) then
+        if doesFileExist(dir .. '\\' .. name) then
             return true
         end
     end
@@ -465,10 +469,15 @@ function main()
         return
     end
     purgeBrokenLauncherPending()
-    pcall(applyPendingBootstrap)
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)
     end
+    local okSf, errSf = pcall(require, 'lib.sampfuncs')
+    if not okSf then
+        print('[Report Desk] SAMPFUNCS required: ' .. tostring(errSf))
+        return
+    end
+    pcall(applyPendingBootstrap)
 
     local ok, err = pcall(function()
         local pipelineOk, sessionUpdated = runInstallPipeline()
