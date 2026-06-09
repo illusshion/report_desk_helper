@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.0.2')
+script_version('1.0.0')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -237,24 +237,17 @@ local function bootstrapSeedUpdater()
     return true
 end
 
-local function applyLauncherPendingAtStartup()
+local function stageLauncherPendingOnDisk()
     if not updaterInstalled() then
-        return false
+        return
     end
     local autoupdate = requireAutoupdate()
     if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
-        return false
+        return
     end
     if autoupdate.applyLauncherPending() then
-        clearDeskModuleCache()
-        print('[Report Desk] launcher updated, reloading bootstrap')
-        wait(200)
-        if thisScript and thisScript().reload then
-            thisScript():reload()
-            return true
-        end
+        print('[Report Desk] launcher committed on disk (picked up on next game start)')
     end
-    return false
 end
 
 local function applyPendingBootstrap()
@@ -437,9 +430,7 @@ function main()
     if devEntryPresent() then
         return
     end
-    if applyLauncherPendingAtStartup() then
-        return
-    end
+    stageLauncherPendingOnDisk()
     applyPendingBootstrap()
     while not isSampfuncsLoaded() or not isSampLoaded() do
         wait(100)

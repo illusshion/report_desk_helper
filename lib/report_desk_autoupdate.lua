@@ -229,7 +229,7 @@ function M.showWelcomeMessage(manifest)
     if ver == '' or ver == '0.0.0' then
         ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
     end
-    M.chatSay('Report Desk v' .. ver .. ' \xB7 F7, /deskupdate')
+    M.chatSay('Report Desk Beta 1 \xB7 F7, /deskupdate')
 end
 
 local function overlayProgressDetail(opts, step, total, fallback)
@@ -1275,11 +1275,11 @@ function M.repair()
         return false, status
     end
     if willReload then
-        M.applyPendingFiles()
+        M.applyPendingFiles({ includeLauncher = false })
         package.loaded['report_desk_autoupdate'] = nil
         package.loaded['lib.report_desk_autoupdate'] = nil
         if M.applyLauncherPending and M.applyLauncherPending() then
-            return true, 'reload'
+            log('launcher pending committed on disk (next game start)')
         end
     end
     if M.needsAssets(manifest) then
