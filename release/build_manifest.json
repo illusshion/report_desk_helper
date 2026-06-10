@@ -1,32 +1,32 @@
 {
-    "tag":  "v1.1.0",
-    "version":  "1.1.0",
-    "built_at":  "2026-06-10T18:57:29.2641397+03:00",
+    "tag":  "v1.1.1",
+    "version":  "1.1.1",
+    "built_at":  "2026-06-10T19:37:34.5338199+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
                                      "path":  "dist\\report_desk_assets.zip",
-                                     "sha256":  "b03bd3a42579e70c4fa1c09204c6b417a312f3cc26093a6d48f86b1f2751efc0",
+                                     "sha256":  "7be0aa3f143a9acc337d22ff29dfa5ea767af15472ddc7dc6c294e19a8857bc7",
                                      "bytes":  24055546
                                  },
                       "bootstrap_file":  {
                                              "path":  "dist\\AdminDesk.luac",
-                                             "sha256":  "f42ae33a30eb3d3f1e8f37a5ad8f41709c9579811a6c0990b785e1ed246f3b6d",
+                                             "sha256":  "e62c5d0d2ccff393b4b7ddc01aa575443a2f8627e544745ed6e9cb47a51b066f",
                                              "bytes":  13016
                                          },
-                      "version":  "1.1.0",
+                      "version":  "1.1.1",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "ad35fac3bfd279536e170098d7fc93d1383b83b0c893a8058c058aca5b9821d8",
-                                  "bytes":  31345960
+                                  "sha256":  "4575e9c510fbe32d00d14f14b511da20523a08fcc0acede0834de75937558da6",
+                                  "bytes":  31346938
                               },
                       "bootstrap":  "AdminDesk.luac",
                       "core_asset":  "AdminDeskCore.luac",
                       "core":  {
                                    "repo_path":  "report_desk\\AdminDeskCore.lua",
-                                   "sha256":  "e779a95b0712a20e57e4e05d348154394346718e92c3654ca5a2adf2a91a8b93",
+                                   "sha256":  "79a6c20d1ae26e6b50b7543ffbdb55b92bc4ae64b7a5f24745560f22797e5062",
                                    "dist_path":  "dist\\report_desk\\AdminDeskCore.luac",
-                                   "bytes":  1284502
+                                   "bytes":  1284725
                                },
                       "verified":  true,
                       "deps":  {

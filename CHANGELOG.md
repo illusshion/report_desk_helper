@@ -1,5 +1,12 @@
 ﻿# Admin Report Desk Changelog
 
+## 1.1.1
+
+**Hotfix: загрузка AdminDeskCore на MoonLoader (лимит 200 local variables).**
+
+- Bundle core разбит на core_a / core_b / core_c (как dev `report_desk_app.lua`).
+- Исправлен порядок `env_export` (до admin_punish).
+
 ## 1.1.0
 
 **Автовыдача наказаний из /a + обновления intent/autoreply.**
