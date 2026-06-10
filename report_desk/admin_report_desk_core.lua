@@ -6546,7 +6546,83 @@ local state = {
     pendingSpNick = '',
     pendingSpAt = 0,
     lastSpOutboundAt = 0,
+    pendingSpStepDelta = nil,
+    skipSpecIds = {},
+    lastSubjectId = -1,
+    lastSubjectNick = '',
 }
+
+local SPEC_SKIP_SEC = 45
+
+local function rememberLastSubject(id, nick)
+    id = tonumber(id)
+    nick = trim(nick or '')
+    if nick == '' then return end
+    state.lastSubjectNick = nick
+    if id and id >= 0 then
+        state.lastSubjectId = id
+    end
+end
+
+local function markSpecIdSkipped(id)
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    state.skipSpecIds[id] = os.clock() + SPEC_SKIP_SEC
+end
+
+local function isSpecIdSkipped(id)
+    id = tonumber(id)
+    if not id then return false end
+    local untilAt = state.skipSpecIds[id]
+    if not untilAt then return false end
+    if os.clock() > untilAt then
+        state.skipSpecIds[id] = nil
+        return false
+    end
+    return true
+end
+
+local function isSpectateStepCandidate(id)
+    if isSpecIdSkipped(id) then return false end
+    return M.isSpectateCandidate(id)
+end
+
+local function getSpectateStepBaseId()
+    if specSession.getTargetId then
+        local sid = tonumber(specSession.getTargetId())
+        if sid and sid >= 0 then return sid end
+    end
+    local tid = tonumber(state.targetId)
+    if tid and tid >= 0 then return tid end
+    return -1
+end
+
+local function sendSpectateStepCommand(nextId)
+    nextId = tonumber(nextId)
+    if not nextId or nextId < 0 then return false end
+    M.markPendingSpCommand(nextId, '')
+    local cmd = 'sp ' .. tostring(nextId)
+    if sendMenuOutbound then
+        sendMenuOutbound(cmd, { skipPendingMark = true })
+    elseif sendChat then
+        sendChat(cmd)
+    else
+        return false
+    end
+    return true
+end
+
+local function tryAdvanceAfterFailedSpec(failedId, delta)
+    failedId = tonumber(failedId)
+    delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    if not failedId or not specPlayerActive() then return false end
+    markSpecIdSkipped(failedId)
+    local nextId = M.findAdjacentSpectateId(failedId, delta)
+    if not nextId then return false end
+    state.pendingSpStepDelta = delta
+    lastSpecStepAt = os.clock()
+    return sendSpectateStepCommand(nextId)
+end
 
 -- ID цели на handshake /sp: pending → session → локальный state.
 local function resolveSpectateHandshakeId()
@@ -7196,6 +7272,39 @@ function M.getTargetId()
     return -1
 end
 
+-- Последняя цель /sp для warnlast/banlast/… (ник сохраняется после выхода).
+function M.getLastSubject()
+    local id = -1
+    local nick = ''
+
+    local curId = M.getTargetId()
+    if curId >= 0 then
+        id = curId
+        nick = trim(state.targetNick or '')
+    elseif state.lastSubjectId and state.lastSubjectId >= 0 then
+        id = state.lastSubjectId
+        nick = trim(state.lastSubjectNick or '')
+    elseif state.lastSubjectNick and state.lastSubjectNick ~= '' then
+        nick = state.lastSubjectNick
+        id = tonumber(state.lastSubjectId) or -1
+    end
+
+    if nick == '' then return nil end
+
+    local offline = true
+    if id >= 0 and sampIsPlayerConnected and sampIsPlayerConnected(id) then
+        offline = false
+        if sampGetPlayerNickname then
+            local live = trim(sampGetPlayerNickname(id) or '')
+            if live ~= '' then nick = live end
+        end
+    elseif state.lastSubjectNick and state.lastSubjectNick ~= '' then
+        nick = state.lastSubjectNick
+    end
+
+    return { id = id, nick = nick, offline = offline }
+end
+
 -- Публичный API модуля.
 function M.getMyPlayerId()
     if sampGetPlayerIdByCharHandle then
@@ -7229,28 +7338,19 @@ end
 function M.findAdjacentSpectateId(curId, delta)
     curId = tonumber(curId)
     if curId == nil then return nil end
-    local maxId = M.getMaxPlayerId()
-    local me = M.getMyPlayerId()
     delta = (tonumber(delta) or 0) >= 0 and 1 or -1
-    local function candidate(id)
-        id = tonumber(id)
-        if not id or id < 0 then return false end
-        if me >= 0 and id == me then return false end
-        return sampIsPlayerConnected and sampIsPlayerConnected(id)
-    end
-    if delta > 0 then
-        for i = curId + 1, maxId do
-            if candidate(i) then return i end
+    -- AdminTools: +1/-1 with wrap 0..1000 until connected (not sampGetMaxPlayerId cap).
+    local maxScan = MAX_SPEC_PLAYER_ID
+    local id = curId
+    for _ = 1, maxScan + 1 do
+        id = id + delta
+        if id > maxScan then
+            id = 0
+        elseif id < 0 then
+            id = maxScan
         end
-        for i = 0, curId - 1 do
-            if candidate(i) then return i end
-        end
-    else
-        for i = curId - 1, 0, -1 do
-            if candidate(i) then return i end
-        end
-        for i = maxId, curId + 1, -1 do
-            if candidate(i) then return i end
+        if isSpectateStepCandidate(id) then
+            return id
         end
     end
     return nil
@@ -7262,22 +7362,20 @@ function M.stepSpectate(delta)
     if now - lastSpecStepAt < SPEC_STEP_COOLDOWN then
         return false
     end
-    lastSpecStepAt = now
-    local cur = M.getTargetId()
+    delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    if state.pendingSpId then
+        M.cancelPendingSp()
+    end
+    local cur = getSpectateStepBaseId()
     if cur < 0 then
         cur = M.getMyPlayerId()
         if cur < 0 then cur = 0 end
     end
     local nextId = M.findAdjacentSpectateId(cur, delta)
     if not nextId then return false end
-    M.markPendingSpCommand(nextId, '')
-    local cmd = 'sp ' .. tostring(nextId)
-    if sendMenuOutbound then
-        sendMenuOutbound(cmd, { skipPendingMark = true })
-    elseif sendChat then
-        sendChat(cmd)
-    end
-    return true
+    lastSpecStepAt = now
+    state.pendingSpStepDelta = delta
+    return sendSpectateStepCommand(nextId)
 end
 
 -- Публичный API модуля.
@@ -7338,6 +7436,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
+    rememberLastSubject(id, state.targetNick)
     pcall(spRefresh.onTargetConfirmed, id, { fullBaseline = prevId ~= id })
     if inputDeps and inputDeps.setPlayerSpectating then
         inputDeps.setPlayerSpectating(true)
@@ -7417,6 +7516,7 @@ function M.cancelPendingSp()
     state.pendingSpId = nil
     state.pendingSpNick = ''
     state.pendingSpAt = 0
+    state.pendingSpStepDelta = nil
     pcall(specSession.markAwaitingSpectate, false)
 end
 
@@ -7602,6 +7702,7 @@ function M.setSpectateTarget(id, nick, settings)
     end
     state.targetId = id
     state.targetNick = trim(nick or '')
+    rememberLastSubject(id, state.targetNick)
     local e = ensureEntry(id)
     if e then
         if prevId ~= id then
@@ -7829,7 +7930,12 @@ end
 function M.onServerMessage(color, text)
     if not text or text == '' then return false end
     if state.pendingSpId and isSpCommandRejected(text) then
+        local failed = tonumber(state.pendingSpId)
+        local stepDelta = state.pendingSpStepDelta or 1
         M.cancelPendingSp()
+        if failed then
+            tryAdvanceAfterFailedSpec(failed, stepDelta)
+        end
         return false
     end
     color = tonumber(color) or 0
@@ -9016,6 +9122,7 @@ end
 function M.notifyTargetQuit(playerId)
     playerId = tonumber(playerId)
     if not playerId or M.getTargetId() ~= playerId then return end
+    rememberLastSubject(playerId, state.targetNick)
     M.forceExitSpectate({ reason = 'quit', sendServer = true })
 end
 
@@ -13196,7 +13303,15 @@ USER_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lu
 USER_CONFIG_TMP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.lua.tmp'
 USER_CONFIG_BACKUP = getWorkingDirectory() .. '\\config\\admin_report_desk_user.bak.lua'
 USER_DEFAULT_CONFIG_PATH = getWorkingDirectory() .. '\\config\\admin_report_desk_user.default.lua'
+INTENTS_CONFIG_PATH = getWorkingDirectory() .. '\\config\\report_desk_intents.lua'
+INTENT_STEM_BLOCKLIST_PATH = getWorkingDirectory() .. '\\config\\intent_stem_blocklist.lua'
+INTENT_EXTENSIONS_PATH = getWorkingDirectory() .. '\\config\\intent_trigger_extensions.lua'
+INTENT_CORPUS_QUEUE_PATH = getWorkingDirectory() .. '\\config\\intent_corpus_queue.jsonl'
 SCENARIOS_PACK_VERSION = 2
+INTENTS_VERSION = 1
+INTENT_MIN_CONFIDENCE = 12
+INTENT_CLOSE_RATIO = 0.92
+INTENT_MAX_BUTTONS = 2
 CHECKER_CATALOG_PATH = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.lua'
 CHECKER_CATALOG_BACKUP = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.bak.lua'
 SKINS_DIR = getWorkingDirectory() .. '\\res\\report_desk_skins\\'
@@ -13299,6 +13414,8 @@ col_composer = imgui.ImVec4(0.09, 0.09, 0.12, 1.0)
 col_row_sel = imgui.ImVec4(0.22, 0.14, 0.32, 0.85)
 col_row_hover = imgui.ImVec4(0.14, 0.14, 0.18, 0.6)
 col_unread = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
+col_player_nick = imgui.ImVec4(0.58, 0.76, 0.96, 1.0)
+col_player_nick_offline = imgui.ImVec4(0.38, 0.44, 0.52, 0.72)
 
 LIST_W = 310  -- ширина sidebar списка тредов, px
 THREAD_ROW_H = 74
@@ -13306,16 +13423,16 @@ THREAD_PAD_L = 10
 THREAD_TEXT_OFF = 16
 THREAD_BADGE_W = 18
 THREAD_ACCENT_W = 4
-CHAT_HEADER_H = 62
+CHAT_HEADER_H = 58
 COMPOSER_H = 86
 COMPOSER_INPUT_H = 34
 COMPOSER_SEND_SZ = 34
 COMPOSER_QUICK_H = 26
 COMPOSER_QUICK_GAP = 6
 COMPOSER_ROW_GAP = 6
-local DEFAULT_GG_REPLY = '\xCF\xF0\xE8\xFF\xF2\xED\xEE\xE9 \xE8\xE3\xF0\xFB \xED\xE0 ARP Blue)'
-local DEFAULT_TIME_REPLY = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}'
-local DEFAULT_TECH_REPLY = '\xCB\xF3\xF7\xF8\xE5 \xEE\xE1\xF0\xE0\xF2\xE8\xF2\xE5\xF1\xFC \xE2 \xF2\xE5\xF5\xED\xE8\xF7\xE5\xF1\xEA\xE8\xE9 \xF0\xE0\xE7\xE4\xE5\xEB \xED\xE0 \xF4\xEE\xF0\xF3\xEC\xE5 ARP'
+DEFAULT_GG_REPLY = '\xCF\xF0\xE8\xFF\xF2\xED\xEE\xE9 \xE8\xE3\xF0\xFB \xED\xE0 ARP Blue)'
+DEFAULT_TIME_REPLY = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}'
+DEFAULT_TECH_REPLY = '\xCB\xF3\xF7\xF8\xE5 \xEE\xE1\xF0\xE0\xF2\xE8\xF2\xE5\xF1\xFC \xE2 \xF2\xE5\xF5\xED\xE8\xF7\xE5\xF1\xEA\xE8\xE9 \xF0\xE0\xE7\xE4\xE5\xEB \xED\xE0 \xF4\xEE\xF0\xF3\xEC\xE5 ARP'
 PANEL_PAD = 12
 BUBBLE_PAD_X = 14
 BUBBLE_PAD_Y = 10
@@ -13347,8 +13464,8 @@ RULE_TRIG_MAX = 150
 RULE_ADD_ROW_H = 36
 RULE_ACTIONS_H = 88
 MIN_CONTAINS_TRIGGER_LEN = 3
-local ANS_CHAT_LINE_MAX = 125
-local ANS_SPLIT_DELAY_MS = 200
+ANS_CHAT_LINE_MAX = 125
+ANS_SPLIT_DELAY_MS = 200
 
 -- ImGui тёмная тема Report Desk.
 function applyModernDarkStyle()
@@ -13500,6 +13617,11 @@ settings = {
     checker_auto_sync = true,
     checker_auto_promote = true,
     checker_auto_admin = true,
+    admin_punish_enabled = false,
+    admin_punish_confirm_key = vkeys.VK_DELETE,
+    admin_punish_cancel_key = vkeys.VK_END,
+    admin_punish_send_ans = false,
+    admin_punish_sign_cmd = true,
 }
 
 -- Default Cheats Settings
@@ -13542,6 +13664,7 @@ local function defaultCheatsSettings()
         veh_alt = false,
         hud_x = 12,
         hud_y = 80,
+        mask_player_id = true,
     }
 end
 
@@ -13573,8 +13696,9 @@ function ensureCheatsSettings()
     ch.wh_on_start = ch.wh_on_start == true or tonumber(ch.wh_on_start) == 1
     ch.show_hud = not (ch.show_hud == false or tonumber(ch.show_hud) == 0)
     ch.marker_wheel = not (ch.marker_wheel == false or tonumber(ch.marker_wheel) == 0)
+    ch.mask_player_id = not (ch.mask_player_id == false or tonumber(ch.mask_player_id) == 0)
 end
-local profanity_words = {}
+profanity_words = {}
 local DEFAULT_QUICK_SCENARIOS = {
     {
         label = '\xD1\xEE\xE1\xE5\xF1\xE5\xE4\xEE\xE2\xE0\xED\xE8\xE5',
@@ -13600,10 +13724,12 @@ local DEFAULT_QUICK_SCENARIOS = {
         skip_if_report_id = false,
     },
 }
-local quickScenarios = {}
-local threads = {}
-local threadOrder = {}
-local threadCount = 0
+--[[ Shared mutable state (no `local`): core split into loadstring chunks (core_a/b/c).
+    Reassignment or cross-chunk reads must use the same env binding — see report_desk_env_export.lua. ]]
+quickScenarios = {}
+threads = {}
+threadOrder = {}
+threadCount = 0
 
 local showWindow = new.bool(false)
 local activeTab = new.int(0)
@@ -13611,9 +13737,7 @@ local filterMode = new.int(0)
 local searchBuf = new.char[96]()
 local replyBuf = new.char[512]()
 local cmdBuf = new.char[64]()
-local selectedKey = nil
-local focusReplyNext = false
-local focusReplyReason = nil  -- 'open' | 'select' | 'send'
+selectedKey = nil
 local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
@@ -13635,6 +13759,8 @@ local deskInputState = {
     snapPending = false,
     snapKey = nil,
     hasUnseenMessages = false,
+    focusReplyNext = false,
+    focusReplyReason = nil, -- 'open' | 'select' | 'send'
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -13674,13 +13800,14 @@ local uiCheatAb = new.bool(false)
 local uiCheatGmStart = new.bool(false)
 local uiCheatWhStart = new.bool(false)
 local uiCheatHud = new.bool(true)
+local uiCheatMaskId = new.bool(true)
 local uiCheatAbSpeed = new.float(1.0)
-local cheatsUiSynced = false
-local cheatsStartupDone = false
-local skinCatalog = nil
-local skinCatalogById = {}
-local skinUiTabActive = false
-local skinTabEntered = false
+cheatsUiSynced = false
+cheatsStartupDone = false
+skinCatalog = nil
+skinCatalogById = {}
+skinUiTabActive = false
+skinTabEntered = false
 local skinSelectedId = 1
 local skinNearbyCache = { t = 0, n = 0, r = -1 }
 local skinLoadFailLogged = false
@@ -13700,8 +13827,8 @@ local MOUSE_BIND_VKS = {
     [0x01] = true, [0x02] = true, [0x04] = true, [0x05] = true, [0x06] = true,
 }
 local rulesEditorDirty = false
-local dirtySettings = false
-local dirtyThreads = false
+dirtySettings = false
+dirtyThreads = false
 
 local RECENT = {
     ingest = {}, ingestOrd = {},
@@ -13709,12 +13836,10 @@ local RECENT = {
     out = {}, outOrd = {},
     prof = {}, profOrd = {},
 }
-local lastMapPrune = 0
-local lastSettingsSave = 0
-local lastThreadsSave = 0
+lastMapPrune = 0
+lastSettingsSave = 0
+lastThreadsSave = 0
 local scenariosGen = 0
-local cachedSortedScenarioIdx = nil
-local cachedSortedScenariosGen = -1
 local deskCache = {
     monthRu = {
         January = '\xFF\xED\xE2\xE0\xF0\xFF', February = '\xF4\xE5\xE2\xF0\xE0\xEB\xFF',
@@ -13736,9 +13861,13 @@ local deskCache = {
     cheatCapture = nil,
     cheatCaptureAt = 0,
     cheatCaptureSlot = 'main',
+    adminPunishBindCapture = false,
+    adminPunishBindCaptureAt = 0,
+    adminPunishBindField = nil,
     bindCapVk = nil,
     bindCapIgnoreMouseUntil = 0,
     bindCapPollPrev = nil,
+    bindCapKbPrev = nil,
     ui = { kwBulkOpen = {}, panelStart = {}, panelStack = {} },
     filterKeys = nil,
     filterSig = '',
@@ -13884,6 +14013,9 @@ local uiSpecWheelZoom = new.bool(true)
 local uiProfanityFilter = new.bool(true)
 local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
+local uiAdminPunishEnabled = new.bool(false)
+local uiAdminPunishSendAns = new.bool(false)
+local uiAdminPunishSignCmd = new.bool(true)
 editRuleMatch = new.int(1)
 editRulePriority = new.int(0)
 editRuleSkipReportId = new.bool(true)
@@ -13891,22 +14023,23 @@ local ruleKwBulk = new.char[2048]()
 local ruleTestBuf = new.char[256]()
 local ruleTestResult = new.char[128]()
 rulesTestOpen = new.bool(false)
+adminPunishUiSynced = false
 
 local AUTO_RETRY_MS = 280  -- retry auto-reply, мс
 local AUTO_RETRY_MAX = 4
 local AUTO_REPLY_DELAY_MS = 250
-local myPlayerNick = ''
-local myNickTick = 0
+myPlayerNick = ''
+myNickTick = 0
 local PLAYER_NICK_CACHE_INTERVAL = 2.0  -- интервал кэша nick→id, сек
 local CHAT_UI_RENDER_MAX = 100
-local playerNickToId = {}
-local playerNickCacheAt = 0
+playerNickToId = {}
+playerNickCacheAt = 0
 local chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
-local chatLogReady = false
-local styleApplied = false
-local sessionLive = false
-local deskConfigReady = false
-local totalUnread = 0
+chatLogReady = false
+styleApplied = false
+sessionLive = false
+deskConfigReady = false
+totalUnread = 0
 
 local editRuleName = new.char[64]()
 local editRulePayload = new.char[512]()
@@ -14170,8 +14303,39 @@ function stripChatTimestamp(line)
     return line
 end
 
+-- Lowercase для match (Lua :lower() не трогает cp1251 кириллицу).
+function cp1251Lower(s)
+    if not s or s == '' then return '' end
+    if isUtf8Text(s) then
+        s = utf8ToCp1251(s)
+    end
+    return (s:gsub('[\192-\223]', function(c)
+        return string.char(c:byte() + 32)
+    end):gsub('\168', '\184'))
+end
+
+-- Снять обёрточную пунктуацию/пробелы (Спасибо! ), !!!, «спасибо»).
+local function isMatchEdgeByte(b)
+    if not b then return false end
+    if b == 0x20 or (b >= 0x09 and b <= 0x0D) then return true end
+    if b >= 0x21 and b <= 0x2F then return true end
+    if b >= 0x3A and b <= 0x40 then return true end
+    if b >= 0x5B and b <= 0x60 then return true end
+    if b >= 0x7B and b <= 0x7E then return true end
+    if b == 0x85 or b == 0x96 or b == 0x97 or b == 0xAB or b == 0xBB then return true end
+    return false
+end
+
+function peelMatchEdges(s)
+    if not s or s == '' then return '' end
+    local from, to = 1, #s
+    while from <= to and isMatchEdgeByte(s:byte(from)) do from = from + 1 end
+    while to >= from and isMatchEdgeByte(s:byte(to)) do to = to - 1 end
+    return s:sub(from, to)
+end
+
 function normalizeIngestBody(body)
-    return trim(stripTags(body or '')):lower()
+    return cp1251Lower(trim(stripTags(body or '')))
 end
 
 -- Типичные опечатки в репортах для fuzzy match правил.
@@ -14189,6 +14353,10 @@ local MATCH_TYPO_WORDS = {
     ['обьявление'] = 'объявление',
     ['скилы'] = 'скиллы',
     ['inventar'] = 'инвентарь',
+    ['провеить'] = 'проверить',
+    ['прсмотреть'] = 'посмотреть',
+    ['какиквесты'] = 'как квесты',
+    ['ремкомлект'] = 'ремкомплект',
 }
 
 function normalizeMatchTextTypo(s)
@@ -14246,6 +14414,9 @@ function invalidateUiCaches()
     deskCache.filterSig = ''
     deskCache.quickBtn = {}
     deskCache.quickBtnGen = -1
+    if type(deskCache.intentResolve) == 'table' then
+        deskCache.intentResolve = {}
+    end
 end
 
 function invalidateFilterCache()
@@ -14355,10 +14526,13 @@ function rebuildNickIndex()
     end
 end
 
-function bumpScenariosGen()
+function bumpScenariosGen(preferLegacyScenarios)
     scenariosGen = scenariosGen + 1
     deskCache.quickBtnGen = -1
     deskCache.quickBtn = {}
+    if type(reloadDeskIntentsFromSources) == 'function' then
+        pcall(reloadDeskIntentsFromSources, preferLegacyScenarios == true)
+    end
 end
 
 -- LRU-подобная timed map с порядком eviction.
@@ -14766,6 +14940,954 @@ end
 function playProfanityAlertSound()
     if settings.profanity_filter_sound == false then return end
     playDeskAlertSound()
+end
+
+--[[ Intent matching: token normalization, stem policy, text bags. ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local EDGE_PUNCT = '[%s%.%!%?,:;%-]+'
+
+if type(normalizeMatchText) ~= 'function' then
+    function normalizeMatchText(s)
+        s = trim(stripTags(s or ''))
+        -- Intent config / UI strings are UTF-8; SAMP chat and stored threads are CP1251.
+        if type(isUtf8Text) == 'function' and isUtf8Text(s)
+                and type(utf8ToCp1251) == 'function' then
+            s = utf8ToCp1251(s)
+        end
+        s = s:lower():gsub('%s+', ' ')
+        s = s:gsub('\xB8', '\xE5')
+        s = s:gsub('^' .. EDGE_PUNCT, ''):gsub(EDGE_PUNCT .. '$', '')
+        return s
+    end
+end
+
+local STEM_BLOCKLIST = {}
+local STEM_BLOCKLIST_LOADED = false
+
+function loadIntentStemBlocklist()
+    if STEM_BLOCKLIST_LOADED then return end
+    STEM_BLOCKLIST_LOADED = true
+    STEM_BLOCKLIST = {}
+    local path = INTENT_STEM_BLOCKLIST_PATH
+    if type(path) ~= 'string' or not doesFileExist(path) then return end
+    local chunk = loadfile(path)
+    if not chunk then return end
+    local ok, data = pcall(chunk)
+    if ok and type(data) == 'table' then
+        for _, root in ipairs(data) do
+            local n = normalizeMatchText(root)
+            if n ~= '' then STEM_BLOCKLIST[n] = true end
+        end
+    end
+end
+
+function intentStemBlocked(token)
+    loadIntentStemBlocklist()
+    token = normalizeMatchText(token)
+    if token == '' then return false end
+    for blocked, _ in pairs(STEM_BLOCKLIST) do
+        if #blocked >= 4 and (token:sub(1, #blocked) == blocked or blocked:sub(1, #token) == token) then
+            return true
+        end
+    end
+    return false
+end
+
+function intentMatchTextPadded(s)
+    s = normalizeMatchText(s)
+    if s == '' then return '' end
+    return ' ' .. s:gsub('%s+', ' ') .. ' '
+end
+
+function intentTokenMinLength(token)
+    token = normalizeMatchText(token)
+    if token == '' then return MIN_CONTAINS_TRIGGER_LEN or 3 end
+    if token:match('^[%a%d]+$') and #token >= 2 then return 2 end
+    return MIN_CONTAINS_TRIGGER_LEN or 3
+end
+
+function intentTextContainsToken(msg, msgAlt, token, msgTypo)
+    token = normalizeMatchText(token)
+    if token == '' or #token < intentTokenMinLength(token) then return false end
+    local needle = ' ' .. token .. ' '
+    for _, bag in ipairs({ msg, msgAlt, msgTypo or normalizeMatchTextTypo(msg) }) do
+        local mp = intentMatchTextPadded(bag)
+        if mp:find(needle, 1, true) then return true end
+    end
+    return false
+end
+
+function intentWordsShareStem(word, token, minStem, allowStem)
+    if not allowStem or intentStemBlocked(token) or intentStemBlocked(word) then return false end
+    minStem = minStem or 6
+    word = normalizeMatchText(word)
+    token = normalizeMatchText(token)
+    if word == '' or token == '' then return false end
+    if word == token then return true end
+    local maxStem = math.min(#word, #token)
+    if maxStem < minStem then return false end
+    for n = maxStem, minStem, -1 do
+        if word:sub(1, n) == token:sub(1, n) then return true end
+    end
+    return false
+end
+
+--[[
+    Intent token match: whole word; prefix for len>=5; stem only if allowStem and not blocklisted.
+]]
+function intentTextMatchesToken(msg, msgAlt, token, msgTypo, allowStem)
+    token = normalizeMatchText(token)
+    if token == '' or #token < intentTokenMinLength(token) then return false end
+    msgTypo = msgTypo or normalizeMatchTextTypo(msg)
+    if intentTextContainsToken(msg, msgAlt, token, msgTypo) then return true end
+    if #token < 5 then return false end
+    local seen = {}
+    local bags = {}
+    for _, bag in ipairs({ msg, msgAlt, msgTypo }) do
+        local n = normalizeMatchText(bag)
+        if n ~= '' and not seen[n] then
+            seen[n] = true
+            bags[#bags + 1] = n
+        end
+    end
+    for _, bag in ipairs(bags) do
+        for w in bag:gmatch('%S+') do
+            if #w >= #token and w:sub(1, #token) == token then
+                return true
+            end
+            if allowStem and #token >= 6 then
+                local minStem = (#token >= 8) and 6 or 5
+                if intentWordsShareStem(w, token, minStem, true) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function intentNormalizeBags(body)
+    local msg, msgAlt, msgTypo = matchMessageVariants(body)
+    return {
+        raw = body,
+        msg = msg,
+        msgAlt = msgAlt,
+        msgTypo = msgTypo,
+        key = msg ~= '' and msg or msgAlt,
+    }
+end
+
+function intentMessageHasToken(bags, token, allowStem)
+    if not bags then return false end
+    return intentTextMatchesToken(bags.msg, bags.msgAlt, token, bags.msgTypo, allowStem)
+end
+
+function intentMessageHasAllTokens(bags, tokens, allowStem)
+    if not bags or type(tokens) ~= 'table' then return false end
+    for _, t in ipairs(tokens) do
+        if not intentMessageHasToken(bags, t, allowStem) then
+            return false
+        end
+    end
+    return #tokens > 0
+end
+
+function intentMessageHasAnyToken(bags, tokens, allowStem)
+    if not bags or type(tokens) ~= 'table' then return false end
+    for _, t in ipairs(tokens) do
+        if intentMessageHasToken(bags, t, allowStem) then
+            return true
+        end
+    end
+    return false
+end
+
+function intentMessageHasNoneTokens(bags, tokens, allowStem)
+    if not bags or type(tokens) ~= 'table' then return true end
+    for _, t in ipairs(tokens) do
+        if intentMessageHasToken(bags, t, allowStem) then
+            return false
+        end
+    end
+    return true
+end
+
+--[[ Context classifier: FAQ / REPORT / THANKS / UNKNOWN (before intent matching). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+INTENT_CONTEXT_FAQ = 'faq'
+INTENT_CONTEXT_REPORT = 'report'
+INTENT_CONTEXT_THANKS = 'thanks'
+INTENT_CONTEXT_UNKNOWN = 'unknown'
+
+local DEFAULT_REPORT_MARKERS = {
+    'dm', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
+    'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
+}
+
+local DEFAULT_FAQ_HINTS = {
+    'где', 'как', 'сколько', 'можно', 'можно ли', 'почему', 'что', 'когда', 'куда', 'какой', 'какая',
+    'help', 'хелп', 'подскаж', 'объясн', 'найти', 'купить', 'продать', 'устроиться', 'работ',
+}
+
+local contextConfig = nil
+
+function getIntentContextConfig()
+    if contextConfig then return contextConfig end
+    contextConfig = {
+        report_markers = DEFAULT_REPORT_MARKERS,
+        faq_hints = DEFAULT_FAQ_HINTS,
+        thanks_exact = {},
+    }
+    if type(BUILTIN_AUTO_RULE_GG) == 'table' and type(BUILTIN_AUTO_RULE_GG.keywords) == 'table' then
+        for _, k in ipairs(BUILTIN_AUTO_RULE_GG.keywords) do
+            contextConfig.thanks_exact[#contextConfig.thanks_exact + 1] = k
+        end
+    end
+    if type(intentRegistry) == 'table' and type(intentRegistry.contexts) == 'table' then
+        local c = intentRegistry.contexts
+        if type(c.report_markers) == 'table' then contextConfig.report_markers = c.report_markers end
+        if type(c.faq_hints) == 'table' then contextConfig.faq_hints = c.faq_hints end
+        if type(c.thanks_exact) == 'table' and #c.thanks_exact > 0 then
+            contextConfig.thanks_exact = c.thanks_exact
+        end
+    end
+    return contextConfig
+end
+
+function resetIntentContextConfig()
+    contextConfig = nil
+end
+
+function messageLooksLikeThanks(bags)
+    if not bags then return false end
+    local cfg = getIntentContextConfig()
+    local low = bags.msg
+    if low == '' then low = bags.msgAlt end
+    if low == '' then return false end
+    if #low > 48 then return false end
+    for _, kw in ipairs(cfg.thanks_exact or {}) do
+        local k = normalizeMatchText(kw)
+        if k ~= '' and (low == k or low == normalizeMatchTextTypo(kw)) then
+            return true
+        end
+    end
+    return false
+end
+
+function messageLooksLikeReportContext(bags, rawText)
+    if not bags then return false end
+    local low = bags.msg
+    if low == '' then low = bags.msgAlt end
+    if low == '' then return false end
+    if type(deskIngest) == 'table' and deskIngest.looksLikeAdminActionText
+        and deskIngest.looksLikeAdminActionText(rawText or bags.raw or '') then
+        return false
+    end
+    local cfg = getIntentContextConfig()
+    local hasMarker = false
+    for _, m in ipairs(cfg.report_markers or DEFAULT_REPORT_MARKERS) do
+        local mNorm = normalizeMatchText(m)
+        if mNorm ~= '' and low:find(mNorm, 1, true) then
+            hasMarker = true
+            break
+        end
+    end
+    if not hasMarker then return false end
+    if extractSuspectIdFromReport(rawText or bags.raw or '') then
+        return true
+    end
+    return false
+end
+
+function messageHasFaqHints(bags)
+    if not bags then return false end
+    local low = bags.msg
+    if low == '' then low = bags.msgAlt end
+    if low == '' then return false end
+    local cfg = getIntentContextConfig()
+    for _, h in ipairs(cfg.faq_hints or DEFAULT_FAQ_HINTS) do
+        local hint = normalizeMatchText(h)
+        if hint ~= '' and intentMessageHasToken(bags, hint, false) then
+            return true
+        end
+    end
+    if low:find('%?') then return true end
+    return false
+end
+
+function classifyContext(body, bags)
+    bags = bags or intentNormalizeBags(body)
+    if messageLooksLikeThanks(bags) then
+        return INTENT_CONTEXT_THANKS
+    end
+    if messageLooksLikeReportContext(bags, body) then
+        return INTENT_CONTEXT_REPORT
+    end
+    local low = bags.msg
+    if low == '' then low = bags.msgAlt end
+    if low == '' then return INTENT_CONTEXT_UNKNOWN end
+    local genericOnly = {
+        'help', 'хелп', 'hel', 'помогите', 'помоги', 'помог',
+        '\xEF\xEE\xEC\xEE\xE3\xE8\xF2\xE5', '\xEF\xEE\xEC\xEE\xE3\xE8',
+        'zastryal', 'застрял', '\xE7\xE0\xF1\xF2\xF0\xFF\xEB',
+    }
+    for _, token in ipairs(genericOnly) do
+        local key = normalizeMatchText(token)
+        if key ~= '' and low == key then
+            return INTENT_CONTEXT_UNKNOWN
+        end
+    end
+    if messageHasFaqHints(bags) then
+        return INTENT_CONTEXT_FAQ
+    end
+    if extractSuspectIdForWatch(body or bags.raw) and not messageLooksLikeReportContext(bags, body) then
+        return INTENT_CONTEXT_FAQ
+    end
+    return INTENT_CONTEXT_FAQ
+end
+
+--[[ Intent trigger / exclusion matching and scoring. ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+function intentClauseMatches(bags, clause, allowStem)
+    if type(clause) ~= 'table' then return false end
+    if clause.requires_id then
+        return extractSuspectIdForWatch(bags.raw or '') ~= nil
+    end
+    if clause.token and trim(clause.token) ~= '' then
+        return intentMessageHasToken(bags, clause.token, allowStem)
+    end
+    if type(clause.all) == 'table' and #clause.all > 0 then
+        if not intentMessageHasAllTokens(bags, clause.all, allowStem) then return false end
+    end
+    if type(clause.any) == 'table' and #clause.any > 0 then
+        if not intentMessageHasAnyToken(bags, clause.any, allowStem) then return false end
+    end
+    if type(clause.none) == 'table' and #clause.none > 0 then
+        if not intentMessageHasNoneTokens(bags, clause.none, allowStem) then return false end
+    end
+    if clause.all or clause.any or clause.token or clause.requires_id then
+        return true
+    end
+    return false
+end
+
+function intentExclusionMatches(bags, exclusions, allowStem)
+    if type(exclusions) ~= 'table' then return false end
+    for _, clause in ipairs(exclusions) do
+        if intentClauseMatches(bags, clause, allowStem) then
+            return true
+        end
+    end
+    return false
+end
+
+function intentCountClauseTokens(clause)
+    if type(clause) ~= 'table' then return 0 end
+    if clause.requires_id then return 2 end
+    if clause.token and trim(clause.token) ~= '' then return 1 end
+    local n = 0
+    if type(clause.all) == 'table' then n = n + #clause.all end
+    if type(clause.any) == 'table' then n = n + #clause.any end
+    return n
+end
+
+function intentScoreTriggerClause(bags, clause, allowStem)
+    if not intentClauseMatches(bags, clause, allowStem) then return 0 end
+    local score = 0
+    if clause.requires_id then return 24 end
+    if clause.token and trim(clause.token) ~= '' then
+        score = 10 + math.min(#normalizeMatchText(clause.token), 12)
+    end
+    if type(clause.all) == 'table' then
+        for _, t in ipairs(clause.all) do
+            score = score + 10 + math.min(#normalizeMatchText(t), 8)
+        end
+        if #clause.all >= 2 then score = score + 5 end
+    end
+    if type(clause.any) == 'table' and #clause.any > 0 then
+        score = score + 6
+    end
+    return score
+end
+
+function intentBestTriggerScore(bags, intent)
+    if not intent or type(intent.triggers) ~= 'table' then return 0 end
+    local allowStem = intent.stem == true
+    local groups = intent.triggers.any
+    if type(groups) ~= 'table' then return 0 end
+    local best = 0
+    for _, clause in ipairs(groups) do
+        best = math.max(best, intentScoreTriggerClause(bags, clause, allowStem))
+    end
+    if type(intent.requires) == 'table' then
+        for _, req in ipairs(intent.requires) do
+            if not intentClauseMatches(bags, req, allowStem) then
+                return 0
+            end
+            best = best + 8
+        end
+    end
+    return best
+end
+
+function intentMatches(bags, intent, context)
+    if not intent or intent.enabled == false then return false, 0 end
+    if context and intent.context and intent.context ~= context then return false, 0 end
+    local allowStem = intent.stem == true
+    if intentExclusionMatches(bags, intent.exclusions, allowStem) then
+        return false, 0
+    end
+    local score = intentBestTriggerScore(bags, intent)
+    if score <= 0 then return false, 0 end
+    return true, score
+end
+
+function intentFirstTokens(intent)
+    local out = {}
+    local seen = {}
+    local function addToken(t)
+        t = normalizeMatchText(t)
+        if t ~= '' and #t >= 3 and not seen[t] then
+            seen[t] = true
+            out[#out + 1] = t
+        end
+    end
+    if type(intent.triggers) ~= 'table' or type(intent.triggers.any) ~= 'table' then
+        return out
+    end
+    for _, clause in ipairs(intent.triggers.any) do
+        if clause.requires_id then
+            addToken('id')
+        end
+        if clause.token then addToken(clause.token) end
+        if type(clause.all) == 'table' then
+            for _, t in ipairs(clause.all) do addToken(t) end
+        end
+        if type(clause.any) == 'table' then
+            for _, t in ipairs(clause.any) do addToken(t) end
+        end
+    end
+    return out
+end
+
+--[[ Legacy quick_scenarios → intent adapter; guard rules as data exclusions. ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local LEGACY_GUARD_EXCLUSIONS = {
+    ['/c 090'] = {
+        { all = { 'квест', 'механик' } },
+        { all = { 'заклад' } },
+        { all = { 'участк' }, none = { '090' } },
+            { all = { 'механик' }, none = { 'вызвать', '090', 'эвакуатор', '010', 'полом' } },
+    },
+    ['азс'] = {
+        { all = { 'заправ', 'игрок' }, none = { 'бензин', 'топлив', 'канистр' } },
+        { all = { 'контракт' }, none = { 'бензин', 'азс' } },
+    },
+    ['канистр'] = {
+        { all = { 'заправ', 'игрок' }, none = { 'бензин', 'топлив', 'канистр' } },
+        { all = { 'контракт' }, none = { 'бензин', 'азс' } },
+    },
+    ['creditshelp'] = {
+        { all = { 'кредит' }, none = { 'advance', 'credits', 'donate', 'адванс', 'credit' } },
+    },
+    ['/bp'] = {
+        { all = { 'квест' }, none = { 'бп', 'battle', 'батл' } },
+    },
+    ['/mn 8'] = {
+        { all = { 'квест' }, none = { 'бп', 'battle', 'батл' } },
+    },
+}
+
+function legacyIntentIdFromLabel(label)
+    label = normalizeMatchText(label)
+    if label == '' then return 'legacy.unknown' end
+    label = label:gsub('[^%w%.%-]+', '_'):gsub('_+', '_'):gsub('^_', ''):gsub('_$', '')
+    return 'legacy.' .. label
+end
+
+function legacyKeywordToTrigger(kw)
+    kw = trim(kw or '')
+    if kw == '' then return nil end
+    if kw:find('+', 1, true) or kw:find(' ', 1, true) then
+        local parts = {}
+        local seen = {}
+        for w in (kw:gsub('+', ' ') .. ' '):gmatch('(%S+)') do
+            w = normalizeMatchText(w)
+            if w ~= '' and not seen[w] then
+                seen[w] = true
+                parts[#parts + 1] = w
+            end
+        end
+        if #parts < 1 then return nil end
+        if #parts == 1 then return { token = parts[1] } end
+        return { all = parts }
+    end
+    return { token = kw }
+end
+
+function legacyKeywordsToTriggers(keywords)
+    local any = {}
+    for _, kw in ipairs(keywords or {}) do
+        local tr = legacyKeywordToTrigger(kw)
+        if tr then any[#any + 1] = tr end
+    end
+    return any
+end
+
+function legacyKeywordsToExclusions(neg)
+    local out = {}
+    for _, kw in ipairs(neg or {}) do
+        local tr = legacyKeywordToTrigger(kw)
+        if tr then out[#out + 1] = tr end
+    end
+    return out
+end
+
+function legacyGuardExclusionsForReply(reply)
+    reply = normalizeMatchText(reply or '')
+    if reply == '' then return {} end
+    local out = {}
+    for key, rules in pairs(LEGACY_GUARD_EXCLUSIONS) do
+        local nk = normalizeMatchText(key)
+        if reply:find(nk, 1, true) or reply:find(key, 1, true) then
+            for _, r in ipairs(rules) do
+                out[#out + 1] = r
+            end
+        end
+    end
+    return out
+end
+
+function legacyCategoryFromLabel(label, reply)
+    label = normalizeMatchText(label or '')
+    reply = trim(reply or '')
+    if label:find('gps') or label:find('тир') or label:find('отель') or label:find('лиценз') then
+        return 'navigation'
+    end
+    if label:find('прод') or label:find('куп') or label:find('price') or label:find('баланс') or label:find('кредит') then
+        return 'economy'
+    end
+    if label:find('телефон') or label:find('такси') or label:find('позвон') or label:find('sms') or label:find('/c') then
+        return 'communication'
+    end
+    if label:find('работ') or label:find('устро') or label:find('автобус') or label:find('таксист') or label:find('дальноб') then
+        return 'jobs'
+    end
+    if reply:find('/sp') or label:find('след') then return 'reports' end
+    return 'gameplay'
+end
+
+function adaptQuickScenarioToIntent(sc, idx)
+    if type(sc) ~= 'table' then return nil end
+    local actionType = sc.action == 'watch' and 'watch' or 'reply'
+    local context = actionType == 'watch' and INTENT_CONTEXT_REPORT or INTENT_CONTEXT_FAQ
+    local reply = trim(sc.reply or '')
+    local triggersAny = legacyKeywordsToTriggers(sc.keywords or {})
+    if actionType == 'watch' and #triggersAny < 1 then
+        triggersAny = { { requires_id = true } }
+    end
+    if #triggersAny < 1 then return nil end
+    local exclusions = legacyKeywordsToExclusions(sc.negative_keywords)
+    local guardEx = legacyGuardExclusionsForReply(reply)
+    for _, g in ipairs(guardEx) do
+        exclusions[#exclusions + 1] = g
+    end
+    local label = trim(sc.label or '')
+    return {
+        id = legacyIntentIdFromLabel(label ~= '' and label or ('scenario_' .. tostring(idx or 0))),
+        context = context,
+        category = legacyCategoryFromLabel(label, reply),
+        label = label ~= '' and label or '?',
+        enabled = sc.enabled ~= false,
+        stem = false,
+        action = {
+            type = actionType,
+            text = reply,
+            notify = actionType == 'watch' and reply or nil,
+        },
+        triggers = { any = triggersAny },
+        exclusions = #exclusions > 0 and exclusions or nil,
+        _legacy = true,
+    }
+end
+
+function adaptLegacyScenariosToIntents(scenarios)
+    local intents = {}
+    for i, sc in ipairs(scenarios or {}) do
+        local intent = adaptQuickScenarioToIntent(sc, i)
+        if intent then intents[#intents + 1] = intent end
+    end
+    return intents
+end
+
+function migrateGuardRulesToIntentExclusions(intents)
+    if type(intents) ~= 'table' then return end
+    for _, intent in ipairs(intents) do
+        if type(intent.action) == 'table' and intent.action.text then
+            local guardEx = legacyGuardExclusionsForReply(intent.action.text)
+            if #guardEx > 0 then
+                intent.exclusions = intent.exclusions or {}
+                for _, g in ipairs(guardEx) do
+                    intent.exclusions[#intent.exclusions + 1] = g
+                end
+            end
+        end
+    end
+end
+
+--[[ Merge config/intent_trigger_extensions.lua into intent list at load time. ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local function clauseKey(clause)
+    if type(clause) ~= 'table' then return '' end
+    if clause.requires_id then return 'id' end
+    if clause.token then return 't:' .. normalizeMatchText(clause.token) end
+    local parts = {}
+    if type(clause.all) == 'table' then
+        for _, t in ipairs(clause.all) do parts[#parts + 1] = normalizeMatchText(t) end
+        table.sort(parts)
+        return 'a:' .. table.concat(parts, '+')
+    end
+    if type(clause.any) == 'table' then
+        for _, t in ipairs(clause.any) do parts[#parts + 1] = normalizeMatchText(t) end
+        table.sort(parts)
+        return 'o:' .. table.concat(parts, '+')
+    end
+    return ''
+end
+
+local function mergeClauses(into, add)
+    if type(into) ~= 'table' or type(add) ~= 'table' then return end
+    local seen = {}
+    for _, c in ipairs(into) do
+        local k = clauseKey(c)
+        if k ~= '' then seen[k] = true end
+    end
+    for _, c in ipairs(add) do
+        local k = clauseKey(c)
+        if k == '' or not seen[k] then
+            into[#into + 1] = c
+            if k ~= '' then seen[k] = true end
+        end
+    end
+end
+
+function applyIntentExtensionsToList(intents)
+    local path = INTENT_EXTENSIONS_PATH
+    if type(path) ~= 'string' or not doesFileExist(path) then return false end
+    local chunk, err = loadfile(path)
+    if not chunk then
+        print('[Report Desk] intent extensions load: ' .. tostring(err))
+        return false
+    end
+    local ok, ext = pcall(chunk)
+    if not ok or type(ext) ~= 'table' then return false end
+
+    local byId = {}
+    for i, intent in ipairs(intents or {}) do
+        if intent.id then byId[intent.id] = i end
+    end
+
+    for _, patch in ipairs(ext.patches or {}) do
+        local idx = patch.id and byId[patch.id]
+        if idx then
+            local intent = intents[idx]
+            intent.triggers = intent.triggers or { any = {} }
+            intent.triggers.any = intent.triggers.any or {}
+            mergeClauses(intent.triggers.any, patch.add_any)
+            if type(patch.add_exclusions) == 'table' and #patch.add_exclusions > 0 then
+                intent.exclusions = intent.exclusions or {}
+                mergeClauses(intent.exclusions, patch.add_exclusions)
+            end
+        end
+    end
+
+    for _, raw in ipairs(ext.new_intents or {}) do
+        if type(raw) == 'table' and raw.id and not byId[raw.id] then
+            intents[#intents + 1] = raw
+            byId[raw.id] = #intents
+        end
+    end
+
+    return true
+end
+
+--[[ Intent registry, compile index, resolveMessageIntents (Top-1 + optional alt). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+intentRegistry = nil
+deskIntents = {}
+deskIntentsById = {}
+deskIntentIndex = {}
+intentsGen = 0
+
+function bumpIntentsGen()
+    intentsGen = intentsGen + 1
+    if type(deskCache) == 'table' then
+        deskCache.intentResolve = {}
+    end
+    resetIntentContextConfig()
+end
+
+function normalizeIntentRecord(raw)
+    if type(raw) ~= 'table' then return nil end
+    local id = trim(raw.id or '')
+    if id == '' then return nil end
+    local action = raw.action
+    if type(action) ~= 'table' then
+        local actionType = raw.action == 'watch' and 'watch' or 'reply'
+        action = { type = actionType, text = trim(raw.reply or ''), notify = trim(raw.reply or '') }
+    end
+    return {
+        id = id,
+        context = raw.context or INTENT_CONTEXT_FAQ,
+        category = raw.category or 'general',
+        label = trim(raw.label or id),
+        enabled = raw.enabled ~= false,
+        stem = raw.stem == true,
+        action = action,
+        triggers = raw.triggers or { any = {} },
+        exclusions = raw.exclusions,
+        requires = raw.requires,
+    }
+end
+
+function compileIntentIndex(intents)
+    local index = {}
+    for i, intent in ipairs(intents or {}) do
+        local ctx = intent.context or INTENT_CONTEXT_FAQ
+        if not index[ctx] then index[ctx] = { all = {}, byToken = {} } end
+        index[ctx].all[#index[ctx].all + 1] = i
+        for _, tok in ipairs(intentFirstTokens(intent)) do
+            local bucket = index[ctx].byToken[tok]
+            if not bucket then
+                bucket = {}
+                index[ctx].byToken[tok] = bucket
+            end
+            bucket[#bucket + 1] = i
+        end
+    end
+    return index
+end
+
+function setDeskIntents(intents, registryMeta)
+    deskIntents = {}
+    deskIntentsById = {}
+    for i, raw in ipairs(intents or {}) do
+        local intent = normalizeIntentRecord(raw)
+        if intent then
+            deskIntents[i] = intent
+            deskIntentsById[intent.id] = intent
+        end
+    end
+    intentRegistry = registryMeta or { version = INTENTS_VERSION or 1 }
+    if type(intentRegistry.intents) ~= 'table' then
+        intentRegistry.intents = deskIntents
+    end
+    deskIntentIndex = compileIntentIndex(deskIntents)
+    bumpIntentsGen()
+end
+
+function loadIntentsFromFile(path)
+    path = path or INTENTS_CONFIG_PATH
+    if not doesFileExist(path) then return false end
+    local chunk, err = loadfile(path)
+    if not chunk then
+        print('[Report Desk] intents load: ' .. tostring(err))
+        return false
+    end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= 'table' then return false end
+    if type(data.intents) ~= 'table' or #data.intents < 1 then return false end
+    migrateGuardRulesToIntentExclusions(data.intents)
+    if type(applyIntentExtensionsToList) == 'function' then
+        applyIntentExtensionsToList(data.intents)
+    end
+    setDeskIntents(data.intents, data)
+    if data.version then
+        settings.intents_version = tonumber(data.version) or settings.intents_version
+    end
+    return true
+end
+
+function reloadDeskIntentsFromSources(preferLegacyScenarios)
+    if not preferLegacyScenarios
+            and type(loadIntentsFromFile) == 'function'
+            and loadIntentsFromFile(INTENTS_CONFIG_PATH) then
+        return true
+    end
+    if type(quickScenarios) == 'table' and #quickScenarios > 0 then
+        local adapted = adaptLegacyScenariosToIntents(quickScenarios)
+        setDeskIntents(adapted, { version = 0, source = 'legacy_adapter' })
+        return #deskIntents > 0
+    end
+    setDeskIntents({}, { version = 0 })
+    return false
+end
+
+function ensureDeskIntentsLoaded()
+    if #deskIntents > 0 then return true end
+    return reloadDeskIntentsFromSources()
+end
+
+function intentCandidateIndices(bags, context)
+    ensureDeskIntentsLoaded()
+    local bucket = deskIntentIndex[context]
+    if not bucket then return {} end
+    if not bags or bags.key == '' then return bucket.all end
+    local seen = {}
+    local out = {}
+    for tok in bags.key:gmatch('%S+') do
+        local list = bucket.byToken[tok]
+        if list then
+            for _, idx in ipairs(list) do
+                if not seen[idx] then
+                    seen[idx] = true
+                    out[#out + 1] = idx
+                end
+            end
+        end
+    end
+    if #out < 1 then return bucket.all end
+    return out
+end
+
+function intentToQuickScenario(intent)
+    if not intent then return nil end
+    local action = intent.action or {}
+    local actionType = action.type == 'watch' and 'watch' or 'reply'
+    return {
+        label = intent.label or intent.id,
+        enabled = intent.enabled ~= false,
+        match = 'contains',
+        keywords = {},
+        negative_keywords = {},
+        reply = trim(action.text or action.notify or ''),
+        action = actionType,
+        priority = 0,
+        skip_if_report_id = intent.context == INTENT_CONTEXT_FAQ,
+        intentId = intent.id,
+    }
+end
+
+function resolveMessageIntents(text)
+    text = trim(text or '')
+    if text == '' then return {}, INTENT_CONTEXT_UNKNOWN end
+    ensureDeskIntentsLoaded()
+    local bags = intentNormalizeBags(text)
+    if bags.key == '' then return {}, INTENT_CONTEXT_UNKNOWN end
+
+    local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
+    if type(deskCache) == 'table' and deskCache.intentResolve then
+        local hit = deskCache.intentResolve[bags.key]
+        if hit and hit.sig == sig then
+            return hit.results, hit.context
+        end
+    end
+
+    local context = classifyContext(text, bags)
+    if context == INTENT_CONTEXT_THANKS or context == INTENT_CONTEXT_UNKNOWN then
+        local empty = {}
+        if type(deskCache) == 'table' then
+            deskCache.intentResolve = deskCache.intentResolve or {}
+            deskCache.intentResolve[bags.key] = { sig = sig, results = empty, context = context }
+        end
+        return empty, context
+    end
+
+    local minConf = tonumber(INTENT_MIN_CONFIDENCE) or 12
+    local closeRatio = tonumber(INTENT_CLOSE_RATIO) or 0.92
+    local maxBtns = tonumber(INTENT_MAX_BUTTONS) or 2
+
+    local candidates = {}
+    local indices = intentCandidateIndices(bags, context)
+    for _, idx in ipairs(indices) do
+        local intent = deskIntents[idx]
+        local ok, score = intentMatches(bags, intent, context)
+        if ok and score >= minConf then
+            candidates[#candidates + 1] = {
+                intent = intent,
+                score = score,
+                id = intent.id,
+            }
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return (a.id or '') < (b.id or '')
+    end)
+
+    local results = {}
+    if #candidates > 0 then
+        results[1] = candidates[1]
+        if #candidates > 1 and maxBtns > 1 then
+            local second = candidates[2]
+            if second.score / candidates[1].score >= closeRatio then
+                results[2] = second
+            end
+        end
+    end
+
+    if messageEligibleForWatchButton(text, context) then
+        local hasWatch = false
+        for _, r in ipairs(results) do
+            if r.intent and r.intent.action and r.intent.action.type == 'watch' then
+                hasWatch = true
+                break
+            end
+        end
+        if not hasWatch then
+            local watchIntent = deskIntentsById['report.watch']
+            if not watchIntent then
+                watchIntent = normalizeIntentRecord({
+                    id = 'report.watch',
+                    context = INTENT_CONTEXT_REPORT,
+                    category = 'reports',
+                    label = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC',
+                    action = { type = 'watch', text = '', notify = settings and settings.watch_notify or 'see' },
+                    triggers = { any = { { requires_id = true } } },
+                })
+            end
+            if watchIntent then
+                table.insert(results, 1, { intent = watchIntent, score = 30, id = watchIntent.id })
+                if #results > maxBtns then
+                    table.remove(results)
+                end
+            end
+        end
+    end
+
+    if type(deskCache) == 'table' then
+        deskCache.intentResolve = deskCache.intentResolve or {}
+        deskCache.intentResolve[bags.key] = { sig = sig, results = results, context = context }
+    end
+    return results, context
+end
+
+function resolveMessageIntentIds(text)
+    local results, ctx = resolveMessageIntents(text)
+    local ids = {}
+    for _, r in ipairs(results) do
+        ids[#ids + 1] = r.id
+    end
+    return ids, ctx
+end
+
+function formatIntentResolveSummary(text)
+    local results, ctx = resolveMessageIntents(text)
+    if #results < 1 then
+        return string.format('context=%s | no match', tostring(ctx))
+    end
+    local parts = { string.format('context=%s', tostring(ctx)) }
+    for i, r in ipairs(results) do
+        parts[#parts + 1] = string.format('%s=%s (%.0f)', i == 1 and 'top1' or 'alt', tostring(r.id), r.score or 0)
+    end
+    return table.concat(parts, ' | ')
 end
 
 --[[ Модуль: фильтр мата, парсинг чата, hooks. ]]
@@ -15630,14 +16752,68 @@ function appendOutgoingMessage(t, body, opts)
     return threadApplyOutgoing(t, key, body, opts)
 end
 
+local AUTO_RULE_LABELS = {
+    time = '\xC2\xF0\xE5\xEC\xFF',
+    GG = 'GG',
+}
+
+-- Auto Rule Display Name
+function autoRuleDisplayName(ruleName)
+    ruleName = trim(ruleName or '')
+    if ruleName == '' then return '?' end
+    return AUTO_RULE_LABELS[ruleName] or ruleName
+end
+
+-- Human-readable auto-reply note (legacy auto: … → /ans … тоже нормализуется).
+function formatAutoSystemDisplay(m)
+    if type(m) ~= 'table' then return '' end
+    local note = trim(m.note or '')
+    if m.autoStatus and note ~= '' then return note end
+    local rule, rest = note:match('^auto:%s*(.-)%s*\xE2\x86\x92%s*(.+)$')
+    if rule then
+        rest = trim(rest)
+        if rest:match('^/ans') or rest:match('^/ ') then
+            return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB', autoRuleDisplayName(rule))
+        end
+        if rest:find('\xEE\xE6\xE8\xE4\xE0\xE5\xF2', 1, true) then
+            return string.format(
+                '\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\xEE\xE6\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF',
+                autoRuleDisplayName(rule))
+        end
+        return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\x80\x94 %s', autoRuleDisplayName(rule), rest)
+    end
+    return note
+end
+
+-- Format Auto System Line
+function formatAutoSystemLine(ruleName, detail, status)
+    local label = autoRuleDisplayName(ruleName)
+    if status == 'pending' then
+        return string.format(
+            '\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\xEE\xE6\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF',
+            label)
+    end
+    if status == 'fail' then
+        detail = trim(tostring(detail or ''))
+        if detail == '' or detail:match('^/ans') or detail:match('^/ ') then
+            detail = '\xED\xE5 \xEE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE'
+        end
+        return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\x80\x94 %s', label, detail)
+    end
+    return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB', label)
+end
+
 -- Add Auto System Note
-function addAutoSystemNote(t, ruleName, result)
+function addAutoSystemNote(t, ruleName, detail, status)
     if not t then return end
+    status = status or 'info'
     local key = findThreadKeyByNick(t.nick) or nickKey(t.nick)
     addMessageToKey(key, {
         dir = 'system',
         text = '',
-        note = string.format('auto: %s \xE2\x86\x92 %s', ruleName or '', result or ''),
+        autoRule = ruleName,
+        autoStatus = status,
+        note = formatAutoSystemLine(ruleName, detail, status),
         ts = os.time(),
     })
 end
@@ -15736,7 +16912,7 @@ function sendOutgoingAns(t, text, opts)
     if not ansId then
         if err then say(err) end
         if opts.showSystemOnFail then
-            addAutoSystemNote(t, opts.ruleName or '', err or 'fail')
+            addAutoSystemNote(t, opts.ruleName or '', err or 'fail', 'fail')
         end
         return false, err
     end
@@ -16394,6 +17570,7 @@ function cheatsCleanup()
     if cheatState.airbreak then cheatsSetAirbreak(false) end
     if cheatState.godmode then cheatsApplyGodmode(false) end
     if cheatState.wallhack then cheatsApplyWallhack(false) end
+    if type(maskIdCleanup) == 'function' then pcall(maskIdCleanup) end
     cheatState.ntBackup = nil
 end
 
@@ -16872,23 +18049,24 @@ function syncCheatsUiFromSettings()
     uiCheatGmStart[0] = c.gm_on_start and true or false
     uiCheatWhStart[0] = c.wh_on_start and true or false
     uiCheatHud[0] = c.show_hud and true or false
+    if uiCheatMaskId then uiCheatMaskId[0] = c.mask_player_id ~= false end
     cheatState.uiMarkerWheel[0] = c.marker_wheel ~= false
     uiCheatAbSpeed[0] = tonumber(c.ab_speed) or 1.0
     cheatsUiSynced = true
 end
 
-local CHEATS_HUD_W = 54
-local CHEATS_HUD_H = 68
-local CHEATS_HUD_PAD_X = 10
-local CHEATS_HUD_PAD_Y = 8
-local CHEATS_HUD_LINE_H = 16
-local CHEATS_HUD_LABEL_W = 96
-local CHEATS_OVERLAY_PANEL_W = 188
-local CHEATS_AB_HUD_W = 108
-local CHEATS_AB_HUD_H = 28
-local CHEATS_AB_HUD_SIDE_PAD = 12
+CHEATS_HUD_W = 54
+CHEATS_HUD_H = 68
+CHEATS_HUD_PAD_X = 10
+CHEATS_HUD_PAD_Y = 8
+CHEATS_HUD_LINE_H = 16
+CHEATS_HUD_LABEL_W = 96
+CHEATS_OVERLAY_PANEL_W = 188
+CHEATS_AB_HUD_W = 108
+CHEATS_AB_HUD_H = 28
+CHEATS_AB_HUD_SIDE_PAD = 12
 
-local CHEATS_HUD_LINES = {
+CHEATS_HUD_LINES = {
     { 'WH', function() return cheatState.wallhack end },
     { 'GM', function() return cheatState.godmode end },
     { 'AB', function() return cheatState.airbreak end },
@@ -17254,6 +18432,13 @@ function cheatLiveBindPreview()
     return uiText(table.concat(parts, '+'))
 end
 
+-- Активен ли любой режим захвата бинда (hotkey / cheats / автовыдача).
+function deskAnyBindCapture()
+    return deskCache.hotkeyCapture == true
+        or deskCache.cheatCapture ~= nil
+        or deskCache.adminPunishBindCapture == true
+end
+
 -- Finish Desk Bind Capture
 function finishDeskBindCapture()
     deskCache.hotkeyCapture = false
@@ -17262,6 +18447,10 @@ function finishDeskBindCapture()
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = 0
     deskCache.bindCapPollPrev = nil
+    deskCache.bindCapKbPrev = nil
+    if deskCache.adminPunishBindCapture and type(finishAdminPunishBindCapture) == 'function' then
+        finishAdminPunishBindCapture()
+    end
 end
 
 -- Обычные клавиши для WM_KEY* (без кнопок мыши — их см. deskBindMouseKeyboardVk).
@@ -17320,7 +18509,7 @@ function deskBindMouseCommitsOnDown(vk)
 end
 
 -- Begin Desk Bind Capture Session
-local function deskBindCaptureResetPollState()
+function deskBindCaptureResetPollState()
     local prev = {}
     for vk in pairs(MOUSE_BIND_VKS) do
         prev[vk] = isVkDown(vk) == true
@@ -17340,16 +18529,22 @@ local function deskBindCapturePollSave(vk)
     if deskCache.hotkeyCapture then
         return deskBindCapSaveHotkey(vk)
     end
+    if deskCache.adminPunishBindCapture and type(adminPunishBindCaptureSave) == 'function' then
+        return adminPunishBindCaptureSave(vk)
+    end
     return false
 end
 
 -- M4/M5/MMB часто видны только через GetAsyncKeyState; WM_* / WM_KEY* в SA до Lua не доходят.
 function deskBindCapturePollFrame()
-    if not deskCache.hotkeyCapture and not deskCache.cheatCapture then
+    if not deskAnyBindCapture() then
         deskCache.bindCapPollPrev = nil
+        deskCache.bindCapKbPrev = nil
         return
     end
-    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt or deskCache.hotkeyCaptureAt
+    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt
+        or deskCache.adminPunishBindCapture and deskCache.adminPunishBindCaptureAt
+        or deskCache.hotkeyCaptureAt
     if os.clock() - (tonumber(startedAt) or 0) < PF.HOTKEY_CAPTURE_GRACE then return end
 
     local prev = deskCache.bindCapPollPrev
@@ -17389,6 +18584,28 @@ function deskBindCapturePollFrame()
             return
         end
         prev[capVk] = down
+    end
+
+    -- Запасной путь для клавиатуры, если WM съели chat/imgui-слой.
+    local kbPrev = deskCache.bindCapKbPrev
+    if type(kbPrev) ~= 'table' then
+        kbPrev = {}
+        deskCache.bindCapKbPrev = kbPrev
+    end
+    for vk = 1, 255 do
+        if not cheatBindIsModifier(vk) and not MOUSE_BIND_VKS[vk] then
+            local down = isVkDown(vk) == true
+            local was = kbPrev[vk] == true
+            if down and not was then
+                deskCache.bindCapVk = vk
+                if deskBindMouseCommitsOnDown(vk) then
+                    if deskBindCapturePollSave(vk) then return end
+                end
+            elseif was and not down and tonumber(deskCache.bindCapVk) == vk then
+                if deskBindCapturePollSave(vk) then return end
+            end
+            kbPrev[vk] = down
+        end
     end
 end
 
@@ -17524,7 +18741,7 @@ end
 -- Try Handle Desk Hotkey Message
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     if not sessionLive then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     local hk = (type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7
     hk = tonumber(hk) or 0
@@ -17865,6 +19082,158 @@ function skinsReleaseTextures()
     deskTexPipeline.requestDeferredFlush()
 end
 
+
+--[[ ID над головой у игроков в маске / тёмном нике (как AdminTools). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local MASK_LABEL_DRAW_DIST = 300
+local MASK_LABEL_COLOR = 4294967295
+local MASK_LABEL_Z = 0.6
+local MASK_COLORS = {
+    [4278190335] = true,
+    [2236962] = true,
+}
+
+local function maskIdNormColor(c)
+    if type(normColor) == 'function' then
+        return normColor(c)
+    end
+    c = tonumber(c) or 0
+    if c < 0 then c = c + 4294967296 end
+    return c
+end
+
+local function maskIdIsMaskedColor(color)
+    color = maskIdNormColor(color)
+    if MASK_COLORS[color] then return true end
+    if not bit then return false end
+    local rr = bit.band(bit.rshift(color, 16), 0xFF)
+    local gg = bit.band(bit.rshift(color, 8), 0xFF)
+    local bb = bit.band(color, 0xFF)
+    return rr <= 40 and gg <= 40 and bb <= 40
+end
+
+local function maskIdEnabled()
+    if type(settings) ~= 'table' or type(settings.cheats) ~= 'table' then return false end
+    return settings.cheats.mask_player_id ~= false
+end
+
+local function maskIdActiveSession()
+    if not sessionLive then return false end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+    if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
+    return true
+end
+
+local function maskIdPlayerExists(id)
+    id = clampSuspectPlayerId and clampSuspectPlayerId(id) or tonumber(id)
+    if not id or id < 0 then return false end
+    if type(sampIsPlayerConnected) ~= 'function' or not sampIsPlayerConnected(id) then return false end
+    if type(sampGetCharHandleBySampPlayerId) ~= 'function' or type(doesCharExist) ~= 'function' then return false end
+    local ok, handle = sampGetCharHandleBySampPlayerId(id)
+    return ok and handle and doesCharExist(handle)
+end
+
+local function maskIdGetLabelInfo(id)
+    if type(sampIs3dTextDefined) ~= 'function' or not sampIs3dTextDefined(id) then return nil end
+    if type(sampGet3dTextInfoById) ~= 'function' then return nil end
+    local ok, text, color, x, y, z, distance, los, playerId, vehicleId = pcall(sampGet3dTextInfoById, id)
+    if not ok then return nil end
+    return {
+        text = text,
+        color = color,
+        distance = tonumber(distance),
+        playerId = tonumber(playerId),
+        vehicleId = tonumber(vehicleId),
+    }
+end
+
+local function maskIdIsOurLabel(id)
+    local info = maskIdGetLabelInfo(id)
+    if not info then return false end
+    return info.distance == MASK_LABEL_DRAW_DIST and info.playerId == id
+end
+
+local function maskIdCreate(id)
+    if type(sampCreate3dTextEx) ~= 'function' then return false end
+    local text = tostring(id)
+    pcall(sampCreate3dTextEx, id, text, MASK_LABEL_COLOR, 0, 0, MASK_LABEL_Z,
+        MASK_LABEL_DRAW_DIST, true, id, -1)
+    return true
+end
+
+local function maskIdEnsure(id)
+    if not maskIdPlayerExists(id) then return end
+    local info = maskIdGetLabelInfo(id)
+    if info then
+        if info.distance == MASK_LABEL_DRAW_DIST and info.playerId == id
+            and tostring(info.text or '') == tostring(id) then
+            return
+        end
+        if info.distance == MASK_LABEL_DRAW_DIST then
+            maskIdCreate(id)
+        end
+        return
+    end
+    maskIdCreate(id)
+end
+
+local function maskIdDestroy(id)
+    if type(sampDestroy3dText) ~= 'function' then return end
+    if maskIdIsOurLabel(id) then
+        pcall(sampDestroy3dText, id)
+    end
+end
+
+local function maskIdDestroyAll()
+    if type(sampIs3dTextDefined) ~= 'function' or type(sampDestroy3dText) ~= 'function' then return end
+    for id = 0, 1000 do
+        if maskIdIsOurLabel(id) then
+            pcall(sampDestroy3dText, id)
+        end
+    end
+end
+
+local function maskIdPlayerColor(id)
+    if type(sampGetPlayerColor) ~= 'function' then return nil end
+    local ok, c = pcall(sampGetPlayerColor, id)
+    if ok then return c end
+    return nil
+end
+
+function maskIdTick()
+    if not maskIdEnabled() or not maskIdActiveSession() then
+        maskIdDestroyAll()
+        return
+    end
+    if type(sampGetMaxPlayerId) ~= 'function' or type(sampIsPlayerConnected) ~= 'function' then return end
+
+    local maxId = tonumber(sampGetMaxPlayerId(true)) or 0
+    if maxId < 0 then maxId = 0 end
+    if maxId > 1000 then maxId = 1000 end
+
+    for id = 0, maxId do
+        if sampIsPlayerConnected(id) and maskIdPlayerExists(id) then
+            local color = maskIdPlayerColor(id)
+            if color and maskIdIsMaskedColor(color) then
+                maskIdEnsure(id)
+            elseif maskIdIsOurLabel(id) then
+                maskIdDestroy(id)
+            end
+        elseif maskIdIsOurLabel(id) then
+            maskIdDestroy(id)
+        end
+    end
+end
+
+function maskIdOnPlayerQuit(playerId)
+    local id = clampSuspectPlayerId and clampSuspectPlayerId(playerId) or tonumber(playerId)
+    if id then maskIdDestroy(id) end
+end
+
+function maskIdCleanup()
+    maskIdDestroyAll()
+end
 
 --[[ Модуль: выдача скинов, каталог превью. ]]
 function skinsLoadCatalog()
@@ -18561,6 +19930,14 @@ function drawCheatsTab()
         markDirtySettings()
         flushDirtyConfigNow()
     end) then end
+    if deskFormCheckboxRow('\xCD \xED\xE0 \xE3\xEE\xEB\xEE\xE2\xE5 \xE2 \xEC\xE0\xF1\xEA\xE5 \xE8 \xCC\xC2\xC4', uiCheatMaskId, function(v)
+        ensureCheatsSettings()
+        settings.cheats.mask_player_id = v and true or false
+        if not v and type(maskIdCleanup) == 'function' then pcall(maskIdCleanup) end
+        markDirtySettings()
+        flushDirtyConfigNow()
+    end, 'mask_id') then end
+    drawSettingsHint('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xE5\xF2 \xED\xEE\xEC\xE5\xF0 ID \xED\xE0\xE4 \xED\xE8\xEA\xEE\xEC, \xE5\xF1\xEB\xE8 \xED\xE8\xEA \xF2\xB8\xEC\xED\xFB\xE9 \xE8\xEB\xE8 \xED\xE5 \xF7\xE8\xF2\xE0\xE5\xF2\xF1\xFF')
     deskFormPanelEnd()
 
     imgui.PopStyleVar(2)
@@ -18676,7 +20053,7 @@ end
 
 -- Desk hook/helper.
 function deskImguiNeedsInput()
-    if showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then
+    if showWindow[0] or (type(deskAnyBindCapture) == 'function' and deskAnyBindCapture()) then
         return true
     end
     if deskSpectateCameraOwnsInput() then
@@ -19150,7 +20527,7 @@ function deskShouldBlockSampChatKey(msg, wparam)
     if sampIsChatInputActive and sampIsChatInputActive() then return false end
     if sampIsDialogActive and sampIsDialogActive() then return false end
     if not deskCache or not deskCache.wm then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return false end
     msg = tonumber(msg) or 0
     wparam = tonumber(wparam) or 0
     local vkReturn = (vkeys and vkeys.VK_RETURN) or 0x0D
@@ -19321,6 +20698,8 @@ function closeDeskWindow()
     finishDeskBindCapture()
     deskInputState.replyFocused = false
     deskInputState.replyInputActive = false
+    deskInputState.focusReplyNext = false
+    deskInputState.focusReplyReason = nil
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0
     deskWantsKeyboard = false
@@ -19407,28 +20786,169 @@ function sendTrPlayer(targetId)
     end
 end
 
--- Отправка команды/сообщения на сервер.
-function sendHistoryByPlayerId(arg)
+-- ID онлайн-игрока -> ник (общая логика /hist, /iget, /ilog, /iskill).
+function resolveOnlinePlayerNickByArg(arg)
     local id = clampSuspectPlayerId(tonumber(trim(tostring(arg or '')):match('(%d+)')))
-    if not id then
-        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /hist [ID \xE8\xE3\xF0\xEE\xEA\xE0].')
-        return false
-    end
-    if not isSampAvailable() then return false end
+    if not id then return nil, 'usage' end
+    if not isSampAvailable() then return nil, 'samp' end
     if type(sampIsPlayerConnected) ~= 'function' or not sampIsPlayerConnected(id) then
-        say('\xC8\xE3\xF0\xEE\xEA\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5 \xED\xE5\xF2.')
-        return false
+        return nil, 'offline'
     end
     local nick = (type(sampGetPlayerNickname) == 'function' and sampGetPlayerNickname(id)) or ''
     nick = trim(nick)
-    if nick == '' then
-        say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xEE\xEB\xF3\xF7\xE8\xF2\xFC \xED\xE8\xEA \xE8\xE3\xF0\xEE\xEA\xE0.')
+    if nick == '' then return nil, 'nick' end
+    return id, nick
+end
+
+function sendNickLookupCommand(arg, serverCmd, minLevel, usageMsg, levelDeniedMsg)
+    serverCmd = trim(tostring(serverCmd or ''))
+    if serverCmd == '' then return false end
+    minLevel = tonumber(minLevel) or 1
+    if getLocalAdminLevel() < minLevel then
+        if levelDeniedMsg and levelDeniedMsg ~= '' then
+            say(levelDeniedMsg)
+        end
         return false
     end
-    if sendChat('history ' .. nick) then
-        return true
+    local _, nickOrErr = resolveOnlinePlayerNickByArg(arg)
+    if not _ then
+        if nickOrErr == 'usage' then
+            say(usageMsg or '\xCD\xE5\xE2\xE5\xF0\xED\xFB\xE9 \xE0\xF0\xE3\xF3\xEC\xE5\xED\xF2 \xEA\xEE\xEC\xE0\xED\xE4\xFB.')
+        elseif nickOrErr == 'offline' then
+            say('\xC8\xE3\xF0\xEE\xEA\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5 \xED\xE5\xF2.')
+        elseif nickOrErr == 'nick' then
+            say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xEE\xEB\xF3\xF7\xE8\xF2\xFC \xED\xE8\xEA \xE8\xE3\xF0\xEE\xEA\xE0.')
+        end
+        return false
     end
-    return false
+    return sendChat(serverCmd .. ' ' .. nickOrErr) == true
+end
+
+function getLastSpectateSubject()
+    if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.getLastSubject) ~= 'function' then
+        return nil
+    end
+    local ok, subj = pcall(deskSpectateStats.getLastSubject)
+    if not ok or type(subj) ~= 'table' then return nil end
+    local nick = trim(subj.nick or '')
+    if nick == '' then return nil end
+    return {
+        id = tonumber(subj.id) or -1,
+        nick = nick,
+        offline = subj.offline == true,
+    }
+end
+
+function sendLastOffPunish(cmdBody, minDirectLevel)
+    cmdBody = trim(tostring(cmdBody or ''))
+    if cmdBody == '' then return false end
+    minDirectLevel = tonumber(minDirectLevel) or 4
+    if getLocalAdminLevel() >= minDirectLevel then
+        return sendChat('/' .. cmdBody) == true
+    end
+    return sendChat('/a /' .. cmdBody) == true
+end
+
+function sendLastOffCommand(arg, usageMsg, minDirectLevel, offCmd, needLeadingNumber)
+    arg = trim(tostring(arg or ''))
+    if arg == '' then
+        say(usageMsg)
+        return false
+    end
+    if needLeadingNumber and not arg:match('^(%d+)') then
+        say(usageMsg)
+        return false
+    end
+    local subj = getLastSpectateSubject()
+    if not subj then
+        say('\xC2\xFB \xE5\xF9\xE5 \xED\xE8 \xE7\xE0 \xEA\xE5\xEC \xED\xE5 \xF1\xEB\xE5\xE4\xE8\xEB\xE8.')
+        return false
+    end
+    offCmd = trim(tostring(offCmd or ''))
+    if offCmd == '' then return false end
+    return sendLastOffPunish(string.format('%s %s %s.', offCmd, subj.nick, arg), minDirectLevel)
+end
+
+function sendHistoryByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'history',
+        1,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /hist [ID \xE8\xE3\xF0\xEE\xEA\xE0].'
+    )
+end
+
+function sendGetByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'get',
+        3,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /iget [ID \xE8\xE3\xF0\xEE\xEA\xE0].',
+        '\xC4\xE0\xED\xED\xE0\xFF \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xEF\xF0\xE5\xE4\xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE0 \xE4\xEB\xFF \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2 3 \xF3\xF0\xEE\xE2\xED\xFF \xE8\xEB\xE8 \xE2\xFB\xF8\xE5.'
+    )
+end
+
+function sendLogByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'log',
+        2,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /ilog [ID \xE8\xE3\xF0\xEE\xEA\xE0].',
+        '\xC4\xE0\xED\xED\xE0\xFF \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xEF\xF0\xE5\xE4\xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE0 \xE4\xEB\xFF \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2 2 \xF3\xF0\xEE\xE2\xED\xFF \xE8\xEB\xE8 \xE2\xFB\xF8\xE5.'
+    )
+end
+
+function sendAskillByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'askill',
+        1,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /iskill [ID \xE8\xE3\xF0\xEE\xEA\xE0].'
+    )
+end
+
+function sendWarnLast(arg)
+    arg = trim(tostring(arg or ''))
+    if arg == '' then
+        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /warnlast [\xCF\xF0\xE8\xF7\xE8\xED\xE0].')
+        return false
+    end
+    local subj = getLastSpectateSubject()
+    if not subj then
+        say('\xC2\xFB \xE5\xF9\xE5 \xED\xE8 \xE7\xE0 \xEA\xE5\xEC \xED\xE5 \xF1\xEB\xE5\xE4\xE8\xEB\xE8.')
+        return false
+    end
+    return sendLastOffPunish(string.format('offwarn %s %s.', subj.nick, arg), 4)
+end
+
+function sendBanLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /banlast [\xCA\xEE\xEB\xE8\xF7\xE5\xF1\xF2\xE2\xEE \xE4\xED\xE5\xE9] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        4,
+        'offban',
+        true
+    )
+end
+
+function sendJailLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /jaillast [\xCC\xE8\xED\xF3\xF2\xFB] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        3,
+        'offjail',
+        true
+    )
+end
+
+function sendMuteLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /mutelast [\xCC\xE8\xED\xF3\xF2\xFB] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        3,
+        'offmute',
+        true
+    )
 end
 
 -- Header Action Btn Width
@@ -19506,6 +21026,18 @@ function extractSuspectIdFromReport(text)
     return nil
 end
 
+-- Message Eligible For Watch Button
+function messageEligibleForWatchButton(text, context)
+    if context == INTENT_CONTEXT_THANKS or context == INTENT_CONTEXT_UNKNOWN then
+        return false
+    end
+    if not extractSuspectIdForWatch(text) then return false end
+    if context == INTENT_CONTEXT_FAQ and not textLooksLikePlayerReport(text) then
+        return false
+    end
+    return true
+end
+
 --[[ ID для кнопки «Следить»: строгие правила + первое число в тексте (кроме HH:MM:SS). ]]
 function extractSuspectIdForWatch(text)
     text = trim(text or '')
@@ -19525,26 +21057,6 @@ function extractSuspectIdForWatch(text)
         if id then return id end
     end
     return nil
-end
-
--- Find Enabled Watch Scenario
-function findEnabledWatchScenario()
-    for _, sc in ipairs(quickScenarios) do
-        if sc.action == 'watch' and sc.enabled then return sc end
-    end
-    return nil
-end
-
--- Get Watch Button Scenario
-function getWatchButtonScenario()
-    local sc = findEnabledWatchScenario()
-    if sc then return sc end
-    return {
-        label = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC',
-        enabled = true,
-        action = 'watch',
-        reply = settings.watch_notify or 'see',
-    }
 end
 
 -- Schedule Watch Notify
@@ -19604,43 +21116,6 @@ function cloneQuickScenarios(src, fromUtf8)
         }
     end
     return out
-end
-
--- Quick Scenario Matches
-function quickScenarioMatches(sc, body)
-    local keywords = sc.keywords or {}
-    return keywordMatches({
-        match = sc.match or 'contains',
-        keywords = keywords,
-    }, body)
-end
-
--- Quick Scenario Negative Matches
-function quickScenarioNegativeMatches(sc, body)
-    local neg = sc.negative_keywords
-    if type(neg) ~= 'table' or #neg < 1 then return false end
-    return keywordMatches({
-        match = sc.match or 'contains',
-        keywords = neg,
-    }, body)
-end
-
--- Get Sorted Quick Scenario Indices
-function getSortedQuickScenarioIndices()
-    if cachedSortedScenarioIdx and cachedSortedScenariosGen == scenariosGen then
-        return cachedSortedScenarioIdx
-    end
-    local idx = {}
-    for i = 1, #quickScenarios do idx[i] = i end
-    table.sort(idx, function(a, b)
-        local la = quickScenarios[a].label or ''
-        local lb = quickScenarios[b].label or ''
-        if la ~= lb then return la < lb end
-        return a < b
-    end)
-    cachedSortedScenarioIdx = idx
-    cachedSortedScenariosGen = scenariosGen
-    return idx
 end
 
 -- Push Quick Scenario Btn Style
@@ -19756,13 +21231,24 @@ function getLastPlayerScenarioBody(t)
     return ''
 end
 
+-- Message Qualifies For Scenario Actions
+function messageQualifiesForScenarioActions(body)
+    body = trim(body or '')
+    if body == '' then return false end
+    if #collectQuickButtonsForMessage(body) > 0 then return true end
+    if type(intentMessageCorpusCandidate) == 'function' and intentMessageCorpusCandidate(body) then
+        return true
+    end
+    return false
+end
+
 -- Find Last Player Scenario Msg Idx
 function findLastPlayerScenarioMsgIdx(msgs, renderFrom)
     renderFrom = tonumber(renderFrom) or 1
     if type(msgs) ~= 'table' then return nil end
     for i = #msgs, renderFrom, -1 do
         local body = playerMessageScenarioBody(msgs[i])
-        if body ~= '' and #collectQuickButtonsForMessage(body) > 0 then
+        if messageQualifiesForScenarioActions(body) then
             return i
         end
     end
@@ -19866,132 +21352,188 @@ function drawQuickScenarioButtons(quickBtns, localX, localY, btnRowY, rowW, padS
     imgui.PopID()
 end
 
--- Scenario Guard Blocks
-function scenarioGuardBlocks(sc, text)
-    if not sc or not text then return false end
-    local reply = trim(sc.reply or '')
-    local msg, _, msgTypo = matchMessageVariants(text)
-    local bags = { msg, msgTypo }
-    local function anyPat(pat)
-        for _, bag in ipairs(bags) do
-            if bag ~= '' and bag:find(pat) then return true end
-        end
-        return false
-    end
-    if reply:find('/c 090', 1, true) then
-        if anyPat('\xEA\xE2\xE5\xF1\xF2') and anyPat('\xEC\xE5\xF5\xE0\xED\xE8\xEA') then return true end
-        if anyPat('\xE7\xE0\xEA\xEB\xE0\xE4') then return true end
-        if anyPat('\xF3\xF7\xE0\xF1\xF2\xEA') and not anyPat('090') then return true end
-        if anyPat('\xEC\xE5\xF5\xE0\xED\xE8\xEA') and not anyPat('\xE2\xFB\xE7\xE2\xE0\xF2\xFC')
-            and not anyPat('090') and not anyPat('\xFD\xE2\xE0\xEA\xF3\xE0\xF2\xEE\xF0')
-            and not anyPat('010') and not anyPat('\xEF\xEE\xEB\xEE\xEC') then
-            return true
-        end
-    end
-    if reply:find('\xC0\xC7\xD1', 1, true) or reply:find('\xEA\xE0\xED\xE8\xF1\xF2\xF0', 1, true) then
-        if anyPat('\xE7\xE0\xEF\xF0\xE0\xE2') and anyPat('\xE8\xE3\xF0\xEE\xEA')
-            and not anyPat('\xE1\xE5\xED\xE7\xE8\xED') and not anyPat('\xF2\xEE\xEF\xEB\xE8\xE2')
-            and not anyPat('\xEA\xE0\xED\xE8\xF1\xF2\xF0') then
-            return true
-        end
-        if anyPat('\xEA\xEE\xED\xF2\xF0\xE0\xEA\xF2') and not anyPat('\xE1\xE5\xED\xE7\xE8\xED')
-            and not anyPat('\xE0\xE7\xF1') then
-            return true
-        end
-    end
-    if reply:find('creditshelp', 1, true) then
-        if not anyPat('\xE0\xE4\xE2\xE0\xED\xF1') and not anyPat('credits') and not anyPat('donate')
-            and not anyPat('credit') and anyPat('\xEA\xF0\xE5\xE4\xE8\xF2') then
-            return true
-        end
-    end
-    if reply:find('/bp', 1, true) or reply:find('/mn 8', 1, true) then
-        if anyPat('\xEA\xE2\xE5\xF1\xF2') and not anyPat('\xE1\xEF') and not anyPat('battle')
-            and not anyPat('\xE1\xE0\xF2\xEB') then
-            return true
-        end
-    end
-    return false
-end
-
--- Scenario Visible On Message
-function scenarioVisibleOnMessage(sc, text)
-    if not sc or not sc.enabled then return false end
-    if sc.action == 'watch' then
-        return extractSuspectIdForWatch(text) ~= nil
-    end
-    if sc.skip_if_report_id ~= false
-        and textLooksLikePlayerReport(text)
-        and extractSuspectIdFromReport(text) then
-        return false
-    end
-    if scenarioGuardBlocks(sc, text) then return false end
-    if not quickScenarioMatches(sc, text) then return false end
-    if quickScenarioNegativeMatches(sc, text) then return false end
-    return true
-end
-
 -- Collect Quick Buttons For Message
 function collectQuickButtonsForMessage(text)
-    local cacheKey = normalizeMatchText(text)
-    local sig = tostring(scenariosGen) .. '|' .. tostring(#quickScenarios)
-    if cacheKey ~= '' then
+    local bags = intentNormalizeBags(text)
+    local cacheKey = bags.key
+    local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
+    if cacheKey ~= '' and type(deskCache) == 'table' and deskCache.quickBtn then
         local hit = deskCache.quickBtn[cacheKey]
         if hit and hit.sig == sig then return hit.btns end
     end
-    local candidates = {}
-    for i = 1, #quickScenarios do
-        local sc = quickScenarios[i]
-        if scenarioVisibleOnMessage(sc, text) then
-            local score = scenarioMatchScore(sc, text)
-            if score <= 0 and quickScenarioMatches(sc, text) then
-                score = 10
-            end
-            if score > 0 then
-                candidates[#candidates + 1] = {
-                    scenario = sc,
-                    idx = i,
-                    score = score,
-                    btnW = quickBtnWidth(sc.label),
-                    suspectId = sc.action == 'watch' and extractSuspectIdForWatch(text) or nil,
-                }
-            end
-        end
-    end
-    table.sort(candidates, function(a, b)
-        local pa = tonumber(a.scenario.priority) or 0
-        local pb = tonumber(b.scenario.priority) or 0
-        if pa ~= pb then return pa > pb end
-        if a.score ~= b.score then return a.score > b.score end
-        return (a.scenario.label or '') < (b.scenario.label or '')
-    end)
+
+    local results, ctx = resolveMessageIntents(text)
     local out = {}
-    for i = 1, math.min(6, #candidates) do
-        out[i] = candidates[i]
-    end
-    local watchId = extractSuspectIdForWatch(text)
-    if watchId then
-        local hasWatch = false
-        for _, qb in ipairs(out) do
-            if qb.scenario and qb.scenario.action == 'watch' then
-                hasWatch = true
-                break
-            end
-        end
-        if not hasWatch then
-            local wsc = getWatchButtonScenario()
-            table.insert(out, 1, {
-                scenario = wsc,
+    for _, r in ipairs(results) do
+        local sc = intentToQuickScenario(r.intent)
+        if sc then
+            out[#out + 1] = {
+                scenario = sc,
                 idx = 0,
-                btnW = quickBtnWidth(wsc.label),
-                suspectId = watchId,
-            })
+                score = r.score,
+                btnW = quickBtnWidth(sc.label),
+                suspectId = sc.action == 'watch' and extractSuspectIdForWatch(text) or nil,
+                intentId = r.id,
+                context = ctx,
+            }
         end
     end
-    if cacheKey ~= '' then
+
+    if cacheKey ~= '' and type(deskCache) == 'table' then
+        deskCache.quickBtn = deskCache.quickBtn or {}
         deskCache.quickBtn[cacheKey] = { sig = sig, btns = out }
     end
     return out
+end
+
+-- Intent corpus queue: ручное «В базу» у промахов в чате треда.
+INTENT_CORPUS_BTN_H = 20
+intentCorpusQueue = intentCorpusQueue or { seen = {}, loaded = false }
+
+local function intentCorpusJsonStr(s)
+    s = tostring(s or '')
+    s = s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\r', '\\r'):gsub('\n', '\\n')
+    return '"' .. s .. '"'
+end
+
+function loadIntentCorpusQueueSeen()
+    if intentCorpusQueue.loaded then return end
+    intentCorpusQueue.loaded = true
+    intentCorpusQueue.seen = {}
+    local path = INTENT_CORPUS_QUEUE_PATH
+    if not path or path == '' then return end
+    local f = io.open(path, 'rb')
+    if not f then return end
+    for line in f:lines() do
+        local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        if phrase then
+            phrase = phrase:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+            local key = normalizeMatchText(phrase)
+            if key ~= '' then intentCorpusQueue.seen[key] = true end
+        end
+    end
+    f:close()
+end
+
+function intentCorpusQueueContains(phrase)
+    loadIntentCorpusQueueSeen()
+    local key = normalizeMatchText(phrase)
+    return key ~= '' and intentCorpusQueue.seen[key] == true
+end
+
+function appendIntentCorpusPhrase(phrase, meta)
+    phrase = trim(phrase or '')
+    if phrase == '' or #phrase < 3 then return false, 'empty' end
+    loadIntentCorpusQueueSeen()
+    local key = normalizeMatchText(phrase)
+    if key == '' then return false, 'empty' end
+    if intentCorpusQueue.seen[key] then return false, 'dup' end
+
+    local ctx = meta and meta.context or ''
+    if ctx == '' and type(resolveMessageIntents) == 'function' then
+        ensureDeskIntentsLoaded()
+        local _, c = resolveMessageIntents(phrase)
+        ctx = c or ''
+    end
+
+    local path = INTENT_CORPUS_QUEUE_PATH
+    if not path or path == '' then return false, 'io' end
+    local f = io.open(path, 'ab')
+    if not f then return false, 'io' end
+    local ts = os.date('!%Y-%m-%dT%H:%M:%SZ')
+    local thread = trim(meta and meta.thread or '')
+    local threadId = tonumber(meta and meta.threadId) or 0
+    f:write(string.format(
+        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d}\n',
+        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(ctx),
+        intentCorpusJsonStr(thread), threadId
+    ))
+    f:close()
+    intentCorpusQueue.seen[key] = true
+    return true, 'ok'
+end
+
+function intentMessageCorpusCandidate(text)
+    text = trim(text or '')
+    if text == '' or #text < 3 then return false end
+    ensureDeskIntentsLoaded()
+    local results, ctx = resolveMessageIntents(text)
+    if #results > 0 then return false end
+    if ctx == 'thanks' or ctx == 'unknown' then return false end
+    return true
+end
+
+function intentCorpusBtnWidth(phrase)
+    local saved = intentCorpusQueueContains(phrase)
+    local label = saved and '\xC2\xE1\xE0\xE7\xE5' or '\xC2\xE1\xE0\xE7\xF3'
+    local w = imgui.CalcTextSize(uiText(label)).x + 14
+    if w < 44 then w = 44 end
+    if w > 72 then w = 72 end
+    return w
+end
+
+function pushIntentCorpusBtnStyle(saved)
+    if saved then
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50, 0.82, 0.58, 0.92))
+    else
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.16, 0.14, 0.20, 0.42))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.24, 0.20, 0.30, 0.78))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.28, 0.22, 0.36, 0.92))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.68, 0.64, 0.78, 0.88))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(6, 2))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, saved and 0 or 1)
+    if not saved then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.38, 0.34, 0.48, 0.35))
+    end
+end
+
+function popIntentCorpusBtnStyle(saved)
+    imgui.PopStyleVar(3)
+    imgui.PopStyleColor(4)
+    if not saved then imgui.PopStyleColor() end
+end
+
+function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY)
+    phrase = trim(phrase or '')
+    if phrase == '' then return end
+    local saved = intentCorpusQueueContains(phrase)
+    local label = saved and '\xC2\xE1\xE0\xE7\xE5' or '\xC2\xE1\xE0\xE7\xF3'
+    local btnW = intentCorpusBtnWidth(phrase)
+
+    imgui.PushID((msgIdx or 0) * 1000 + 99)
+    imgui.SetCursorPos(imgui.ImVec2(btnX, btnY))
+    pushIntentCorpusBtnStyle(saved)
+    local clicked = false
+    if saved then
+        imgui.Button(uiText(label) .. '##icq', imgui.ImVec2(btnW, INTENT_CORPUS_BTN_H))
+    else
+        clicked = imgui.Button(uiText(label) .. '##icq', imgui.ImVec2(btnW, INTENT_CORPUS_BTN_H))
+    end
+    if imgui.IsItemHovered() and imgui.SetTooltip then
+        if saved then
+            imgui.SetTooltip(uiText(
+                '\xD3\xE6\xE5 \xE2 \xE1\xE0\xE7\xE5 \xE4\xEB\xFF \xF0\xE0\xF1\xF8\xE8\xF0\xE5\xED\xE8\xFF \xF2\xF0\xE8\xE3\xE3\xE5\xF0\xEE\xE2'))
+        else
+            imgui.SetTooltip(uiText(
+                '\xD1\xEE\xF5\xF0\xE0\xED\xE8\xF2\xFC \xE2\xEE\xEF\xF0\xEE\xF1 \xE2 \xE1\xE0\xE7\xF3 \xEF\xF0\xEE\xEC\xE0\xF5\xEE\xE2'))
+        end
+    end
+    popIntentCorpusBtnStyle(saved)
+    if clicked then
+        local ok = appendIntentCorpusPhrase(phrase, {
+            thread = reporter and reporter.nick or '',
+            threadId = reporter and reporter.id or 0,
+        })
+        if ok and type(say) == 'function' then
+            say('\xC4\xEE\xE1\xE0\xE2\xEB\xE5\xED\xEE \xE2 \xE1\xE0\xE7\xF3 intent')
+        end
+    end
+    imgui.PopID()
 end
 
 -- Execute Quick Scenario
@@ -20017,7 +21559,6 @@ function executeQuickScenario(sc, reporter, messageText)
     })
     if ok then
         clearThreadRuleCooldowns(tk)
-        say('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE: ' .. (sc.label or ''))
     elseif res then
         say(res)
     end
@@ -20207,11 +21748,6 @@ end
 -- Rule Name Exists
 function ruleNameExists(name)
     return false
-end
-
--- Append Faq Pack Rules
-function appendFaqPackRules()
-    return 0
 end
 
 -- Trim Messages
@@ -20421,6 +21957,1238 @@ function migrateThreadKey(oldKey, newKey)
     return newKey
 end
 
+
+--[[ Модуль: автовыдача наказаний по запросу в admin chat (/a). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local ADMIN_CHAT_COLOR = -1714683649
+local ADMIN_CHAT_COLORS = {
+    [-1714683649] = true, -- 0x99CC00FF
+    [-1717986817] = true, -- 0x999999FF
+}
+local PUNISH_TIMEOUT_SEC = 15
+local OVERLAY_W = 420
+local OVERLAY_BOTTOM_MARGIN = 62
+local AP_HINT_GAP = 20
+
+local apState = {
+    pending = nil,
+    keyPrev = {},
+    bindField = nil,
+    bindCapture = false,
+    ingestDedup = {},
+    ingestDedupOrd = {},
+}
+local AP_INGEST_DEDUP_SEC = 4
+
+local spThemeMod
+
+local function apTheme()
+    if spThemeMod == false then return nil end
+    if not spThemeMod then
+        local ok, mod = pcall(require, 'report_desk_sp_theme')
+        spThemeMod = ok and mod or false
+    end
+    return spThemeMod or nil
+end
+
+-- Ensure Admin Punish Settings
+function ensureAdminPunishSettings()
+    if type(settings) ~= 'table' then return end
+    if settings.admin_punish_enabled == nil then settings.admin_punish_enabled = false end
+    if settings.admin_punish_send_ans == nil then settings.admin_punish_send_ans = false end
+    if settings.admin_punish_sign_cmd == nil then settings.admin_punish_sign_cmd = true end
+    local ck = tonumber(settings.admin_punish_confirm_key)
+    if not ck or ck <= 0 then settings.admin_punish_confirm_key = vkeys.VK_DELETE end
+    local xk = tonumber(settings.admin_punish_cancel_key)
+    if not xk or xk <= 0 then settings.admin_punish_cancel_key = vkeys.VK_END end
+    if tonumber(settings.admin_punish_confirm_key) == tonumber(settings.admin_punish_cancel_key) then
+        settings.admin_punish_cancel_key = vkeys.VK_END
+    end
+end
+
+local function apPlayerConnected(id)
+    id = clampSuspectPlayerId and clampSuspectPlayerId(id) or tonumber(id)
+    if not id then return false end
+    if not isSampAvailable or not isSampAvailable() then return false end
+    if type(sampIsPlayerConnected) ~= 'function' then return false end
+    return sampIsPlayerConnected(id)
+end
+
+local function apPlainText(text)
+    if type(normalizeChatLine) == 'function' then
+        return normalizeChatLine(text)
+    end
+    if type(stripChatTimestamp) == 'function' and type(stripTags) == 'function' then
+        return trim(stripChatTimestamp(stripTags(text or '')))
+    end
+    if type(stripTags) == 'function' then
+        return trim(stripTags(text or ''))
+    end
+    return trim(text or '')
+end
+
+local function apIsAdminChatLine(color, plain)
+    plain = trim(plain or '')
+    if plain:find('^%[A%]%s', 1) then return true end
+    if plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1) then return true end
+    return ADMIN_CHAT_COLORS[tonumber(color) or 0] == true
+        or tonumber(color) == ADMIN_CHAT_COLOR
+end
+
+-- Lua: a,b,c = s:match(p1) or s:match(p2) оставляет только первый capture при or — нельзя.
+local function apParseAdminRequest(plain)
+    plain = trim(plain or '')
+    if plain == '' then return nil end
+    local admName, admId, admCommand = plain:match('^%[A%]%s*(.-)%[(%d+)%]%:%s*(.*)')
+    if not admId then
+        admName, admId, admCommand = plain:match('^([%w][%w_]*)%[(%d+)%]%:%s*(/.*)$')
+    end
+    if not admId or not admCommand then return nil end
+    admCommand = trim(admCommand)
+    if admCommand == '' or admCommand:sub(1, 1) ~= '/' then return nil end
+    return trim(admName), tonumber(admId), admCommand
+end
+
+local function apIsDirectCommand(cmd)
+    return cmd:match('^/unban%s')
+        or cmd:match('^/unwarn%s')
+        or cmd:match('^/unmute%s')
+        or cmd:match('^/unjail%s')
+        or cmd:match('^/tr%s')
+end
+
+local function apEnabled()
+    return type(settings) == 'table' and settings.admin_punish_enabled == true
+end
+
+local function apMinLevel()
+    return getLocalAdminLevel and getLocalAdminLevel() or 3
+end
+
+local function apIsCatalogAdmin(nick)
+    if not nick or nick == '' then return false end
+    if type(checkerIsCatalogAdmin) == 'function' then
+        return checkerIsCatalogAdmin(nick) == true
+    end
+    if type(Catalog) == 'table' and type(Catalog.getAdmin) == 'function' then
+        return Catalog.getAdmin(nick) ~= nil
+    end
+    return false
+end
+
+local function apBlocksTargetAdmin(cmd)
+    if not cmd or cmd == '' then return false end
+    local skip = {
+        '/skin', '/hp', '/unmute', '/unwarn', '/unban', '/msg', '/areg', '/unjail',
+    }
+    for _, s in ipairs(skip) do
+        if cmd:find(s, 1, true) then return false end
+    end
+    return true
+end
+
+local function apAdminSurname(admName)
+    admName = trim(tostring(admName or ''))
+    if admName == '' then return '?' end
+    local surname = admName:match('_(%w+)$')
+    if surname and surname ~= '' then return surname end
+    return admName
+end
+
+local function apSignSuffix(admName)
+    if settings.admin_punish_sign_cmd == false then return '' end
+    local surname = apAdminSurname(admName)
+    if surname == '?' then return '' end
+    return ' / by ' .. surname
+end
+
+local function apMuteHasReason(cmd)
+    return cmd:match('^/mute%s+%d+%s+%d+%s+(.+)$') ~= nil
+end
+
+-- Как AdminTools: /mute без причины — без подписи; с причиной — с подписью; /un* — без.
+local function apNeedsSignSuffix(cmd)
+    if apIsDirectCommand(cmd) then return false end
+    if cmd:match('^/mute') then
+        return apMuteHasReason(cmd)
+    end
+    return true
+end
+
+local function apOutboundCmd(cmd, admName)
+    if apNeedsSignSuffix(cmd) then
+        return cmd .. apSignSuffix(admName)
+    end
+    return cmd
+end
+
+local function apIngestSeen(key)
+    if not key or key == '' then return false end
+    local now = os.clock()
+    if apState.ingestDedup[key] and (now - apState.ingestDedup[key]) < AP_INGEST_DEDUP_SEC then
+        return true
+    end
+    apState.ingestDedup[key] = now
+    apState.ingestDedupOrd[#apState.ingestDedupOrd + 1] = key
+    while #apState.ingestDedupOrd > 48 do
+        local old = table.remove(apState.ingestDedupOrd, 1)
+        if old and apState.ingestDedup[old] and (now - apState.ingestDedup[old]) > AP_INGEST_DEDUP_SEC then
+            apState.ingestDedup[old] = nil
+        end
+    end
+    return false
+end
+
+local function apNotifyPending(p)
+    if not p then return end
+    local target = trim(p.playerName or p.snapshotNick or '?')
+    local tid = tonumber(p.playerId)
+    local targetShow = (tid and tid >= 0) and string.format('%s[%d]', target, tid) or target
+    say(string.format(
+        '{9E7BEF}[\xC0\xE2\xF2\xEE\xE2\xFB\xE4\xE0\xF7\xE0]{FFFFFF} %s[%d] \xB7 %s \xB7 %s',
+        p.admName or '?', p.admId or 0, p.action or '-', targetShow))
+end
+
+local function apClearPending(reason)
+    if apState.pending and reason then
+        say(reason)
+    end
+    apState.pending = nil
+end
+
+local function apSetPending(p)
+    if not p then return end
+    p.snapshotNick = trim(p.playerName or '')
+    if p.snapshotNick == '' and tonumber(p.playerId) and tonumber(p.playerId) >= 0 then
+        p.snapshotNick = trim(sampGetPlayerNickname(p.playerId) or '')
+    end
+    if type(nickKey) == 'function' then
+        p.snapshotNickKey = nickKey(p.snapshotNick)
+    else
+        p.snapshotNickKey = p.snapshotNick:lower()
+    end
+    apState.pending = p
+    apNotifyPending(p)
+    if settings.sound and playSoundFrontEnd then
+        pcall(playSoundFrontEnd, 4)
+    end
+end
+
+-- Статус цели для online-ID: ok / offline / nick_changed. Offline-nick команды — na.
+local function apLiveTargetStatus(p)
+    if not p then return nil end
+    local pid = clampSuspectPlayerId and clampSuspectPlayerId(p.playerId) or tonumber(p.playerId)
+    if not pid or pid < 0 then
+        return {
+            mode = 'offline_nick',
+            status = 'na',
+            nickOk = true,
+            connected = nil,
+            playerId = -1,
+            snapshotNick = p.snapshotNick or p.playerName,
+            liveNick = p.snapshotNick or p.playerName,
+        }
+    end
+    local snapNick = p.snapshotNick or p.playerName or ''
+    if not apPlayerConnected(pid) then
+        return {
+            mode = 'online_id',
+            status = 'offline',
+            nickOk = false,
+            connected = false,
+            playerId = pid,
+            snapshotNick = snapNick,
+            liveNick = '',
+        }
+    end
+    local liveNick = trim(sampGetPlayerNickname(pid) or '')
+    local snapKey = p.snapshotNickKey
+    if not snapKey or snapKey == '' then
+        snapKey = type(nickKey) == 'function' and nickKey(snapNick) or snapNick:lower()
+    end
+    local liveKey = type(nickKey) == 'function' and nickKey(liveNick) or liveNick:lower()
+    local nickOk = snapKey ~= '' and liveKey ~= '' and snapKey == liveKey
+    return {
+        mode = 'online_id',
+        status = nickOk and 'ok' or 'nick_changed',
+        nickOk = nickOk,
+        connected = true,
+        playerId = pid,
+        snapshotNick = snapNick,
+        liveNick = liveNick,
+    }
+end
+
+local function apCanExecutePending(p)
+    local st = apLiveTargetStatus(p)
+    if not st then return false, nil, nil end
+    if st.mode == 'offline_nick' or st.status == 'na' then
+        return true, st, nil
+    end
+    if st.status == 'offline' then
+        return false, st, string.format(
+            '\xC8\xE3\xF0\xEE\xEA %s[%d] \xE2\xFB\xF8\xE5\xEB \xF1 \xF1\xE5\xF0\xE2\xE5\xF0\xE0. \xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.',
+            st.snapshotNick or '?', st.playerId or 0)
+    end
+    if st.status == 'nick_changed' then
+        return false, st, string.format(
+            '\xCD\xE0 ID %d \xE1\xFB\xEB %s, \xF1\xE5\xE9\xF7\xE0\xF1 %s. \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xED\xE5 \xE2\xFB\xE4\xE0\xED\xEE.',
+            st.playerId or 0, st.snapshotNick or '?', st.liveNick ~= '' and st.liveNick or '?')
+    end
+    return true, st, nil
+end
+
+local function apBuildOutboundPreview(p)
+    if not p or not p.command then return '' end
+    return apOutboundCmd(p.command, p.admName)
+end
+
+local function apTryParse(admCommand)
+    local cmd = trim(tostring(admCommand or ''))
+    if cmd == '' or cmd:sub(1, 1) ~= '/' then return nil end
+    local lvl = apMinLevel()
+
+    local id, term, reason = cmd:match('^/jail%s+(%d+)%s+(%d+)%s+(.+)$')
+    if id and term and reason and lvl >= 2 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xCF\xEE\xF1\xE0\xE4\xE8\xF2\xFC \xE2 \xF2\xFE\xF0\xFC\xEC\xF3',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = term,
+            reason = reason,
+        }
+    end
+
+    id = cmd:match('^/unjail%s+(%d+)$')
+    if id and lvl >= 2 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xC2\xFB\xEF\xF3\xF1\xF2\xE8\xF2\xFC \xE8\xE7 \xF2\xFE\xF0\xFC\xEC\xFB',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    id = cmd:match('^/unmute%s+(%d+)$')
+    if id and lvl >= 2 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xD1\xED\xFF\xF2\xFC \xE7\xE0\xF2\xFB\xF7\xEA\xF3',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    id, reason = cmd:match('^/kick%s+(%d+)%s+(.+)$')
+    if id and reason and lvl >= 2 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xCA\xE8\xEA\xED\xF3\xF2\xFC',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = reason,
+        }
+    end
+
+    id, term = cmd:match('^/mute%s+(%d+)%s+(%d+)')
+    if id and term and lvl >= 2 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        reason = cmd:match('^/mute%s+%d+%s+%d+%s+(.+)$') or '-'
+        return {
+            command = cmd,
+            action = '\xC7\xE0\xEC\xF3\xF2\xE8\xF2\xFC',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = term,
+            reason = reason,
+        }
+    end
+
+    id, reason = cmd:match('^/warn%s+(%d+)%s+(.+)$')
+    if id and reason and lvl >= 3 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xC7\xE0\xE2\xE0\xF0\xED\xE8\xF2\xFC',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = reason,
+        }
+    end
+
+    id, term, reason = cmd:match('^/ban%s+(%d+)%s+(%d+)%s+(.+)$')
+    if id and term and reason and lvl >= 3 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xC7\xE0\xE1\xE0\xED\xE8\xF2\xFC',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = term,
+            reason = reason,
+        }
+    end
+
+    local nick, offTerm, offReason = cmd:match('^/offmute%s+(%S+)%s+(%d+)%s+(.+)$')
+    if nick and offTerm and offReason and lvl >= 3 then
+        return {
+            command = cmd,
+            action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE7\xE0\xF2\xFB\xF7\xEA\xE0',
+            playerId = -1,
+            playerName = nick,
+            term = offTerm,
+            reason = offReason,
+        }
+    end
+
+    nick, offTerm, offReason = cmd:match('^/offjail%s+(%S+)%s+(%d+)%s+(.+)$')
+    if nick and offTerm and offReason and lvl >= 3 then
+        return {
+            command = cmd,
+            action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xF2\xFE\xF0\xFC\xEC\xE0',
+            playerId = -1,
+            playerName = nick,
+            term = offTerm,
+            reason = offReason,
+        }
+    end
+
+    id = cmd:match('^/skick%s+(%d+)$')
+    if id and lvl >= 3 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xD1\xEA\xE8\xEA',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    id = cmd:match('^/tr%s+(%d+)%s*$')
+    if id and lvl >= 3 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = string.format('/tr %d', id),
+            action = '\xC4\xEE\xF1\xF2\xE0\xF2\xFC \xE8\xE7 \xE2\xEE\xE4\xFB',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    id = cmd:match('^/unwarn%s+(%d+)$')
+    if id and lvl >= 4 then
+        id = tonumber(id)
+        if not apPlayerConnected(id) then
+            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
+        end
+        return {
+            command = cmd,
+            action = '\xD1\xED\xFF\xF2\xFC \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5',
+            playerId = id,
+            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    nick, offTerm, offReason = cmd:match('^/offban%s+(%S+)%s+(%d+)%s+(.+)$')
+    if nick and offTerm and offReason and lvl >= 4 then
+        return {
+            command = cmd,
+            action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE1\xE0\xED',
+            playerId = -1,
+            playerName = nick,
+            term = offTerm,
+            reason = offReason,
+        }
+    end
+
+    nick, offReason = cmd:match('^/offwarn%s+(%S+)%s+(.+)$')
+    if nick and offReason and lvl >= 4 then
+        return {
+            command = cmd,
+            action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE2\xE0\xF0\xED',
+            playerId = -1,
+            playerName = nick,
+            term = '-',
+            reason = offReason,
+        }
+    end
+
+    nick = cmd:match('^/unban%s+(%S+)$')
+    if nick and lvl >= 4 then
+        return {
+            command = cmd,
+            action = '\xD0\xE0\xE7\xE1\xE0\xED\xE8\xF2\xFC',
+            playerId = -1,
+            playerName = nick,
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    nick = cmd:match('^/unwarn%s+(%S+)$')
+    if nick and lvl >= 4 then
+        return {
+            command = cmd,
+            action = '\xD1\xED\xFF\xF2\xFC \xE2\xE0\xF0\xED',
+            playerId = -1,
+            playerName = nick,
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    nick = cmd:match('^/unmute%s+(%S+)$')
+    if nick and lvl >= 2 then
+        return {
+            command = cmd,
+            action = '\xD1\xED\xFF\xF2\xFC \xEE\xF4\xF4\xE0\xE9\xED \xEC\xF3\xF2',
+            playerId = -1,
+            playerName = nick,
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    nick = cmd:match('^/unjail%s+(%S+)$')
+    if nick and lvl >= 2 then
+        return {
+            command = cmd,
+            action = '\xCE\xF4\xF4\xE0\xE9\xED \xE2\xFB\xEF\xF3\xF1\xEA',
+            playerId = -1,
+            playerName = nick,
+            term = '-',
+            reason = '-',
+        }
+    end
+
+    return nil
+end
+
+local function apAnotherAdminExecuted(text)
+    local p = apState.pending
+    if not p then return false end
+    local plain = apPlainText(text)
+    if plain == '' then return false end
+    local target = trim(p.playerName or p.snapshotNick or '')
+    if target == '' then return false end
+    local needles = {
+        ' \xEF\xEE\xF1\xE0\xE4\xE8\xEB \xE2 \xF2\xFE\xF0\xFC\xEC\xF3 ' .. target,
+        ' \xE2\xFB\xF2\xE0\xF9\xE8\xEB \xE8\xE7 \xF2\xFE\xF0\xFC\xEC\xFB ' .. target,
+        ' \xF0\xE0\xE7\xE1\xE0\xED\xE8\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xEA\xE8\xEA\xED\xF3\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xEF\xEE\xF1\xF2\xE0\xE2\xE8\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
+        ' \xEF\xEE\xF1\xF2\xE0\xE2\xE8\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xEE\xF4\xF4\xEB\xE0\xE9\xED \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
+        ' \xE2\xFB\xE4\xE0\xEB \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
+        ' \xE2\xFB\xE4\xE0\xEB \xEE\xF4\xF4\xEB\xE0\xE9\xED \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
+        ' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xEE\xF4\xF4\xEB\xE0\xE9\xED \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xF1\xED\xFF\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xF1 \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xF1\xED\xFF\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xEE\xF4\xF4\xE0\xE9\xED \xF1 \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xF1\xED\xFF\xEB 1 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
+        '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ',
+    }
+    for _, n in ipairs(needles) do
+        if n == '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ' then
+            if plain:find('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ', 1, true)
+                    and (plain:find(' \xEA\xE8\xEA\xED\xF3\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target, 1, true)
+                        or plain:find(' \xEF\xEE\xF1\xE0\xE4\xE8\xEB \xE2 \xF2\xFE\xF0\xFC\xEC\xF3 ' .. target, 1, true)
+                        or plain:find(' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target, 1, true)
+                        or plain:find(' \xEF\xEE\xF1\xF2\xE0\xE2\xE8\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target, 1, true)
+                        or plain:find(' \xE2\xFB\xE4\xE0\xEB \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target, 1, true)) then
+                return true
+            end
+        elseif plain:find(n, 1, true) then
+            return true
+        end
+    end
+    local pid = tonumber(p.playerId)
+    if pid and pid >= 0 then
+        if plain:find('[' .. pid .. ']', 1, true) then
+            return true
+        end
+        if p.command and p.command:match('^/tr') and plain:find('/tr%s+' .. pid, 1) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Admin Punish Ingest Chat Line (hook + poll)
+function adminPunishIngestChatLine(color, text)
+    if not apEnabled() then return end
+    if not text or text == '' then return end
+    local plain = apPlainText(text)
+
+    if apState.pending and apAnotherAdminExecuted(text) then
+        apClearPending('\xCA\xEE\xEC\xE0\xED\xE4\xF3 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xEB \xE4\xF0\xF3\xE3\xEE\xE9 \xE0\xE4\xEC\xE8\xED.')
+        return
+    end
+
+    if apState.pending then return end
+    if not apIsAdminChatLine(color, plain) then return end
+    if type(isGamePaused) == 'function' and isGamePaused() then return end
+    if type(isPauseMenuActive) == 'function' and isPauseMenuActive() then return end
+
+    local admName, admId, admCommand = apParseAdminRequest(plain)
+    if not admName or not admId or not admCommand then return end
+    if type(isMyAdminReply) == 'function' and isMyAdminReply(admName, admId) then return end
+
+    local dedupKey = tostring(admId) .. '|' .. admCommand
+    if apIngestSeen(dedupKey) then return end
+
+    local parsed, errMsg = apTryParse(admCommand)
+    if not parsed then
+        if errMsg then say(errMsg) end
+        return
+    end
+
+    if apBlocksTargetAdmin(admCommand) and apIsCatalogAdmin(parsed.playerName) then
+        say('{EE0000}\xC2\xED\xE8\xEC\xE0\xED\xE8\xE5! \xD6\xE5\xEB\xFC \xE2 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2.')
+        return
+    end
+
+    parsed.admName = admName
+    parsed.admId = admId
+    parsed.tick = os.clock()
+    apSetPending(parsed)
+end
+
+-- Admin Punish On Server Message
+function adminPunishOnServerMessage(color, text)
+    adminPunishIngestChatLine(color, text)
+end
+
+local function apVkJustPressed(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    local down = isVkDown(vk) == true
+    local was = apState.keyPrev[vk] == true
+    apState.keyPrev[vk] = down
+    return down and not was
+end
+
+local function apInputsBlocked()
+    if sampIsChatInputActive and sampIsChatInputActive() then return true end
+    if sampIsDialogActive and sampIsDialogActive() then return true end
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return true end
+    return false
+end
+
+local function apExecutePending()
+    local p = apState.pending
+    if not p then return end
+    local ok, _, errMsg = apCanExecutePending(p)
+    if not ok then
+        if errMsg then say(errMsg) end
+        return
+    end
+    local cmd = p.command
+
+    if settings.admin_punish_send_ans and p.playerId and p.playerId >= 0 then
+        sendChat(string.format(
+            '/ans %d \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xE2\xFB\xE4\xE0\xED\xEE \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xE0 %s.',
+            p.playerId, p.admName or ''))
+    end
+
+    sendChat(apOutboundCmd(cmd, p.admName))
+
+    say('\xCA\xEE\xEC\xE0\xED\xE4\xE0 \xE2\xFB\xEF\xEE\xEB\xED\xE5\xED\xE0.')
+    apState.pending = nil
+end
+
+-- Admin Punish Confirm
+function adminPunishConfirm()
+    apExecutePending()
+end
+
+-- Admin Punish On Player Quit
+function adminPunishOnPlayerQuit(playerId)
+    if not apEnabled() then return end
+    local p = apState.pending
+    if not p then return end
+    local pid = clampSuspectPlayerId and clampSuspectPlayerId(p.playerId) or tonumber(p.playerId)
+    if not pid or pid < 0 then return end
+    if pid ~= tonumber(playerId) then return end
+    apClearPending(string.format(
+        '\xC8\xE3\xF0\xEE\xEA %s[%d] \xE2\xFB\xF8\xE5\xEB. \xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.',
+        p.snapshotNick or p.playerName or '?', pid))
+end
+
+-- Admin Punish Cancel
+function adminPunishCancel()
+    apClearPending('\xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.')
+end
+
+-- Admin Punish Has Pending
+function adminPunishHasPending()
+    return apState.pending ~= nil
+end
+
+-- Admin Punish Tick
+function adminPunishTick()
+    local p = apState.pending
+    if not p then return end
+
+    if os.clock() - (p.tick or 0) > PUNISH_TIMEOUT_SEC then
+        apClearPending('\xC2\xF0\xE5\xEC\xFF \xEE\xE6\xE8\xE4\xE0\xED\xE8\xFF \xE8\xF1\xF2\xE5\xEA\xEB\xEE.')
+        return
+    end
+
+    local st = apLiveTargetStatus(p)
+    if st and st.mode == 'online_id' and st.status == 'offline' then
+        apClearPending(string.format(
+            '\xC8\xE3\xF0\xEE\xEA %s[%d] \xE2\xFB\xF8\xE5\xEB \xF1 \xF1\xE5\xF0\xE2\xE5\xF0\xE0. \xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.',
+            st.snapshotNick or '?', st.playerId or 0))
+        return
+    end
+
+    local ck = tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE
+    local xk = tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END
+    if apInputsBlocked() then
+        apVkJustPressed(ck)
+        apVkJustPressed(xk)
+        return
+    end
+    if apVkJustPressed(ck) then
+        adminPunishConfirm()
+    elseif apVkJustPressed(xk) then
+        adminPunishCancel()
+    end
+end
+
+local function apBindPreviewCapturing()
+    local vk = tonumber(deskCache.bindCapVk) or 0
+    if vk > 0 then return vkToLabel(vk) end
+    return '...'
+end
+
+-- Admin Punish Bind Capture Save
+function adminPunishBindCaptureSave(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    if cheatBindIsModifier and cheatBindIsModifier(vk) then return false end
+    ensureAdminPunishSettings()
+    local field = apState.bindField or deskCache.adminPunishBindField or 'confirm'
+    local peerKey = field == 'cancel' and settings.admin_punish_confirm_key or settings.admin_punish_cancel_key
+    if vk == tonumber(peerKey) then
+        say('\xCF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xE5 \xE8 \xEE\xF2\xEC\xE5\xED\xE0 \xED\xE5 \xEC\xEE\xE3\xF3\xF2 \xE1\xFB\xF2\xFC \xEE\xE4\xED\xEE\xE9 \xEA\xEB\xE0\xE2\xE8\xF8\xE5\xE9.')
+        return false
+    end
+    if field == 'cancel' then
+        settings.admin_punish_cancel_key = vk
+    else
+        settings.admin_punish_confirm_key = vk
+    end
+    markDirtySettings()
+    if type(finishDeskBindCapture) == 'function' then
+        finishDeskBindCapture()
+    else
+        finishAdminPunishBindCapture()
+    end
+    return true
+end
+
+-- WM/poll захват клавиш (как hotkey/cheats в настройках).
+function applyAdminPunishBindCapture(msg, wparam, lparam)
+    if not deskCache.adminPunishBindCapture then return false end
+    if os.clock() - (tonumber(deskCache.adminPunishBindCaptureAt) or 0) < PF.HOTKEY_CAPTURE_GRACE then
+        return true
+    end
+    wparam = tonumber(wparam) or 0
+    if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
+        if wparam == vkeys.VK_ESCAPE then
+            finishDeskBindCapture()
+        elseif wparam == vkeys.VK_DELETE or wparam == vkeys.VK_BACK then
+            ensureAdminPunishSettings()
+            local field = apState.bindField or deskCache.adminPunishBindField or 'confirm'
+            if field == 'cancel' then
+                settings.admin_punish_cancel_key = vkeys.VK_END
+            else
+                settings.admin_punish_confirm_key = vkeys.VK_DELETE
+            end
+            markDirtySettings()
+            finishDeskBindCapture()
+        else
+            local capKey = deskBindCaptureKeyFromKeyboard and deskBindCaptureKeyFromKeyboard(wparam) or nil
+            if capKey then
+                deskCache.bindCapVk = capKey
+                if deskBindMouseCommitsOnDown and deskBindMouseCommitsOnDown(capKey) then
+                    adminPunishBindCaptureSave(capKey)
+                end
+            end
+        end
+        return true
+    end
+    if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+        local capKey = deskBindCaptureKeyFromKeyboard and deskBindCaptureKeyFromKeyboard(wparam) or nil
+        if deskBindCapTrySaveOnUp then
+            deskBindCapTrySaveOnUp(capKey, adminPunishBindCaptureSave, capKey)
+        end
+        return true
+    end
+    local mvk = parseMouseButtonVk and parseMouseButtonVk(msg, wparam, lparam) or nil
+    if mvk then
+        if deskBindMouseUiClickVk and deskBindMouseUiClickVk(mvk)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
+        end
+        deskCache.bindCapVk = mvk
+        if deskBindMouseCommitsOnDown and deskBindMouseCommitsOnDown(mvk) then
+            adminPunishBindCaptureSave(mvk)
+        end
+        return true
+    end
+    local relMv = parseMouseButtonReleaseVk and parseMouseButtonReleaseVk(msg, wparam, lparam) or nil
+    if relMv then
+        if deskBindMouseUiClickVk and deskBindMouseUiClickVk(relMv)
+                and os.clock() < (tonumber(deskCache.bindCapIgnoreMouseUntil) or 0) then
+            return true
+        end
+        if deskBindCapTrySaveOnUp then
+            deskBindCapTrySaveOnUp(relMv, adminPunishBindCaptureSave, relMv)
+        end
+        return true
+    end
+    return true
+end
+
+-- Begin Admin Punish Bind Capture
+function beginAdminPunishBindCapture(field)
+    if type(cancelDeskBindCapture) == 'function' then cancelDeskBindCapture() end
+    field = field == 'cancel' and 'cancel' or 'confirm'
+    apState.bindField = field
+    apState.bindCapture = true
+    deskCache.adminPunishBindField = field
+    deskCache.adminPunishBindCapture = true
+    deskCache.adminPunishBindCaptureAt = os.clock()
+    deskCache.bindCapVk = nil
+    deskCache.bindCapPollPrev = nil
+    deskCache.bindCapIgnoreMouseUntil = os.clock() + 0.35
+    if type(deskBindCaptureResetPollState) == 'function' then
+        deskBindCaptureResetPollState()
+    end
+end
+
+-- Finish Admin Punish Bind Capture
+function finishAdminPunishBindCapture()
+    apState.bindCapture = false
+    apState.bindField = nil
+    deskCache.adminPunishBindCapture = false
+    deskCache.adminPunishBindCaptureAt = nil
+    deskCache.adminPunishBindField = nil
+end
+
+-- Sync Admin Punish Ui From Settings
+function syncAdminPunishUiFromSettings()
+    ensureAdminPunishSettings()
+    uiAdminPunishEnabled[0] = settings.admin_punish_enabled == true
+    uiAdminPunishSendAns[0] = settings.admin_punish_send_ans == true
+    uiAdminPunishSignCmd[0] = settings.admin_punish_sign_cmd ~= false
+end
+
+local function apTruncate(s, maxBytes)
+    s = trim(tostring(s or ''))
+    maxBytes = tonumber(maxBytes) or 48
+    if #s <= maxBytes then return s end
+    return s:sub(1, math.max(1, maxBytes - 2)) .. '..'
+end
+
+local function apOverlayLiveValue(st, reqNick)
+    if st.mode == 'offline_nick' or st.status == 'na' then
+        return '\xEF\xEE \xED\xE8\xEA\xF3', col_muted2
+    end
+    if st.status == 'offline' then
+        return '\xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5', col_punish_label
+    end
+    if st.status == 'nick_changed' then
+        local liveShow = st.liveNick
+        if not liveShow or liveShow == '' then
+            liveShow = string.format('?[%d]', st.playerId or 0)
+        elseif st.playerId and st.playerId >= 0 then
+            liveShow = string.format('%s[%d]', liveShow, st.playerId)
+        end
+        return liveShow, col_punish_label
+    end
+    local liveLine = st.liveNick or reqNick
+    if st.playerId and st.playerId >= 0 then
+        liveLine = string.format('%s[%d]', liveLine, st.playerId)
+    end
+    return liveLine .. ' \xB7 \xEE\xEA', col_player_nick
+end
+
+local function apHudColorU32(col)
+    if type(toU32) == 'function' then return toU32(col) end
+    if imgui.ColorConvertFloat4ToU32 then return imgui.ColorConvertFloat4ToU32(col) end
+    return 0xFFFFFFFF
+end
+
+local function apHudActionColor(_p)
+    return col_punish_label
+end
+
+local function apHudTargetLabel(reqNick, reqPid)
+    reqNick = trim(tostring(reqNick or '?'))
+    local pid = tonumber(reqPid)
+    if pid and pid >= 0 then
+        return string.format('%s [%d]', reqNick, pid)
+    end
+    return reqNick
+end
+
+local function apHudCmdLine(p)
+    if not p or not p.command then return '' end
+    local cmd = trim(tostring(p.command or ''))
+    if cmd == '' then return '' end
+    return apOutboundCmd(cmd, p.admName)
+end
+
+local function apHudDrawTimerStrip(frac, left)
+    local timer = string.format('%.0f \xF1', left)
+    timer = uiText(timer)
+    local subW = imgui.CalcTextSize(timer).x
+    local avail = imgui.GetContentRegionAvail().x
+    if avail > subW + 2 then
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + avail - subW)
+    end
+    imgui.TextColored(col_muted2, timer)
+    imgui.Dummy(imgui.ImVec2(0, 1))
+
+    local dl = imgui.GetWindowDrawList()
+    if not dl then
+        imgui.Dummy(imgui.ImVec2(0, 4))
+        return
+    end
+    local wp = imgui.GetWindowPos()
+    local ws = imgui.GetWindowSize()
+    local pad = 10
+    local y = imgui.GetCursorScreenPos().y
+    local x0 = wp.x + pad
+    local x1 = wp.x + ws.x - pad
+    local track = imgui.ImVec4(0.10, 0.08, 0.14, 0.55)
+    dl:AddRectFilled(imgui.ImVec2(x0, y), imgui.ImVec2(x1, y + 2), apHudColorU32(track), 1)
+    if frac > 0 then
+        dl:AddRectFilled(
+            imgui.ImVec2(x0, y), imgui.ImVec2(x0 + (x1 - x0) * frac, y + 2),
+            apHudColorU32(col_accent_dim), 1)
+    end
+    imgui.Dummy(imgui.ImVec2(0, 6))
+end
+
+local function apVkHudShort(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return '?' end
+    if vkeys then
+        if vk == vkeys.VK_DELETE then return 'Del' end
+        if vk == vkeys.VK_END then return 'End' end
+        if vk == vkeys.VK_INSERT then return 'Ins' end
+        if vk == vkeys.VK_HOME then return 'Hm' end
+        if vk == vkeys.VK_PRIOR then return 'PgU' end
+        if vk == vkeys.VK_NEXT then return 'PgD' end
+        if vk == vkeys.VK_RETURN then return 'Ent' end
+        if vk == vkeys.VK_BACK then return 'Bk' end
+        if vk == vkeys.VK_SPACE then return 'Spc' end
+        if vk == vkeys.VK_TAB then return 'Tab' end
+        if vk == vkeys.VK_ESCAPE then return 'Esc' end
+        if vk == vkeys.VK_LBUTTON then return 'LMB' end
+        if vk == vkeys.VK_RBUTTON then return 'RMB' end
+        if vk == vkeys.VK_MBUTTON then return 'MMB' end
+        if vk == vkeys.VK_XBUTTON1 then return 'M4' end
+        if vk == vkeys.VK_XBUTTON2 then return 'M5' end
+        for d = 0, 9 do
+            if vk == vkeys['VK_NUMPAD' .. d] then return 'N' .. d end
+        end
+        if vk >= vkeys.VK_F1 and vk <= vkeys.VK_F12 then
+            return 'F' .. (vk - vkeys.VK_F1 + 1)
+        end
+    end
+    local full = vkToLabel(vk)
+    local digit = full:match('^NUMPAD(%d)$') or full:match('^[Nn]umpad%s*(%d)$')
+    if digit then return 'N' .. digit end
+    if #full <= 5 then return full end
+    return full:sub(1, 5)
+end
+
+local function apHudMeasureHintLine(label, keyVk, primary)
+    local lbl = uiText(tostring(label or ''))
+    local key = uiText(apVkHudShort(keyVk))
+    if primary then
+        return imgui.CalcTextSize(lbl).x + 4 + imgui.CalcTextSize(key).x
+    end
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(0.90) end
+    local w = imgui.CalcTextSize(lbl).x + 4
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(0.76) end
+    w = w + imgui.CalcTextSize(key).x
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+    return w
+end
+
+local function apHudDrawHintLine(label, keyVk, primary, enabled)
+    local lbl = uiText(tostring(label or ''))
+    local key = uiText(apVkHudShort(keyVk))
+    enabled = enabled ~= false
+
+    if primary then
+        imgui.TextColored(enabled and col_accent or col_muted, lbl)
+        imgui.SameLine(0, 4)
+        if imgui.SetWindowFontScale then imgui.SetWindowFontScale(0.78) end
+        local keyCol = enabled
+            and imgui.ImVec4(col_accent.x, col_accent.y, col_accent.z, 0.38)
+            or imgui.ImVec4(0.42, 0.40, 0.48, 0.30)
+        imgui.TextColored(keyCol, key)
+    else
+        if imgui.SetWindowFontScale then imgui.SetWindowFontScale(0.90) end
+        imgui.TextColored(imgui.ImVec4(col_muted.x, col_muted.y, col_muted.z, 0.46), lbl)
+        imgui.SameLine(0, 4)
+        if imgui.SetWindowFontScale then imgui.SetWindowFontScale(0.76) end
+        imgui.TextColored(imgui.ImVec4(0.40, 0.38, 0.46, 0.22), key)
+    end
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
+local function apHudDrawBody(p, reqNick, reqPid, canExec)
+    local targetCol = canExec and col_player_nick or col_punish_label
+    imgui.TextColored(apHudActionColor(p), uiText(p.action or '-'))
+    imgui.SameLine(0, 6)
+    imgui.TextColored(targetCol, uiText(apHudTargetLabel(reqNick, reqPid)))
+    imgui.SameLine(0, 6)
+    imgui.TextColored(col_muted2, uiText('\xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5'))
+    imgui.SameLine(0, 4)
+    imgui.TextColored(col_admin_label, uiText(trim(p.admName or '?')))
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+    local cmdLine = apHudCmdLine(p)
+    if cmdLine ~= '' then
+        imgui.PushTextWrapPos(imgui.GetCursorPosX() + imgui.GetContentRegionAvail().x)
+        imgui.TextColored(col_muted2, uiText(apTruncate(cmdLine, 84)))
+        imgui.PopTextWrapPos()
+    end
+end
+
+local function apHudDrawStatus(st, reqNick, canExec, blockMsg)
+    if canExec then return end
+    if blockMsg and blockMsg ~= '' then
+        imgui.TextColored(col_punish_label, uiText(apTruncate(blockMsg, 64)))
+        return
+    end
+    local liveText, liveCol = apOverlayLiveValue(st, reqNick)
+    if st.status == 'nick_changed' or st.status == 'offline' then
+        imgui.TextColored(liveCol or col_punish_label, uiText(liveText))
+    end
+end
+
+local function apHudDrawHints(canExec)
+    ensureAdminPunishSettings()
+    local ck = tonumber(settings.admin_punish_confirm_key) or 0
+    local xk = tonumber(settings.admin_punish_cancel_key) or 0
+    local lblOk = '\xCF\xF0\xE8\xED\xFF\xF2\xFC'
+    local lblNo = '\xEE\xF2\xEC\xE5\xED\xE0'
+
+    imgui.Dummy(imgui.ImVec2(0, 2))
+    local w1 = apHudMeasureHintLine(lblOk, ck, true)
+    local w2 = apHudMeasureHintLine(lblNo, xk, false)
+    local avail = imgui.GetContentRegionAvail().x
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + math.max(0, (avail - (w1 + AP_HINT_GAP + w2)) * 0.5))
+
+    apHudDrawHintLine(lblOk, ck, true, canExec)
+    imgui.SameLine(0, AP_HINT_GAP)
+    apHudDrawHintLine(lblNo, xk, false, true)
+    imgui.Dummy(imgui.ImVec2(0, 1))
+end
+
+-- Draw Admin Punish Tab
+function drawAdminPunishTab()
+    if not adminPunishUiSynced then
+        syncAdminPunishUiFromSettings()
+        adminPunishUiSynced = true
+    end
+
+    pushPanelStyle(col_chat_bg)
+    local panelFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.BeginChild('##admin_punish_panel', imgui.ImVec2(-1, -1), false, panelFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    if adminPunishHasPending() then
+        drawSettingsSubsection('\xC0\xEA\xF2\xE8\xE2\xED\xFB\xE9 \xE7\xE0\xEF\xF0\xEE\xF1')
+        drawSettingsHint('\xCE\xE6\xE8\xE4\xE0\xE5\xF2\xF1\xFF \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xE5 \xB7 \xEF\xEB\xE0\xF8\xEA\xE0 \xE2\xED\xE8\xE7\xF3 \xEF\xEE \xF6\xE5\xED\xF2\xF0\xF3 \xFD\xEA\xF0\xE0\xED\xE0')
+        imgui.Dummy(imgui.ImVec2(0, 4))
+    end
+
+    deskFormPanelBegin('##ap_main')
+    drawSettingsCardHeader('\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF \xE8\xE7 /a',
+        '\xCA\xEE\xEB\xEB\xE5\xE3\xE0 \xEF\xE8\xF8\xE5\xF2 \xEA\xEE\xEC\xE0\xED\xE4\xF3 \xB7 \xEF\xE5\xF0\xE5\xE4 \xE2\xFB\xE4\xE0\xF7\xE5\xE9 \xF1\xE2\xE5\xF0\xFF\xE0\xE5\xF2\xF1\xF1\xFF \xED\xE8\xEA \xED\xE0 ID')
+    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE8\xF2\xFC \xE0\xE2\xF2\xEE\xE2\xFB\xE4\xE0\xF7\xF3', uiAdminPunishEnabled, function(v)
+        settings.admin_punish_enabled = v
+        if not v then apClearPending() end
+        markDirtySettings()
+    end, 'ap_en') then end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##ap_keys')
+    drawSettingsCardHeader('\xCA\xEB\xE0\xE2\xE8\xF8\xE8',
+        '\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEF\xEE \xEF\xEE\xEB\xFE \xEF\xF0\xE8\xE2\xFF\xE7\xEA\xE8 \xB7 \xCF\xCA\xCC \xF1\xE1\xF0\xEE\xF1 \xB7 Esc \xEE\xF2\xEC\xE5\xED\xE0')
+    local capConfirm = deskCache.adminPunishBindCapture and deskCache.adminPunishBindField == 'confirm'
+    local capCancel = deskCache.adminPunishBindCapture and deskCache.adminPunishBindField == 'cancel'
+    drawDeskBindRow({
+        label = '\xC7\xE0\xF2\xE2\xE5\xF0\xE4\xE8\xF2\xFC \xE8 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xF2\xFC',
+        inline = false,
+        previewText = capConfirm and apBindPreviewCapturing() or vkToLabel(settings.admin_punish_confirm_key),
+        capturing = capConfirm,
+        keyCapId = '##ap_confirm',
+        onCapture = function() beginAdminPunishBindCapture('confirm') end,
+        onClear = function()
+            settings.admin_punish_confirm_key = vkeys.VK_DELETE
+            ensureAdminPunishSettings()
+            markDirtySettings()
+        end,
+    })
+    drawDeskBindRow({
+        label = '\xCE\xF2\xEC\xE5\xED\xE8\xF2\xFC \xE7\xE0\xEF\xF0\xEE\xF1',
+        inline = false,
+        previewText = capCancel and apBindPreviewCapturing() or vkToLabel(settings.admin_punish_cancel_key),
+        capturing = capCancel,
+        keyCapId = '##ap_cancel',
+        onCapture = function() beginAdminPunishBindCapture('cancel') end,
+        onClear = function()
+            settings.admin_punish_cancel_key = vkeys.VK_END
+            ensureAdminPunishSettings()
+            markDirtySettings()
+        end,
+    })
+    drawSettingsHint(string.format(
+        '\xCF\xEB\xE0\xF8\xEA\xE0 \xE2\xED\xE8\xE7\xF3 \xEF\xEE \xF6\xE5\xED\xF2\xF0\xF3 \xB7 %d \xF1\xE5\xEA \xB7 \xF3\xEF\xF0\xE0\xE2\xEB\xE5\xED\xE8\xE5 \xF2\xEE\xEB\xFC\xEA\xEE \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xEE\xE9',
+        PUNISH_TIMEOUT_SEC))
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##ap_send')
+    drawSettingsCardHeader('\xCE\xF2\xEF\xF0\xE0\xE2\xEA\xE0')
+    if deskFormCheckboxRow('\xCF\xEE\xE4\xEF\xE8\xF1\xFC \xE2 \xEA\xEE\xEC\xE0\xED\xE4\xE5', uiAdminPunishSignCmd, function(v)
+        settings.admin_punish_sign_cmd = v
+        markDirtySettings()
+    end, 'ap_sign') then end
+    if deskFormCheckboxRow('\xD1\xED\xE0\xF7\xE0\xEB\xE0 /ans \xE8\xE3\xF0\xEE\xEA\xF3', uiAdminPunishSendAns, function(v)
+        settings.admin_punish_send_ans = v
+        markDirtySettings()
+    end, 'ap_ans') then end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##ap_help')
+    drawSettingsCardHeader('\xCA\xEE\xEC\xE0\xED\xE4\xFB')
+    drawSettingsHint('/jail ID \xEC\xE8\xED \xEF\xF0\xE8\xF7\xE8\xED\xE0 \xB7 /mute /ban /warn /kick \xB7 /off* \xB7 /un* \xB7 /skick ID \xB7 /tr ID')
+    drawSettingsHint('\xCF\xE5\xF0\xE5\xE4 \xE2\xFB\xE4\xE0\xF7\xE5\xE9 \xF1\xE2\xE5\xF0\xFF\xE5\xF2\xF1\xFF \xED\xE8\xEA \xED\xE0 ID \xB7 \xEF\xF0\xE8 \xF1\xEC\xE5\xED\xE5 \xE8\xE3\xF0\xEE\xEA\xE0 \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xED\xE5 \xF3\xE9\xE4\xB8\xF2')
+    drawSettingsHint('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0 \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xED\xE0\xF1\xF2\xF0\xEE\xE5\xEA \xAB\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2 /sp\xBB')
+    deskFormPanelEnd()
+
+    imgui.PopStyleVar(2)
+    imgui.Dummy(imgui.ImVec2(0, 12))
+    imgui.EndChild()
+    popPanelStyle()
+end
+
+function drawAdminPunishSettings()
+    drawAdminPunishTab()
+end
+
+-- Draw Admin Punish Overlay (компактная карточка внизу по центру)
+function drawAdminPunishOverlay()
+    local p = apState.pending
+    if not p or not apEnabled() then return end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return end
+    ensureAdminPunishSettings()
+
+    local canExec, st, blockMsg = apCanExecutePending(p)
+    st = st or {}
+    local reqNick = st.snapshotNick or p.snapshotNick or p.playerName or '?'
+    local reqPid = st.playerId
+    if reqPid == nil then reqPid = p.playerId end
+
+    local sw, sh = getScreenResolution()
+    sw, sh = tonumber(sw) or 800, tonumber(sh) or 600
+    local elapsed = os.clock() - (p.tick or 0)
+    local left = math.max(0, PUNISH_TIMEOUT_SEC - elapsed)
+    local frac = math.max(0, math.min(1, left / PUNISH_TIMEOUT_SEC))
+
+    local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
+        + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoInputs
+    if imgui.WindowFlags.NoBringToFrontOnFocus then
+        flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
+    end
+    if imgui.WindowFlags.NoFocusOnAppearing then
+        flags = flags + imgui.WindowFlags.NoFocusOnAppearing
+    end
+    if imgui.WindowFlags.NoSavedSettings then
+        flags = flags + imgui.WindowFlags.NoSavedSettings
+    end
+
+    imgui.SetNextWindowSizeConstraints(
+        imgui.ImVec2(OVERLAY_W, 0), imgui.ImVec2(OVERLAY_W + 56, 280))
+    imgui.SetNextWindowPos(
+        imgui.ImVec2(sw * 0.5, sh - OVERLAY_BOTTOM_MARGIN), imgui.Cond.Always, imgui.ImVec2(0.5, 1.0))
+
+    local theme = apTheme()
+    if theme then theme.pushHudChrome(0.92) end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 10))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(4, 2))
+    if imgui.Begin('###desk_admin_punish', nil, flags) then
+        if theme and theme.drawPanelFrame then theme.drawPanelFrame() end
+
+        apHudDrawTimerStrip(frac, left)
+        apHudDrawBody(p, reqNick, reqPid, canExec)
+        apHudDrawStatus(st, reqNick, canExec, blockMsg)
+        apHudDrawHints(canExec)
+        imgui.End()
+    end
+    imgui.PopStyleVar(2)
+    if theme then theme.popHudChrome() end
+end
 
 --[[ Модуль: треды репортов, сообщения, unread. ]]
 function resolveThread(nick, id)
@@ -20696,6 +23464,8 @@ function requestChatSnapBottom(key)
     deskInputState.snapPending = true
     deskInputState.snapKey = key
     deskInputState.chatFollowBottom = true
+    deskInputState.hasUnseenMessages = false
+    deskInputState.chatScrollUntil = os.clock() + 0.5
 end
 
 -- Request Chat Scroll For Thread
@@ -20897,7 +23667,12 @@ end
 
 -- Load Config
 function loadConfig()
-    quickScenarios = cloneQuickScenarios(DEFAULT_QUICK_SCENARIOS)
+    local scenarioDefaults = DEFAULT_QUICK_SCENARIOS
+    if type(scenarioDefaults) ~= 'table' then
+        local pack = loadDefaultScenarioPack()
+        scenarioDefaults = pack and pack.quick_scenarios or {}
+    end
+    quickScenarios = cloneQuickScenarios(scenarioDefaults)
     reloadProfanityWordsFromDict()
     threads = {}
     threadOrder = {}
@@ -20970,6 +23745,7 @@ function loadConfig()
         settings.tech_reply = repairStoredConfigText(settings.tech_reply, DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
     settings.poll_chat_log = nil
     settings.poll_events_only = nil
     settings.ingest_pc = nil
@@ -21102,6 +23878,9 @@ function loadConfig()
         end
     end
     migrateScenariosPackIfNeeded()
+    if type(reloadDeskIntentsFromSources) == 'function' then
+        reloadDeskIntentsFromSources()
+    end
     deskConfigReady = true
 end
 
@@ -21255,6 +24034,11 @@ function loadUserConfig()
         quickScenarios = cloneQuickScenarios(data.quick_scenarios, true)
         bumpScenariosGen()
     end
+    if type(data.intents) == 'table' and #data.intents > 0 then
+        setDeskIntents(data.intents, data)
+    elseif type(reloadDeskIntentsFromSources) == 'function' then
+        reloadDeskIntentsFromSources()
+    end
     if type(data.checker) == 'table' then
         local catalogPath = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.lua'
         if not doesFileExist(catalogPath) then
@@ -21367,6 +24151,11 @@ function saveConfig()
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
     f:write(string.format('    checker_dev_rpc_probe = %s,\n', settings.checker_dev_rpc_probe == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_enabled = %s,\n', settings.admin_punish_enabled == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_confirm_key = %d,\n', tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE))
+    f:write(string.format('    admin_punish_cancel_key = %d,\n', tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END))
+    f:write(string.format('    admin_punish_send_ans = %s,\n', settings.admin_punish_send_ans == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_sign_cmd = %s,\n', settings.admin_punish_sign_cmd ~= false and 'true' or 'false'))
     if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
         f:write('    cmd_binds = {\n')
         for _, row in ipairs(settings.cmd_binds) do
@@ -21723,12 +24512,21 @@ function setRuleCooldown(threadKey, rule)
     ruleCooldowns[key] = os.time() + (tonumber(rule.cooldown) or 120)
 end
 
--- Normalize Match Text
+local EDGE_PUNCT = '[%s%.%!%?,:;%-]+'
+
+-- Normalize Match Text (shared with intent engine when loaded first)
+if type(normalizeMatchText) ~= 'function' then
 function normalizeMatchText(s)
-    s = trim(stripTags(s or ''):lower():gsub('%s+', ' '))
+    s = trim(stripTags(s or ''))
+    if type(isUtf8Text) == 'function' and isUtf8Text(s)
+            and type(utf8ToCp1251) == 'function' then
+        s = utf8ToCp1251(s)
+    end
+    s = s:lower():gsub('%s+', ' ')
     s = s:gsub('\xB8', '\xE5')
-    s = s:gsub('^[%s%.%!%?,:;%-–—]+', ''):gsub('[%s%.%!%?,:;%-–—]+$', '')
+    s = s:gsub('^' .. EDGE_PUNCT, ''):gsub(EDGE_PUNCT .. '$', '')
     return s
+end
 end
 
 -- Rule Match Mode Label
@@ -21886,17 +24684,6 @@ function keywordMatchScore(kw, msg, msgAlt, mode, msgTypo)
         return math.max(#normalizeMatchText(raw), 3)
     end
     return 0
-end
-
--- Scenario Match Score
-function scenarioMatchScore(sc, text)
-    local msg, msgAlt, msgTypo = matchMessageVariants(text)
-    local mode = sc.match or 'contains'
-    local best = 0
-    for _, kw in ipairs(sc.keywords or {}) do
-        best = math.max(best, keywordMatchScore(kw, msg, msgAlt, mode, msgTypo))
-    end
-    return best
 end
 
 -- Trigger Matches Keyword
@@ -22379,12 +25166,14 @@ function processAutoRules(t, body)
     end
     if rule.mode == 'confirm' then
         pendingAuto[tk] = { rule = rule, body = body }
-        addAutoSystemNote(t, rule.name, '\xEE\xE6\xE8\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF')
+        addAutoSystemNote(t, rule.name, nil, 'pending')
         markAutoFired(t, body)
         return true
     end
     local ok, executed = executeRuleAction(t, rule)
-    addAutoSystemNote(t, rule.name, executed)
+    if not ok then
+        addAutoSystemNote(t, rule.name, executed, 'fail')
+    end
     if ok then
         setRuleCooldown(tk, rule)
         markAutoFired(t, body)
@@ -22914,7 +25703,12 @@ function lastPreview(t)
     local msgs = t.messages
     if not msgs or #msgs == 0 then return '' end
     local m = msgs[#msgs]
-    if m.dir == 'system' then return m.note or '' end
+    if m.dir == 'system' then
+        if type(formatAutoSystemDisplay) == 'function' then
+            return formatAutoSystemDisplay(m)
+        end
+        return m.note or ''
+    end
     local k = messageKind(m)
     if k == 'action' then
         return '* ' .. (m.text or '')
@@ -23314,13 +26108,19 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     local profanityHighlight = opts.profanityHighlight == true
     local scenarioBody = ''
     local quickBtns = {}
-    if not opts.noQuickButtons and reporter and messageShowsScenarioButtons(m) then
+    local corpusCandidate = false
+    if reporter and messageShowsScenarioButtons(m) then
         scenarioBody = messageBodyForScenarios(m)
         if scenarioBody == '' then scenarioBody = line end
         quickBtns = collectQuickButtonsForMessage(scenarioBody)
     end
-    local watchBtns, replyBtns = splitQuickButtons(quickBtns)
+    local showQuickBtns = opts.noQuickButtons ~= true
+    local watchBtns, replyBtns = splitQuickButtons(showQuickBtns and quickBtns or {})
+    if dir == 'in' and #replyBtns == 0 and intentMessageCorpusCandidate(scenarioBody) then
+        corpusCandidate = true
+    end
     local watchInlineW = quickButtonsInlineWidth(watchBtns)
+    local corpusInlineW = corpusCandidate and (intentCorpusBtnWidth(scenarioBody) + 8) or 0
     local btnAreaW = math.max(80, rowW - padSide * 2)
     local replyBtnRows, replyBtnBlockH = layoutQuickButtonRows(replyBtns, btnAreaW)
 
@@ -23350,7 +26150,7 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
 
     local subDisp = sub and uiText(sub) or ''
     local subSz = subDisp ~= '' and imgui.CalcTextSize(subDisp) or imgui.ImVec2(0, 0)
-    local maxBubbleW = math.max(64, rowW - padSide * 2 - watchInlineW)
+    local maxBubbleW = math.max(64, rowW - padSide * 2 - watchInlineW - corpusInlineW)
     local wrapInner = math.min(maxInner, math.max(48, maxBubbleW - BUBBLE_PAD_X * 2))
     local estW, estH = measureBubbleText(line, wrapInner, m)
     local padY = compactSpacing and BUBBLE_PAD_Y_GROUPED or BUBBLE_PAD_Y
@@ -23401,10 +26201,17 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     drawBubbleBodyText(dl, textX, textY, wrapInner, line, fg, m)
     dl:AddText(imgui.ImVec2(timeX, timeY), toU32(col_muted2), timeDispPre)
 
-    if #watchBtns > 0 and not alignRight then
-        local watchBtnY = localY + topPad + authorH + math.max(0, (bubbleH - QUICK_BTN_H) * 0.5)
-        local watchBtnX = localX + padSide + bubbleW + 8
-        drawInlineWatchButtons(watchBtns, localX, localY, watchBtnX, watchBtnY, scenarioBody, reporter, msgIdx)
+    if not alignRight then
+        local inlineBtnY = localY + topPad + authorH + math.max(0, (bubbleH - QUICK_BTN_H) * 0.5)
+        local inlineBtnX = localX + padSide + bubbleW + 8
+        if #watchBtns > 0 then
+            drawInlineWatchButtons(watchBtns, localX, localY, inlineBtnX, inlineBtnY, scenarioBody, reporter, msgIdx)
+            inlineBtnX = inlineBtnX + math.max(0, watchInlineW - 8)
+        end
+        if corpusCandidate then
+            local corpusBtnY = localY + topPad + authorH + math.max(0, (bubbleH - INTENT_CORPUS_BTN_H) * 0.5)
+            drawIntentCorpusQueueButton(scenarioBody, reporter, msgIdx, inlineBtnX, corpusBtnY)
+        end
     end
 
     if #replyBtnRows > 0 then
@@ -23753,12 +26560,12 @@ function drawComposer(composerH, quickItems)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 0))
     imgui.BeginChild('##composer', imgui.ImVec2(-1, composerH), false, composerFlags)
 
-    if focusReplyNext and imgui.SetKeyboardFocusHere then
+    if deskInputState.focusReplyNext and imgui.SetKeyboardFocusHere then
         imgui.SetKeyboardFocusHere(0)
         deskInputState.keyboardStickyUntil = os.clock() + 2.0
         deskInputState.replyFocused = true
-        focusReplyNext = false
-        focusReplyReason = nil
+        deskInputState.focusReplyNext = false
+        deskInputState.focusReplyReason = nil
     end
 
     local canSend = getSelectedThread() ~= nil
@@ -23785,8 +26592,9 @@ function drawComposer(composerH, quickItems)
     else
         sent = imgui.InputText('##reply', replyBuf, sizeof(replyBuf), flags)
     end
-    if imgui.IsItemClicked and imgui.IsItemClicked(0) and imgui.IsItemActive and not imgui.IsItemActive() then
-        focusReplyNext = true
+    if imgui.IsItemClicked and imgui.IsItemClicked(0) then
+        deskInputState.keyboardStickyUntil = os.clock() + 2.0
+        deskInputState.replyFocused = true
     end
     deskKeepInputOnActiveItem()
     local replyActive = false
@@ -23827,9 +26635,12 @@ function drawComposer(composerH, quickItems)
     if canSend and (sendClicked or sent) then
         if sendReplyToSelected() then
             ffi.copy(replyBuf, '')
-            focusReplyNext = true
-            focusReplyReason = 'send'
+            deskInputState.focusReplyNext = true
+            deskInputState.focusReplyReason = 'send'
             deskInputState.replyFocused = true
+            if selectedKey then
+                requestChatSnapBottom(selectedKey)
+            end
         end
     end
 
@@ -23866,8 +26677,8 @@ function drawThreadRow(t, key, sel)
         t.unread = 0
         deskInputState.chatFollowBottom = true
         requestChatSnapBottom(key)
-        focusReplyNext = true
-        focusReplyReason = 'select'
+        deskInputState.focusReplyNext = true
+        deskInputState.focusReplyReason = 'select'
         markDirtyThreads()
     end
 
@@ -24229,18 +27040,17 @@ function runScenarioMatchTest()
         setInputBuf(scTestResult, uiText('\xE2\xE2\xE5\xE4\xE8\xF2\xE5 \xF2\xE5\xEA\xF1\xF2'))
         return
     end
-    local names = {}
-    for _, i in ipairs(getSortedQuickScenarioIndices()) do
-        local sc = quickScenarios[i]
-        if scenarioVisibleOnMessage(sc, sample) then
-            names[#names + 1] = sc.label or '?'
-        end
+    local summary = formatIntentResolveSummary(sample)
+    local btns = collectQuickButtonsForMessage(sample)
+    if #btns < 1 then
+        setInputBuf(scTestResult, summary .. ' | ' .. uiText('\xED\xE5\xF2 \xEA\xED\xEE\xEF\xEE\xEA'))
+        return
     end
-    if #names == 0 then
-        setInputBuf(scTestResult, uiText('\xED\xE5\xF2 \xEA\xED\xEE\xEF\xEE\xEA'))
-    else
-        setInputBuf(scTestResult, table.concat(names, ', '))
+    local labels = {}
+    for _, qb in ipairs(btns) do
+        labels[#labels + 1] = qb.scenario and qb.scenario.label or '?'
     end
+    setInputBuf(scTestResult, summary .. ' | ' .. table.concat(labels, ', '))
 end
 
 -- Draw Scenarios Edit Panel
@@ -24574,12 +27384,14 @@ function applyChatScrollIfNeeded(msgCount)
             imgui.SetScrollY(maxY)
             deskInputState.snapPending = false
             deskInputState.snapKey = nil
+        else
+            deskInputState.chatScrollUntil = os.clock() + 0.12
         end
         return
     end
 
     -- SetScrollY не забирает фокус у ##reply (в отличие от SetScrollHereY).
-    if focusReplyNext and focusReplyReason ~= 'send' then return end
+    if deskInputState.focusReplyNext and deskInputState.focusReplyReason ~= 'send' then return end
 
     local wantFollow = (not deskInputState.snapPending)
         and (os.clock() < (deskInputState.chatScrollUntil or 0))
@@ -25145,10 +27957,11 @@ function toggleWindow()
     end
     rulesUiSynced = false
     settingsUiSynced = false
+    adminPunishUiSynced = false
     scenariosUiSynced = false
     local selThread = getSelectedThread()
-    focusReplyNext = selThread ~= nil
-    focusReplyReason = selThread ~= nil and 'open' or nil
+    deskInputState.focusReplyNext = selThread ~= nil
+    deskInputState.focusReplyReason = selThread ~= nil and 'open' or nil
     deskInputState.windowOpenSince = os.clock()
     if selThread ~= nil then
         deskInputState.replyInputActive = false
@@ -25196,8 +28009,10 @@ function drawMainWindow()
 
     if filterMode[0] > 1 then filterMode[0] = 0 end
 
+    local chatTabActive = false
     if imgui.BeginTabBar('##tabs') then
         if imgui.BeginTabItem(uiText('\xD0\xE5\xEF\xEE\xF0\xF2\xFB') .. '##tab_chat') then
+            chatTabActive = true
             drawThreadList()
             imgui.SameLine(0, 0)
             drawChatPanel()
@@ -25288,6 +28103,15 @@ function drawMainWindow()
             deskVeh.tabActive = false
             pcall(deskVeh.onTabLeave)
         end
+        if imgui.BeginTabItem(uiText('\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF') .. '##tab_ap') then
+            local okAp, errAp = pcall(drawAdminPunishTab)
+            if not okAp then
+                imgui.TextColored(col_warn, 'Admin punish UI error:')
+                imgui.TextWrapped(tostring(errAp))
+                print('[Report Desk] admin punish UI: ' .. tostring(errAp))
+            end
+            imgui.EndTabItem()
+        end
         if imgui.BeginTabItem(uiText('\xCD\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE8') .. '##tab_set') then
             local okSet, errSet = pcall(drawSettingsTab)
             if not okSet then
@@ -25300,6 +28124,9 @@ function drawMainWindow()
         imgui.EndTabBar()
     end
 
+    if not chatTabActive then
+        deskInputState.replyInputActive = false
+    end
 
     imgui.End()
     if not showWindow[0] then
@@ -25552,6 +28379,19 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return type(adminPunishHasPending) == 'function' and adminPunishHasPending()
+        end,
+        function(self)
+            self.HideCursor = true
+            self.LockPlayer = false
+            pcall(drawAdminPunishOverlay)
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
             return cheatState.marker.active
         end,
         function()
@@ -25735,7 +28575,13 @@ local function installDeskWmHandlers()
     end)
 
     deskWmDispatch.register('main', 50, function(msg, wparam, lparam)
-        if deskCache.cheatCapture then
+        if deskCache.adminPunishBindCapture then
+            if type(applyAdminPunishBindCapture) == 'function'
+                    and applyAdminPunishBindCapture(msg, wparam, lparam) then
+                consumeWindowMessage(true, true, true)
+                return true
+            end
+        elseif deskCache.cheatCapture then
             if applyCheatKeyCapture(msg, wparam, lparam) then
                 consumeWindowMessage(true, true, true)
                 return true
@@ -25773,7 +28619,7 @@ local function installDeskWmHandlers()
                     return true
                 end
                 if msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
-                    if deskCache.hotkeyCapture or deskCache.cheatCapture then
+                    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
                         cancelDeskBindCapture()
                     else
                         closeDeskWindow()
@@ -25902,6 +28748,14 @@ function pollReportIngest()
         if key == '' then goto continue end
         if chatSeen.lines[key] then goto continue end
         local plain = normalizeChatLine(line)
+        if type(adminPunishIngestChatLine) == 'function' then
+            local apPoll = (type(adminPunishHasPending) == 'function' and adminPunishHasPending())
+                or plain:find('^%[A%]%s', 1)
+                or plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1)
+            if apPoll then
+                pcall(adminPunishIngestChatLine, 0, line)
+            end
+        end
         if tryIngestAdminReplyLine(plain) then
             markChatLineSeen(key)
             chatSeen.deferred[key] = nil
@@ -25933,84 +28787,188 @@ function pollReportIngest()
     end
 end
 
---[[ Модуль: публикация locals в env для hooks/late chunks (checker). ]]
+--[[ Модуль: публикация locals в env для 2-го core-chunk и late modules (checker). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
--- Экспорт core locals в env — hooks/checker chunks видят imgui, settings, deskCache и т.д.
-do
-    local e = getfenv(1)
-    if type(e) ~= 'table' then return end
-    e.imgui = imgui
-    e.sampev = sampev
-    e.vkeys = vkeys
-    e.new = new
-    e.sizeof = sizeof
-    e.u8 = u8
-    e.ffi = ffi
-    e.memory = memory
-    e.cheat_user32 = cheat_user32
-    e.deskVeh = deskVeh
-    e.deskGrid = deskGrid
-    e.deskTex = deskTex
-    e.deskTexPipeline = deskTexPipeline
-    e.deskTexLoad = deskTexLoad
-    e.deskSpectateStats = deskSpectateStats
-    e.deskIngest = deskIngest
-    e.settings = settings
-    e.deskCache = deskCache
-    e.deskInputState = deskInputState
-    e.showWindow = showWindow
-    e.threads = threads
-    e.threadOrder = threadOrder
-    e.threadCount = threadCount
-    e.MAX_PLAYER_ID = MAX_PLAYER_ID
-    e.findPlayerIdByNick = findPlayerIdByNick
-    e.refreshPlayerNickCache = refreshPlayerNickCache
-    e.nickKey = nickKey
-    if type(outbound) ~= 'table' then
-        error('[Report Desk] outbound not initialized before env export')
-    end
-    if type(chatSeen) ~= 'table' then
-        error('[Report Desk] chatSeen not initialized before env export')
-    end
-    e.chatSeen = chatSeen
-    e.outbound = outbound
-    _G.chatSeen = chatSeen
-    _G.outbound = outbound
-    e.trim = trim
-    e.stripTags = stripTags
-    e.stripChatTimestamp = stripChatTimestamp
-    e.chatLineSeenKey = chatLineSeenKey
-    e.markChatLineSeen = markChatLineSeen
-    e.markDirtyThreads = markDirtyThreads
-    e.clearPendingOutbound = clearPendingOutbound
-    e.tryIngestAdminReplyLine = tryIngestAdminReplyLine
-    e.processChatLineIngest = processChatLineIngest
-    e.profanityIsLineSeen = profanityIsLineSeen
-    e.checkProfanityFromChatLine = checkProfanityFromChatLine
-    e.checkProfanityOutgoing = checkProfanityOutgoing
-    e.installProfanityHooks = installProfanityHooks
-    e.tryInterceptSplitAnsCommand = tryInterceptSplitAnsCommand
-    e.handleOutgoingAnsCommand = handleOutgoingAnsCommand
-    e.deskLeaveSpectateMode = deskLeaveSpectateMode
-    e.deskApplyInputPolicy = deskApplyInputPolicy
-    if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
-    if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
-    if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
-    if deskEnsureAllHooks then _G.deskEnsureAllHooks = deskEnsureAllHooks end
-    if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
-    if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
-    if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
-    if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
-    if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
-    if deskSpectateCameraBlocked then _G.deskSpectateCameraBlocked = deskSpectateCameraBlocked end
-    if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
-    if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
-    if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
-    if deskSpectateOverlayInputAllowed then _G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed end
-    if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
-    if deskCache then _G.deskCache = deskCache end
+-- Без local e: у core_a уже ~200 locals (ещё один local ломает loadstring).
+if type(getfenv(1)) ~= 'table' then return end
+if type(outbound) ~= 'table' then
+    error('[Report Desk] outbound not initialized before env export')
 end
+if type(chatSeen) ~= 'table' then
+    error('[Report Desk] chatSeen not initialized before env export')
+end
+
+getfenv(1).imgui = imgui
+getfenv(1).sampev = sampev
+getfenv(1).vkeys = vkeys
+getfenv(1).new = new
+getfenv(1).sizeof = sizeof
+getfenv(1).u8 = u8
+getfenv(1).ffi = ffi
+getfenv(1).memory = memory
+getfenv(1).cheat_user32 = cheat_user32
+getfenv(1).deskVeh = deskVeh
+getfenv(1).deskGrid = deskGrid
+getfenv(1).deskTex = deskTex
+getfenv(1).deskTexPipeline = deskTexPipeline
+getfenv(1).deskTexLoad = deskTexLoad
+getfenv(1).deskSpectateStats = deskSpectateStats
+getfenv(1).deskIngest = deskIngest
+getfenv(1).settings = settings
+getfenv(1).deskCache = deskCache
+getfenv(1).deskInputState = deskInputState
+getfenv(1).showWindow = showWindow
+getfenv(1).threads = threads
+getfenv(1).threadOrder = threadOrder
+getfenv(1).threadCount = threadCount
+getfenv(1).MAX_PLAYER_ID = MAX_PLAYER_ID
+getfenv(1).findPlayerIdByNick = findPlayerIdByNick
+getfenv(1).refreshPlayerNickCache = refreshPlayerNickCache
+getfenv(1).nickKey = nickKey
+getfenv(1).chatSeen = chatSeen
+getfenv(1).outbound = outbound
+_G.chatSeen = chatSeen
+_G.outbound = outbound
+getfenv(1).trim = trim
+getfenv(1).stripTags = stripTags
+getfenv(1).stripChatTimestamp = stripChatTimestamp
+getfenv(1).chatLineSeenKey = chatLineSeenKey
+getfenv(1).markChatLineSeen = markChatLineSeen
+getfenv(1).markDirtyThreads = markDirtyThreads
+getfenv(1).clearPendingOutbound = clearPendingOutbound
+getfenv(1).tryIngestAdminReplyLine = tryIngestAdminReplyLine
+getfenv(1).processChatLineIngest = processChatLineIngest
+getfenv(1).profanityIsLineSeen = profanityIsLineSeen
+getfenv(1).checkProfanityFromChatLine = checkProfanityFromChatLine
+getfenv(1).checkProfanityOutgoing = checkProfanityOutgoing
+getfenv(1).installProfanityHooks = installProfanityHooks
+getfenv(1).tryInterceptSplitAnsCommand = tryInterceptSplitAnsCommand
+getfenv(1).handleOutgoingAnsCommand = handleOutgoingAnsCommand
+getfenv(1).deskLeaveSpectateMode = deskLeaveSpectateMode
+getfenv(1).deskApplyInputPolicy = deskApplyInputPolicy
+getfenv(1).markDirtySettings = markDirtySettings
+getfenv(1).say = say
+getfenv(1).sendChat = sendChat
+getfenv(1).getLocalAdminLevel = getLocalAdminLevel
+getfenv(1).profanity_words = profanity_words
+getfenv(1).quickScenarios = quickScenarios
+getfenv(1).activeTab = activeTab
+getfenv(1).filterMode = filterMode
+getfenv(1).searchBuf = searchBuf
+getfenv(1).replyBuf = replyBuf
+getfenv(1).cmdBuf = cmdBuf
+getfenv(1).selectedKey = selectedKey
+getfenv(1).pendingAuto = pendingAuto
+getfenv(1).ruleCooldowns = ruleCooldowns
+getfenv(1).replyUi = replyUi
+getfenv(1).catWarmup = catWarmup
+getfenv(1).cheatState = cheatState
+getfenv(1).uiCheatGm = uiCheatGm
+getfenv(1).uiCheatWh = uiCheatWh
+getfenv(1).uiCheatAb = uiCheatAb
+getfenv(1).uiCheatGmStart = uiCheatGmStart
+getfenv(1).uiCheatWhStart = uiCheatWhStart
+getfenv(1).uiCheatHud = uiCheatHud
+getfenv(1).uiCheatMaskId = uiCheatMaskId
+getfenv(1).uiCheatAbSpeed = uiCheatAbSpeed
+getfenv(1).cheatsUiSynced = cheatsUiSynced
+getfenv(1).cheatsStartupDone = cheatsStartupDone
+getfenv(1).skinCatalog = skinCatalog
+getfenv(1).skinCatalogById = skinCatalogById
+getfenv(1).skinUiTabActive = skinUiTabActive
+getfenv(1).skinTabEntered = skinTabEntered
+getfenv(1).skinSelectedId = skinSelectedId
+getfenv(1).skinNearbyCache = skinNearbyCache
+getfenv(1).skinLoadFailLogged = skinLoadFailLogged
+getfenv(1).skinTargetBuf = skinTargetBuf
+getfenv(1).skinFilterBuf = skinFilterBuf
+getfenv(1).skinFiltered = skinFiltered
+getfenv(1).skinsTabSynced = skinsTabSynced
+getfenv(1).uiSkinRadius = uiSkinRadius
+getfenv(1).uiAdminLevel = uiAdminLevel
+getfenv(1).skinRadiusJob = skinRadiusJob
+getfenv(1).skinApplyCooldownUntil = skinApplyCooldownUntil
+getfenv(1).rulesEditorDirty = rulesEditorDirty
+getfenv(1).dirtySettings = dirtySettings
+getfenv(1).dirtyThreads = dirtyThreads
+getfenv(1).RECENT = RECENT
+getfenv(1).lastMapPrune = lastMapPrune
+getfenv(1).lastSettingsSave = lastSettingsSave
+getfenv(1).lastThreadsSave = lastThreadsSave
+getfenv(1).scenariosGen = scenariosGen
+getfenv(1).uiSound = uiSound
+getfenv(1).uiAutoOnlyUnread = uiAutoOnlyUnread
+getfenv(1).deskReplyBuf = deskReplyBuf
+getfenv(1).editCqLabel = editCqLabel
+getfenv(1).editCqText = editCqText
+getfenv(1).editScLabel = editScLabel
+getfenv(1).editScReply = editScReply
+getfenv(1).scKwNew = scKwNew
+getfenv(1).scKwBulk = scKwBulk
+getfenv(1).scTestBuf = scTestBuf
+getfenv(1).scTestResult = scTestResult
+getfenv(1).uiAutoRulesEnabled = uiAutoRulesEnabled
+getfenv(1).uiAutoTimeEnabled = uiAutoTimeEnabled
+getfenv(1).uiAutoGgEnabled = uiAutoGgEnabled
+getfenv(1).uiWatchAutoNotify = uiWatchAutoNotify
+getfenv(1).uiSpecHud = uiSpecHud
+getfenv(1).uiSpecAutoSt = uiSpecAutoSt
+getfenv(1).uiSpecAutoRefresh = uiSpecAutoRefresh
+getfenv(1).uiSpecHudPersist = uiSpecHudPersist
+getfenv(1).uiSpecSpMenuSound = uiSpecSpMenuSound
+getfenv(1).uiSpecVehicleHud = uiSpecVehicleHud
+getfenv(1).uiSpecKeysHud = uiSpecKeysHud
+getfenv(1).uiSpecWheelZoom = uiSpecWheelZoom
+getfenv(1).uiProfanityFilter = uiProfanityFilter
+getfenv(1).uiRemoteChatSamp = uiRemoteChatSamp
+getfenv(1).uiProfanitySound = uiProfanitySound
+getfenv(1).uiAdminPunishEnabled = uiAdminPunishEnabled
+getfenv(1).uiAdminPunishSendAns = uiAdminPunishSendAns
+getfenv(1).uiAdminPunishSignCmd = uiAdminPunishSignCmd
+getfenv(1).ruleKwBulk = ruleKwBulk
+getfenv(1).ruleTestBuf = ruleTestBuf
+getfenv(1).ruleTestResult = ruleTestResult
+getfenv(1).myPlayerNick = myPlayerNick
+getfenv(1).myNickTick = myNickTick
+getfenv(1).playerNickToId = playerNickToId
+getfenv(1).playerNickCacheAt = playerNickCacheAt
+getfenv(1).chatLogReady = chatLogReady
+getfenv(1).styleApplied = styleApplied
+getfenv(1).sessionLive = sessionLive
+getfenv(1).deskConfigReady = deskConfigReady
+getfenv(1).totalUnread = totalUnread
+getfenv(1).editRuleName = editRuleName
+getfenv(1).editRulePayload = editRulePayload
+getfenv(1).ruleKwNew = ruleKwNew
+if deskSpectatingNow then _G.deskSpectatingNow = deskSpectatingNow end
+if deskSetPlayerSpectating then _G.deskSetPlayerSpectating = deskSetPlayerSpectating end
+if deskReinstallSpMenuHooks then _G.deskReinstallSpMenuHooks = deskReinstallSpMenuHooks end
+if deskEnsureAllHooks then _G.deskEnsureAllHooks = deskEnsureAllHooks end
+if deskHoldSampChatInput then _G.deskHoldSampChatInput = deskHoldSampChatInput end
+if deskReleaseSampChatInput then _G.deskReleaseSampChatInput = deskReleaseSampChatInput end
+if deskCloseSampChatIfOpen then _G.deskCloseSampChatIfOpen = deskCloseSampChatIfOpen end
+if deskRestoreSampChatIfNeeded then _G.deskRestoreSampChatIfNeeded = deskRestoreSampChatIfNeeded end
+if deskShouldBlockGameInput then _G.deskShouldBlockGameInput = deskShouldBlockGameInput end
+if deskSpectateCameraBlocked then _G.deskSpectateCameraBlocked = deskSpectateCameraBlocked end
+if deskRestoreSpectateCamera then _G.deskRestoreSpectateCamera = deskRestoreSpectateCamera end
+if deskMimguiHideCursor then _G.deskMimguiHideCursor = deskMimguiHideCursor end
+if deskSpectateCameraOwnsInput then _G.deskSpectateCameraOwnsInput = deskSpectateCameraOwnsInput end
+if deskSpectateOverlayInputAllowed then _G.deskSpectateOverlayInputAllowed = deskSpectateOverlayInputAllowed end
+if deskEnableUiCursorForSamp then _G.deskEnableUiCursorForSamp = deskEnableUiCursorForSamp end
+if deskCache then _G.deskCache = deskCache end
+getfenv(1).SKIN_RADIUS_MIN = SKIN_RADIUS_MIN
+getfenv(1).SKIN_RADIUS_MAX = SKIN_RADIUS_MAX
+getfenv(1).SKIN_RADIUS_MAX_TARGETS = SKIN_RADIUS_MAX_TARGETS
+getfenv(1).SKIN_LIST_MAX_TARGETS = SKIN_LIST_MAX_TARGETS
+getfenv(1).SKIN_APPLY_COOLDOWN_SEC = SKIN_APPLY_COOLDOWN_SEC
+getfenv(1).MOUSE_BIND_VKS = MOUSE_BIND_VKS
+getfenv(1).AUTO_RETRY_MS = AUTO_RETRY_MS
+getfenv(1).AUTO_RETRY_MAX = AUTO_RETRY_MAX
+getfenv(1).AUTO_REPLY_DELAY_MS = AUTO_REPLY_DELAY_MS
+getfenv(1).PLAYER_NICK_CACHE_INTERVAL = PLAYER_NICK_CACHE_INTERVAL
+getfenv(1).CHAT_UI_RENDER_MAX = CHAT_UI_RENDER_MAX
+getfenv(1).DEFAULT_QUICK_SCENARIOS = DEFAULT_QUICK_SCENARIOS
 
 --[[ Модуль: главный цикл MoonLoader, poll, autosave, hook health. ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
@@ -26031,6 +28989,7 @@ function main()
     end
     pcall(ensureComposerQuickButtons)
     pcall(syncLegacyGgTechFromComposerButtons)
+    pcall(ensureAdminPunishSettings)
     pcall(initDeskIngest)
     if settings.spectate_sp_ui == nil then settings.spectate_sp_ui = true end
     if settings.spectate_vehicle_hud == nil then
@@ -26163,6 +29122,27 @@ function main()
     sampRegisterChatCommand('hist', function(arg)
         pcall(sendHistoryByPlayerId, arg)
     end)
+    sampRegisterChatCommand('iget', function(arg)
+        pcall(sendGetByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('ilog', function(arg)
+        pcall(sendLogByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('iskill', function(arg)
+        pcall(sendAskillByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('warnlast', function(arg)
+        pcall(sendWarnLast, arg)
+    end)
+    sampRegisterChatCommand('banlast', function(arg)
+        pcall(sendBanLast, arg)
+    end)
+    sampRegisterChatCommand('jaillast', function(arg)
+        pcall(sendJailLast, arg)
+    end)
+    sampRegisterChatCommand('mutelast', function(arg)
+        pcall(sendMuteLast, arg)
+    end)
     sampRegisterChatCommand('acar', function(arg)
         pcall(deskAcarEnter, arg)
     end)
@@ -26265,7 +29245,8 @@ function main()
         if type(deskSpectateStats) == 'table'
                 and deskSpectateStats.isHudDragActive
                 and deskSpectateStats.isHudDragActive() then return 1 end
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 1 end
+        if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
+        if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 16 end
         return 50
     end
 
@@ -26295,7 +29276,7 @@ function main()
 
         deskSampChatGuardFrame()
         deskApplyInputPolicy()
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then
+        if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then
             pcall(deskBindCapturePollFrame)
         end
         pcall(deskTickAdminPauseState)
@@ -26351,6 +29332,8 @@ function main()
             end
         end)
         pcall(cheatsTickMarker)
+        pcall(maskIdTick)
+        pcall(adminPunishTick)
         pcall(tickScheduledConfigFlush)
 
         local nowSave = os.clock()
@@ -26433,7 +29416,12 @@ function deskOnServerMessage(color, text)
         return
     end
     if not text or text == '' then return end
-    pcall(checkerOnServerMessage, color, text)
+    if type(adminPunishOnServerMessage) == 'function' then
+        pcall(adminPunishOnServerMessage, color, text)
+    end
+    if type(checkerOnServerMessage) == 'function' then
+        pcall(checkerOnServerMessage, color, text)
+    end
     if type(deskSpectateStats) == 'table' and type(deskSpectateStats.onServerMessage) == 'function' then
         pcall(deskSpectateStats.onServerMessage, color, text)
     end
@@ -26443,7 +29431,7 @@ function deskOnServerMessage(color, text)
 
     local ingestKey = chatLineSeenKey(text)
     if ingestKey ~= '' and chatSeen.lines[ingestKey] then
-        if type(settings) == 'table' and settings.profanity_filter_enabled and not profanityIsLineSeen(ingestKey) then
+        if type(settings) == 'table' and settings.profanity_filter_enabled ~= false and not profanityIsLineSeen(ingestKey) then
             pcall(checkProfanityFromChatLine, plain, ingestKey)
         end
         return
@@ -26459,7 +29447,7 @@ function deskOnServerMessage(color, text)
         return
     end
 
-    if type(settings) == 'table' and settings.profanity_filter_enabled then
+    if type(settings) == 'table' and settings.profanity_filter_enabled ~= false then
         pcall(checkProfanityFromChatLine, plain, chatLineSeenKey(text))
     end
 end
@@ -26526,6 +29514,12 @@ local function deskOnPlayerQuitBody(playerId, reason)
     playerId = tonumber(playerId)
     if not playerId then return end
     pcall(checkerOnPlayerQuit, playerId)
+    if type(adminPunishOnPlayerQuit) == 'function' then
+        pcall(adminPunishOnPlayerQuit, playerId)
+    end
+    if type(maskIdOnPlayerQuit) == 'function' then
+        pcall(maskIdOnPlayerQuit, playerId)
+    end
     pcall(function()
         if type(deskSpectateStats) == 'table' and type(deskSpectateStats.notifyTargetQuit) == 'function' then
             deskSpectateStats.notifyTargetQuit(playerId)
@@ -28382,6 +31376,11 @@ function Catalog.getAdmin(nick)
     return idx.admins[key]
 end
 
+-- Для admin_punish и других модулей вне checker chunk.
+function checkerIsCatalogAdmin(nick)
+    return Catalog.getAdmin(nick) ~= nil
+end
+
 -- Получить запись leader из каталога.
 function Catalog.getLeader(nick)
     ensureCheckerCatalog()
@@ -29073,7 +32072,7 @@ function checkerLeaderDisplayRole(entry)
         else
             role = role:gsub('^%[%d+%]%s*', '')
             role = role:gsub('^LV%s*[%•%-%·]%s*', ''):gsub('^LS%s*|%s*', ''):gsub('^SF%s*|%s*', '')
-            role = role:gsub('^LV%s*[%-–—]%s*', '')
+            role = role:gsub('^LV%s*%-%s*', '')
         end
     end
     if role ~= '' then return role end
@@ -29689,6 +32688,31 @@ function checkerEnsureChiefCatalog()
     return changed
 end
 
+-- Checker (admin HUD/catalog): Ringo/Smart и прочие top admins — всегда в каталоге с валидным lvl.
+function checkerEnsureTopAdminCatalog()
+    ensureCheckerCatalog()
+    local changed = false
+    for _, nick in ipairs(checkerTopAdminList()) do
+        local ex = Catalog.getAdmin(nick)
+        local lv = math.floor(tonumber(ex and ex.level) or 0)
+        if not ex then
+            checkerCatalog.admins[#checkerCatalog.admins + 1] = {
+                nick = nick,
+                level = ADMIN_LEVEL_7,
+            }
+            changed = true
+        elseif not checkerIsValidAdminLevel(lv) then
+            ex.level = ADMIN_LEVEL_7
+            changed = true
+        end
+    end
+    if changed then
+        checkerSortCatalogAdmins(checkerCatalog.admins)
+        checkerMarkCatalogDirty()
+    end
+    return changed
+end
+
 -- Checker (admin HUD/catalog).
 function checkerMergeChiefCatalog(list)
     for _, chief in ipairs(checkerChiefList()) do
@@ -29702,6 +32726,26 @@ function checkerMergeChiefCatalog(list)
         end
         if not found then
             list[#list + 1] = { nick = chief.nick, level = chief.level }
+        end
+    end
+    return list
+end
+
+-- Checker (admin HUD/catalog).
+function checkerMergeTopAdminCatalog(list)
+    for _, nick in ipairs(checkerTopAdminList()) do
+        local found = false
+        for _, e in ipairs(list) do
+            if nickKey(e.nick) == nickKey(nick) then
+                if not checkerIsValidAdminLevel(e.level) then
+                    e.level = ADMIN_LEVEL_7
+                end
+                found = true
+                break
+            end
+        end
+        if not found then
+            list[#list + 1] = { nick = nick, level = ADMIN_LEVEL_7 }
         end
     end
     return list
@@ -29737,6 +32781,7 @@ function checkerMergeAdminsIntoCatalog(list)
         ::continue::
     end
     checkerMergeChiefCatalog(checkerCatalog.admins)
+    checkerMergeTopAdminCatalog(checkerCatalog.admins)
     checkerSortCatalogAdmins(checkerCatalog.admins)
     return changed
 end
@@ -30695,6 +33740,9 @@ function checkerApplyCatalogSnapshot(c)
     if checkerEnsureChiefCatalog() then
         changed = true
     end
+    if checkerEnsureTopAdminCatalog() then
+        changed = true
+    end
     checkerSanitizeAdminCatalog()
     return changed
 end
@@ -30914,13 +33962,19 @@ function checkerRebuildOnline(force)
     local byNick = checkerState.onlineNickIndex and checkerState.onlineNickIndex.byNick
     local admins, leaders, friends = {}, {}, {}
     for _, e in ipairs(checkerCatalog.admins) do
-        if e and e.nick and checkerIsValidAdminLevel(e.level)
-                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level) then
+        local topAdmin = e and e.nick and checkerIsTopAdmin(e.nick)
+        local includeAdmin = e and e.nick and (topAdmin
+            or (checkerIsValidAdminLevel(e.level)
+                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level)))
+        if includeAdmin then
             local id = checkerLookupOnlineId(e.nick)
             if id then
                 local prev = OnlineIndex.getById('admin', id)
                 local nick = checkerSafeNick(id, e.nick)
                 local level = checkerEffectiveAdminLevel(e.nick, e.level)
+                if topAdmin and not checkerIsValidAdminLevel(level) then
+                    level = ADMIN_LEVEL_7
+                end
                 local snap = checkerState.admsOnlineSnapshot
                 if type(snap) == 'table' and type(snap.byId) == 'table' and snap.byId[id] then
                     level = snap.byId[id].level or level
@@ -31400,6 +34454,12 @@ function checkerSanitizeAdminCatalog()
         local level = math.floor(tonumber(e and e.level) or 0)
         if nick == '' then
             changed = true
+        elseif checkerIsTopAdmin(nick) then
+            if not checkerIsValidAdminLevel(level) then
+                e.level = ADMIN_LEVEL_7
+                changed = true
+            end
+            out[#out + 1] = e
         elseif not checkerIsValidAdminLevel(level) then
             changed = true
         elseif checkerLeaderRoleConflictsAdminLevel(nick, level) then
@@ -31444,6 +34504,7 @@ function checkerInit()
         ensureCheckerSettings()
         ensureCheckerCatalog()
         checkerEnsureChiefCatalog()
+        checkerEnsureTopAdminCatalog()
         if not checkerLoadCatalogStorage() then
             local pending = rawget(_G, '__desk_pendingCheckerCatalog')
             if type(pending) == 'table' then
@@ -32215,7 +35276,9 @@ do
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local CMD_BIND_RESERVED = {
-    ans = true, reps = true, reportdesk = true, hist = true, acar = true, guns = true,
+    ans = true, reps = true, reportdesk = true, hist = true, iget = true, ilog = true, iskill = true,
+    warnlast = true, banlast = true, jaillast = true, mutelast = true,
+    acar = true, guns = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
     deskupdate = true, deskrepair = true, reload = true, r = true,
     c = true, cc = true, me = true, b = true, w = true, f = true, g = true,
@@ -32353,17 +35416,22 @@ function runCmdBind(entry, arg)
     sendChat(string.format('ans %d %s', id, text))
 end
 
+-- Register one chat command bind (MoonLoader cannot unregister; new names register on rename).
+local function registerOneCmdBind(name)
+    name = trim(tostring(name or '')):lower()
+    if name == '' or cmdBindRegistered[name] then return false end
+    cmdBindRegistered[name] = true
+    sampRegisterChatCommand(name, function(arg)
+        runCmdBind(findCmdBindByName(name), arg)
+    end)
+    return true
+end
+
 -- Register Cmd Binds
 function registerCmdBinds()
     ensureCmdBinds()
     for _, entry in ipairs(settings.cmd_binds) do
-        local name = entry.cmd
-        if name and name ~= '' and not cmdBindRegistered[name] then
-            cmdBindRegistered[name] = true
-            sampRegisterChatCommand(name, function(arg)
-                runCmdBind(findCmdBindByName(name), arg)
-            end)
-        end
+        registerOneCmdBind(entry.cmd)
     end
 end
 
@@ -32388,6 +35456,7 @@ end
 function applyCmdBindEditor()
     ensureCmdBinds()
     if cmdBindSelected < 1 or cmdBindSelected > #settings.cmd_binds then return false end
+    local entry = settings.cmd_binds[cmdBindSelected]
     local cmd = trim(readInputBuf(editCmdBindCmd)):lower()
     local text = readInputBuf(editCmdBindText)
     if not cmdBindIsValidName(cmd) then
@@ -32402,11 +35471,15 @@ function applyCmdBindEditor()
         cmdBindSetStatus('\xD2\xE5\xEA\xF1\xF2 \xED\xE5 \xEC\xEE\xE6\xE5\xF2 \xE1\xFB\xF2\xFC \xEF\xF3\xF1\xF2\xFB\xEC')
         return false
     end
+    local prevCmd = trim(tostring(entry.cmd or '')):lower()
     settings.cmd_binds[cmdBindSelected] = {
         cmd = cmd,
         text = text,
         enabled = editCmdBindEnabled[0],
     }
+    if cmd ~= prevCmd then
+        registerOneCmdBind(cmd)
+    end
     markDirtySettings()
     cmdBindEditorDirty = false
     return true
