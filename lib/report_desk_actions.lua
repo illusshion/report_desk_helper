@@ -220,7 +220,7 @@ function clampSuspectPlayerId(id)
 end
 
 local REPORT_ID_MARKERS = {
-    'dm', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
+    'dm', 'дм', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
     'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
 }
 
@@ -236,34 +236,75 @@ function textLooksLikePlayerReport(text)
 end
 
 --[[
-    Извлекает ID из текста жалобы: "43 dm", "114id чит", "id 55", "43 убил" и т.п.
-    Без маркеров репорта произвольные числа (время, уровень) не считаются ID.
+    Явный ID нарушителя в репорте (единый источник для «Следить», контекста, ingest).
+    Без эвристики «первое число в тексте» — только документированные шаблоны.
+    Порядок: N id/ид / id N / N dm → только N → N в начале строки → при маркерах репорта.
 ]]
-function extractSuspectIdFromReport(text)
+local function stripReportSuspectText(text)
+    text = trim(text or '')
+    if text == '' then return '' end
+    if type(stripChatTimestamp) == 'function' then
+        text = trim(stripChatTimestamp(text))
+    end
+    if text == '' then return '' end
+    -- Ведущее HH:MM:SS в теле сообщения (не ID нарушителя).
+    text = text:gsub('^%d%d?:%d%d:?%d%d?%s+', '')
+    return trim(text)
+end
+
+local function extractReportSuspectIdCore(text, opts)
+    opts = opts or {}
     text = trim(text or '')
     if text == '' or not text:find('%d') then return nil end
+    if opts.prepareText then
+        text = stripReportSuspectText(text)
+        if text == '' then return nil end
+    end
+    if opts.rejectStatusBody
+            and deskIngest.looksLikePlayerStatusBody
+            and deskIngest.looksLikePlayerStatusBody(text) then
+        return nil
+    end
 
-    local id = text:match('(%d+)%s*[iI][dD]')
+    local id = text:match('(%d+)%s*[iI\xE8\xC8][dD\xE4\xC4]')
     if id then return clampSuspectPlayerId(id) end
 
-    id = text:match('[iI][dD]%s*(%d+)')
+    id = text:match('[iI\xE8\xC8][dD\xE4\xC4]%s*(%d+)')
     if id then return clampSuspectPlayerId(id) end
 
-    id = text:match('(%d+)%s*dm')
+    id = text:match('(%d+)%s*[dD][mM]')
     if id then return clampSuspectPlayerId(id) end
 
-    id = text:match('(%d+)%s*DM')
+    id = text:match('^(%d+)$')
+    if id then return clampSuspectPlayerId(id) end
+
+    id = text:match('^(%d+)[%s%,%.%-%):;]')
+    if id then return clampSuspectPlayerId(id) end
+
+    id = text:match('^(%d+)%s+[%a\xC0-\xFF]')
     if id then return clampSuspectPlayerId(id) end
 
     if not textLooksLikePlayerReport(text) then return nil end
 
-    id = text:match('^(%d+)%s+')
-    if id then return clampSuspectPlayerId(id) end
-
     id = text:match('(%d+)%s+[%a\xC0-\xFF]')
     if id then return clampSuspectPlayerId(id) end
 
+    id = text:match('[%s%p](%d+)%s*$')
+    if id then return clampSuspectPlayerId(id) end
+
     return nil
+end
+
+function extractReportSuspectId(text)
+    return extractReportSuspectIdCore(text, { prepareText = true, rejectStatusBody = true })
+end
+
+function extractSuspectIdFromReport(text)
+    return extractReportSuspectIdCore(text, { prepareText = false, rejectStatusBody = false })
+end
+
+function extractSuspectIdForWatch(text)
+    return extractReportSuspectId(text)
 end
 
 -- Message Eligible For Watch Button
@@ -271,34 +312,7 @@ function messageEligibleForWatchButton(text, context)
     if context == INTENT_CONTEXT_THANKS then
         return false
     end
-    return extractSuspectIdForWatch(text) ~= nil
-end
-
---[[ ID для кнопки «Следить»: строгие правила + первое число в тексте (кроме HH:MM:SS). ]]
-function extractSuspectIdForWatch(text)
-    text = trim(text or '')
-    if text == '' then return nil end
-    if type(stripChatTimestamp) == 'function' then
-        text = trim(stripChatTimestamp(text))
-    end
-    if text == '' then return nil end
-    if deskIngest.looksLikePlayerStatusBody and deskIngest.looksLikePlayerStatusBody(text) then return nil end
-    local id = text:match('^(%d+)%s+%S')
-    if id then return clampSuspectPlayerId(id) end
-    id = extractSuspectIdFromReport(text)
-    if id then return id end
-    text = trim(text or '')
-    if text == '' or not text:find('%d') then return nil end
-    id = text:match('^(%d+)$')
-    if id then return clampSuspectPlayerId(id) end
-    id = text:match('^(%d+)[%s%,%.%-%)]')
-    if id then return clampSuspectPlayerId(id) end
-    local scrubbed = text:gsub('%d%d?:%d%d:?%d%d?', ' '):gsub('%s+', ' ')
-    for num in scrubbed:gmatch('(%d+)') do
-        id = clampSuspectPlayerId(num)
-        if id then return id end
-    end
-    return nil
+    return extractReportSuspectId(text) ~= nil
 end
 
 -- Schedule Watch Notify
@@ -632,10 +646,126 @@ end
 INTENT_CORPUS_BTN_H = 20
 intentCorpusQueue = intentCorpusQueue or { seen = {}, loaded = false }
 
+local function intentCorpusJsonUnescape(s)
+    s = tostring(s or '')
+    return s:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+end
+
 local function intentCorpusJsonStr(s)
     s = tostring(s or '')
     s = s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\r', '\\r'):gsub('\n', '\\n')
     return '"' .. s .. '"'
+end
+
+-- JSONL хранит UTF-8; в Lua/игре строки CP1251.
+local function intentCorpusTextFromFile(raw)
+    raw = intentCorpusJsonUnescape(raw or '')
+    if raw == '' then return '' end
+    if isUtf8Text(raw) then return utf8ToCp1251(raw) end
+    return raw
+end
+
+local function intentCorpusTextToFile(cp1251Text)
+    cp1251Text = tostring(cp1251Text or '')
+    if cp1251Text == '' then return '' end
+    if type(configStoreText) == 'function' then
+        return configStoreText(cp1251Text)
+    end
+    return cp1251ToUtf8(cp1251Text)
+end
+
+local function intentCorpusParseMatchedIds(line)
+    local block = line:match('"matched"%s*:%s*%[([^%]]*)%]')
+    if not block or block == '' then return nil end
+    local out = {}
+    for id in block:gmatch('"([^"\\]*(?:\\.[^"\\]*)*)"') do
+        id = intentCorpusTextFromFile(id)
+        if trim(id) ~= '' then out[#out + 1] = id end
+    end
+    if #out < 1 then return nil end
+    return out
+end
+
+local function intentCorpusParseLine(line)
+    if not line or line == '' then return nil end
+    local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+    if not phrase then return nil end
+    local ts = line:match('"ts"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        or line:match('"ts"%s*:%s*([^,}]+)')
+    local context = line:match('"context"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
+    local thread = line:match('"thread"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
+    local threadId = tonumber(line:match('"thread_id"%s*:%s*(%d+)')) or 0
+    return {
+        ts = intentCorpusJsonUnescape(ts or ''),
+        phrase = phrase,
+        context = context,
+        thread = thread,
+        thread_id = threadId,
+        matched = intentCorpusParseMatchedIds(line),
+    }
+end
+
+local function intentCorpusFormatMatchedIds(matched)
+    if type(matched) ~= 'table' or #matched < 1 then return '' end
+    local parts = {}
+    for _, id in ipairs(matched) do
+        id = trim(tostring(id or ''))
+        if id ~= '' then
+            parts[#parts + 1] = intentCorpusJsonStr(intentCorpusTextToFile(id))
+        end
+    end
+    if #parts < 1 then return '' end
+    return ',"matched":[' .. table.concat(parts, ',') .. ']'
+end
+
+local function intentCorpusFormatLine(entry)
+    local phrase = intentCorpusTextToFile(intentCorpusTextFromFile(entry.phrase))
+    local context = intentCorpusTextToFile(intentCorpusTextFromFile(entry.context))
+    local thread = intentCorpusTextToFile(intentCorpusTextFromFile(entry.thread))
+    local ts = entry.ts or os.date('!%Y-%m-%dT%H:%M:%SZ')
+    return string.format(
+        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d%s}',
+        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(context),
+        intentCorpusJsonStr(thread), tonumber(entry.thread_id) or 0,
+        intentCorpusFormatMatchedIds(entry.matched)
+    )
+end
+
+local function intentCorpusFileNeedsUtf8Migrate(path)
+    local f = io.open(path, 'rb')
+    if not f then return false end
+    for line in f:lines() do
+        local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        if phrase then
+            phrase = intentCorpusJsonUnescape(phrase)
+            if phrase ~= '' and not isUtf8Text(phrase) and phrase:find('[\128-\255]') then
+                f:close()
+                return true
+            end
+        end
+    end
+    f:close()
+    return false
+end
+
+local function migrateIntentCorpusQueueToUtf8(path)
+    local f = io.open(path, 'rb')
+    if not f then return end
+    local entries = {}
+    for line in f:lines() do
+        local entry = intentCorpusParseLine(line)
+        if entry then entries[#entries + 1] = entry end
+    end
+    f:close()
+    if #entries == 0 then return end
+    local out = io.open(path, 'wb')
+    if not out then return end
+    for i, entry in ipairs(entries) do
+        out:write(intentCorpusFormatLine(entry))
+        if i < #entries then out:write('\n') end
+    end
+    out:write('\n')
+    out:close()
 end
 
 function loadIntentCorpusQueueSeen()
@@ -644,12 +774,15 @@ function loadIntentCorpusQueueSeen()
     intentCorpusQueue.seen = {}
     local path = INTENT_CORPUS_QUEUE_PATH
     if not path or path == '' then return end
+    if intentCorpusFileNeedsUtf8Migrate(path) then
+        pcall(migrateIntentCorpusQueueToUtf8, path)
+    end
     local f = io.open(path, 'rb')
     if not f then return end
     for line in f:lines() do
         local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
         if phrase then
-            phrase = phrase:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+            phrase = intentCorpusTextFromFile(phrase)
             local key = normalizeMatchText(phrase)
             if key ~= '' then intentCorpusQueue.seen[key] = true end
         end
@@ -671,11 +804,17 @@ function appendIntentCorpusPhrase(phrase, meta)
     if key == '' then return false, 'empty' end
     if intentCorpusQueue.seen[key] then return false, 'dup' end
 
-    local ctx = meta and meta.context or ''
+    meta = type(meta) == 'table' and meta or {}
+    local ctx = meta.context or ''
     if ctx == '' and type(resolveMessageIntents) == 'function' then
         ensureDeskIntentsLoaded()
         local _, c = resolveMessageIntents(phrase)
         ctx = c or ''
+    end
+
+    local matched = meta.matched
+    if type(matched) ~= 'table' or #matched < 1 then
+        matched = nil
     end
 
     local path = INTENT_CORPUS_QUEUE_PATH
@@ -683,26 +822,48 @@ function appendIntentCorpusPhrase(phrase, meta)
     local f = io.open(path, 'ab')
     if not f then return false, 'io' end
     local ts = os.date('!%Y-%m-%dT%H:%M:%SZ')
-    local thread = trim(meta and meta.thread or '')
-    local threadId = tonumber(meta and meta.threadId) or 0
-    f:write(string.format(
-        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d}\n',
-        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(ctx),
-        intentCorpusJsonStr(thread), threadId
-    ))
+    local thread = trim(meta.thread or '')
+    local threadId = tonumber(meta.threadId) or 0
+    f:write(intentCorpusFormatLine({
+        ts = ts,
+        phrase = phrase,
+        context = ctx,
+        thread = thread,
+        thread_id = threadId,
+        matched = matched,
+    }) .. '\n')
     f:close()
     intentCorpusQueue.seen[key] = true
     return true, 'ok'
 end
 
-function intentMessageCorpusCandidate(text)
+-- Кнопка «В базу» на входящих репортах (кроме спасибо / пустых / unknown).
+function intentMessageCorpusEligible(text)
     text = trim(text or '')
     if text == '' or #text < 3 then return false end
     ensureDeskIntentsLoaded()
-    local results, ctx = resolveMessageIntents(text)
-    if #results > 0 then return false end
-    if ctx == 'thanks' or ctx == 'unknown' then return false end
+    local _, ctx = resolveMessageIntents(text)
+    if ctx == INTENT_CONTEXT_THANKS or ctx == INTENT_CONTEXT_UNKNOWN then return false end
     return true
+end
+
+function intentCorpusMatchedFromQuickBtns(quickBtns)
+    local out, seen = {}, {}
+    for _, qb in ipairs(quickBtns or {}) do
+        local id = trim(tostring(qb.intentId or ''))
+        if id ~= '' and not seen[id] then
+            seen[id] = true
+            out[#out + 1] = id
+        end
+    end
+    if #out < 1 then return nil end
+    return out
+end
+
+function intentMessageCorpusCandidate(text)
+    if not intentMessageCorpusEligible(text) then return false end
+    local results = resolveMessageIntents(text)
+    return #results < 1
 end
 
 function intentCorpusBtnWidth(phrase)
@@ -740,12 +901,15 @@ function popIntentCorpusBtnStyle(saved)
     if not saved then imgui.PopStyleColor() end
 end
 
-function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY)
+function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY, opts)
     phrase = trim(phrase or '')
     if phrase == '' then return end
+    opts = type(opts) == 'table' and opts or {}
     local saved = intentCorpusQueueContains(phrase)
     local label = saved and '\xC2\xE1\xE0\xE7\xE5' or '\xC2\xE1\xE0\xE7\xF3'
     local btnW = intentCorpusBtnWidth(phrase)
+    local matched = opts.matched
+    local hasWrongMatch = type(matched) == 'table' and #matched > 0
 
     imgui.PushID((msgIdx or 0) * 1000 + 99)
     imgui.SetCursorPos(imgui.ImVec2(btnX, btnY))
@@ -760,6 +924,10 @@ function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY)
         if saved then
             imgui.SetTooltip(uiText(
                 '\xD3\xE6\xE5 \xE2 \xE1\xE0\xE7\xE5 \xE4\xEB\xFF \xF0\xE0\xF1\xF8\xE8\xF0\xE5\xED\xE8\xFF \xF2\xF0\xE8\xE3\xE3\xE5\xF0\xEE\xE2'))
+        elseif hasWrongMatch then
+            imgui.SetTooltip(uiText(
+                '\xCE\xF2\xEC\xE5\xF2\xE8\xF2\xFC \xED\xE5\xE2\xE5\xF0\xED\xFB\xE9 \xF1\xF6\xE5\xED\xE0\xF0\xE8\xE9: '
+                .. table.concat(matched, ', ')))
         else
             imgui.SetTooltip(uiText(
                 '\xD1\xEE\xF5\xF0\xE0\xED\xE8\xF2\xFC \xE2\xEE\xEF\xF0\xEE\xF1 \xE2 \xE1\xE0\xE7\xF3 \xEF\xF0\xEE\xEC\xE0\xF5\xEE\xE2'))
@@ -770,6 +938,8 @@ function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY)
         local ok = appendIntentCorpusPhrase(phrase, {
             thread = reporter and reporter.nick or '',
             threadId = reporter and reporter.id or 0,
+            context = opts.context,
+            matched = matched,
         })
         if ok and type(say) == 'function' then
             say('\xC4\xEE\xE1\xE0\xE2\xEB\xE5\xED\xEE \xE2 \xE1\xE0\xE7\xF3 intent')

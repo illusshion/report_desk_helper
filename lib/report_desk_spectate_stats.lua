@@ -1046,6 +1046,9 @@ function M.markPendingSpCommand(id, nick)
         pcall(spRefresh.resetContext)
     end
     pcall(specSession.markAwaitingSpectate, true)
+    if spUi.syncTdHooks then
+        pcall(spUi.syncTdHooks)
+    end
     if spUi.ensureSpectateSampevHooks then
         local sampev = inputDeps and inputDeps.sampev
         local specSessionMod = package.loaded['report_desk_spectate_session']

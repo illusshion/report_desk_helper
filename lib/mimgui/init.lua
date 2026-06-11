@@ -195,7 +195,16 @@ local function RegisterEvents()
                 renderer:SwitchContext()
                 local io = imgui.GetIO()
                 renderer:WindowMessage(msg, wparam, lparam)
-                if (keyboard and io.WantCaptureKeyboard) or (mouse and io.WantCaptureMouse) then
+                local captureKb = keyboard and io.WantCaptureKeyboard
+                -- Report Desk: пропуск F8/F12/PrtSc и hotkey окна в GTA (см. deskPassesGameKey / gamePassVks).
+                -- Релиз должен паковать lib/mimgui из репо, не upstream THE-FYP zip.
+                if captureKb then
+                    local passFn = rawget(_G, 'deskPassesGameKey')
+                    if type(passFn) == 'function' and passFn(wparam) then
+                        captureKb = false
+                    end
+                end
+                if captureKb or (mouse and io.WantCaptureMouse) then
                     if msg == winmsg.WM_KEYDOWN or msg == winmsg.WM_SYSKEYDOWN then
                         keyState[wparam] = false
                         consumeWindowMessage(true, true, true)

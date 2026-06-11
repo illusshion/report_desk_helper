@@ -67,11 +67,16 @@ function M.drawMenu(settings)
     if ok then pcall(menu.flushPendingAction) end
 end
 
--- Ensure Td Hooks
-local function ensureTdHooks()
+-- Sync Td Hooks — install only when /sp or vehicle HUD needs them.
+local function syncTdHooks()
     if deps.sampev then
-        pcall(session.ensureTextDrawHooks, deps.sampev)
+        pcall(session.syncTextDrawHooks, deps.sampev)
     end
+end
+
+-- Ensure Td Hooks (legacy name: sync, never blind install).
+local function ensureTdHooks()
+    syncTdHooks()
 end
 
 -- Ensure Spectate Player Sampev Hook
@@ -187,13 +192,12 @@ function M.install(cfg)
                 pcall(session.installSampevHooks, deps.sampev)
                 reinstallSampevInputHooks()
             end
-            ensureTdHooks()
+            syncTdHooks()
         end,
         ensureTdHooks = ensureTdHooks,
         onBegin = deps.onSessionBegin,
         onEnd = deps.onSessionEnd,
     })
-    ensureTdHooks()
 end
 
 -- Публичный API модуля.
@@ -294,7 +298,7 @@ function M.installInputHooks(cfg)
         menuDepsWired = false
     end
     wireMenuDeps()
-    ensureTdHooks()
+    syncTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
     installWmHandler()
@@ -303,10 +307,15 @@ end
 -- Публичный API модуля.
 function M.ensureInputHooks()
     if not deps.sampev then return end
-    ensureTdHooks()
+    syncTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
     installWmHandler()
+end
+
+-- Публичный API модуля.
+function M.syncTdHooks()
+    syncTdHooks()
 end
 
 -- Публичный API модуля.

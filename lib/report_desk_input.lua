@@ -805,7 +805,10 @@ function updateDeskInputCapture()
     end
     local io = imgui.GetIO and imgui.GetIO()
     local wantKb = deskWindowWantsKeyboard()
-    if io and (io.WantCaptureKeyboard or io.WantTextInput) then
+    if not wantKb and io and io.WantTextInput then
+        wantKb = true
+    end
+    if not wantKb and imgui.IsAnyItemActive and imgui.IsAnyItemActive() then
         wantKb = true
     end
     local wantMouse = showWindow[0] == true

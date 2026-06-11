@@ -410,7 +410,7 @@ function findMatchingRule(body)
     for _, i in ipairs(order) do
         local rule = rules[i]
         if rule.enabled and keywordMatches(rule, body) then
-            if rule.skip_if_report_id ~= true or not extractSuspectIdFromReport(body) then
+            if rule.skip_if_report_id ~= true or not extractReportSuspectId(body) then
                 return rule
             end
         end

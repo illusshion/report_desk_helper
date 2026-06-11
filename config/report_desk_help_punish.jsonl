@@ -20,3 +20,14 @@
 {"term":"5","src":"a_request","pid":184,"dateKey":"2026-06-11","reason":"cheat","cmd":"\/a \/ban 184 5 cheat","kind":"ban","reqAdmin":"","action":"Забанить","player":"Emil_Feltsman","ts":1781140166}
 {"term":"5","src":"a_request","pid":105,"dateKey":"2026-06-11","reason":"cheat","cmd":"\/a \/ban 105 5 cheat","kind":"ban","reqAdmin":"","action":"Забанить","player":"Werner_Tyrone","ts":1781140199}
 {"term":"80","src":"manual","pid":81,"dateKey":"2026-06-11","reason":"nrp","cmd":"\/jail 81 80 nrp","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Pavel_BIessed","ts":1781140746}
+{"term":"-","src":"manual","pid":482,"dateKey":"2026-06-11","reason":"помеха","cmd":"\/kick 482 помеха","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"diavlo_scaleti","ts":1781179043}
+{"term":"-","src":"manual","pid":718,"dateKey":"2026-06-11","reason":"dm","cmd":"\/kick 718 dm","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Wayne_Mortan","ts":1781179103}
+{"term":"-","src":"manual","pid":438,"dateKey":"2026-06-11","reason":"тс шахта","cmd":"\/kick 438 тс шахта","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Artem_Femozini","ts":1781179707}
+{"term":"-","src":"manual","pid":176,"dateKey":"2026-06-11","reason":"dm kpz next warn","cmd":"\/kick 176 dm kpz next warn","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Cofeyok_Bos","ts":1781196081}
+{"term":"20","src":"manual","pid":363,"dateKey":"2026-06-11","reason":"offtop","cmd":"\/mute 363 20 offtop","kind":"mute","reqAdmin":"","action":"Замутить","player":"Bobby_Murzay","ts":1781196205}
+{"term":"-","src":"manual","pid":445,"dateKey":"2026-06-11","reason":"dm kpz next warn","cmd":"\/kick 445 dm kpz next warn","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Centurion_Virtovskoy","ts":1781196291}
+{"term":"-","src":"manual","pid":821,"dateKey":"2026-06-11","reason":"помеха","cmd":"\/kick 821 помеха","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Santos__York","ts":1781196613}
+{"term":"30","src":"manual","pid":732,"dateKey":"2026-06-11","reason":"mat \/j","cmd":"\/mute 732 30 mat \/j","kind":"mute","reqAdmin":"","action":"Замутить","player":"Don_Wanted","ts":1781198642}
+{"term":"30","src":"manual","pid":452,"dateKey":"2026-06-11","reason":"mat","cmd":"\/mute 452 30 mat","kind":"mute","reqAdmin":"","action":"Замутить","player":"Ivan_Kozlovtsev","ts":1781199774}
+{"term":"20","src":"manual","pid":642,"dateKey":"2026-06-11","reason":"mat \/re","cmd":"\/mute 642 20 mat \/re","kind":"mute","reqAdmin":"","action":"Замутить","player":"Tati_Maestro","ts":1781199823}
+{"term":"30","src":"manual","pid":955,"dateKey":"2026-06-11","reason":"mat","cmd":"\/mute 955 30 mat","kind":"mute","reqAdmin":"","action":"Замутить","player":"Vincent_Rotti","ts":1781200491}

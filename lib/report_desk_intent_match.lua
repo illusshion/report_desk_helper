@@ -4,7 +4,7 @@ if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 function intentClauseMatches(bags, clause, allowStem)
     if type(clause) ~= 'table' then return false end
     if clause.requires_id then
-        return extractSuspectIdForWatch(bags.raw or '') ~= nil
+        return extractReportSuspectId(bags.raw or '') ~= nil
     end
     if clause.token and trim(clause.token) ~= '' then
         return intentMessageHasToken(bags, clause.token, allowStem)

@@ -32,6 +32,9 @@ return {
         { all = {"нету", "азс"} },
         { all = {"бензин", "дать"} },
         { all = {"заправить", "пожалуйста"} },
+        { all = {"заправить", "автобус", "механик"} },
+        { all = {"можно", "заправить", "автобус"} },
+        { all = {"механику", "заправку"} },
       },
     },
     {
@@ -60,6 +63,8 @@ return {
       add_any = {
         { all = {"баланс", "адванс"} },
         { all = {"посмотреть", "адванс", "кредит"} },
+        { all = {"mn", "команда"} },
+        { token = "/mn" },
       },
     },
     {
@@ -89,12 +94,6 @@ return {
         { all = {"использовать", "адванс", "коин"} },
         { all = {"advance", "credit", "без", "донат"} },
         { all = {"тратить", "адванс", "коин"} },
-      },
-    },
-    {
-      id = "faq.gameplay.drugs",
-      add_any = {
-        { all = {"курить", "сигар"} },
       },
     },
     {
@@ -348,6 +347,84 @@ return {
     {
       id = "faq.navigation.gps",
       add_any = {
+        { all = {"ближайший", "7"} },
+      },
+    },
+    {
+      id = "faq.navigation.price",
+      add_any = {
+        { all = {"собес", "отель"} },
+        { all = {"отель", "или", "магазин"} },
+      },
+    },
+    {
+      id = "faq.gameplay.price_22",
+      add_any = {
+        { all = {"ограничение", "85"} },
+        { all = {"85", "км"} },
+      },
+    },
+    {
+      id = "faq.communication.c_090",
+      add_any = {
+        { all = {"заправить", "автобус", "механик"} },
+        { all = {"механику", "заправку"} },
+        { all = {"можно", "заправить", "автобус"} },
+        { all = {"позвонить", "механик", "заправ"} },
+      },
+    },
+    {
+      id = "faq.gameplay.rent_x",
+      add_any = {
+        { all = {"аренда", "скутера"} },
+      },
+    },
+    {
+      id = "faq.gameplay.bp",
+      add_any = {
+        { all = {"bp", "команда"} },
+      },
+    },
+    {
+      id = "faq.gameplay.i",
+      add_any = {
+        { token = "/i" },
+        { all = {"команда", "инвентар"} },
+      },
+    },
+    {
+      id = "faq.gameplay.lrec",
+      add_any = {
+        { all = {"lrec", "команда"} },
+      },
+    },
+    {
+      id = "faq.gameplay.newspaper",
+      add_any = {
+        { all = {"деть", "газеты"} },
+      },
+    },
+    {
+      id = "faq.gameplay.f2_f9",
+      add_any = {
+        { all = {"f2", "f9", "войс"} },
+      },
+    },
+    {
+      id = "faq.gameplay.lic",
+      add_any = {
+        { all = {"лицензия", "показать"} },
+      },
+    },
+    {
+      id = "faq.gameplay.unrent",
+      add_any = {
+        { all = {"аренда", "машины", "работе"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps",
+      add_any = {
         { all = {"найти", "дом", "номер"} },
         { all = {"дом", "номер"} },
         { all = {"нефтевышк"} },
@@ -419,6 +496,348 @@ return {
       add_any = {
         { all = {"продать", "авто", "гос"} },
         { all = {"продать", "машин", "гос"} },
+        { all = {"сдать", "тачку", "гос"} },
+        { all = {"сдавать", "машину", "госс"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps_9",
+      add_any = {
+        { all = {"найти", "транспортную", "компанию"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps_7-2",
+      add_any = {
+        { all = {"gps", "тир", "поставить"} },
+      },
+      add_exclusions = {
+        { all = {"убрать", "метк"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps_1",
+      add_any = {
+        { token = "авторынок" },
+      },
+    },
+    {
+      id = "faq.gameplay.gps_8",
+      add_any = {
+        { all = {"свободные", "дома"} },
+      },
+    },
+    {
+      id = "faq.gameplay.00_03",
+      add_any = {
+        { all = {"когда", "слетает", "отель"} },
+      },
+    },
+    {
+      id = "faq.gameplay.e_ctrl",
+      add_any = {
+        { all = {"не", "заводится", "авто"} },
+        { all = {"включить", "двигатель"} },
+      },
+    },
+    {
+      id = "faq.gameplay.b",
+      add_any = {
+        { all = {"положить", "вещи", "машину"} },
+      },
+    },
+    {
+      id = "faq.gameplay.allow",
+      add_any = {
+        { all = {"доступ", "авто", "другу"} },
+      },
+    },
+    {
+      id = "faq.communication.car",
+      add_any = {
+        { all = {"команда", "парковк"} },
+        { all = {"поставить", "тачку", "парков"} },
+      },
+      add_exclusions = {
+        { all = {"где", "машина"} },
+      },
+    },
+    {
+      id = "faq.gameplay.unrent",
+      add_any = {
+        { all = {"арендовать", "транспорт", "работ"} },
+        { all = {"снять", "аренду", "транспорт"} },
+      },
+    },
+    {
+      id = "faq.gameplay.rent_x",
+      add_any = {
+        { all = {"аренда", "скутера", "команда"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fix",
+      add_any = {
+        { token = "fix" },
+      },
+    },
+    {
+      id = "faq.gameplay.getfuel",
+      add_any = {
+        { token = "заправиться" },
+        { all = {"залить", "топлив"} },
+      },
+    },
+    {
+      id = "faq.communication.c_090",
+      add_any = {
+        { all = {"заправить", "автобус", "механик"} },
+        { all = {"механику", "заправк"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fuel",
+      add_any = {
+        { token = "fuel" },
+        { all = {"где", "все", "азс"} },
+      },
+      add_exclusions = {
+        { all = {"заправиться"} },
+      },
+    },
+    {
+      id = "faq.communication.2_gps_1",
+      add_any = {
+        { all = {"работа", "такси", "где"} },
+        { all = {"работать", "такси"} },
+      },
+    },
+    {
+      id = "faq.communication.2",
+      add_any = {
+        { all = {"клиент", "сел", "заказ"} },
+      },
+    },
+    {
+      id = "faq.gameplay.h",
+      add_any = {
+        { all = {"завершить", "разговор", "телефон"} },
+      },
+    },
+    {
+      id = "faq.gameplay.n62",
+      add_any = {
+        { all = {"парковка", "автобус"} },
+      },
+    },
+    {
+      id = "faq.gameplay.join",
+      add_any = {
+        { all = {"вступить", "фракцию"} },
+        { token = "join" },
+      },
+    },
+    {
+      id = "faq.gameplay.r_f",
+      add_any = {
+        { all = {"команда", "r", "f"} },
+        { all = {"фракционный", "чат"} },
+      },
+    },
+    {
+      id = "faq.gameplay.r_f",
+      add_any = {
+        { all = {"команда", "r", "f"} },
+      },
+      add_exclusions = {
+        { all = {"нон", "рп"} },
+        { all = {"non", "rp"} },
+        { all = {"oos"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fn",
+      add_any = {
+        { all = {"писать", "нон", "рп", "организа"} },
+        { all = {"oos", "чат", "фрак"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fm",
+      add_any = {
+        { all = {"голос", "семьи"} },
+      },
+    },
+    {
+      id = "faq.gameplay.find",
+      add_any = {
+        { token = "find" },
+        { all = {"сети", "работе"} },
+      },
+    },
+    {
+      id = "faq.gameplay.price",
+      add_any = {
+        { all = {"price", "оружие"} },
+      },
+    },
+    {
+      id = "faq.gameplay.sellgun",
+      add_any = {
+        { all = {"продать", "оружие"} },
+      },
+    },
+    {
+      id = "faq.gameplay.price_2",
+      add_any = {
+        { all = {"отмычка", "price"} },
+      },
+    },
+    {
+      id = "faq.economy.mn_1",
+      add_any = {
+        { all = {"mn", "команда"} },
+        { token = "/mn" },
+      },
+    },
+    {
+      id = "faq.gameplay.donate",
+      add_any = {
+        { token = "donate" },
+      },
+    },
+    {
+      id = "faq.gameplay.sellm",
+      add_any = {
+        { token = "sellm" },
+        { all = {"сдавать", "руду"} },
+      },
+    },
+    {
+      id = "faq.gameplay.bp",
+      add_any = {
+        { token = "bp" },
+      },
+    },
+    {
+      id = "faq.gameplay.tasks",
+      add_any = {
+        { all = {"tasks", "прогресс"} },
+        { all = {"бп", "задания", "не", "выполняются"} },
+      },
+    },
+    {
+      id = "faq.gameplay.season",
+      add_any = {
+        { all = {"season", "рейтинг"} },
+      },
+    },
+    {
+      id = "faq.gameplay.end",
+      add_any = {
+        { all = {"закончить", "тренировку", "спортзал"} },
+        { all = {"переодеться", "квест", "сил"} },
+      },
+    },
+    {
+      id = "faq.gameplay.newspaper",
+      add_any = {
+        { all = {"газеты", "работы"} },
+      },
+    },
+    {
+      id = "faq.gameplay.i",
+      add_any = {
+        { token = "i" },
+      },
+    },
+    {
+      id = "faq.gameplay.skill",
+      add_any = {
+        { token = "skill" },
+      },
+    },
+    {
+      id = "faq.gameplay.reset",
+      add_any = {
+        { token = "reset" },
+        { all = {"сбросить", "настройки"} },
+      },
+    },
+    {
+      id = "faq.gameplay.n34",
+      add_any = {
+        { all = {"звёзды", "гта"} },
+      },
+    },
+    {
+      id = "faq.gameplay.setspawn",
+      add_any = {
+        { all = {"поставить", "точку", "спавна"} },
+      },
+    },
+    {
+      id = "faq.gameplay.free_id",
+      add_any = {
+        { all = {"free", "id"} },
+      },
+    },
+    {
+      id = "faq.gameplay.lrec",
+      add_any = {
+        { token = "lrec" },
+      },
+    },
+    {
+      id = "faq.gameplay.badge",
+      add_any = {
+        { all = {"показать", "семью", "голов"} },
+        { all = {"семью", "над", "головой"} },
+      },
+    },
+    {
+      id = "faq.gameplay.mn_2",
+      add_any = {
+        { all = {"новичок", "начать"} },
+      },
+      add_exclusions = {
+        { all = {"трамвай"} },
+      },
+    },
+    {
+      id = "faq.gameplay.gps_5_1",
+      add_exclusions = {
+        { all = {"новичок"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps_5",
+      add_any = {
+        { all = {"металл", "набрать"} },
+      },
+      add_exclusions = {
+        { all = {"сдать", "металл"} },
+        { all = {"куда", "сдать"} },
+      },
+    },
+    {
+      id = "faq.gameplay.buym",
+      add_exclusions = {
+        { all = {"куда", "сдать"} },
+      },
+    },
+    {
+      id = "faq.gameplay.leave",
+      add_any = {
+        { all = {"уйти", "работы", "псе"} },
+      },
+    },
+    {
+      id = "faq.gameplay.drugs",
+      add_exclusions = {
+        { all = {"курить", "сигар"} },
+        { all = {"почему", "нарко"} },
+        { all = {"после", "нарко"} },
       },
     },
   },
@@ -548,6 +967,43 @@ return {
         any = {
           { all = {"продать", "газет"} },
         },
+      },
+    },
+    {
+      id = "faq.gameplay.eat_quest",
+      context = "faq",
+      category = "gameplay",
+      label = "Квест «поесть»",
+      enabled = true,
+      action = { type = "reply", text = "съешьте еду полностью из инвентаря (/i), иногда нужно выйти из интерьера" },
+      triggers = {
+        any = {
+          { all = {"кушаю", "еду", "задание"} },
+          { all = {"квест", "поесть"} },
+          { all = {"задание", "покушать"} },
+          { all = {"еду", "квест", "не"} },
+          { all = {"кушаю", "еду", "квест"} },
+        },
+      },
+    },
+    {
+      id = "faq.gameplay.phone_number",
+      context = "faq",
+      category = "communication",
+      label = "Номер телефона",
+      enabled = true,
+      action = { type = "reply", text = "свой номер: /number; чужой — через объявление /ad или спросите в RP" },
+      triggers = {
+        any = {
+          { all = {"узнать", "номер", "телефон"} },
+          { all = {"мой", "номер", "телефон"} },
+          { all = {"номер", "телефона", "игрок"} },
+          { all = {"как", "узнать", "номер"} },
+        },
+      },
+      exclusions = {
+        { all = {"купить", "телефон"} },
+        { all = {"позвонить"} },
       },
     },
   },

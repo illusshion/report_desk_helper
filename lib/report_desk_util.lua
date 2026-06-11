@@ -312,6 +312,15 @@ local MATCH_TYPO_WORDS = {
     ['прсмотреть'] = 'посмотреть',
     ['какиквесты'] = 'как квесты',
     ['ремкомлект'] = 'ремкомплект',
+    ['гд'] = 'где',
+    ['зделать'] = 'сделать',
+    ['екран'] = 'экран',
+    ['роботает'] = 'работает',
+    ['отел'] = 'отель',
+    ['устроится'] = 'устроиться',
+    ['трамвайчик'] = 'трамвай',
+    ['псэ'] = 'псе',
+    ['идёт'] = 'идет',
 }
 
 function normalizeMatchTextTypo(s)
@@ -579,16 +588,67 @@ function normalizeChatLine(line)
     return trim(stripChatTimestamp(stripTags(line or '')))
 end
 
---[[
-    Ключ для poll-лога: без метки времени два репорта "Nick[id]: time" сливаются в один.
-    Для строк с [ЧЧ:ММ:СС] добавляем метку — каждый репорт в чате уникален.
-]]
+-- Ключ poll/hook: только нормализованный текст (метка времени снимается в normalizeChatLine).
 function chatLineSeenKey(line)
     local plain = normalizeChatLine(line)
     if plain == '' then return '' end
-    local ts = (line or ''):match('(%[%d+:%d+:%d+%])')
-    if ts then return plain .. '|' .. ts end
     return plain
+end
+
+-- Возраст строки чата по [ЧЧ:ММ:СС] или [ДД.ММ.ГГГГ ЧЧ:ММ:СС]; nil если метки нет.
+function chatLineAgeSeconds(line)
+    line = line or ''
+    local h, m, s = line:match('%[(%d+):(%d+):(%d+)%]')
+    if not h then
+        h, m, s = line:match('%[%d+%.%d+%.%d+%s+(%d+):(%d+):(%d+)%]')
+    end
+    if not h then return nil end
+    h, m, s = tonumber(h), tonumber(m), tonumber(s)
+    if not h or not m or not s then return nil end
+    local now = os.date('*t')
+    local msgSec = h * 3600 + m * 60 + s
+    local nowSec = now.hour * 3600 + now.min * 60 + now.sec
+    local diff = nowSec - msgSec
+    if diff < 0 then diff = diff + 86400 end
+    return diff
+end
+
+local function deskPauseBlocksAutoReply()
+    if deskAdminPlayerPaused() then return true end
+    if isPauseMenuActive and isPauseMenuActive() then return true end
+    if isGamePaused and isGamePaused() then return true end
+    return false
+end
+
+-- После AFK/pause: не переигрывать уже обработанные строки буфера чата.
+function deskSyncChatSeenAfterResume()
+    if type(clearAllPendingAuto) == 'function' then
+        pcall(clearAllPendingAuto)
+    end
+    if not sampGetChatString then return end
+    for i = 0, 99 do
+        local line = sampGetChatString(i) or ''
+        if line == '' then goto cont end
+        local key = chatLineSeenKey(line)
+        if key == '' then goto cont end
+        if isReportLineConsumed(line) then
+            markChatLineSeen(key)
+            goto cont
+        end
+        local plain = normalizeChatLine(line)
+        if plain ~= '' and type(deskIngest) == 'table' and type(deskIngest.tryParseChatEvent) == 'function' then
+            local ev = deskIngest.tryParseChatEvent(plain, { chatStrictReports = true })
+            if ev and ev.type == 'player_report' and type(threadHasIncomingReportBody) == 'function' then
+                local tk = findThreadKeyByNick(ev.nick) or nickKey(ev.nick)
+                local th = threads and threads[tk]
+                if th and threadHasIncomingReportBody(th, ev.text) then
+                    markChatLineSeen(key)
+                    markReportLineConsumed(line)
+                end
+            end
+        end
+        ::cont::
+    end
 end
 
 function clearThreadRuleCooldowns(threadKey)
@@ -633,9 +693,7 @@ end
 -- Можно ли слать auto-reply (не пауза, SAMP доступен).
 function deskAutoReplyAllowed()
     if not isSampAvailable() then return false end
-    if isPauseMenuActive and isPauseMenuActive() then return false end
-    if isGamePaused and isGamePaused() then return false end
-    if deskAdminPlayerPaused() then return false end
+    if deskPauseBlocksAutoReply() then return false end
     return true
 end
 
@@ -656,14 +714,14 @@ end
 local deskAdminPauseTracked = false
 
 function deskTickAdminPauseState()
-    local paused = deskAdminPlayerPaused()
+    local paused = deskPauseBlocksAutoReply()
     local was = deskAdminPauseTracked
     if paused and not was then
         if type(clearAllPendingAuto) == 'function' then
             pcall(clearAllPendingAuto)
         end
     elseif was and not paused then
-        pcall(seedSeenChatLines)
+        pcall(deskSyncChatSeenAfterResume)
     end
     deskAdminPauseTracked = paused
 end

@@ -48,6 +48,7 @@ AUTOSAVE_SETTINGS_INTERVAL = 60   -- автосохранение настрое
 AUTOSAVE_THREADS_INTERVAL = 600   -- автосохранение тредов репортов, сек
 PRUNE_MAP_INTERVAL = 90           -- очистка timed maps (dedup/seen), сек
 INGEST_DEDUP_SEC = 3.0            -- dedup ingest одной строки, сек
+AUTO_REPLY_MAX_AGE_SEC = 90       -- автоответ только на свежие репорты (по метке чата), сек
 
 -- Poll чата: safety при активном hook, полный fallback если hook сорван.
 POLL_INTERVAL_SAFETY = 2.0        -- hook активен: редкий reconcile последних строк

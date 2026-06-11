@@ -336,6 +336,7 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     local scenarioBody = ''
     local quickBtns = {}
     local corpusCandidate = false
+    local corpusOpts = nil
     if reporter and messageShowsScenarioButtons(m) then
         scenarioBody = messageBodyForScenarios(m)
         if scenarioBody == '' then scenarioBody = line end
@@ -344,8 +345,13 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     local showReplyBtns = opts.noQuickButtons ~= true
     local watchBtns, replyBtns = splitQuickButtons(quickBtns)
     if not showReplyBtns then replyBtns = {} end
-    if dir == 'in' and #replyBtns == 0 and intentMessageCorpusCandidate(scenarioBody) then
+    if dir == 'in' and reporter and messageShowsScenarioButtons(m)
+            and intentMessageCorpusEligible(scenarioBody) then
         corpusCandidate = true
+        corpusOpts = {
+            matched = intentCorpusMatchedFromQuickBtns(quickBtns),
+            context = quickBtns[1] and quickBtns[1].context or nil,
+        }
     end
     local watchInlineW = quickButtonsInlineWidth(watchBtns)
     local corpusInlineW = corpusCandidate and (intentCorpusBtnWidth(scenarioBody) + 8) or 0
@@ -438,7 +444,7 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         end
         if corpusCandidate then
             local corpusBtnY = localY + topPad + authorH + math.max(0, (bubbleH - INTENT_CORPUS_BTN_H) * 0.5)
-            drawIntentCorpusQueueButton(scenarioBody, reporter, msgIdx, inlineBtnX, corpusBtnY)
+            drawIntentCorpusQueueButton(scenarioBody, reporter, msgIdx, inlineBtnX, corpusBtnY, corpusOpts)
         end
     end
 
@@ -1953,6 +1959,8 @@ function deskPassesGameKey(wparam)
     return false
 end
 
+_G.deskPassesGameKey = deskPassesGameKey
+
 
 -- Draw Desk Sp Spectate Overlay
 function drawDeskSpSpectateOverlay()
@@ -2532,12 +2540,16 @@ function pollReportIngest()
         if key == '' then goto continue end
         if chatSeen.lines[key] then goto continue end
         if type(adminPunishIngestChatLine) == 'function' then
-            local apPoll = plain:find('^%[A%]%s', 1)
-                or plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1)
-                or (type(lineLooksLikeAdminPunishRequest) == 'function'
-                    and lineLooksLikeAdminPunishRequest(plain, 0))
-            if apPoll then
-                pcall(adminPunishIngestChatLine, 0, line)
+            local apHooksOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+                and deskCache and deskCache.profHooksInstalled == true
+            if not apHooksOk then
+                local apPoll = plain:find('^%[A%]%s', 1)
+                    or plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1)
+                    or (type(lineLooksLikeAdminPunishRequest) == 'function'
+                        and lineLooksLikeAdminPunishRequest(plain, 0))
+                if apPoll then
+                    pcall(adminPunishIngestChatLine, 0, line)
+                end
             end
         end
         if tryIngestAdminReplyLine(plain) then
@@ -2560,7 +2572,7 @@ function pollReportIngest()
             pcall(checkProfanityFromChatLine, plain, key)
         end
         local source = hookActive and 'srv' or 'chat'
-        if processChatLineIngest(plain, 0, source, true, line, { delay = 0 }) then
+        if processChatLineIngest(plain, 0, source, false, line, { delay = 0 }) then
             markChatLineSeen(key)
             chatSeen.deferred[key] = nil
         elseif not tryParseReport(plain)

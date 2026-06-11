@@ -1,4 +1,81 @@
 --[[ Модуль: auto-rules, scenarios, processChatLineIngest. ]]
+local autoReplyQueue = {}
+local autoReplyWorkerOn = false
+local AUTO_REPLY_QUEUE_MAX = 48
+
+local function runAutoReplyJob(job)
+    if not job then return end
+    local nickCopy, idCopy, bodyCopy, src = job.nick, job.id, job.body, job.src
+    if settings.profanity_filter_enabled then
+        pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
+    end
+    if not deskAutoReplyAllowed() then return end
+    local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
+    local th = threads[tk]
+    if th then
+        pcall(runAutoRulesForReport, th, bodyCopy, src)
+    end
+end
+
+local function startAutoReplyWorker()
+    if autoReplyWorkerOn then return end
+    if #autoReplyQueue < 1 then return end
+    if not lua_thread or not lua_thread.create then return end
+    autoReplyWorkerOn = true
+    lua_thread.create(function()
+        local okRun, errRun = pcall(function()
+            while #autoReplyQueue > 0 do
+                local job = table.remove(autoReplyQueue, 1)
+                local delayMs = tonumber(AUTO_REPLY_DELAY_MS) or 250
+                local elapsedMs = (os.clock() - (job.enqueuedAt or os.clock())) * 1000
+                local remain = math.floor(delayMs - elapsedMs + 0.5)
+                if remain > 0 then wait(remain) end
+                if deskAutoReplyAllowed() then
+                    pcall(runAutoReplyJob, job)
+                end
+            end
+        end)
+        autoReplyWorkerOn = false
+        if not okRun then
+            print('[Report Desk] auto reply worker: ' .. tostring(errRun))
+        end
+        if #autoReplyQueue > 0 then
+            startAutoReplyWorker()
+        end
+    end)
+end
+
+function threadHasIncomingReportBody(t, body)
+    if not t or not body then return false end
+    local want = normalizeIngestBody(body)
+    if want == '' then return false end
+    local msgs = t.messages
+    if type(msgs) ~= 'table' then return false end
+    local from = math.max(1, #msgs - 80)
+    for i = #msgs, from, -1 do
+        local m = msgs[i]
+        if m and m.dir == 'in' and (m.kind == 'player' or m.kind == nil) then
+            local got = normalizeIngestBody(m.text or '')
+            if got ~= '' and got == want then return true end
+        end
+    end
+    return false
+end
+
+local function enqueueAutoReplyJob(nick, id, body, src)
+    if #autoReplyQueue >= AUTO_REPLY_QUEUE_MAX then
+        table.remove(autoReplyQueue, 1)
+    end
+    autoReplyQueue[#autoReplyQueue + 1] = {
+        nick = nick,
+        id = id,
+        body = body,
+        src = src or 'live',
+        enqueuedAt = os.clock(),
+    }
+    startAutoReplyWorker()
+end
+
 function cloneBuiltinAutoRule(tpl, payload)
     local kw = {}
     for _, k in ipairs(tpl.keywords or {}) do
@@ -84,6 +161,9 @@ end
 function clearAllPendingAuto()
     for k in pairs(pendingAuto) do
         pendingAuto[k] = nil
+    end
+    for i = #autoReplyQueue, 1, -1 do
+        autoReplyQueue[i] = nil
     end
 end
 
@@ -323,20 +403,11 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     })
     markDirtyThreads()
     if isLive and settings.auto_rules_enabled ~= false then
-        local src = source or 'live'
-        local nickCopy, idCopy, bodyCopy = nick, id, body
-        lua_thread.create(function()
-            if settings.profanity_filter_enabled then
-                pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
-            end
-            wait(AUTO_REPLY_DELAY_MS)
-            if not deskAutoReplyAllowed() then return end
-            local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
-            local th = threads[tk]
-            if th then
-                pcall(runAutoRulesForReport, th, bodyCopy, src)
-            end
-        end)
+        local maxAge = tonumber(AUTO_REPLY_MAX_AGE_SEC) or 90
+        local age = type(chatLineAgeSeconds) == 'function' and chatLineAgeSeconds(raw) or nil
+        if age == nil or age <= maxAge then
+            enqueueAutoReplyJob(nick, id, body, source or 'live')
+        end
     end
 end
 
@@ -357,6 +428,13 @@ function ingestReport(color, text, source, isLive, rawLine, ingestMeta, ev)
     local seenKey = chatLineSeenKey(rawLine or text)
     if isDuplicateIngest(id, body, rawLine) then
         if seenKey ~= '' then markChatLineSeen(seenKey) end
+        return false
+    end
+    local tk = findThreadKeyByNick(nick) or nickKey(nick)
+    local th = threads[tk]
+    if th and threadHasIncomingReportBody(th, body) then
+        if seenKey ~= '' then markChatLineSeen(seenKey) end
+        markReportLineConsumed(rawLine or text)
         return false
     end
     if settings.debug and ingestMeta then

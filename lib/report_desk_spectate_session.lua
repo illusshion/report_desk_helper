@@ -251,6 +251,12 @@ end
 function M.markAwaitingSpectate(on)
     session.awaitingSpectate = on and true or false
     invalidateSuppressCache()
+    if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
+end
+
+-- Нужны ли TD-хуки: /sp (pending или цель) или кастомный спидометр в машине.
+function M.tdHooksNeeded()
+    return vehicleHudPipelineActive()
 end
 
 -- Custom Vehicle Hud Enabled — ingest/block server TD спидометра.
@@ -409,6 +415,62 @@ function M.ensureTextDrawHooks(sampev)
     M.installTextDrawHooks(sampev)
 end
 
+-- Снять только TD-хуки (spectate player/vehicle hooks не трогаем).
+function M.uninstallTextDrawHooks(sampev)
+    if not sampev then return end
+    if showTdHook and sampev.onShowTextDraw == showTdHook then
+        sampev.onShowTextDraw = hookPrevShowTd
+    end
+    if setStrHook and sampev.onTextDrawSetString == setStrHook then
+        sampev.onTextDrawSetString = hookPrevSetStr
+    end
+    showTdHook = nil
+    setStrHook = nil
+    hookPrevShowTd = nil
+    hookPrevSetStr = nil
+end
+
+-- Поставить TD-хуки если нужны, снять если нет.
+function M.syncTextDrawHooks(sampev)
+    if not sampev then
+        sampev = package.loaded['lib.samp.events']
+    end
+    if not sampev then return end
+    if M.tdHooksNeeded() then
+        M.installTextDrawHooks(sampev)
+    elseif M.areTextDrawHooksActive(sampev) then
+        M.uninstallTextDrawHooks(sampev)
+    end
+end
+
+local lastTdLifecycleAt = -1
+local TD_LIFECYCLE_INTERVAL = 0.35
+
+-- В /sp — мгновенно чинит пропавшие хуки; вне /sp — редкий poll для посадки в машину.
+function M.tickTdHooksLifecycle(sampev)
+    if not sampev then
+        sampev = package.loaded['lib.samp.events']
+    end
+    if not sampev then return end
+    local spPath = session.awaitingSpectate == true or session.spectating == true or session.active == true
+    if spPath then
+        if M.areTextDrawHooksActive(sampev) then return end
+        M.installTextDrawHooks(sampev)
+        return
+    end
+    local now = os.clock()
+    if now - lastTdLifecycleAt < TD_LIFECYCLE_INTERVAL then return end
+    lastTdLifecycleAt = now
+    local needed = M.tdHooksNeeded()
+    local active = M.areTextDrawHooksActive(sampev)
+    if needed == active then return end
+    if needed then
+        M.installTextDrawHooks(sampev)
+    else
+        M.uninstallTextDrawHooks(sampev)
+    end
+end
+
 -- Публичный API модуля.
 function M.isSpectatingMode()
     return playerSpectatingNow() or M.isActive()
@@ -419,6 +481,9 @@ function M.setSpectating(on)
     on = on and true or false
     session.spectating = on
     if on then
+        if M.getTargetId() < 0 and session.awaitingSpectate ~= true then
+            M.markAwaitingSpectate(true)
+        end
         if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
         if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
     else
@@ -426,6 +491,7 @@ function M.setSpectating(on)
         clearMenuColumnState()
         pcall(vehicleHud.reset)
         if cbResetMenuState then pcall(cbResetMenuState) end
+        if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
     end
 end
 
@@ -572,6 +638,7 @@ function M.endSession()
     pcall(vehicleHud.reset)
     if cbResetMenuSelection then pcall(cbResetMenuSelection) end
     if cbOnEnd then pcall(cbOnEnd) end
+    if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
 end
 
 -- Outbound Base
@@ -700,16 +767,7 @@ function M.uninstallSampevHooks(sampev)
     end
     playerHandler = nil
     hookPrevPlayer = nil
-    if showTdHook and sampev.onShowTextDraw == showTdHook then
-        sampev.onShowTextDraw = hookPrevShowTd
-    end
-    if setStrHook and sampev.onTextDrawSetString == setStrHook then
-        sampev.onTextDrawSetString = hookPrevSetStr
-    end
-    showTdHook = nil
-    setStrHook = nil
-    hookPrevShowTd = nil
-    hookPrevSetStr = nil
+    M.uninstallTextDrawHooks(sampev)
     if vehicleHandler and sampev.onSpectateVehicle == vehicleHandler then
         sampev.onSpectateVehicle = hookPrevVehicle
     end

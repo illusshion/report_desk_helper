@@ -140,7 +140,7 @@ function main()
     end
     pcall(flushDirtyConfigNow)
 
-    sampRegisterChatCommand('reps', function()
+    sampRegisterChatCommand('adesk', function()
         pcall(toggleWindow)
     end)
     sampRegisterChatCommand('reportdesk', function()
@@ -253,6 +253,7 @@ function main()
     local lastHookCheck = 0
     local lastCheckerTickAt = 0
     local CHECKER_TICK_SP_INTERVAL = 0.5
+    local CHECKER_TICK_IDLE_INTERVAL = 0.5
     local deskWasSampInGame = type(deskSampInGame) == 'function' and deskSampInGame() or false
 
     local function resolveIngestPollInterval()
@@ -263,7 +264,7 @@ function main()
     end
 
     local function mainLoopWaitMs()
-        if showWindow[0] then return 8 end
+        if showWindow[0] then return 16 end
         if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
@@ -275,8 +276,14 @@ function main()
                 and deskSpectateStats.isHudDragActive
                 and deskSpectateStats.isHudDragActive() then return 1 end
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
-        if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 16 end
-        if type(settings) == 'table' and settings.admin_punish_enabled == true then return 16 end
+        if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 8 end
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then
+            local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+            local profOk = deskCache and deskCache.profHooksInstalled == true
+            if not hookOk or not profOk then
+                return 25
+            end
+        end
         return 50
     end
 
@@ -364,8 +371,10 @@ function main()
         pcall(cheatsProcessKeybinds)
         pcall(cheatsMaintain)
         local nowLoop = os.clock()
-        local checkerInterval = (deskIsSpectating() and type(checkerIsHudVisible) == 'function'
-            and not checkerIsHudVisible() and CHECKER_TICK_SP_INTERVAL) or 0
+        local checkerInterval = CHECKER_TICK_IDLE_INTERVAL
+        if deskIsSpectating() and type(checkerIsHudVisible) == 'function' and not checkerIsHudVisible() then
+            checkerInterval = CHECKER_TICK_SP_INTERVAL
+        end
         if nowLoop - lastCheckerTickAt >= checkerInterval then
             pcall(checkerTick)
             lastCheckerTickAt = nowLoop
@@ -373,6 +382,12 @@ function main()
         pcall(function()
             if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
                 deskSpectateStats.tickPendingSp()
+            end
+        end)
+        pcall(function()
+            local specSession = package.loaded['report_desk_spectate_session']
+            if specSession and specSession.tickTdHooksLifecycle then
+                specSession.tickTdHooksLifecycle()
             end
         end)
         pcall(cheatsTickMarker)

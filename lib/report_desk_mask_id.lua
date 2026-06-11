@@ -3,6 +3,9 @@ if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local MASK_LABEL_DRAW_DIST = 300
 local MASK_LABEL_COLOR = 4294967295
+local MASK_ID_TICK_INTERVAL = 0.4
+local maskIdLastTickAt = 0
+local maskIdWasActive = false
 local MASK_LABEL_Z = 0.6
 local MASK_COLORS = {
     [4278190335] = true,
@@ -117,11 +120,21 @@ local function maskIdPlayerColor(id)
 end
 
 function maskIdTick()
-    if not maskIdEnabled() or not maskIdActiveSession() then
-        maskIdDestroyAll()
+    local active = maskIdEnabled() and maskIdActiveSession()
+    if not active then
+        if maskIdWasActive then
+            maskIdDestroyAll()
+        end
+        maskIdWasActive = false
+        maskIdLastTickAt = 0
         return
     end
+    maskIdWasActive = true
     if type(sampGetMaxPlayerId) ~= 'function' or type(sampIsPlayerConnected) ~= 'function' then return end
+
+    local now = os.clock()
+    if now - maskIdLastTickAt < MASK_ID_TICK_INTERVAL then return end
+    maskIdLastTickAt = now
 
     local maxId = tonumber(sampGetMaxPlayerId(true)) or 0
     if maxId < 0 then maxId = 0 end
@@ -147,5 +160,6 @@ function maskIdOnPlayerQuit(playerId)
 end
 
 function maskIdCleanup()
+    maskIdWasActive = false
     maskIdDestroyAll()
 end

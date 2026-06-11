@@ -11,20 +11,35 @@ local OVERLAY_W = 420
 local OVERLAY_BOTTOM_MARGIN = 62
 local AP_HINT_GAP = 20
 
+local AP_SEEN_GLOBAL = rawget(_G, '__DESK_AP_SEEN')
+if type(AP_SEEN_GLOBAL) ~= 'table' then
+    AP_SEEN_GLOBAL = { req = {}, line = {} }
+    rawset(_G, '__DESK_AP_SEEN', AP_SEEN_GLOBAL)
+end
+
 local apState = {
     pending = nil,
+    executing = false,
     bindField = nil,
     bindCapture = false,
     handled = {},
     handledOrd = {},
     handledPerm = {},
+    reqSeen = AP_SEEN_GLOBAL.req,
     pendingOfflineSince = nil,
     punishLogDedup = { key = '', at = 0 },
+    bootstrapped = false,
 }
 local AP_LINE_REJECT_SEC = 50
+local AP_REQ_SEEN_SEC = PUNISH_TIMEOUT_SEC + 30
 local AP_POLL_RECENT = 40
-local AP_OFFLINE_CANCEL_SEC = 2.0
-local AP_HANDLED_MAX = 256
+local AP_POLL_LINES_FALLBACK = 24
+local AP_POLL_INTERVAL_FALLBACK = 0.45
+local AP_OFFLINE_CANCEL_SEC = 0.35
+local AP_HANDLED_MAX = 512
+local AP_HOOK_REINSTALL_SEC = 30.0
+local apPollLastAt = 0
+local apHookReinstallAt = 0
 
 local function apMono()
     if type(getGameTimer) == 'function' then
@@ -53,7 +68,6 @@ end
 function ensureAdminPunishSettings()
     if type(settings) ~= 'table' then return end
     if settings.admin_punish_enabled == nil then settings.admin_punish_enabled = false end
-    if settings.admin_punish_send_ans == nil then settings.admin_punish_send_ans = false end
     if settings.admin_punish_sign_cmd == nil then settings.admin_punish_sign_cmd = true end
     local ck = tonumber(settings.admin_punish_confirm_key)
     if not ck or ck <= 0 then settings.admin_punish_confirm_key = vkeys.VK_DELETE end
@@ -273,13 +287,71 @@ local function apLineHandledEntry(lineKey)
 end
 
 local function apLineAlreadyHandled(lineKey)
-    if apState.handledPerm[lineKey] then return true end
+    if apLineGloballyConsumed(lineKey) then return true end
     return apLineHandledEntry(lineKey) ~= nil
 end
 
 local function apMarkLineConsumed(lineKey)
     if not lineKey or lineKey == '' then return end
     apState.handledPerm[lineKey] = true
+    AP_SEEN_GLOBAL.line[lineKey] = true
+end
+
+local function apLineGloballyConsumed(lineKey)
+    if not lineKey or lineKey == '' then return false end
+    if apState.handledPerm[lineKey] then return true end
+    return AP_SEEN_GLOBAL.line[lineKey] == true
+end
+
+local function apRequestSeenRecently(dedupKey)
+    dedupKey = trim(tostring(dedupKey or ''))
+    if dedupKey == '' then return false end
+    local at = tonumber(apState.reqSeen[dedupKey]) or 0
+    if at <= 0 then return false end
+    if apMono() - at > AP_REQ_SEEN_SEC then
+        apState.reqSeen[dedupKey] = nil
+        return false
+    end
+    return true
+end
+
+local function apMarkRequestSeen(dedupKey)
+    dedupKey = trim(tostring(dedupKey or ''))
+    if dedupKey == '' then return end
+    apState.reqSeen[dedupKey] = apMono()
+end
+
+local function apPruneRequestSeen()
+    local now = apMono()
+    for key, at in pairs(apState.reqSeen) do
+        if now - (tonumber(at) or 0) > AP_REQ_SEEN_SEC then
+            apState.reqSeen[key] = nil
+        end
+    end
+end
+
+-- После /reload буфер чата содержит старые /a — помечаем без уведомлений.
+local function apBootstrapChatBuffer()
+    if apState.bootstrapped or not apEnabled() then return end
+    apState.bootstrapped = true
+    if not sampGetChatString then return end
+    for i = 0, AP_POLL_RECENT - 1 do
+        local line = sampGetChatString(i) or ''
+        if line ~= '' then
+            local plain = apPlainText(line)
+            if apHasPunishCommand(plain) then
+                local lineKey = apStableLineKey(line)
+                if lineKey ~= '' then
+                    apMarkLineConsumed(lineKey)
+                end
+                local admName, admId, admCommand = apParseAdminRequest(plain)
+                if admId and admCommand then
+                    apMarkRequestSeen(apRequestKey(admId, admCommand))
+                end
+            end
+        end
+    end
+    apPruneRequestSeen()
 end
 
 local function apMarkLineRejected(lineKey)
@@ -293,6 +365,11 @@ local function apSealPending(p)
     if not p then return end
     if p.stableLineKey and p.stableLineKey ~= '' then
         apMarkLineConsumed(p.stableLineKey)
+    end
+    if p.dedupKey and p.dedupKey ~= '' then
+        apMarkRequestSeen(p.dedupKey)
+    elseif p.admId and p.command then
+        apMarkRequestSeen(apRequestKey(p.admId, p.command))
     end
 end
 
@@ -364,6 +441,10 @@ local function apNotifyPending(p)
 end
 
 local function apClearPending(reason)
+    if apState.executing then
+        if not reason then return end
+        apState.executing = false
+    end
     local p = apState.pending
     if p then
         apSealPending(p)
@@ -387,8 +468,21 @@ local function apSyncBindKeyPrev()
     end
 end
 
-local function apSetPending(p)
+local function apSetPending(p, opts)
     if not p then return end
+    opts = type(opts) == 'table' and opts or {}
+    local dedupKey = p.dedupKey or apRequestKey(p.admId, p.command)
+    p.dedupKey = dedupKey
+
+    local cur = apState.pending
+    if cur and cur.dedupKey == dedupKey then
+        cur.tick = apMono()
+        if p.stableLineKey and p.stableLineKey ~= '' then
+            apMarkLineConsumed(p.stableLineKey)
+        end
+        return
+    end
+
     p.snapshotNick = trim(p.playerName or '')
     if p.snapshotNick == '' and tonumber(p.playerId) and tonumber(p.playerId) >= 0 then
         p.snapshotNick = trim(sampGetPlayerNickname(p.playerId) or '')
@@ -401,9 +495,11 @@ local function apSetPending(p)
     apState.pending = p
     apState.pendingOfflineSince = nil
     apSyncBindKeyPrev()
-    apNotifyPending(p)
-    if settings.sound and playSoundFrontEnd then
-        pcall(playSoundFrontEnd, 4)
+    if not opts.silent then
+        apNotifyPending(p)
+        if settings.sound and playSoundFrontEnd then
+            pcall(playSoundFrontEnd, 4)
+        end
     end
 end
 
@@ -483,6 +579,11 @@ local function apCanExecutePending(p)
             st.snapshotNick or '?', st.playerId or 0)
     end
     if st.status == 'nick_changed' then
+        local cmdPid = clampSuspectPlayerId and clampSuspectPlayerId(p.playerId) or tonumber(p.playerId)
+        -- Команда по online-ID (/kick 12 …): слот занят — сервер наказывает по ID, не по нику в снапшоте.
+        if cmdPid and cmdPid >= 0 and st.connected and tonumber(st.playerId) == cmdPid then
+            return true, st, nil
+        end
         return false, st, string.format(
             '\xCD\xE0 ID %d \xE1\xFB\xEB %s, \xF1\xE5\xE9\xF7\xE0\xF1 %s. \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xED\xE5 \xE2\xFB\xE4\xE0\xED\xEE.',
             st.playerId or 0, st.snapshotNick or '?', st.liveNick ~= '' and st.liveNick or '?')
@@ -784,6 +885,8 @@ end
 function adminPunishIngestChatLine(color, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
+    apBootstrapChatBuffer()
+
     local plain = apPlainText(text)
     if apIsOwnAutovydachaLog(plain) then return end
 
@@ -793,6 +896,7 @@ function adminPunishIngestChatLine(color, text)
     end
 
     if not apIsAdminChatLine(color, plain) then return end
+    if not apHasPunishCommand(plain) then return end
 
     local admName, admId, admCommand = apParseAdminRequest(plain)
     if not admName or not admId or not admCommand then return end
@@ -801,17 +905,22 @@ function adminPunishIngestChatLine(color, text)
     if stableLineKey == '' then return end
     if apLineAlreadyHandled(stableLineKey) then return end
 
-    if type(isMyAdminReply) == 'function' and isMyAdminReply(admName, admId) then
+    local dedupKey = apRequestKey(admId, admCommand)
+    if apRequestSeenRecently(dedupKey) then
         apMarkLineConsumed(stableLineKey)
         return
     end
 
-    local dedupKey = apRequestKey(admId, admCommand)
+    if type(isMyAdminReply) == 'function' and isMyAdminReply(admName, admId) then
+        apMarkLineConsumed(stableLineKey)
+        apMarkRequestSeen(dedupKey)
+        return
+    end
 
     if apState.pending then
         local old = apState.pending
-        local oldKey = apRequestKey(old.admId, old.command)
-        if oldKey == dedupKey then
+        if old.dedupKey == dedupKey or apRequestKey(old.admId, old.command) == dedupKey then
+            old.tick = apMono()
             apMarkLineConsumed(stableLineKey)
             return
         end
@@ -821,14 +930,18 @@ function adminPunishIngestChatLine(color, text)
     local parsed = apTryParse(admCommand)
     if not parsed then
         apMarkLineConsumed(stableLineKey)
+        apMarkRequestSeen(dedupKey)
         return
     end
 
     if apBlocksTargetAdmin(admCommand) and apIsCatalogAdmin(parsed.playerName) then
         say('{EE0000}\xC2\xED\xE8\xEC\xE0\xED\xE8\xE5! \xD6\xE5\xEB\xFC \xE2 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2.')
         apMarkLineConsumed(stableLineKey)
+        apMarkRequestSeen(dedupKey)
         return
     end
+
+    apMarkLineConsumed(stableLineKey)
 
     parsed.admName = admName
     parsed.admId = admId
@@ -836,7 +949,6 @@ function adminPunishIngestChatLine(color, text)
     parsed.tick = apMono()
     parsed.stableLineKey = stableLineKey
     parsed.dedupKey = dedupKey
-    apMarkLineConsumed(stableLineKey)
     apSetPending(parsed)
 end
 
@@ -864,15 +976,24 @@ function adminPunishOnChatMessage(playerId, text)
     adminPunishIngestChatLine(0, string.format('[A] %s[%d]: %s', nick, playerId, cmd))
 end
 
--- Запасной poll: всегда последние N строк (hook может пропустить по color/chain).
+-- Запасной poll только если хуки не стоят (иначе дубли и лаг от скана буфера).
 function pollAdminPunishChat()
     if not apEnabled() then return end
+    apBootstrapChatBuffer()
+    local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+    local profHookActive = deskCache and deskCache.profHooksInstalled == true
+    if hookActive and profHookActive then return end
     if not sampGetChatString then return end
-    for i = 0, AP_POLL_RECENT - 1 do
+    local now = os.clock()
+    if now - apPollLastAt < AP_POLL_INTERVAL_FALLBACK then return end
+    apPollLastAt = now
+    local maxLines = AP_POLL_LINES_FALLBACK
+    if maxLines > AP_POLL_RECENT then maxLines = AP_POLL_RECENT end
+    for i = 0, maxLines - 1 do
         local line = sampGetChatString(i) or ''
         if line ~= '' then
             local plain = apPlainText(line)
-            if apIsAdminChatLine(0, plain) then
+            if apHasPunishCommand(plain) then
                 pcall(adminPunishIngestChatLine, 0, line)
             end
         end
@@ -882,14 +1003,17 @@ end
 -- Health-check hooks автовыдачи (onServerMessage + onChatMessage).
 function adminPunishEnsureServerHook()
     if not apEnabled() then return end
+    apBootstrapChatBuffer()
     if type(installDeskServerMessageHook) == 'function' then
         if type(deskIsServerMsgHookActive) ~= 'function' or not deskIsServerMsgHookActive() then
             pcall(installDeskServerMessageHook)
         end
     end
     if type(installProfanityHooks) == 'function' then
-        if not deskCache.profHooksInstalled
-                or (deskCache.profChatHandler and sampev and sampev.onChatMessage ~= deskCache.profChatHandler) then
+        local needReinstall = not deskCache.profHooksInstalled
+            or (deskCache.profChatHandler and sampev and sampev.onChatMessage ~= deskCache.profChatHandler)
+        if needReinstall and os.clock() - apHookReinstallAt >= AP_HOOK_REINSTALL_SEC then
+            apHookReinstallAt = os.clock()
             deskCache.profHooksInstalled = false
             pcall(installProfanityHooks)
         end
@@ -924,38 +1048,30 @@ local function apInputsBlocked()
     return false
 end
 
-local function apSendOutboundCmd(line)
+-- Наказание всегда через sendChat: очередь /sp (0.55 с) задерживает kick и проигрывает гонку админов.
+local function apSendPunishChat(line)
     line = trim(tostring(line or ''))
     if line == '' then return false end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
-    local chatBusy = (sampIsChatInputActive and sampIsChatInputActive())
-        or (type(deskSampDialogActive) == 'function' and deskSampDialogActive())
-    if (type(deskDeskOrAnsUiOpen) == 'function' and deskDeskOrAnsUiOpen()) or chatBusy then
-        if type(sendMenuOutbound) == 'function' then
-            return sendMenuOutbound(line, { skipPendingMark = true }) == true
-        end
-    end
     return sendChat(line) == true
 end
 
-local function apExecutePending()
-    local p = apState.pending
-    if not p then return end
-    local ok, _, errMsg = apCanExecutePending(p)
-    if not ok then
-        if errMsg then say(errMsg) end
-        return
-    end
-    local cmd = p.command
+local function apFinishExecuteSuccess(p)
+    apSealPending(p)
+    apState.pending = nil
+    apState.pendingOfflineSince = nil
+    apState.executing = false
+end
 
-    if settings.admin_punish_send_ans and p.playerId and p.playerId >= 0 then
-        apSendOutboundCmd(string.format(
-            '/ans %d \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xE2\xFB\xE4\xE0\xED\xEE \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xE0 %s.',
-            p.playerId, p.admName or ''))
-    end
+local function apFinishExecuteFail()
+    apState.executing = false
+    say('{EE0000}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xEA\xEE\xEC\xE0\xED\xE4\xF3.')
+end
 
-    local outbound = apOutboundCmd(cmd, p.admName)
-    apRecordPunishLog({
+local function apBuildPunishLogEntry(p, outbound)
+    if not p then return nil end
+    local cmd = p.command or ''
+    return {
         ts = os.time(),
         kind = apPunishKindFromCommand(cmd),
         action = p.action or '-',
@@ -963,32 +1079,62 @@ local function apExecutePending()
         pid = tonumber(p.playerId) or -1,
         term = p.term or '-',
         reason = p.reason or '-',
-        cmd = outbound,
+        cmd = outbound or cmd,
         reqAdmin = p.admName or '',
         reqAdminId = tonumber(p.admId),
         src = 'auto',
-    })
+    }
+end
+
+-- Журнал после отправки: не блокировать hot-path автовыдачи.
+local function apDeferPunishLog(entry)
+    if not entry then return end
+    if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
+        lua_thread.create(function()
+            pcall(apRecordPunishLog, entry)
+        end)
+        return
+    end
+    pcall(apRecordPunishLog, entry)
+end
+
+local function apSendPunishOutbound(outbound)
     if type(deskCache) == 'table' then
         deskCache.skipPunishStatsHook = (tonumber(deskCache.skipPunishStatsHook) or 0) + 1
     end
-    local sent = apSendOutboundCmd(outbound)
+    local sent = apSendPunishChat(outbound) == true
     if type(deskCache) == 'table' then
         local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
         deskCache.skipPunishStatsHook = n > 0 and n or nil
     end
-    if not sent then
-        say('{EE0000}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xEA\xEE\xEC\xE0\xED\xE4\xF3.')
+    return sent
+end
+
+local function apExecutePending()
+    if apState.executing then return end
+    local p = apState.pending
+    if not p then return end
+    local ok, _, errMsg = apCanExecutePending(p)
+    if not ok then
+        if errMsg then say(errMsg) end
+        return
+    end
+    local outbound = apOutboundCmd(p.command, p.admName)
+    apState.executing = true
+
+    local sentOk, sent = pcall(apSendPunishOutbound, outbound)
+    if not sentOk or not sent then
+        apFinishExecuteFail()
         return
     end
 
-    say('\xCA\xEE\xEC\xE0\xED\xE4\xE0 \xE2\xFB\xEF\xEE\xEB\xED\xE5\xED\xE0.')
-    apSealPending(p)
-    apState.pending = nil
-    apState.pendingOfflineSince = nil
+    apDeferPunishLog(apBuildPunishLogEntry(p, outbound))
+    apFinishExecuteSuccess(p)
 end
 
 -- Admin Punish Confirm
 function adminPunishConfirm()
+    if apState.executing then return end
     apExecutePending()
 end
 
@@ -1113,6 +1259,7 @@ end
 function adminPunishTick()
     local p = apState.pending
     if not p then return end
+    if apState.executing then return end
 
     apRefreshPendingNick(p)
 
@@ -1266,7 +1413,6 @@ end
 function syncAdminPunishUiFromSettings()
     ensureAdminPunishSettings()
     uiAdminPunishEnabled[0] = settings.admin_punish_enabled == true
-    uiAdminPunishSendAns[0] = settings.admin_punish_send_ans == true
     uiAdminPunishSignCmd[0] = settings.admin_punish_sign_cmd ~= false
 end
 
@@ -1473,9 +1619,39 @@ local function apHudDrawHints(canExec)
     local avail = imgui.GetContentRegionAvail().x
     imgui.SetCursorPosX(imgui.GetCursorPosX() + math.max(0, (avail - (w1 + AP_HINT_GAP + w2)) * 0.5))
 
-    apHudDrawHintLine(lblOk, ck, true, canExec)
+    apHudDrawHintLine(lblOk, ck, true, canExec and not apState.executing)
     imgui.SameLine(0, AP_HINT_GAP)
     apHudDrawHintLine(lblNo, xk, false, true)
+    imgui.Dummy(imgui.ImVec2(0, 1))
+end
+
+local function apHudDrawActions(canExec)
+    local busy = apState.executing == true
+    local btnW = math.max(96, (OVERLAY_W - 28 - 8) * 0.5)
+    local lblOk = uiText('\xCF\xF0\xE8\xED\xFF\xF2\xFC')
+    local lblNo = uiText('\xCE\xF2\xEC\xE5\xED\xE0')
+    imgui.Dummy(imgui.ImVec2(0, 2))
+    if canExec and not busy then
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.14, 0.26, 0.96))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.30, 0.22, 0.42, 1.0))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
+        if imgui.Button(lblOk .. '##ap_ok', imgui.ImVec2(btnW, 26)) then
+            adminPunishConfirm()
+        end
+        imgui.PopStyleColor(3)
+        imgui.SameLine(0, 8)
+    elseif busy then
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.14, 0.12, 0.18, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.14, 0.12, 0.18, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.14, 0.12, 0.18, 0.72))
+        imgui.PushStyleColor(imgui.Col.Text, col_muted2)
+        imgui.Button(lblOk .. '##ap_ok_busy', imgui.ImVec2(btnW, 26))
+        imgui.PopStyleColor(4)
+        imgui.SameLine(0, 8)
+    end
+    if imgui.Button(lblNo .. '##ap_no', imgui.ImVec2(btnW, 26)) and not busy then
+        adminPunishCancel()
+    end
     imgui.Dummy(imgui.ImVec2(0, 1))
 end
 
@@ -1506,7 +1682,12 @@ function drawAdminPunishTab()
         '\xD1\xEA\xF0\xE8\xEF\xF2 \xF7\xE8\xF2\xE0\xE5\xF2 \xF7\xE0\xF2 \xE0\xE4\xEC\xE8\xED\xE0 \xE8 \xEF\xF0\xE5\xE4\xEB\xE0\xE3\xE0\xE5\xF2 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xF2\xFC \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5.')
     if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE8\xF2\xFC \xE0\xE2\xF2\xEE\xE2\xFB\xE4\xE0\xF7\xF3', uiAdminPunishEnabled, function(v)
         settings.admin_punish_enabled = v
-        if not v then apClearPending() end
+        if not v then
+            apClearPending()
+        else
+            apState.bootstrapped = false
+            apBootstrapChatBuffer()
+        end
         markDirtySettings()
     end, 'ap_en') then end
     if deskFormCheckboxRow('\xC4\xEE\xEF\xE8\xF1\xFB\xE2\xE0\xF2\xFC\x20\x2F\x20\x62\x79', uiAdminPunishSignCmd, function(v)
@@ -1514,11 +1695,6 @@ function drawAdminPunishTab()
         markDirtySettings()
     end, 'ap_sign') then end
     drawSettingsHint('\xAB\xEF\xF0\xE8\xF7\xE8\xED\xE0\x20\x2F\x20\x62\x79\x20\x41\x64\x6D\x69\x6E\xBB')
-    if deskFormCheckboxRow('\xD1\xED\xE0\xF7\xE0\xEB\xE0 \xF1\xEE\xEE\xE1\xF9\xE8\xF2\xFC \xE8\xE3\xF0\xEE\xEA\xF3 \xE2\x20\x2F\x61\x6E\x73', uiAdminPunishSendAns, function(v)
-        settings.admin_punish_send_ans = v
-        markDirtySettings()
-    end, 'ap_ans') then end
-    drawSettingsHint('\xAB\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5\x20\xE2\xFB\xE4\xE0\xED\xEE\x20\xEF\xEE\x20\xEF\xF0\xEE\xF1\xFC\xE1\xE5\x20\x2E\x2E\x2E\xBB')
     deskFormPanelEnd()
 
     deskFormPanelBegin('##ap_keys')
@@ -1583,7 +1759,7 @@ function drawAdminPunishOverlay()
     local frac = math.max(0, math.min(1, left / PUNISH_TIMEOUT_SEC))
 
     local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.AlwaysAutoResize
-        + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoInputs
+        + imgui.WindowFlags.NoNav + imgui.WindowFlags.NoScrollbar
     if imgui.WindowFlags.NoBringToFrontOnFocus then
         flags = flags + imgui.WindowFlags.NoBringToFrontOnFocus
     end
@@ -1609,6 +1785,7 @@ function drawAdminPunishOverlay()
         apHudDrawTimerStrip(frac, left)
         apHudDrawBody(p, reqNick, reqPid, canExec)
         apHudDrawStatus(st, reqNick, canExec, blockMsg)
+        apHudDrawActions(canExec)
         apHudDrawHints(canExec)
         imgui.End()
     end

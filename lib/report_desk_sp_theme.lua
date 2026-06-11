@@ -190,8 +190,10 @@ function M.drawHudKvRow(label, value, valueCol, labelW, uiTextFn)
     label = label or ''
     value = tostring(value or '')
     if value == '' then return end
-    imgui.TextColored(M.labelCol(), uiTextFn(label))
-    imgui.SameLine(labelW)
+    if label ~= '' then
+        imgui.TextColored(M.labelCol(), uiTextFn(label))
+        imgui.SameLine(labelW)
+    end
     imgui.TextColored(valueCol, uiTextFn(value))
 end
 

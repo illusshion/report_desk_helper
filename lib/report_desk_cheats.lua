@@ -77,9 +77,10 @@ end
 -- Desk hook/helper.
 function deskWindowWantsKeyboard()
     if not showWindow[0] then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
-    -- Открытая панель — всегда держим клавиатуру у ImGui (иначе WM не доходит до InputText).
-    return true
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
+        return true
+    end
+    return deskImguiTypingActive()
 end
 
 -- Desk hook/helper.
@@ -90,7 +91,7 @@ function deskImguiTypingActive()
     if deskInputState.replyFocused then return true end
     if deskInputState.keyboardStickyUntil > os.clock() then return true end
     local io = imgui.GetIO and imgui.GetIO()
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then return true end
+    if io and io.WantTextInput then return true end
     if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return true end
     return false
 end
@@ -1361,19 +1362,27 @@ function drawMarkerHudOverlay()
         flags = flags + imgui.WindowFlags.NoFocusOnAppearing
     end
 
-    local padX, padY = 14, 10
-    local panelW = CHEATS_OVERLAY_PANEL_W
-    local wx, wy = sx + padX, sy + padY
-    if wx + panelW > sw - 8 then wx = sw - panelW - 8 end
-    if wy + 120 > sh - 8 then wy = sh - 120 - 8 end
-    if wx < 4 then wx = 4 end
-    if wy < 4 then wy = 4 end
+    local offsetX, offsetY = 16, 18
+    local estW, estH = 168, 72
+    local pivotX, pivotY = 0.0, 0.0
+    local posX, posY = sx + offsetX, sy + offsetY
+    if posX + estW > sw - 8 then
+        posX = sx - offsetX
+        pivotX = 1.0
+    end
+    if posY + estH > sh - 8 then
+        posY = sy - offsetY
+        pivotY = 1.0
+    end
+    posX = math.max(4, math.min(posX, sw - 4))
+    posY = math.max(4, math.min(posY, sh - 4))
 
     local spTheme = cheatsOverlayTheme()
-    imgui.SetNextWindowSize(imgui.ImVec2(panelW, 0), imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(wx, wy), imgui.Cond.Always)
+    local labelW = (spTheme and spTheme.HUD_LABEL_W) or CHEATS_HUD_LABEL_W
+    imgui.SetNextWindowPos(imgui.ImVec2(posX, posY), imgui.Cond.Always, imgui.ImVec2(pivotX, pivotY))
     if spTheme then spTheme.pushHudChrome() end
     if imgui.Begin('###desk_marker_hud', nil, flags) then
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
         if spTheme then
             spTheme.drawPanelTitle('\xCC\xE0\xF0\xEA\xE5\xF0', nil, col_accent, col_muted, uiText)
         else
@@ -1382,14 +1391,19 @@ function drawMarkerHudOverlay()
         local distM = tonumber(m.dist) or 0
         if spTheme then
             spTheme.drawStatRow(1, '\xD0\xE0\xF1\xF1\xF2\xEE\xFF\xED\xE8\xE5', string.format('%.0f \xEC', distM), col_label,
-                CHEATS_HUD_LABEL_W, uiText)
+                labelW, uiText)
             if m.hoverCar and m.vehLabel ~= '' then
-                spTheme.drawStatRow(2, '\xCC\xE0\xF8\xE8\xED\xE0', m.vehLabel, col_accent, CHEATS_HUD_LABEL_W, uiText)
-                spTheme.drawStatRow(3, '', m.aimCar and '\xCB\xCA\xCC \x97 \xF1\xE5\xF1\xF2\xFC' or '\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3',
-                    m.aimCar and col_label or col_muted, CHEATS_HUD_LABEL_W, uiText)
+                spTheme.drawStatRow(2, '\xCC\xE0\xF8\xE8\xED\xE0', m.vehLabel, col_accent, labelW, uiText)
+                if m.aimCar then
+                    imgui.TextColored(col_muted, uiText(
+                        '\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xB7 \xCF\xCA\xCC \x97 \xEF\xEE\xF1\xE0\xE4\xEA\xE0'))
+                else
+                    imgui.TextColored(col_muted, uiText('\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3'))
+                end
             else
-                spTheme.drawStatRow(2, '', '\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2', col_muted, CHEATS_HUD_LABEL_W, uiText)
+                imgui.TextColored(col_muted, uiText('\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2'))
             end
+            imgui.TextColored(col_muted2, uiText('\xD1\xCA\xCC \x97 \xE2\xFB\xF5\xEE\xE4'))
         end
         imgui.End()
     end

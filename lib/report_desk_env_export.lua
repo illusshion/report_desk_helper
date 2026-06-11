@@ -128,7 +128,6 @@ getfenv(1).uiProfanityFilter = uiProfanityFilter
 getfenv(1).uiRemoteChatSamp = uiRemoteChatSamp
 getfenv(1).uiProfanitySound = uiProfanitySound
 getfenv(1).uiAdminPunishEnabled = uiAdminPunishEnabled
-getfenv(1).uiAdminPunishSendAns = uiAdminPunishSendAns
 getfenv(1).uiAdminPunishSignCmd = uiAdminPunishSignCmd
 getfenv(1).ruleKwBulk = ruleKwBulk
 getfenv(1).ruleTestBuf = ruleTestBuf

@@ -7,7 +7,9 @@ local spTheme = require 'report_desk_sp_theme'
 local VEHICLE_HUD_X_MIN_DEFAULT = 400   -- зона server TD спидометра, px (640x448)
 local VEHICLE_HUD_X_MAX_DEFAULT = 480
 local VEHICLE_HUD_Y_MIN_DEFAULT = 385   -- нижняя полоса HUD
-local STALE_SEC = 6.0
+local STALE_SEC = 4.0
+local VEH_CTX_CACHE_SEC = 0.15
+local ARC_SEGMENTS = 40
 local PANEL_BASE = 260          -- спидометр: правый нижний угол
 local HUD_MARGIN = 10
 local HEALTH_MAX = 1000
@@ -64,6 +66,7 @@ local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
 local hovered = false
 local hudRect = nil
 local anim = { speedVis = 0, fuelPct = 0, hpPct = 0 }
+local vehCtxCache = { at = 0, ok = false }
 
 local touchActive
 
@@ -358,7 +361,7 @@ local function classifyNumeric(text, y, pinnedRole)
         if not n then return nil, nil end
         if pinnedRole == 'health' or (n >= 250 and n <= HEALTH_MAX) then return 'health', n end
         if pinnedRole == 'fuel' or (n <= 100 and y and y >= vehicleHudYMin()) then return 'fuel', n end
-        if n <= 350 then return 'speed', n end
+        if pinnedRole == 'speed' and n <= 350 then return 'speed', n end
         if n <= HEALTH_MAX then return 'health', n end
         return nil, nil
     end
@@ -423,7 +426,20 @@ end
 touchActive = function()
     hud.lastAt = os.clock()
     hud.active = true
-    hud.inVehicle = true
+    hud.inVehicle = M.isVehicleContextActive()
+end
+
+-- Spectate-цель в транспорте (не «любой /sp»).
+function M.isSpectateTargetInVehicle()
+    if not getSpectateTargetId then return false end
+    local ok, id = pcall(getSpectateTargetId)
+    if not ok or not id or id < 0 then return false end
+    if not sampGetCharHandleBySampPlayerId or not doesCharExist or not isCharInAnyCar then
+        return false
+    end
+    local okPed, ped = pcall(sampGetCharHandleBySampPlayerId, id)
+    if not okPed or not ped or not doesCharExist(ped) then return false end
+    return isCharInAnyCar(ped) == true
 end
 
 -- Локальный ped в транспорте (только свой игрок; для /sp — server TD).
@@ -433,6 +449,31 @@ function M.isLocalInVehicle()
     end
     if not doesCharExist(PLAYER_PED) then return false end
     return isCharInAnyCar(PLAYER_PED) == true
+end
+
+function M.isVehicleContextActive()
+    local now = os.clock()
+    if now - (vehCtxCache.at or 0) < VEH_CTX_CACHE_SEC then
+        return vehCtxCache.ok == true
+    end
+    vehCtxCache.at = now
+    if M.isLocalInVehicle() then
+        vehCtxCache.ok = true
+        return true
+    end
+    vehCtxCache.ok = M.isSpectateTargetInVehicle()
+    return vehCtxCache.ok
+end
+
+local function syncVehicleContext()
+    if M.isVehicleContextActive() then
+        hud.inVehicle = true
+        return true
+    end
+    if hud.active then
+        M.reset()
+    end
+    return false
 end
 
 -- Store Field
@@ -486,6 +527,7 @@ end
 
 -- Без side-effect reset (для baseline auto /sp).
 function M.peekActive()
+    if not syncVehicleContext() then return false end
     if not hud.active or not hud.inVehicle then return false end
     if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then return false end
     if hud.speed ~= nil or hud.fuel ~= nil or hud.health ~= nil then return true end
@@ -498,6 +540,7 @@ end
 
 -- Публичный API модуля.
 function M.isActive()
+    if not syncVehicleContext() then return false end
     if not hud.active or not hud.inVehicle then return false end
     if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then
         M.reset()
@@ -615,30 +658,22 @@ local function inferServerTdRole(text, x, y)
     local indPlain = plain:gsub('%s+', '')
     if indPlain:match('^[esmlb]+$') then return 'indicators' end
     local slotRole = roleFromHudPosition(x, y)
-    if slotRole == 'speed' or slotRole == 'health' then
+    if slotRole == 'health' then
         n = tonumber(plain:match('^(%d+)$'))
         if n and n >= 100 and n <= HEALTH_MAX then return 'health' end
+    elseif slotRole == 'speed' then
+        n = tonumber(plain:match('^(%d+)$'))
         if n and n <= 350 then return 'speed' end
     end
     return slotRole
 end
 
--- Числовые поля спидометра — strict-слот, pin, или широкая зона при активной телеметрии.
-local function vehicleTelemetryActive()
-    if M.isLocalInVehicle() then return true end
-    if getSpectateTargetId then
-        local ok, tid = pcall(getSpectateTargetId)
-        if ok and tid and tid >= 0 then return true end
-    end
-    return false
-end
-
 local function mayIngestNumericRole(role, inStrict, inArea, key, tdId)
     if role ~= 'speed' and role ~= 'fuel' and role ~= 'health' then return true end
+    if not M.isVehicleContextActive() then return false end
     if inStrict then return true end
     if tdId and tdRolePin[tdId] then return true end
     if key and posSlots[key] then return true end
-    if inArea and vehicleTelemetryActive() then return true end
     return false
 end
 
@@ -646,12 +681,15 @@ end
 local function applyServerTdField(text, data, tdId)
     data = data or {}
     tdId = tonumber(tdId)
+    local raw = tostring(text or '')
+    local plain = normalizePlain(raw):gsub('_', ' ')
+    if not M.isVehicleContextActive() and not parseCombinedHudPlain(raw, plain) then
+        return
+    end
     local x, y = tdPosX(data), tdPosY(data)
     local inArea = x and y and isVehicleHudArea(x, y)
     local inStrict = x and y and isStrictVehicleHudArea(x, y)
     local key = inStrict and slotBucketKey(x, y) or nil
-    local raw = tostring(text or '')
-    local plain = normalizePlain(raw):gsub('_', ' ')
     if parseCombinedHudPlain(raw, plain) then
         if key then posSlots[key] = 'combined' end
         if tdId then tdRolePin[tdId] = 'combined' end
@@ -726,6 +764,7 @@ function M.shouldShow(settings)
         hovered = false
         return false
     end
+    if not syncVehicleContext() then return false end
     return M.isActive()
 end
 
@@ -780,6 +819,8 @@ end
 
 -- Публичный API модуля.
 function M.reset()
+    vehCtxCache.at = 0
+    vehCtxCache.ok = false
     hud.speed = nil
     hud.fuel = nil
     hud.health = nil
@@ -1040,7 +1081,7 @@ local function drawInnerPlate(dl, lay, plateCx, plateCy)
     if dl.AddCircle then
         dl:AddCircle(
             imgui.ImVec2(plateCx, plateCy), lay.innerR,
-            colorU32(imgui.ImVec4(0.52, 0.38, 0.78, 0.12)), 64, 1.0)
+            colorU32(imgui.ImVec4(0.52, 0.38, 0.78, 0.12)), 36, 1.0)
     end
 end
 
@@ -1167,14 +1208,14 @@ local function drawCefStyleHud(panelW, panelH, speed)
     drawInnerPlate(dl, lay, coreCx, coreCy)
 
     local trackCol = imgui.ImVec4(1, 1, 1, 0.12)
-    drawArcStroke(dl, lay.cx, lay.cy, lay.gaugeR, a0, a0 + ARC_SPAN, trackCol, strokeW, 72)
+    drawArcStroke(dl, lay.cx, lay.cy, lay.gaugeR, a0, a0 + ARC_SPAN, trackCol, strokeW, ARC_SEGMENTS)
 
     local pct = math.max(0, math.min(1, vis / SPEED_MAX))
     if pct > 0.002 then
         local fillCol = speedColor(vis)
         local aFill = a0 + ARC_SPAN * pct
         drawArcStroke(dl, lay.cx, lay.cy, lay.gaugeR, a0, aFill, fillCol, strokeW,
-            math.max(10, math.floor(72 * pct)))
+            math.max(8, math.floor(ARC_SEGMENTS * pct)))
         local nx = lay.cx + math.cos(aFill) * lay.gaugeR
         local ny = lay.cy + math.sin(aFill) * lay.gaugeR
         dl:AddCircleFilled(imgui.ImVec2(nx, ny), strokeW * 0.44, colorU32(fillCol))

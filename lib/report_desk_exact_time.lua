@@ -825,6 +825,28 @@ local function etPunishHasTerm(e)
     return not ET_PUNISH_NO_TERM_HEAD[etPunishCmdHead(e.cmd or '')]
 end
 
+local function etPunishTermIsDays(e)
+    if type(e) ~= 'table' then return false end
+    local head = etPunishCmdHead(e.cmd or '')
+    return head == 'ban' or head == 'offban'
+end
+
+local function etFormatDaysRu(days)
+    days = math.floor(tonumber(days) or 0)
+    if days <= 0 then return ET_PUNISH_TERM_EMPTY end
+    local mod10 = days % 10
+    local mod100 = days % 100
+    local unit
+    if mod10 == 1 and mod100 ~= 11 then
+        unit = '\xE4\xE5\xED\xFC'
+    elseif mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20) then
+        unit = '\xE4\xED\xFF'
+    else
+        unit = '\xE4\xED\xE5\xE9'
+    end
+    return string.format('%d %s', days, unit)
+end
+
 local function etFormatPunishTerm(e)
     if type(e) == 'table' and not etPunishHasTerm(e) then
         return ET_PUNISH_TERM_EMPTY
@@ -836,6 +858,9 @@ local function etFormatPunishTerm(e)
     if n then
         n = math.floor(n)
         if n <= 0 then return ET_PUNISH_TERM_EMPTY end
+        if type(e) == 'table' and etPunishTermIsDays(e) then
+            return etFormatDaysRu(n)
+        end
         if n >= 60 and n % 60 == 0 then
             return string.format('%d \xF7', math.floor(n / 60))
         end
@@ -953,7 +978,9 @@ local function etPunishTableLayout(availW, rows)
         etHelpColTextW(ET_PUNISH_TERM_HDR, pad),
         etHelpColTextW(ET_PUNISH_TERM_EMPTY, 8),
         etHelpColTextW('999 \xEC\xE8\xED', 8),
-        etHelpColTextW('99 \xF7', 8))
+        etHelpColTextW('99 \xF7', 8),
+        etHelpColTextW('21 \xE4\xE5\xED\xFC', 8),
+        etHelpColTextW('5 \xE4\xED\xE5\xE9', 8))
 
     for _, lbl in pairs(ET_PUNISH_KIND_LABEL) do
         minAction = math.max(minAction, etHelpColTextW(lbl, 8))

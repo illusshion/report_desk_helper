@@ -8,6 +8,7 @@ local state = {
     hint = '',
     fraction = nil,
     started = 0,
+    minimal = false,
 }
 
 local handler = nil
@@ -17,9 +18,9 @@ local fontSmall = nil
 
 local COL_PANEL = 0xE812121A
 local COL_PANEL_BORDER = 0xFF9E7BEF
-local COL_BAR_BG = 0xFF1E1C28
+local COL_BAR_BG = 0xC018161F
 local COL_BAR_FILL = 0xFF9E7BEF
-local COL_BAR_GLOW = 0x669E7BEF
+local COL_BAR_GLOW = 0x559E7BEF
 local COL_TEXT = 0xFFF2F0FA
 local COL_MUTED = 0xFF9890A8
 
@@ -38,8 +39,42 @@ local function screenSize()
     return 640, 480
 end
 
-local function drawPanel()
-    if not state.active then return end
+local function drawMinimalBar()
+    if not renderDrawBox or not renderFontDrawText then return end
+    ensureFonts()
+    if not fontSmall then return end
+
+    local sw, sh = screenSize()
+    local barW = math.min(380, math.max(220, sw - 160))
+    local barH = 7
+    local x = math.floor((sw - barW) * 0.5)
+    local y = sh - 42
+
+    if state.detail ~= '' then
+        renderFontDrawText(fontSmall, state.detail, x, y - 16, COL_MUTED, 1.0)
+    end
+
+    renderDrawBox(x, y, barW, barH, COL_BAR_BG, true)
+
+    local frac = tonumber(state.fraction)
+    if frac == nil then
+        local t = os.clock() - (state.started or os.clock())
+        local pulseW = math.max(56, math.floor(barW * 0.22))
+        local travel = barW - pulseW
+        local phase = (t * 0.5) % 1.0
+        local px = x + math.floor(travel * phase)
+        renderDrawBox(px, y, pulseW, barH, COL_BAR_GLOW, true)
+        renderDrawBox(px + 1, y + 1, pulseW - 2, barH - 2, COL_BAR_FILL, true)
+    else
+        frac = math.max(0, math.min(1, frac))
+        local fillW = math.max(0, math.floor(barW * frac))
+        if fillW > 0 then
+            renderDrawBox(x, y, fillW, barH, COL_BAR_FILL, true)
+        end
+    end
+end
+
+local function drawFullPanel()
     if not renderDrawBox or not renderFontDrawText then return end
     ensureFonts()
     if not fontTitle then return end
@@ -89,6 +124,15 @@ local function drawPanel()
     end
 end
 
+local function drawPanel()
+    if not state.active then return end
+    if state.minimal then
+        drawMinimalBar()
+    else
+        drawFullPanel()
+    end
+end
+
 local function installHandler()
     if handler then return end
     handler = function()
@@ -106,6 +150,7 @@ end
 
 function M.show(title, detail, hint)
     state.active = true
+    state.minimal = false
     state.title = tostring(title or 'Report Desk')
     state.detail = tostring(detail or '')
     state.hint = tostring(hint or '\xC8\xE3\xF0\xE0 \xEC\xEE\xE6\xE5\xF2 \xEF\xEE\xE4\xF2\xEE\xF0\xEC\xE0\xE6\xE8\xE2\xE0\xF2\xFC \xB7 \xFD\xF2\xEE \xED\xEE\xF0\xEC\xE0\xEB\xFC\xED\xEE')
@@ -114,8 +159,20 @@ function M.show(title, detail, hint)
     installHandler()
 end
 
+function M.showMinimal(detail)
+    state.active = true
+    state.minimal = true
+    state.title = ''
+    state.detail = tostring(detail or '')
+    state.hint = ''
+    state.fraction = nil
+    state.started = os.clock()
+    installHandler()
+end
+
 function M.update(opts)
     opts = opts or {}
+    if opts.minimal ~= nil then state.minimal = opts.minimal == true end
     if opts.title ~= nil then state.title = tostring(opts.title) end
     if opts.detail ~= nil then state.detail = tostring(opts.detail) end
     if opts.hint ~= nil then state.hint = tostring(opts.hint) end
@@ -134,6 +191,7 @@ function M.hide()
     state.active = false
     state.fraction = nil
     state.detail = ''
+    state.minimal = false
     removeHandler()
 end
 

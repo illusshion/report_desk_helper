@@ -2337,7 +2337,7 @@ function checkerIsSyncBlocked()
     return false
 end
 
--- Spawn catalog sync: не ждём произвольный диалог игрока — только pause и окно /reps.
+-- Spawn catalog sync: не ждём произвольный диалог игрока — только pause и окно /adesk.
 function checkerIsSpawnCatalogSyncBlocked()
     if checkerIsSuspended() then return true end
     if type(showWindow) == 'table' and showWindow[0] then return true end
@@ -2509,7 +2509,7 @@ function checkerScheduleSpawnCatalogSync(delaySec)
     checkerState.spawnCatalogSyncAt = os.clock() + delaySec
 end
 
--- Возобновить spawn catalog sync после закрытия /reps.
+-- Возобновить spawn catalog sync после закрытия /adesk.
 function checkerOnDeskWindowClosed()
     if settings.checker_auto_sync == false then return end
     if checkerState.spawnCatalogSyncDone then return end
@@ -2566,7 +2566,7 @@ function checkerManualSync()
     end
     if checkerIsSyncBlocked() then
         if type(say) == 'function' then
-            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3 \xE8\xEB\xE8 /reps')
+            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3 \xE8\xEB\xE8 /adesk')
         end
         return
     end

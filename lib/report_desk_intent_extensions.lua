@@ -51,6 +51,13 @@ function applyIntentExtensionsToList(intents)
         if intent.id then byId[intent.id] = i end
     end
 
+    for _, raw in ipairs(ext.new_intents or {}) do
+        if type(raw) == 'table' and raw.id and not byId[raw.id] then
+            intents[#intents + 1] = raw
+            byId[raw.id] = #intents
+        end
+    end
+
     for _, patch in ipairs(ext.patches or {}) do
         local idx = patch.id and byId[patch.id]
         if idx then
@@ -62,13 +69,6 @@ function applyIntentExtensionsToList(intents)
                 intent.exclusions = intent.exclusions or {}
                 mergeClauses(intent.exclusions, patch.add_exclusions)
             end
-        end
-    end
-
-    for _, raw in ipairs(ext.new_intents or {}) do
-        if type(raw) == 'table' and raw.id and not byId[raw.id] then
-            intents[#intents + 1] = raw
-            byId[raw.id] = #intents
         end
     end
 
