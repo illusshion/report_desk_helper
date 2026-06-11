@@ -29,8 +29,7 @@ if (-not (Test-Path $repoConfigPath)) {
 $repo = Get-Content $repoConfigPath -Raw | ConvertFrom-Json
 $owner = $repo.github_owner
 $repoName = $repo.github_repo
-$tag = ($repo.release_tag_prefix) + $Version
-if ($tag -notmatch '^v') { $tag = 'v' + $Version }
+$tag = Get-DeskReleaseTag -Version $Version -Prefix $repo.release_tag_prefix
 
 $coreLuac = Join-Path $MoonloaderRoot 'dist\report_desk\AdminDeskCore.luac'
 $coreLua = Join-Path $MoonloaderRoot 'dist\report_desk\AdminDeskCore.lua'

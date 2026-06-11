@@ -24,8 +24,7 @@ if ($Changelog -ne '') {
 $repo = Get-Content (Join-Path $MoonloaderRoot 'release\repo.config.json') -Raw | ConvertFrom-Json
 $owner = $repo.github_owner
 $repoName = $repo.github_repo
-$tag = $repo.release_tag_prefix + $Version
-if ($tag -notmatch '^v') { $tag = 'v' + $Version }
+$tag = Get-DeskReleaseTag -Version $Version -Prefix $repo.release_tag_prefix
 
 $distDir = Join-Path $MoonloaderRoot 'dist'
 $coreLuac = Join-Path $distDir 'report_desk\AdminDeskCore.luac'

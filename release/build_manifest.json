@@ -1,5 +1,5 @@
 {
-    "tag":  "v1 Beta",
+    "tag":  "v1-beta",
     "version":  "1 Beta",
     "built_at":  "2026-06-11T18:16:04.4960129+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",

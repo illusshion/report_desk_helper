@@ -91,6 +91,51 @@ function Invoke-DeskLuajitCompile([string]$LuajitExe, [string]$Src, [string]$Dst
     }
 }
 
+function Test-DeskBundleAppChunks {
+    param(
+        [Parameter(Mandatory = $true)][string]$LibDir,
+        [Parameter(Mandatory = $true)][string]$LuajitExe,
+        [hashtable]$ChunkGroups
+    )
+    if (-not (Test-Path $LuajitExe)) {
+        throw "LuaJIT not found for chunk verify: $LuajitExe"
+    }
+    $luajitDir = Split-Path $LuajitExe -Parent
+    $utf8 = Get-DeskUtf8NoBom
+    Push-Location $luajitDir
+    try {
+        foreach ($entry in $ChunkGroups.GetEnumerator()) {
+            $label = $entry.Key
+            $files = $entry.Value
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($rel in $files) {
+                $path = Join-Path $LibDir $rel
+                if (-not (Test-Path $path)) {
+                    throw "Bundle chunk verify missing: $path"
+                }
+                [void]$sb.AppendLine([System.IO.File]::ReadAllText($path, $utf8))
+                [void]$sb.AppendLine()
+            }
+            $tmpLua = Join-Path $env:TEMP ("desk_chunk_verify_" + $label + '_' + [guid]::NewGuid().ToString('N') + '.lua')
+            $tmpLuac = $tmpLua + 'c'
+            try {
+                [System.IO.File]::WriteAllText($tmpLua, $sb.ToString(), $utf8)
+                & $LuajitExe -bg $tmpLua $tmpLuac 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpLuac)) {
+                    throw "Bundle chunk $label exceeds Lua 5.1 limits or has syntax errors (LuaJIT compile failed)"
+                }
+                Test-DeskLuacLoadable $LuajitExe $tmpLuac | Out-Null
+                Write-Host "Chunk verify OK: $label ($($files.Count) files)"
+            } finally {
+                if (Test-Path $tmpLua) { Remove-Item $tmpLua -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $tmpLuac) { Remove-Item $tmpLuac -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Resolve-DeskPreviewAssetsRoot([string]$MoonloaderRoot, [string]$SubDir) {
     $primary = Join-Path $MoonloaderRoot $SubDir
     $nested = Join-Path $MoonloaderRoot ('res\' + ($SubDir -replace '^res\\', ''))
@@ -190,6 +235,21 @@ function Build-DeskAssetsZip {
     Remove-Item $stage -Recurse -Force
     Write-Host "Assets zip: $OutPath (skins=$skinN veh=$vehN)"
     return @{ skins = $skinN; vehicles = $vehN; bytes = (Get-Item $OutPath).Length }
+}
+
+function Get-DeskReleaseTag {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [string]$Prefix = 'v'
+    )
+    $body = [string]$Version
+    $body = $body.Trim() -replace '\s+', '-'
+    $body = $body.ToLowerInvariant()
+    if ($body -match '^v') {
+        return $body
+    }
+    $pref = if ($Prefix) { $Prefix } else { 'v' }
+    return $pref + $body
 }
 
 function Set-DeskStubVersion([string]$Path, [string]$Version) {
