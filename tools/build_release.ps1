@@ -242,22 +242,8 @@ $assetsZipPath = Join-Path $distDir 'report_desk_assets.zip'
 Build-DeskAssetsZip -MoonloaderRoot $MoonloaderRoot -OutPath $assetsZipPath | Out-Null
 
 $mimguiZipPath = Join-Path $distDir 'mimgui-v1.7.1.zip'
-$mimguiStage = Join-Path $distDir '_mimgui_stage'
-if (Test-Path $mimguiStage) { Remove-Item $mimguiStage -Recurse -Force }
-New-Item -ItemType Directory -Path $mimguiStage -Force | Out-Null
-$mimguiSrcZip = Join-Path $mimguiStage 'upstream.zip'
-$mimguiUrl = 'https://github.com/THE-FYP/mimgui/releases/download/v1.7.1/mimgui-v1.7.1.zip'
-Write-Host "Downloading mimgui repack source..."
-Invoke-WebRequest -Uri $mimguiUrl -OutFile $mimguiSrcZip -UseBasicParsing
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$extractTmp = Join-Path $mimguiStage 'extract'
-New-Item -ItemType Directory -Path $extractTmp -Force | Out-Null
-[System.IO.Compression.ZipFile]::ExtractToDirectory($mimguiSrcZip, $extractTmp)
-if (-not (Test-Path (Join-Path $extractTmp 'mimgui'))) {
-    Write-Error 'mimgui upstream zip missing mimgui/ folder'
-}
-Write-DeskStoreZip -SourceDir $extractTmp -OutPath $mimguiZipPath
-Remove-Item $mimguiStage -Recurse -Force
+Write-Host 'Packing mimgui from lib/mimgui (repo fork with deskPassesGameKey patch)...'
+Build-DeskMimguiReleaseZip -MoonloaderRoot $MoonloaderRoot -OutPath $mimguiZipPath
 Write-Host "mimgui store zip: $mimguiZipPath"
 
 $versionObj = Build-DeskVersionJson -MoonloaderRoot $MoonloaderRoot -Version $Version -Tag $tag `

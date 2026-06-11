@@ -287,6 +287,70 @@ function Test-DeskZipHasEntry([string]$ZipPath, [string]$EntryName) {
     }
 }
 
+function Get-DeskZipEntryText([string]$ZipPath, [string]$EntryName) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipFull = (Resolve-Path $ZipPath).Path
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipFull)
+    try {
+        $normalized = $EntryName -replace '/', '\'
+        $entry = $zip.Entries | Where-Object { ($_.FullName -replace '/', '\') -eq $normalized } | Select-Object -First 1
+        if (-not $entry) {
+            throw "Zip entry not found: $EntryName in $ZipPath"
+        }
+        $stream = $entry.Open()
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, (Get-DeskUtf8NoBom))
+            return $reader.ReadToEnd()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Test-DeskMimguiInitHasGameKeyPass([string]$InitPath) {
+    if (-not (Test-Path $InitPath)) {
+        throw "mimgui init not found: $InitPath"
+    }
+    $text = [System.IO.File]::ReadAllText($InitPath, (Get-DeskUtf8NoBom))
+    if ($text -notmatch 'deskPassesGameKey') {
+        throw 'mimgui init.lua missing Report Desk patch (deskPassesGameKey). Ship lib/mimgui from this repo, not upstream THE-FYP zip.'
+    }
+    return $true
+}
+
+function Build-DeskMimguiReleaseZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$MoonloaderRoot,
+        [Parameter(Mandatory = $true)][string]$OutPath
+    )
+    $src = Join-Path $MoonloaderRoot 'lib\mimgui'
+    if (-not (Test-Path $src)) {
+        throw "Build mimgui zip: missing $src"
+    }
+    Test-DeskMimguiInitHasGameKeyPass (Join-Path $src 'init.lua') | Out-Null
+    $parent = Split-Path $OutPath -Parent
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    if (Test-Path $OutPath) { Remove-Item $OutPath -Force }
+    $stage = Join-Path $env:TEMP ("desk_mimgui_zip_" + [guid]::NewGuid().ToString('N'))
+    try {
+        Copy-Item $src (Join-Path $stage 'mimgui') -Recurse -Force
+        Write-DeskStoreZip -SourceDir $stage -OutPath $OutPath
+        if (-not (Test-Path $OutPath)) {
+            throw "Build mimgui zip failed: $OutPath"
+        }
+        $zipInit = Get-DeskZipEntryText $OutPath 'mimgui/init.lua'
+        if ($zipInit -notmatch 'deskPassesGameKey') {
+            throw 'Built mimgui zip missing deskPassesGameKey patch in mimgui/init.lua'
+        }
+    } finally {
+        if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Get-DeskZipEntrySha256([string]$ZipPath, [string]$EntryName) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipFull = (Resolve-Path $ZipPath).Path
@@ -495,6 +559,18 @@ function Test-DeskReleaseArtifacts {
         if (-not (Test-DeskZipHasEntry $zipPath $entry)) {
             throw "Release verify failed: zip missing entry $entry"
         }
+    }
+    Test-DeskMimguiInitHasGameKeyPass (Join-Path $MoonloaderRoot 'lib\mimgui\init.lua') | Out-Null
+    $mainZipMimguiInit = Get-DeskZipEntryText $zipPath 'lib/mimgui/init.lua'
+    if ($mainZipMimguiInit -notmatch 'deskPassesGameKey') {
+        throw 'Release verify failed: report_desk_helper_main.zip has vanilla mimgui (no deskPassesGameKey)'
+    }
+    if (-not (Test-DeskZipHasEntry $mimguiZipPath 'mimgui/init.lua')) {
+        throw 'Release verify failed: mimgui-v1.7.1.zip missing mimgui/init.lua'
+    }
+    $depMimguiInit = Get-DeskZipEntryText $mimguiZipPath 'mimgui/init.lua'
+    if ($depMimguiInit -notmatch 'deskPassesGameKey') {
+        throw 'Release verify failed: mimgui-v1.7.1.zip has vanilla upstream mimgui (no deskPassesGameKey)'
     }
 
     $coreText = [System.IO.File]::ReadAllText($repoCore, (Get-DeskUtf8NoBom))

@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1
+
+**Hotfix после 1 Beta.**
+
+- mimgui: в релизный zip попадает patched `lib/mimgui` с `deskPassesGameKey` (F8/F12/PrtSc в игре).
+- Автовыдача: убран лишний `/ans`, одна команда наказания, прямой `sendChat` без очереди `/sp`.
+- Bootstrap: `pcall` вокруг загрузки ядра — ошибка core не роняет весь скрипт.
+
 ## 1 Beta
 
 **Первый публичный релиз Admin Report Desk.**

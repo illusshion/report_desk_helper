@@ -321,6 +321,19 @@ foreach ($rel in $allBundleInputs) {
 }
 Write-Host "Bundle inputs OK ($($allBundleInputs.Count) files)"
 
+$luajitVerify = Resolve-DeskLuajit $MoonloaderRoot $PSScriptRoot
+if ($luajitVerify) {
+    $chunkGroups = @{
+        report_desk_app_core_a  = $appChunksCoreA
+        report_desk_app_core_b  = $appChunksCoreB
+        report_desk_app_core_b2 = $appChunksCoreB2
+        report_desk_app_core_c  = $appChunksCoreC
+    }
+    Test-DeskBundleAppChunks -LibDir $libDir -LuajitExe $luajitVerify -ChunkGroups $chunkGroups
+} else {
+    Write-Warning 'LuaJIT missing — skipping per-chunk 200-local compile verify'
+}
+
 
 
 $distDir = Join-Path $MoonloaderRoot 'dist'

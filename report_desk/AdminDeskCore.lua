@@ -13768,7 +13768,6 @@ settings = {
     admin_punish_enabled = false,
     admin_punish_confirm_key = vkeys.VK_DELETE,
     admin_punish_cancel_key = vkeys.VK_END,
-    admin_punish_send_ans = false,
     admin_punish_sign_cmd = true,
     exact_time_enabled = true,
     exact_time_daily_norm_h = 4,
@@ -14135,7 +14134,6 @@ local uiProfanityFilter = new.bool(true)
 local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
 local uiAdminPunishEnabled = new.bool(false)
-local uiAdminPunishSendAns = new.bool(false)
 local uiAdminPunishSignCmd = new.bool(true)
 editRuleMatch = new.int(1)
 editRulePriority = new.int(0)
@@ -22516,7 +22514,6 @@ getfenv(1).uiProfanityFilter = uiProfanityFilter
 getfenv(1).uiRemoteChatSamp = uiRemoteChatSamp
 getfenv(1).uiProfanitySound = uiProfanitySound
 getfenv(1).uiAdminPunishEnabled = uiAdminPunishEnabled
-getfenv(1).uiAdminPunishSendAns = uiAdminPunishSendAns
 getfenv(1).uiAdminPunishSignCmd = uiAdminPunishSignCmd
 getfenv(1).ruleKwBulk = ruleKwBulk
 getfenv(1).ruleTestBuf = ruleTestBuf
@@ -22595,6 +22592,7 @@ local AP_HINT_GAP = 20
 
 local apState = {
     pending = nil,
+    executing = false,
     bindField = nil,
     bindCapture = false,
     handled = {},
@@ -22607,7 +22605,7 @@ local AP_LINE_REJECT_SEC = 50
 local AP_POLL_RECENT = 40
 local AP_POLL_LINES_HOOK = 10
 local AP_POLL_LINES_FALLBACK = 24
-local AP_POLL_INTERVAL_HOOK = 0.85
+local AP_POLL_INTERVAL_HOOK = 0.35
 local AP_POLL_INTERVAL_FALLBACK = 0.22
 local AP_POLL_INTERVAL_PENDING = 0.12
 local AP_OFFLINE_CANCEL_SEC = 2.0
@@ -22641,7 +22639,6 @@ end
 function ensureAdminPunishSettings()
     if type(settings) ~= 'table' then return end
     if settings.admin_punish_enabled == nil then settings.admin_punish_enabled = false end
-    if settings.admin_punish_send_ans == nil then settings.admin_punish_send_ans = false end
     if settings.admin_punish_sign_cmd == nil then settings.admin_punish_sign_cmd = true end
     local ck = tonumber(settings.admin_punish_confirm_key)
     if not ck or ck <= 0 then settings.admin_punish_confirm_key = vkeys.VK_DELETE end
@@ -22952,6 +22949,10 @@ local function apNotifyPending(p)
 end
 
 local function apClearPending(reason)
+    if apState.executing then
+        if not reason then return end
+        apState.executing = false
+    end
     local p = apState.pending
     if p then
         apSealPending(p)
@@ -23523,21 +23524,47 @@ local function apInputsBlocked()
     return false
 end
 
-local function apSendOutboundCmd(line)
+-- Наказание всегда через sendChat: очередь /sp (0.55 с) задерживает kick и проигрывает гонку админов.
+local function apSendPunishChat(line)
     line = trim(tostring(line or ''))
     if line == '' then return false end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
-    local chatBusy = (sampIsChatInputActive and sampIsChatInputActive())
-        or (type(deskSampDialogActive) == 'function' and deskSampDialogActive())
-    if (type(deskDeskOrAnsUiOpen) == 'function' and deskDeskOrAnsUiOpen()) or chatBusy then
-        if type(sendMenuOutbound) == 'function' then
-            return sendMenuOutbound(line, { skipPendingMark = true }) == true
-        end
-    end
     return sendChat(line) == true
 end
 
+local function apFinishExecuteSuccess(p)
+    say('\xCA\xEE\xEC\xE0\xED\xE4\xE0 \xE2\xFB\xEF\xEE\xEB\xED\xE5\xED\xE0.')
+    apSealPending(p)
+    apState.pending = nil
+    apState.pendingOfflineSince = nil
+    apState.executing = false
+end
+
+local function apFinishExecuteFail()
+    apState.executing = false
+    say('{EE0000}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xEA\xEE\xEC\xE0\xED\xE4\xF3.')
+end
+
+local function apRunOutboundSequence(p, outbound)
+    if not apState.executing then return end
+
+    if type(deskCache) == 'table' then
+        deskCache.skipPunishStatsHook = (tonumber(deskCache.skipPunishStatsHook) or 0) + 1
+    end
+    local sentPunish = apSendPunishChat(outbound)
+    if type(deskCache) == 'table' then
+        local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
+        deskCache.skipPunishStatsHook = n > 0 and n or nil
+    end
+    if not sentPunish then
+        apFinishExecuteFail()
+        return
+    end
+    apFinishExecuteSuccess(p)
+end
+
 local function apExecutePending()
+    if apState.executing then return end
     local p = apState.pending
     if not p then return end
     local ok, _, errMsg = apCanExecutePending(p)
@@ -23546,14 +23573,8 @@ local function apExecutePending()
         return
     end
     local cmd = p.command
-
-    if settings.admin_punish_send_ans and p.playerId and p.playerId >= 0 then
-        apSendOutboundCmd(string.format(
-            '/ans %d \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xE2\xFB\xE4\xE0\xED\xEE \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xE0 %s.',
-            p.playerId, p.admName or ''))
-    end
-
     local outbound = apOutboundCmd(cmd, p.admName)
+
     apRecordPunishLog({
         ts = os.time(),
         kind = apPunishKindFromCommand(cmd),
@@ -23567,27 +23588,22 @@ local function apExecutePending()
         reqAdminId = tonumber(p.admId),
         src = 'auto',
     })
-    if type(deskCache) == 'table' then
-        deskCache.skipPunishStatsHook = (tonumber(deskCache.skipPunishStatsHook) or 0) + 1
-    end
-    local sent = apSendOutboundCmd(outbound)
-    if type(deskCache) == 'table' then
-        local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
-        deskCache.skipPunishStatsHook = n > 0 and n or nil
-    end
-    if not sent then
-        say('{EE0000}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xEA\xEE\xEC\xE0\xED\xE4\xF3.')
+
+    apState.executing = true
+
+    if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
+        lua_thread.create(function()
+            apRunOutboundSequence(p, outbound)
+        end)
         return
     end
 
-    say('\xCA\xEE\xEC\xE0\xED\xE4\xE0 \xE2\xFB\xEF\xEE\xEB\xED\xE5\xED\xE0.')
-    apSealPending(p)
-    apState.pending = nil
-    apState.pendingOfflineSince = nil
+    apRunOutboundSequence(p, outbound)
 end
 
 -- Admin Punish Confirm
 function adminPunishConfirm()
+    if apState.executing then return end
     apExecutePending()
 end
 
@@ -23712,6 +23728,7 @@ end
 function adminPunishTick()
     local p = apState.pending
     if not p then return end
+    if apState.executing then return end
 
     apRefreshPendingNick(p)
 
@@ -23865,7 +23882,6 @@ end
 function syncAdminPunishUiFromSettings()
     ensureAdminPunishSettings()
     uiAdminPunishEnabled[0] = settings.admin_punish_enabled == true
-    uiAdminPunishSendAns[0] = settings.admin_punish_send_ans == true
     uiAdminPunishSignCmd[0] = settings.admin_punish_sign_cmd ~= false
 end
 
@@ -24113,11 +24129,6 @@ function drawAdminPunishTab()
         markDirtySettings()
     end, 'ap_sign') then end
     drawSettingsHint('\xAB\xEF\xF0\xE8\xF7\xE8\xED\xE0\x20\x2F\x20\x62\x79\x20\x41\x64\x6D\x69\x6E\xBB')
-    if deskFormCheckboxRow('\xD1\xED\xE0\xF7\xE0\xEB\xE0 \xF1\xEE\xEE\xE1\xF9\xE8\xF2\xFC \xE8\xE3\xF0\xEE\xEA\xF3 \xE2\x20\x2F\x61\x6E\x73', uiAdminPunishSendAns, function(v)
-        settings.admin_punish_send_ans = v
-        markDirtySettings()
-    end, 'ap_ans') then end
-    drawSettingsHint('\xAB\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5\x20\xE2\xFB\xE4\xE0\xED\xEE\x20\xEF\xEE\x20\xEF\xF0\xEE\xF1\xFC\xE1\xE5\x20\x2E\x2E\x2E\xBB')
     deskFormPanelEnd()
 
     deskFormPanelBegin('##ap_keys')
@@ -25180,7 +25191,6 @@ function saveConfig()
     f:write(string.format('    admin_punish_enabled = %s,\n', settings.admin_punish_enabled == true and 'true' or 'false'))
     f:write(string.format('    admin_punish_confirm_key = %d,\n', tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE))
     f:write(string.format('    admin_punish_cancel_key = %d,\n', tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END))
-    f:write(string.format('    admin_punish_send_ans = %s,\n', settings.admin_punish_send_ans == true and 'true' or 'false'))
     f:write(string.format('    admin_punish_sign_cmd = %s,\n', settings.admin_punish_sign_cmd ~= false and 'true' or 'false'))
     f:write(string.format('    exact_time_enabled = %s,\n', settings.exact_time_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    exact_time_daily_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)))
