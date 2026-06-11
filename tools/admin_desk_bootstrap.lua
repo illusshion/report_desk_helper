@@ -4,8 +4,8 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1.1.1')
-script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
+script_version('1 Beta')
+script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
 
@@ -126,10 +126,18 @@ local function updaterInstalled()
     return doesFileExist(libPath('report_desk_autoupdate.lua'))
 end
 
+local FIRST_RUN_INTRO = '\xD6\xF2\xEE \xE2\xE0\xF8 \xEF\xE5\xF0\xE2\xFB\xE9 \xE7\xE0\xEF\xF3\xF1\xEA. \xCF\xF0\xEE\xE2\xE5\xF0\xFE \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF \xE8 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xFE \xE2\xF1\xB8 \xED\xF3\xE6\xED\xEE\xE5. \xC2\xEE\xE7\xEC\xEE\xE6\xED\xE0 \xEF\xF0\xEE\xF1\xE0\xE4\xEA\xE0 FPS \xED\xE0 \xEF\xE0\xF0\xF3 \xF1\xE5\xEA\xF3\xED\xE4 \xB7 \xFD\xF2\xEE \xED\xEE\xF0\xEC\xE0\xEB\xFC\xED\xEE.'
+local FIRST_RUN_FAIL = '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF3\xF1\xF2\xE0\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xF0\xEE\xE2\xE5\xF0\xFC\xF2\xE5 \xE8\xED\xF2\xE5\xF0\xED\xE5\xF2 \xE8 \xEF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair'
+local FIRST_RUN_READY = '\xC3\xEE\xF2\xEE\xE2\xEE! \xCE\xF2\xEA\xF0\xEE\xE9\xF2\xE5 \xEE\xEA\xED\xEE \xEA\xEE\xEC\xE0\xED\xE4\xEE\xE9 /adesk'
+
+local function bootstrapLog(text)
+    print('[Report Desk] ' .. tostring(text or ''))
+end
+
 local function bootstrapSay(text)
     text = tostring(text or '')
     if text == '' then return end
-    print('[Report Desk] ' .. text)
+    bootstrapLog(text)
     if isSampAvailable and isSampAvailable() and sampAddChatMessage then
         pcall(sampAddChatMessage, '{9E7BEF}[Report Desk] {FFFFFF}' .. text, 0xE8E8E8)
     end
@@ -209,20 +217,21 @@ local function bootstrapSeedUpdater()
     if updaterInstalled() then
         return true
     end
-    bootstrapSay('\xCF\xE5\xF0\xE2\xFB\xE9 \xE7\xE0\xEF\xF3\xF1\xEA, \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEC\xEE\xE4\xF3\xEB\xE5\xE9...')
-    print('[Report Desk] first run — seeding updater modules')
+    bootstrapLog('first run — seeding updater modules')
     local root = getWorkingDirectory()
     local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
     ensureDirFor(tmpJson)
     ensureDirFor(libPath('report_desk_autoupdate.lua'))
     local ok, err = downloadWait(MANIFEST_URL, tmpJson, 32, 45)
     if not ok then
-        bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 manifest: ' .. tostring(err))
+        bootstrapLog('manifest download failed: ' .. tostring(err))
+        bootstrapSay(FIRST_RUN_FAIL)
         return false
     end
     local f = io.open(tmpJson, 'r')
     if not f then
-        bootstrapSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xF7\xF2\xE5\xED\xE8\xFF manifest')
+        bootstrapLog('manifest read failed')
+        bootstrapSay(FIRST_RUN_FAIL)
         return false
     end
     local raw = f:read('*a') or ''
@@ -232,23 +241,24 @@ local function bootstrapSeedUpdater()
         if not doesFileExist(dest) then
             local url = manifestAssetUrl(raw, asset)
             if not url then
-                bootstrapSay('\xED\xE5\xF2 URL: ' .. asset)
+                bootstrapLog('missing url for ' .. asset)
+                bootstrapSay(FIRST_RUN_FAIL)
                 return false
             end
             ok, err = downloadWait(url, dest, 256, 180)
             if not ok then
-                bootstrapSay('\xEE\xF8\xE8\xE1\xEA\xE0 ' .. asset .. ': ' .. tostring(err))
+                bootstrapLog('seed failed ' .. asset .. ': ' .. tostring(err))
+                bootstrapSay(FIRST_RUN_FAIL)
                 return false
             end
-            print('[Report Desk] seeded ' .. asset)
+            bootstrapLog('seeded ' .. asset)
         end
     end
     wait(50)
     if not updaterInstalled() then
-        bootstrapSay('\xEC\xEE\xE4\xF3\xEB\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
+        bootstrapSay(FIRST_RUN_FAIL)
         return false
     end
-    bootstrapSay('\xEC\xEE\xE4\xF3\xEB\xE8 OK, \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0...')
     return true
 end
 
@@ -305,9 +315,9 @@ local function registerUpdateCommands(autoupdate, chatSay)
         local willReload, status = autoupdate.repair()
         if willReload then
             clearDeskModuleCache()
-            local pipelineOk, updated = runInstallPipeline()
+            local pipelineOk, updated, firstInstall = runInstallPipeline()
             if pipelineOk then
-                loadAndRunCore(updated)
+                loadAndRunCore(updated, firstInstall)
             end
             return
         end
@@ -341,8 +351,7 @@ local function purgeBrokenLauncherPending()
 end
 
 local function bootstrapReload(reason)
-    print('[Report Desk] reload: ' .. tostring(reason))
-    bootstrapSay('\xCF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xF1\xEA\xF0\xE8\xEF\xF2\xE0 (~2 \xF1\xE5\xEA)...')
+    bootstrapLog('reload: ' .. tostring(reason))
     wait(2000)
     if thisScript and thisScript().reload then
         thisScript():reload()
@@ -351,35 +360,65 @@ local function bootstrapReload(reason)
     return false
 end
 
-local function loadAndRunCore(skipWelcome)
+local function loadAndRunCore(sessionUpdated, firstInstall)
     local autoupdate = requireAutoupdate()
     local fn, loadErr = loadCore()
     if not fn then
-        bootstrapSay(tostring(loadErr))
+        bootstrapLog(tostring(loadErr))
+        bootstrapSay(FIRST_RUN_FAIL)
         if autoupdate and autoupdate.repair then
             bootstrapReload('core load fail')
         end
         return false
     end
 
-    if not skipWelcome and autoupdate and autoupdate.showWelcomeMessage then
-        autoupdate.showWelcomeMessage(nil)
+    if autoupdate and autoupdate.showWelcomeMessage then
+        autoupdate.showWelcomeMessage(nil, {
+            firstInstall = firstInstall,
+            skipWelcome = sessionUpdated,
+        })
     end
 
-    fn()
-    main()
+    local initOk, initErr = pcall(fn)
+    if not initOk then
+        bootstrapLog('core init: ' .. tostring(initErr))
+        bootstrapSay(FIRST_RUN_FAIL)
+        if autoupdate and autoupdate.repair then
+            bootstrapReload('core init fail')
+        end
+        return false
+    end
+
+    if type(main) ~= 'function' then
+        bootstrapLog('core main missing after init')
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false
+    end
+
+    local mainOk, mainErr = pcall(main)
+    if not mainOk then
+        bootstrapLog('core main: ' .. tostring(mainErr))
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false
+    end
     return true
 end
 
 local function runInstallPipeline()
+    local firstInstall = not corePresent()
+    if firstInstall then
+        bootstrapSay(FIRST_RUN_INTRO)
+    end
+
     if not bootstrapSeedUpdater() then
-        return false, false
+        return false, false, firstInstall
     end
 
     local autoupdate, autoupdateErr = requireAutoupdate()
     if not autoupdate then
-        bootstrapSay(tostring(autoupdateErr or 'autoupdate missing'))
-        return false, false
+        bootstrapLog(tostring(autoupdateErr or 'autoupdate missing'))
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
 
     local chatSay = autoupdate.chatSay
@@ -389,22 +428,21 @@ local function runInstallPipeline()
         quietChat = true,
         userFacing = true,
         showOverlay = true,
+        firstInstall = firstInstall,
+        minimalOverlay = true,
     }
 
     local manifest, manifestErr = autoupdate.fetchRemoteManifest()
     if not manifest then
         if corePresent() then
-            print('[Report Desk] offline, using local core')
-            return true, false
+            bootstrapLog('offline, using local core')
+            return true, false, firstInstall
         end
-        bootstrapSay('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xEE')
-        return false, false
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
 
-    if autoupdate.showUpdateOverlay then
-        pcall(autoupdate.showUpdateOverlay, nil, nil, userOpts)
-    end
-    print('[Report Desk] checking for updates...')
+    bootstrapLog('checking for updates...')
     local willReload, syncStatus = autoupdate.sync(manifest, {
         mode = 'full',
         includeCore = true,
@@ -412,10 +450,12 @@ local function runInstallPipeline()
         quietChat = true,
         userFacing = true,
         showOverlay = true,
+        firstInstall = firstInstall,
+        minimalOverlay = true,
     })
     local sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending'
     if syncStatus == 'fail' then
-        return false, false
+        return false, false, firstInstall
     end
     if willReload then
         print('[Report Desk] update applied, loading core in same session')
@@ -428,42 +468,54 @@ local function runInstallPipeline()
     clearDeskModuleCache()
     autoupdate = requireAutoupdate()
     if not autoupdate then
-        bootstrapSay('autoupdate lost after sync')
-        return false, false
+        bootstrapLog('autoupdate lost after sync')
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
     chatSay = autoupdate.chatSay
     registerUpdateCommands(autoupdate, chatSay)
 
     local deps = requireDeps()
     if not deps then
-        bootstrapSay('deps module missing')
-        return false, false
+        bootstrapLog('deps module missing')
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
     local depsOk = select(1, deps.ensureAll({
         manifest = manifest,
         quietChat = true,
         userFacing = true,
         showOverlay = true,
+        firstInstall = firstInstall,
+        minimalOverlay = true,
     }))
     if not depsOk then
-        bootstrapSay('\xE7\xE0\xE2\xE8\xF1\xE8\xEC\xEE\xF1\xF2\xE8 \xED\xE5 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xFB')
-        return false, false
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
 
     if not corePresent() then
-        bootstrapSay('\xFF\xE4\xF0\xEE \xED\xE5 \xED\xE0\xE9\xE4\xE5\xED\xEE (/deskrepair)')
-        return false, false
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
     end
 
     if autoupdate.hideUpdateOverlay then
         pcall(autoupdate.hideUpdateOverlay)
     end
 
-    if autoupdate.needsAssets and autoupdate.needsAssets(manifest) and autoupdate.deferAssets then
+    if autoupdate.reconcileAssetsState then
+        pcall(autoupdate.reconcileAssetsState, manifest)
+    end
+
+    if firstInstall and not sessionUpdated then
+        bootstrapSay(FIRST_RUN_READY)
+    end
+
+    if autoupdate.deferAssets then
         autoupdate.deferAssets(manifest, userOpts)
     end
 
-    return true, sessionUpdated
+    return true, sessionUpdated, firstInstall
 end
 
 function main()
@@ -485,15 +537,15 @@ function main()
     pcall(applyPendingBootstrap)
 
     local ok, err = pcall(function()
-        local pipelineOk, sessionUpdated = runInstallPipeline()
+        local pipelineOk, sessionUpdated, firstInstall = runInstallPipeline()
         if not pipelineOk then
             return
         end
-        loadAndRunCore(sessionUpdated)
+        loadAndRunCore(sessionUpdated, firstInstall)
     end)
 
     if not ok then
-        bootstrapSay('bootstrap error: ' .. tostring(err))
-        print('[Report Desk] bootstrap error: ' .. tostring(err))
+        bootstrapLog('bootstrap error: ' .. tostring(err))
+        bootstrapSay(FIRST_RUN_FAIL)
     end
 end

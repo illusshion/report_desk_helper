@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta
+
+**Первый публичный релиз Admin Report Desk.**
+
+- Установка: положить `AdminDesk.luac` в moonloader — скрипт сам скачает ядро, библиотеки и превью.
+- Команда `/adesk` (алиас `/reportdesk`), `/deskupdate`, `/deskrepair`.
+- Автообновление по SHA256, защита от падения при ошибке ядра, bundle из 4 chunk-групп (лимит 200 local).
+- Первый запуск и обновления — дружелюбные сообщения в чат, минимальный прогресс-бар.
+
 ## 1.1.1
 
 **Hotfix: загрузка AdminDeskCore на MoonLoader (лимит 200 local variables).**

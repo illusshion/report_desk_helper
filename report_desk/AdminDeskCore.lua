@@ -1801,8 +1801,10 @@ function M.drawHudKvRow(label, value, valueCol, labelW, uiTextFn)
     label = label or ''
     value = tostring(value or '')
     if value == '' then return end
-    imgui.TextColored(M.labelCol(), uiTextFn(label))
-    imgui.SameLine(labelW)
+    if label ~= '' then
+        imgui.TextColored(M.labelCol(), uiTextFn(label))
+        imgui.SameLine(labelW)
+    end
     imgui.TextColored(valueCol, uiTextFn(value))
 end
 
@@ -4260,6 +4262,12 @@ end
 function M.markAwaitingSpectate(on)
     session.awaitingSpectate = on and true or false
     invalidateSuppressCache()
+    if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
+end
+
+-- Нужны ли TD-хуки: /sp (pending или цель) или кастомный спидометр в машине.
+function M.tdHooksNeeded()
+    return vehicleHudPipelineActive()
 end
 
 -- Custom Vehicle Hud Enabled — ingest/block server TD спидометра.
@@ -4418,6 +4426,62 @@ function M.ensureTextDrawHooks(sampev)
     M.installTextDrawHooks(sampev)
 end
 
+-- Снять только TD-хуки (spectate player/vehicle hooks не трогаем).
+function M.uninstallTextDrawHooks(sampev)
+    if not sampev then return end
+    if showTdHook and sampev.onShowTextDraw == showTdHook then
+        sampev.onShowTextDraw = hookPrevShowTd
+    end
+    if setStrHook and sampev.onTextDrawSetString == setStrHook then
+        sampev.onTextDrawSetString = hookPrevSetStr
+    end
+    showTdHook = nil
+    setStrHook = nil
+    hookPrevShowTd = nil
+    hookPrevSetStr = nil
+end
+
+-- Поставить TD-хуки если нужны, снять если нет.
+function M.syncTextDrawHooks(sampev)
+    if not sampev then
+        sampev = package.loaded['lib.samp.events']
+    end
+    if not sampev then return end
+    if M.tdHooksNeeded() then
+        M.installTextDrawHooks(sampev)
+    elseif M.areTextDrawHooksActive(sampev) then
+        M.uninstallTextDrawHooks(sampev)
+    end
+end
+
+local lastTdLifecycleAt = -1
+local TD_LIFECYCLE_INTERVAL = 0.35
+
+-- В /sp — мгновенно чинит пропавшие хуки; вне /sp — редкий poll для посадки в машину.
+function M.tickTdHooksLifecycle(sampev)
+    if not sampev then
+        sampev = package.loaded['lib.samp.events']
+    end
+    if not sampev then return end
+    local spPath = session.awaitingSpectate == true or session.spectating == true or session.active == true
+    if spPath then
+        if M.areTextDrawHooksActive(sampev) then return end
+        M.installTextDrawHooks(sampev)
+        return
+    end
+    local now = os.clock()
+    if now - lastTdLifecycleAt < TD_LIFECYCLE_INTERVAL then return end
+    lastTdLifecycleAt = now
+    local needed = M.tdHooksNeeded()
+    local active = M.areTextDrawHooksActive(sampev)
+    if needed == active then return end
+    if needed then
+        M.installTextDrawHooks(sampev)
+    else
+        M.uninstallTextDrawHooks(sampev)
+    end
+end
+
 -- Публичный API модуля.
 function M.isSpectatingMode()
     return playerSpectatingNow() or M.isActive()
@@ -4428,6 +4492,9 @@ function M.setSpectating(on)
     on = on and true or false
     session.spectating = on
     if on then
+        if M.getTargetId() < 0 and session.awaitingSpectate ~= true then
+            M.markAwaitingSpectate(true)
+        end
         if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
         if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
     else
@@ -4435,6 +4502,7 @@ function M.setSpectating(on)
         clearMenuColumnState()
         pcall(vehicleHud.reset)
         if cbResetMenuState then pcall(cbResetMenuState) end
+        if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
     end
 end
 
@@ -4581,6 +4649,7 @@ function M.endSession()
     pcall(vehicleHud.reset)
     if cbResetMenuSelection then pcall(cbResetMenuSelection) end
     if cbOnEnd then pcall(cbOnEnd) end
+    if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
 end
 
 -- Outbound Base
@@ -4709,16 +4778,7 @@ function M.uninstallSampevHooks(sampev)
     end
     playerHandler = nil
     hookPrevPlayer = nil
-    if showTdHook and sampev.onShowTextDraw == showTdHook then
-        sampev.onShowTextDraw = hookPrevShowTd
-    end
-    if setStrHook and sampev.onTextDrawSetString == setStrHook then
-        sampev.onTextDrawSetString = hookPrevSetStr
-    end
-    showTdHook = nil
-    setStrHook = nil
-    hookPrevShowTd = nil
-    hookPrevSetStr = nil
+    M.uninstallTextDrawHooks(sampev)
     if vehicleHandler and sampev.onSpectateVehicle == vehicleHandler then
         sampev.onSpectateVehicle = hookPrevVehicle
     end
@@ -5820,11 +5880,16 @@ function M.drawMenu(settings)
     if ok then pcall(menu.flushPendingAction) end
 end
 
--- Ensure Td Hooks
-local function ensureTdHooks()
+-- Sync Td Hooks — install only when /sp or vehicle HUD needs them.
+local function syncTdHooks()
     if deps.sampev then
-        pcall(session.ensureTextDrawHooks, deps.sampev)
+        pcall(session.syncTextDrawHooks, deps.sampev)
     end
+end
+
+-- Ensure Td Hooks (legacy name: sync, never blind install).
+local function ensureTdHooks()
+    syncTdHooks()
 end
 
 -- Ensure Spectate Player Sampev Hook
@@ -5940,13 +6005,12 @@ function M.install(cfg)
                 pcall(session.installSampevHooks, deps.sampev)
                 reinstallSampevInputHooks()
             end
-            ensureTdHooks()
+            syncTdHooks()
         end,
         ensureTdHooks = ensureTdHooks,
         onBegin = deps.onSessionBegin,
         onEnd = deps.onSessionEnd,
     })
-    ensureTdHooks()
 end
 
 -- Публичный API модуля.
@@ -6047,7 +6111,7 @@ function M.installInputHooks(cfg)
         menuDepsWired = false
     end
     wireMenuDeps()
-    ensureTdHooks()
+    syncTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
     installWmHandler()
@@ -6056,10 +6120,15 @@ end
 -- Публичный API модуля.
 function M.ensureInputHooks()
     if not deps.sampev then return end
-    ensureTdHooks()
+    syncTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
     installWmHandler()
+end
+
+-- Публичный API модуля.
+function M.syncTdHooks()
+    syncTdHooks()
 end
 
 -- Публичный API модуля.
@@ -7530,7 +7599,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     end
     local s = settings
     if not s and getSettings then s = getSettings() end
-    if not (e and s and s.spectate_auto_st ~= false) or syncOpts.skipAutoSt then
+    if not (e and s and s.spectate_hud ~= false) or syncOpts.skipAutoSt then
         return
     end
     local mustForce = syncOpts.forceAutoSt == true or prevId ~= id
@@ -7571,6 +7640,9 @@ function M.markPendingSpCommand(id, nick)
         pcall(spRefresh.resetContext)
     end
     pcall(specSession.markAwaitingSpectate, true)
+    if spUi.syncTdHooks then
+        pcall(spUi.syncTdHooks)
+    end
     if spUi.ensureSpectateSampevHooks then
         local sampev = inputDeps and inputDeps.sampev
         local specSessionMod = package.loaded['report_desk_spectate_session']
@@ -7987,7 +8059,7 @@ end
 
 -- Публичный API модуля.
 function M.maybeAutoRequest(id, settings, force)
-    if not settings or settings.spectate_auto_st == false then return end
+    if not settings or settings.spectate_hud == false then return end
     id = tonumber(id) or state.targetId
     if not id or id < 0 then return end
     local now = os.clock()
@@ -7998,7 +8070,7 @@ end
 
 -- Публичный API модуля.
 function M.autoRequestIfEnabled(id, settings)
-    if not settings or settings.spectate_auto_st == false then return end
+    if not settings or settings.spectate_hud == false then return end
     M.requestStats(tonumber(id), {})
 end
 
@@ -13630,7 +13702,6 @@ BUILTIN_AUTO_RULE_GG = {
 settings = {
     hotkey = vkeys.VK_F7,
     sound = false,
-    auto_only_unread = false,
     watch_notify = 'see',
     watch_auto_notify = true,
     gg_reply = DEFAULT_GG_REPLY,
@@ -14037,33 +14108,17 @@ local deskCache = {
 }
 
 local uiSound = new.bool(false)
-local uiAutoOnlyUnread = new.bool(false)
 local deskReplyBuf = {
     watch = new.char[256](),
     time = new.char[512](),
     gg = new.char[512](),
     tech = new.char[512](),
 }
-selectedScenarioIdx = 1
-scenariosUiSynced = false
 composerQuickSelected = 1
 composerQuickUiSynced = false
 composerQuickEditorDirty = false
 local editCqLabel = new.char[48]()
 local editCqText = new.char[512]()
-scenariosEditorDirty = false
-local editScLabel = new.char[48]()
-local editScReply = new.char[512]()
-editScMatch = new.int(1)
-editScPriority = new.int(0)
-editScEnabled = new.bool(true)
-editScWatch = new.bool(false)
-editScSkipReportId = new.bool(true)
-local scKwNew = new.char[96]()
-scKwEdit = {}
-local scKwBulk = new.char[2048]()
-local scTestBuf = new.char[256]()
-local scTestResult = new.char[128]()
 local uiAutoRulesEnabled = new.bool(true)
 local uiAutoTimeEnabled = new.bool(true)
 local uiAutoGgEnabled = new.bool(true)
@@ -14114,7 +14169,6 @@ editRuleEnabled = new.bool(true)
 local ruleKwNew = new.char[96]()
 ruleKwEdit = {}
 selectedRuleIdx = 1
-rulesUiSynced = false
 settingsUiSynced = false
 deskWantsKeyboard = false
 
@@ -14432,6 +14486,15 @@ local MATCH_TYPO_WORDS = {
     ['прсмотреть'] = 'посмотреть',
     ['какиквесты'] = 'как квесты',
     ['ремкомлект'] = 'ремкомплект',
+    ['гд'] = 'где',
+    ['зделать'] = 'сделать',
+    ['екран'] = 'экран',
+    ['роботает'] = 'работает',
+    ['отел'] = 'отель',
+    ['устроится'] = 'устроиться',
+    ['трамвайчик'] = 'трамвай',
+    ['псэ'] = 'псе',
+    ['идёт'] = 'идет',
 }
 
 function normalizeMatchTextTypo(s)
@@ -15203,7 +15266,7 @@ INTENT_CONTEXT_THANKS = 'thanks'
 INTENT_CONTEXT_UNKNOWN = 'unknown'
 
 local DEFAULT_REPORT_MARKERS = {
-    'dm', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
+    'dm', 'дм', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
     'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
 }
 
@@ -15231,7 +15294,23 @@ function getIntentContextConfig()
         if type(c.report_markers) == 'table' then contextConfig.report_markers = c.report_markers end
         if type(c.faq_hints) == 'table' then contextConfig.faq_hints = c.faq_hints end
         if type(c.thanks_exact) == 'table' and #c.thanks_exact > 0 then
-            contextConfig.thanks_exact = c.thanks_exact
+            local merged = {}
+            local seen = {}
+            for _, kw in ipairs(contextConfig.thanks_exact or {}) do
+                local k = normalizeMatchText(kw)
+                if k ~= '' and not seen[k] then
+                    seen[k] = true
+                    merged[#merged + 1] = kw
+                end
+            end
+            for _, kw in ipairs(c.thanks_exact) do
+                local k = normalizeMatchText(kw)
+                if k ~= '' and not seen[k] then
+                    seen[k] = true
+                    merged[#merged + 1] = kw
+                end
+            end
+            contextConfig.thanks_exact = merged
         end
     end
     return contextConfig
@@ -15250,9 +15329,16 @@ function messageLooksLikeThanks(bags)
     if #low > 48 then return false end
     for _, kw in ipairs(cfg.thanks_exact or {}) do
         local k = normalizeMatchText(kw)
-        if k ~= '' and (low == k or low == normalizeMatchTextTypo(kw)) then
+        if k ~= '' then
+            if low == k or low == normalizeMatchTextTypo(kw) then return true end
+            if #k >= 3 and #low <= 48 and low:find('^' .. k, 1, true) then return true end
+        end
+    end
+    if #low <= 48 then
+        if low == '+' or low == 'ок' or low:find('^ок ', 1, true) or low:find('^понял', 1, true) then
             return true
         end
+        if low:find('^спс', 1, true) then return true end
     end
     return false
 end
@@ -15313,6 +15399,7 @@ function classifyContext(body, bags)
         'help', 'хелп', 'hel', 'помогите', 'помоги', 'помог',
         '\xEF\xEE\xEC\xEE\xE3\xE8\xF2\xE5', '\xEF\xEE\xEC\xEE\xE3\xE8',
         'zastryal', 'застрял', '\xE7\xE0\xF1\xF2\xF0\xFF\xEB',
+        'админ', '\xE0\xE4\xEC\xE8\xED',
     }
     for _, token in ipairs(genericOnly) do
         local key = normalizeMatchText(token)
@@ -15323,7 +15410,9 @@ function classifyContext(body, bags)
     if messageHasFaqHints(bags) then
         return INTENT_CONTEXT_FAQ
     end
-    if extractSuspectIdForWatch(body or bags.raw) then
+    if extractSuspectIdForWatch(body or bags.raw)
+            and type(textLooksLikePlayerReport) == 'function'
+            and textLooksLikePlayerReport(body or bags.raw) then
         return INTENT_CONTEXT_REPORT
     end
     return INTENT_CONTEXT_FAQ
@@ -15462,7 +15551,7 @@ local LEGACY_GUARD_EXCLUSIONS = {
         { all = { 'квест', 'механик' } },
         { all = { 'заклад' } },
         { all = { 'участк' }, none = { '090' } },
-            { all = { 'механик' }, none = { 'вызвать', '090', 'эвакуатор', '010', 'полом' } },
+            { all = { 'механик' }, none = { 'вызвать', '090', 'эвакуатор', '010', 'полом', 'заправ', 'позвонить' } },
     },
     ['азс'] = {
         { all = { 'заправ', 'игрок' }, none = { 'бензин', 'топлив', 'канистр' } },
@@ -15673,6 +15762,13 @@ function applyIntentExtensionsToList(intents)
         if intent.id then byId[intent.id] = i end
     end
 
+    for _, raw in ipairs(ext.new_intents or {}) do
+        if type(raw) == 'table' and raw.id and not byId[raw.id] then
+            intents[#intents + 1] = raw
+            byId[raw.id] = #intents
+        end
+    end
+
     for _, patch in ipairs(ext.patches or {}) do
         local idx = patch.id and byId[patch.id]
         if idx then
@@ -15684,13 +15780,6 @@ function applyIntentExtensionsToList(intents)
                 intent.exclusions = intent.exclusions or {}
                 mergeClauses(intent.exclusions, patch.add_exclusions)
             end
-        end
-    end
-
-    for _, raw in ipairs(ext.new_intents or {}) do
-        if type(raw) == 'table' and raw.id and not byId[raw.id] then
-            intents[#intents + 1] = raw
-            byId[raw.id] = #intents
         end
     end
 
@@ -17155,9 +17244,10 @@ end
 -- Desk hook/helper.
 function deskWindowWantsKeyboard()
     if not showWindow[0] then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return true end
-    -- Открытая панель — всегда держим клавиатуру у ImGui (иначе WM не доходит до InputText).
-    return true
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
+        return true
+    end
+    return deskImguiTypingActive()
 end
 
 -- Desk hook/helper.
@@ -17168,7 +17258,7 @@ function deskImguiTypingActive()
     if deskInputState.replyFocused then return true end
     if deskInputState.keyboardStickyUntil > os.clock() then return true end
     local io = imgui.GetIO and imgui.GetIO()
-    if io and (io.WantTextInput or io.WantCaptureKeyboard) then return true end
+    if io and io.WantTextInput then return true end
     if imgui.IsAnyItemActive and imgui.IsAnyItemActive() then return true end
     return false
 end
@@ -18439,19 +18529,27 @@ function drawMarkerHudOverlay()
         flags = flags + imgui.WindowFlags.NoFocusOnAppearing
     end
 
-    local padX, padY = 14, 10
-    local panelW = CHEATS_OVERLAY_PANEL_W
-    local wx, wy = sx + padX, sy + padY
-    if wx + panelW > sw - 8 then wx = sw - panelW - 8 end
-    if wy + 120 > sh - 8 then wy = sh - 120 - 8 end
-    if wx < 4 then wx = 4 end
-    if wy < 4 then wy = 4 end
+    local offsetX, offsetY = 16, 18
+    local estW, estH = 168, 72
+    local pivotX, pivotY = 0.0, 0.0
+    local posX, posY = sx + offsetX, sy + offsetY
+    if posX + estW > sw - 8 then
+        posX = sx - offsetX
+        pivotX = 1.0
+    end
+    if posY + estH > sh - 8 then
+        posY = sy - offsetY
+        pivotY = 1.0
+    end
+    posX = math.max(4, math.min(posX, sw - 4))
+    posY = math.max(4, math.min(posY, sh - 4))
 
     local spTheme = cheatsOverlayTheme()
-    imgui.SetNextWindowSize(imgui.ImVec2(panelW, 0), imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(wx, wy), imgui.Cond.Always)
+    local labelW = (spTheme and spTheme.HUD_LABEL_W) or CHEATS_HUD_LABEL_W
+    imgui.SetNextWindowPos(imgui.ImVec2(posX, posY), imgui.Cond.Always, imgui.ImVec2(pivotX, pivotY))
     if spTheme then spTheme.pushHudChrome() end
     if imgui.Begin('###desk_marker_hud', nil, flags) then
+        if spTheme and spTheme.drawPanelFrame then spTheme.drawPanelFrame() end
         if spTheme then
             spTheme.drawPanelTitle('\xCC\xE0\xF0\xEA\xE5\xF0', nil, col_accent, col_muted, uiText)
         else
@@ -18460,14 +18558,19 @@ function drawMarkerHudOverlay()
         local distM = tonumber(m.dist) or 0
         if spTheme then
             spTheme.drawStatRow(1, '\xD0\xE0\xF1\xF1\xF2\xEE\xFF\xED\xE8\xE5', string.format('%.0f \xEC', distM), col_label,
-                CHEATS_HUD_LABEL_W, uiText)
+                labelW, uiText)
             if m.hoverCar and m.vehLabel ~= '' then
-                spTheme.drawStatRow(2, '\xCC\xE0\xF8\xE8\xED\xE0', m.vehLabel, col_accent, CHEATS_HUD_LABEL_W, uiText)
-                spTheme.drawStatRow(3, '', m.aimCar and '\xCB\xCA\xCC \x97 \xF1\xE5\xF1\xF2\xFC' or '\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3',
-                    m.aimCar and col_label or col_muted, CHEATS_HUD_LABEL_W, uiText)
+                spTheme.drawStatRow(2, '\xCC\xE0\xF8\xE8\xED\xE0', m.vehLabel, col_accent, labelW, uiText)
+                if m.aimCar then
+                    imgui.TextColored(col_muted, uiText(
+                        '\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xB7 \xCF\xCA\xCC \x97 \xEF\xEE\xF1\xE0\xE4\xEA\xE0'))
+                else
+                    imgui.TextColored(col_muted, uiText('\xCD\xE0\xE2\xE5\xE4\xE8\xF2\xE5 \xED\xE0 \xEC\xE0\xF8\xE8\xED\xF3'))
+                end
             else
-                spTheme.drawStatRow(2, '', '\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2', col_muted, CHEATS_HUD_LABEL_W, uiText)
+                imgui.TextColored(col_muted, uiText('\xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2'))
             end
+            imgui.TextColored(col_muted2, uiText('\xD1\xCA\xCC \x97 \xE2\xFB\xF5\xEE\xE4'))
         end
         imgui.End()
     end
@@ -19281,6 +19384,9 @@ if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local MASK_LABEL_DRAW_DIST = 300
 local MASK_LABEL_COLOR = 4294967295
+local MASK_ID_TICK_INTERVAL = 0.4
+local maskIdLastTickAt = 0
+local maskIdWasActive = false
 local MASK_LABEL_Z = 0.6
 local MASK_COLORS = {
     [4278190335] = true,
@@ -19395,11 +19501,21 @@ local function maskIdPlayerColor(id)
 end
 
 function maskIdTick()
-    if not maskIdEnabled() or not maskIdActiveSession() then
-        maskIdDestroyAll()
+    local active = maskIdEnabled() and maskIdActiveSession()
+    if not active then
+        if maskIdWasActive then
+            maskIdDestroyAll()
+        end
+        maskIdWasActive = false
+        maskIdLastTickAt = 0
         return
     end
+    maskIdWasActive = true
     if type(sampGetMaxPlayerId) ~= 'function' or type(sampIsPlayerConnected) ~= 'function' then return end
+
+    local now = os.clock()
+    if now - maskIdLastTickAt < MASK_ID_TICK_INTERVAL then return end
+    maskIdLastTickAt = now
 
     local maxId = tonumber(sampGetMaxPlayerId(true)) or 0
     if maxId < 0 then maxId = 0 end
@@ -19425,6 +19541,7 @@ function maskIdOnPlayerQuit(playerId)
 end
 
 function maskIdCleanup()
+    maskIdWasActive = false
     maskIdDestroyAll()
 end
 
@@ -20092,7 +20209,7 @@ function drawCheatsTab()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##ch_mk')
-    drawCheatCardTitle('\xCC\xE0\xF0\xEA\xE5\xF0 \xE8 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2', '')
+    drawCheatCardTitle('CLICKWARP', '')
     cheatState.uiMarkerWheel[0] = settings.cheats.marker_wheel ~= false
     if deskFormCheckboxRow('\xD2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xED\xE0 \xEA\xEE\xEB\xB8\xF1\xE8\xEA\xEE \xEC\xFB\xF8\xE8', cheatState.uiMarkerWheel, function(v)
         settings.cheats.marker_wheel = v and true or false
@@ -20852,7 +20969,10 @@ function updateDeskInputCapture()
     end
     local io = imgui.GetIO and imgui.GetIO()
     local wantKb = deskWindowWantsKeyboard()
-    if io and (io.WantCaptureKeyboard or io.WantTextInput) then
+    if not wantKb and io and io.WantTextInput then
+        wantKb = true
+    end
+    if not wantKb and imgui.IsAnyItemActive and imgui.IsAnyItemActive() then
         wantKb = true
     end
     local wantMouse = showWindow[0] == true
@@ -21184,7 +21304,7 @@ function clampSuspectPlayerId(id)
 end
 
 local REPORT_ID_MARKERS = {
-    'dm', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
+    'dm', 'дм', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
     'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
 }
 
@@ -21227,12 +21347,20 @@ function extractSuspectIdFromReport(text)
     id = text:match('(%d+)%s+[%a\xC0-\xFF]')
     if id then return clampSuspectPlayerId(id) end
 
+    id = text:match('[%s%p](%d+)%s*$') or text:match('^(%d+)%s*$')
+    if id then return clampSuspectPlayerId(id) end
+
     return nil
 end
 
 -- Message Eligible For Watch Button
 function messageEligibleForWatchButton(text, context)
     if context == INTENT_CONTEXT_THANKS then
+        return false
+    end
+    if context == INTENT_CONTEXT_FAQ
+            and type(textLooksLikePlayerReport) == 'function'
+            and not textLooksLikePlayerReport(text) then
         return false
     end
     return extractSuspectIdForWatch(text) ~= nil
@@ -21596,10 +21724,99 @@ end
 INTENT_CORPUS_BTN_H = 20
 intentCorpusQueue = intentCorpusQueue or { seen = {}, loaded = false }
 
+local function intentCorpusJsonUnescape(s)
+    s = tostring(s or '')
+    return s:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+end
+
 local function intentCorpusJsonStr(s)
     s = tostring(s or '')
     s = s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\r', '\\r'):gsub('\n', '\\n')
     return '"' .. s .. '"'
+end
+
+-- JSONL хранит UTF-8; в Lua/игре строки CP1251.
+local function intentCorpusTextFromFile(raw)
+    raw = intentCorpusJsonUnescape(raw or '')
+    if raw == '' then return '' end
+    if isUtf8Text(raw) then return utf8ToCp1251(raw) end
+    return raw
+end
+
+local function intentCorpusTextToFile(cp1251Text)
+    cp1251Text = tostring(cp1251Text or '')
+    if cp1251Text == '' then return '' end
+    if type(configStoreText) == 'function' then
+        return configStoreText(cp1251Text)
+    end
+    return cp1251ToUtf8(cp1251Text)
+end
+
+local function intentCorpusParseLine(line)
+    if not line or line == '' then return nil end
+    local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+    if not phrase then return nil end
+    local ts = line:match('"ts"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        or line:match('"ts"%s*:%s*([^,}]+)')
+    local context = line:match('"context"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
+    local thread = line:match('"thread"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
+    local threadId = tonumber(line:match('"thread_id"%s*:%s*(%d+)')) or 0
+    return {
+        ts = intentCorpusJsonUnescape(ts or ''),
+        phrase = phrase,
+        context = context,
+        thread = thread,
+        thread_id = threadId,
+    }
+end
+
+local function intentCorpusFormatLine(entry)
+    local phrase = intentCorpusTextToFile(intentCorpusTextFromFile(entry.phrase))
+    local context = intentCorpusTextToFile(intentCorpusTextFromFile(entry.context))
+    local thread = intentCorpusTextToFile(intentCorpusTextFromFile(entry.thread))
+    local ts = entry.ts or os.date('!%Y-%m-%dT%H:%M:%SZ')
+    return string.format(
+        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d}',
+        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(context),
+        intentCorpusJsonStr(thread), tonumber(entry.thread_id) or 0
+    )
+end
+
+local function intentCorpusFileNeedsUtf8Migrate(path)
+    local f = io.open(path, 'rb')
+    if not f then return false end
+    for line in f:lines() do
+        local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        if phrase then
+            phrase = intentCorpusJsonUnescape(phrase)
+            if phrase ~= '' and not isUtf8Text(phrase) and phrase:find('[\128-\255]') then
+                f:close()
+                return true
+            end
+        end
+    end
+    f:close()
+    return false
+end
+
+local function migrateIntentCorpusQueueToUtf8(path)
+    local f = io.open(path, 'rb')
+    if not f then return end
+    local entries = {}
+    for line in f:lines() do
+        local entry = intentCorpusParseLine(line)
+        if entry then entries[#entries + 1] = entry end
+    end
+    f:close()
+    if #entries == 0 then return end
+    local out = io.open(path, 'wb')
+    if not out then return end
+    for i, entry in ipairs(entries) do
+        out:write(intentCorpusFormatLine(entry))
+        if i < #entries then out:write('\n') end
+    end
+    out:write('\n')
+    out:close()
 end
 
 function loadIntentCorpusQueueSeen()
@@ -21608,12 +21825,15 @@ function loadIntentCorpusQueueSeen()
     intentCorpusQueue.seen = {}
     local path = INTENT_CORPUS_QUEUE_PATH
     if not path or path == '' then return end
+    if intentCorpusFileNeedsUtf8Migrate(path) then
+        pcall(migrateIntentCorpusQueueToUtf8, path)
+    end
     local f = io.open(path, 'rb')
     if not f then return end
     for line in f:lines() do
         local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
         if phrase then
-            phrase = phrase:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+            phrase = intentCorpusTextFromFile(phrase)
             local key = normalizeMatchText(phrase)
             if key ~= '' then intentCorpusQueue.seen[key] = true end
         end
@@ -21649,11 +21869,13 @@ function appendIntentCorpusPhrase(phrase, meta)
     local ts = os.date('!%Y-%m-%dT%H:%M:%SZ')
     local thread = trim(meta and meta.thread or '')
     local threadId = tonumber(meta and meta.threadId) or 0
-    f:write(string.format(
-        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d}\n',
-        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(ctx),
-        intentCorpusJsonStr(thread), threadId
-    ))
+    f:write(intentCorpusFormatLine({
+        ts = ts,
+        phrase = phrase,
+        context = ctx,
+        thread = thread,
+        thread_id = threadId,
+    }) .. '\n')
     f:close()
     intentCorpusQueue.seen[key] = true
     return true, 'ok'
@@ -22275,16 +22497,9 @@ getfenv(1).lastSettingsSave = lastSettingsSave
 getfenv(1).lastThreadsSave = lastThreadsSave
 getfenv(1).scenariosGen = scenariosGen
 getfenv(1).uiSound = uiSound
-getfenv(1).uiAutoOnlyUnread = uiAutoOnlyUnread
 getfenv(1).deskReplyBuf = deskReplyBuf
 getfenv(1).editCqLabel = editCqLabel
 getfenv(1).editCqText = editCqText
-getfenv(1).editScLabel = editScLabel
-getfenv(1).editScReply = editScReply
-getfenv(1).scKwNew = scKwNew
-getfenv(1).scKwBulk = scKwBulk
-getfenv(1).scTestBuf = scTestBuf
-getfenv(1).scTestResult = scTestResult
 getfenv(1).uiAutoRulesEnabled = uiAutoRulesEnabled
 getfenv(1).uiAutoTimeEnabled = uiAutoTimeEnabled
 getfenv(1).uiAutoGgEnabled = uiAutoGgEnabled
@@ -22390,8 +22605,14 @@ local apState = {
 }
 local AP_LINE_REJECT_SEC = 50
 local AP_POLL_RECENT = 40
+local AP_POLL_LINES_HOOK = 10
+local AP_POLL_LINES_FALLBACK = 24
+local AP_POLL_INTERVAL_HOOK = 0.85
+local AP_POLL_INTERVAL_FALLBACK = 0.22
+local AP_POLL_INTERVAL_PENDING = 0.12
 local AP_OFFLINE_CANCEL_SEC = 2.0
 local AP_HANDLED_MAX = 256
+local apPollLastAt = 0
 
 local function apMono()
     if type(getGameTimer) == 'function' then
@@ -23231,11 +23452,22 @@ function adminPunishOnChatMessage(playerId, text)
     adminPunishIngestChatLine(0, string.format('[A] %s[%d]: %s', nick, playerId, cmd))
 end
 
--- Запасной poll: всегда последние N строк (hook может пропустить по color/chain).
+-- Запасной poll: reconcile последних строк (hook — основной путь).
 function pollAdminPunishChat()
     if not apEnabled() then return end
     if not sampGetChatString then return end
-    for i = 0, AP_POLL_RECENT - 1 do
+    local now = os.clock()
+    local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+    local profHookActive = deskCache and deskCache.profHooksInstalled == true
+    local interval = (hookActive and profHookActive) and AP_POLL_INTERVAL_HOOK or AP_POLL_INTERVAL_FALLBACK
+    if apState.pending then
+        interval = math.min(interval, AP_POLL_INTERVAL_PENDING)
+    end
+    if now - apPollLastAt < interval then return end
+    apPollLastAt = now
+    local maxLines = hookActive and AP_POLL_LINES_HOOK or AP_POLL_LINES_FALLBACK
+    if maxLines > AP_POLL_RECENT then maxLines = AP_POLL_RECENT end
+    for i = 0, maxLines - 1 do
         local line = sampGetChatString(i) or ''
         if line ~= '' then
             local plain = apPlainText(line)
@@ -23870,21 +24102,30 @@ function drawAdminPunishTab()
 
     deskFormPanelBegin('##ap_main')
     drawSettingsCardHeader('\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF \xE8\xE7 /a',
-        '\xCA\xEE\xEB\xEB\xE5\xE3\xE0 \xEF\xE8\xF8\xE5\xF2 \xEA\xEE\xEC\xE0\xED\xE4\xF3 \xB7 \xEF\xE5\xF0\xE5\xE4 \xE2\xFB\xE4\xE0\xF7\xE5\xE9 \xF1\xE2\xE5\xF0\xFF\xE0\xE5\xF2\xF1\xF1\xFF \xED\xE8\xEA \xED\xE0 ID')
+        '\xD1\xEA\xF0\xE8\xEF\xF2 \xF7\xE8\xF2\xE0\xE5\xF2 \xF7\xE0\xF2 \xE0\xE4\xEC\xE8\xED\xE0 \xE8 \xEF\xF0\xE5\xE4\xEB\xE0\xE3\xE0\xE5\xF2 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xF2\xFC \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5.')
     if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE8\xF2\xFC \xE0\xE2\xF2\xEE\xE2\xFB\xE4\xE0\xF7\xF3', uiAdminPunishEnabled, function(v)
         settings.admin_punish_enabled = v
         if not v then apClearPending() end
         markDirtySettings()
     end, 'ap_en') then end
+    if deskFormCheckboxRow('\xC4\xEE\xEF\xE8\xF1\xFB\xE2\xE0\xF2\xFC\x20\x2F\x20\x62\x79', uiAdminPunishSignCmd, function(v)
+        settings.admin_punish_sign_cmd = v
+        markDirtySettings()
+    end, 'ap_sign') then end
+    drawSettingsHint('\xAB\xEF\xF0\xE8\xF7\xE8\xED\xE0\x20\x2F\x20\x62\x79\x20\x41\x64\x6D\x69\x6E\xBB')
+    if deskFormCheckboxRow('\xD1\xED\xE0\xF7\xE0\xEB\xE0 \xF1\xEE\xEE\xE1\xF9\xE8\xF2\xFC \xE8\xE3\xF0\xEE\xEA\xF3 \xE2\x20\x2F\x61\x6E\x73', uiAdminPunishSendAns, function(v)
+        settings.admin_punish_send_ans = v
+        markDirtySettings()
+    end, 'ap_ans') then end
+    drawSettingsHint('\xAB\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5\x20\xE2\xFB\xE4\xE0\xED\xEE\x20\xEF\xEE\x20\xEF\xF0\xEE\xF1\xFC\xE1\xE5\x20\x2E\x2E\x2E\xBB')
     deskFormPanelEnd()
 
     deskFormPanelBegin('##ap_keys')
-    drawSettingsCardHeader('\xCA\xEB\xE0\xE2\xE8\xF8\xE8',
-        '\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xEF\xEE \xEF\xEE\xEB\xFE \xEF\xF0\xE8\xE2\xFF\xE7\xEA\xE8 \xB7 \xCF\xCA\xCC \xF1\xE1\xF0\xEE\xF1 \xB7 Esc \xEE\xF2\xEC\xE5\xED\xE0')
+    drawSettingsCardHeader('\xCA\xEB\xE0\xE2\xE8\xF8\xE8')
     local capConfirm = deskCache.adminPunishBindCapture and deskCache.adminPunishBindField == 'confirm'
     local capCancel = deskCache.adminPunishBindCapture and deskCache.adminPunishBindField == 'cancel'
     drawDeskBindRow({
-        label = '\xC7\xE0\xF2\xE2\xE5\xF0\xE4\xE8\xF2\xFC \xE8 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xF2\xFC',
+        label = '\xCF\xEE\xE4\xF2\xE2\xE5\xF0\xE4\xE8\xF2\xFC',
         inline = false,
         previewText = capConfirm and apBindPreviewCapturing() or vkToLabel(settings.admin_punish_confirm_key),
         capturing = capConfirm,
@@ -23897,7 +24138,7 @@ function drawAdminPunishTab()
         end,
     })
     drawDeskBindRow({
-        label = '\xCE\xF2\xEC\xE5\xED\xE8\xF2\xFC \xE7\xE0\xEF\xF0\xEE\xF1',
+        label = '\xCF\xF0\xEE\xEF\xF3\xF1\xF2\xE8\xF2\xFC',
         inline = false,
         previewText = capCancel and apBindPreviewCapturing() or vkToLabel(settings.admin_punish_cancel_key),
         capturing = capCancel,
@@ -23909,28 +24150,6 @@ function drawAdminPunishTab()
             markDirtySettings()
         end,
     })
-    drawSettingsHint(string.format(
-        '\xCF\xEB\xE0\xF8\xEA\xE0 \xE2\xED\xE8\xE7\xF3 \xEF\xEE \xF6\xE5\xED\xF2\xF0\xF3 \xB7 %d \xF1\xE5\xEA \xB7 \xF3\xEF\xF0\xE0\xE2\xEB\xE5\xED\xE8\xE5 \xF2\xEE\xEB\xFC\xEA\xEE \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xEE\xE9',
-        PUNISH_TIMEOUT_SEC))
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##ap_send')
-    drawSettingsCardHeader('\xCE\xF2\xEF\xF0\xE0\xE2\xEA\xE0')
-    if deskFormCheckboxRow('\xCF\xEE\xE4\xEF\xE8\xF1\xFC \xE2 \xEA\xEE\xEC\xE0\xED\xE4\xE5', uiAdminPunishSignCmd, function(v)
-        settings.admin_punish_sign_cmd = v
-        markDirtySettings()
-    end, 'ap_sign') then end
-    if deskFormCheckboxRow('\xD1\xED\xE0\xF7\xE0\xEB\xE0 /ans \xE8\xE3\xF0\xEE\xEA\xF3', uiAdminPunishSendAns, function(v)
-        settings.admin_punish_send_ans = v
-        markDirtySettings()
-    end, 'ap_ans') then end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##ap_help')
-    drawSettingsCardHeader('\xCA\xEE\xEC\xE0\xED\xE4\xFB')
-    drawSettingsHint('/jail ID \xEC\xE8\xED \xEF\xF0\xE8\xF7\xE8\xED\xE0 \xB7 /mute /ban /warn /kick \xB7 /off* \xB7 /un* \xB7 /skick ID')
-    drawSettingsHint('\xCF\xE5\xF0\xE5\xE4 \xE2\xFB\xE4\xE0\xF7\xE5\xE9 \xF1\xE2\xE5\xF0\xFF\xE5\xF2\xF1\xFF \xED\xE8\xEA \xED\xE0 ID \xB7 \xEF\xF0\xE8 \xF1\xEC\xE5\xED\xE5 \xE8\xE3\xF0\xEE\xEA\xE0 \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xED\xE5 \xF3\xE9\xE4\xB8\xF2')
-    drawSettingsHint('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0 \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xED\xE0\xF1\xF2\xF0\xEE\xE5\xEA \xAB\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2 /sp\xBB')
     deskFormPanelEnd()
 
     imgui.PopStyleVar(2)
@@ -24442,7 +24661,6 @@ function migrateScenariosPackIfNeeded()
     if added > 0 then
         quickScenarios = merged
         bumpScenariosGen()
-        scenariosUiSynced = false
         print(string.format('[Report Desk] scenarios: +%d new (pack v%d)', added, SCENARIOS_PACK_VERSION))
     end
     settings.scenarios_pack_version = SCENARIOS_PACK_VERSION
@@ -24860,7 +25078,6 @@ function loadUserConfig()
         ensureComposerQuickButtons()
         syncLegacyGgTechFromComposerButtons()
     end
-    scenariosUiSynced = false
     return true
 end
 
@@ -24890,7 +25107,6 @@ function saveConfig()
     f:write('  settings = {\n')
     f:write(string.format('    hotkey = %d,\n', settings.hotkey or vkeys.VK_F7))
     f:write(string.format('    sound = %s,\n', settings.sound and 'true' or 'false'))
-    f:write(string.format('    auto_only_unread = %s,\n', settings.auto_only_unread and 'true' or 'false'))
     f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
     f:write(string.format('    watch_auto_notify = %s,\n', settings.watch_auto_notify ~= false and 'true' or 'false'))
     f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
@@ -25902,6 +26118,66 @@ end
 ]]
 
 --[[ Модуль: auto-rules, scenarios, processChatLineIngest. ]]
+local autoReplyQueue = {}
+local autoReplyWorkerOn = false
+local AUTO_REPLY_QUEUE_MAX = 48
+
+local function runAutoReplyJob(job)
+    if not job then return end
+    local nickCopy, idCopy, bodyCopy, src = job.nick, job.id, job.body, job.src
+    if settings.profanity_filter_enabled then
+        pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
+    end
+    if not deskAutoReplyAllowed() then return end
+    local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
+    local th = threads[tk]
+    if th then
+        pcall(runAutoRulesForReport, th, bodyCopy, src)
+    end
+end
+
+local function startAutoReplyWorker()
+    if autoReplyWorkerOn then return end
+    if #autoReplyQueue < 1 then return end
+    if not lua_thread or not lua_thread.create then return end
+    autoReplyWorkerOn = true
+    lua_thread.create(function()
+        local okRun, errRun = pcall(function()
+            while #autoReplyQueue > 0 do
+                local job = table.remove(autoReplyQueue, 1)
+                local delayMs = tonumber(AUTO_REPLY_DELAY_MS) or 250
+                local elapsedMs = (os.clock() - (job.enqueuedAt or os.clock())) * 1000
+                local remain = math.floor(delayMs - elapsedMs + 0.5)
+                if remain > 0 then wait(remain) end
+                if deskAutoReplyAllowed() then
+                    pcall(runAutoReplyJob, job)
+                end
+            end
+        end)
+        autoReplyWorkerOn = false
+        if not okRun then
+            print('[Report Desk] auto reply worker: ' .. tostring(errRun))
+        end
+        if #autoReplyQueue > 0 then
+            startAutoReplyWorker()
+        end
+    end)
+end
+
+local function enqueueAutoReplyJob(nick, id, body, src)
+    if #autoReplyQueue >= AUTO_REPLY_QUEUE_MAX then
+        table.remove(autoReplyQueue, 1)
+    end
+    autoReplyQueue[#autoReplyQueue + 1] = {
+        nick = nick,
+        id = id,
+        body = body,
+        src = src or 'live',
+        enqueuedAt = os.clock(),
+    }
+    startAutoReplyWorker()
+end
+
 function cloneBuiltinAutoRule(tpl, payload)
     local kw = {}
     for _, k in ipairs(tpl.keywords or {}) do
@@ -25987,6 +26263,9 @@ end
 function clearAllPendingAuto()
     for k in pairs(pendingAuto) do
         pendingAuto[k] = nil
+    end
+    for i = #autoReplyQueue, 1, -1 do
+        autoReplyQueue[i] = nil
     end
 end
 
@@ -26212,9 +26491,7 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     if reportChannel then
         t.reportChannel = reportChannel
     end
-    local hadUnread = false
     if isLive then
-        hadUnread = (t.unread or 0) > 0
         t.unread = (t.unread or 0) + 1
         totalUnread = totalUnread + 1
         local reportHasProfanity = settings.profanity_filter_enabled and findProfanityMatch(body)
@@ -26227,27 +26504,8 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
         channel = channel,
     })
     markDirtyThreads()
-    if isLive then
-        local runAuto = not (settings.auto_only_unread and hadUnread)
-        if runAuto and not deskAutoReplyAllowed() then runAuto = false end
-        local src = source or 'live'
-        local nickCopy, idCopy, bodyCopy = nick, id, body
-        lua_thread.create(function()
-            if settings.profanity_filter_enabled then
-                pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
-            end
-            if runAuto then
-                wait(AUTO_REPLY_DELAY_MS)
-                if not deskAutoReplyAllowed() then return end
-                local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
-                local th = threads[tk]
-                if th then
-                    if settings.auto_rules_enabled ~= false then
-                        pcall(runAutoRulesForReport, th, bodyCopy, src)
-                    end
-                end
-            end
-        end)
+    if isLive and settings.auto_rules_enabled ~= false then
+        enqueueAutoReplyJob(nick, id, body, source or 'live')
     end
 end
 
@@ -26646,6 +26904,7 @@ local SAMP_DIALOG_ACTIVE_OFF = 40
 local ET_ONLINE_PATH = getWorkingDirectory() .. '\\config\\arp_exact_time_online.ini'
 local ET_ANS_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_ans.ini'
 local ET_PUNISH_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_punish.jsonl'
+local ET_PUNISH_RETAIN_DAYS = 6
 local ET_PUNISH_MAX_STORE = 2000
 local ET_PUNISH_UI_MAX = 100
 local ET_LEGACY_ONLINE = getWorkingDirectory() .. '\\config\\arp_helper_online.ini'
@@ -26866,6 +27125,7 @@ end
 
 local ET_HELP_DAY_HDR = '\xC4\xE5\xED\xFC'
 local ET_HELP_DATE_HDR = '\xC4\xE0\xF2\xE0'
+local ET_HELP_TOTAL_LABEL = '\xC8\xF2\xEE\xE3\xEE'
 local ET_HELP_ANS_HDR = '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2'
 local ET_HELP_ONLINE_HDR = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
 
@@ -26879,6 +27139,7 @@ local ET_HELP_COL_GAP = 16
 local function etHelpTableWidths(availW)
     availW = math.max(260, tonumber(availW) or 260)
     local wDay = etHelpColTextW(ET_HELP_DAY_HDR, 10)
+    wDay = math.max(wDay, etHelpColTextW(ET_HELP_TOTAL_LABEL, 12))
     for _, wd in pairs(ET_WD_SHORT) do
         wDay = math.max(wDay, etHelpColTextW(wd, 6))
     end
@@ -27310,6 +27571,33 @@ local function etRewritePunishStore()
     f:close()
 end
 
+local function etPunishPruneStore(rewrite)
+    if #etState.punish.entries == 0 then return false end
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_PUNISH_RETAIN_DAYS * 86400)
+    local kept = {}
+    for _, e in ipairs(etState.punish.entries) do
+        local dk = e.dateKey or os.date('%Y-%m-%d', tonumber(e.ts) or 0)
+        if dk >= cutoffKey then
+            kept[#kept + 1] = e
+        end
+    end
+    if #kept > ET_PUNISH_MAX_STORE then
+        local trimmed = {}
+        local start = #kept - ET_PUNISH_MAX_STORE + 1
+        for i = start, #kept do
+            trimmed[#trimmed + 1] = kept[i]
+        end
+        kept = trimmed
+    end
+    local changed = #kept ~= #etState.punish.entries
+    if changed then
+        etState.punish.entries = kept
+        etInvalidatePunishWeekCache()
+        if rewrite then pcall(etRewritePunishStore) end
+    end
+    return changed
+end
+
 local function etAppendPunishStoreLine(e)
     if not encodeJson then
         pcall(etRewritePunishStore)
@@ -27340,15 +27628,7 @@ local function etLoadPunishStore()
     end
     f:close()
     table.sort(etState.punish.entries, etPunishEntrySort)
-    if #etState.punish.entries > ET_PUNISH_MAX_STORE then
-        local trimmed = {}
-        local start = #etState.punish.entries - ET_PUNISH_MAX_STORE + 1
-        for i = start, #etState.punish.entries do
-            trimmed[#trimmed + 1] = etState.punish.entries[i]
-        end
-        etState.punish.entries = trimmed
-        pcall(etRewritePunishStore)
-    end
+    etPunishPruneStore(true)
 end
 
 function helpStatsRecordPunish(raw)
@@ -27360,12 +27640,10 @@ function helpStatsRecordPunish(raw)
     end
     etState.punish.entries[#etState.punish.entries + 1] = e
     etInvalidatePunishWeekCache()
-    if #etState.punish.entries > ET_PUNISH_MAX_STORE then
-        table.remove(etState.punish.entries, 1)
-        pcall(etRewritePunishStore)
-    else
-        pcall(etAppendPunishStoreLine, e)
+    if etPunishPruneStore(true) then
+        return
     end
+    pcall(etAppendPunishStoreLine, e)
 end
 
 local ET_PUNISH_KIND_LABEL = {
@@ -27436,6 +27714,28 @@ local function etPunishHasTerm(e)
     return not ET_PUNISH_NO_TERM_HEAD[etPunishCmdHead(e.cmd or '')]
 end
 
+local function etPunishTermIsDays(e)
+    if type(e) ~= 'table' then return false end
+    local head = etPunishCmdHead(e.cmd or '')
+    return head == 'ban' or head == 'offban'
+end
+
+local function etFormatDaysRu(days)
+    days = math.floor(tonumber(days) or 0)
+    if days <= 0 then return ET_PUNISH_TERM_EMPTY end
+    local mod10 = days % 10
+    local mod100 = days % 100
+    local unit
+    if mod10 == 1 and mod100 ~= 11 then
+        unit = '\xE4\xE5\xED\xFC'
+    elseif mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20) then
+        unit = '\xE4\xED\xFF'
+    else
+        unit = '\xE4\xED\xE5\xE9'
+    end
+    return string.format('%d %s', days, unit)
+end
+
 local function etFormatPunishTerm(e)
     if type(e) == 'table' and not etPunishHasTerm(e) then
         return ET_PUNISH_TERM_EMPTY
@@ -27447,6 +27747,9 @@ local function etFormatPunishTerm(e)
     if n then
         n = math.floor(n)
         if n <= 0 then return ET_PUNISH_TERM_EMPTY end
+        if type(e) == 'table' and etPunishTermIsDays(e) then
+            return etFormatDaysRu(n)
+        end
         if n >= 60 and n % 60 == 0 then
             return string.format('%d \xF7', math.floor(n / 60))
         end
@@ -27564,7 +27867,9 @@ local function etPunishTableLayout(availW, rows)
         etHelpColTextW(ET_PUNISH_TERM_HDR, pad),
         etHelpColTextW(ET_PUNISH_TERM_EMPTY, 8),
         etHelpColTextW('999 \xEC\xE8\xED', 8),
-        etHelpColTextW('99 \xF7', 8))
+        etHelpColTextW('99 \xF7', 8),
+        etHelpColTextW('21 \xE4\xE5\xED\xFC', 8),
+        etHelpColTextW('5 \xE4\xED\xE5\xE9', 8))
 
     for _, lbl in pairs(ET_PUNISH_KIND_LABEL) do
         minAction = math.max(minAction, etHelpColTextW(lbl, 8))
@@ -27747,13 +28052,8 @@ local function etDrawHelpPunishLog()
     imgui.Dummy(imgui.ImVec2(0, 4))
 
     drawSettingsHint(string.format(
-        '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE %d \xE8\xE7 %d \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE \xB7 \xE2\xF0\xE5\xEC\xFF \xE4\xEE \xF1\xE5\xEA\xF3\xED\xE4\xFB \xB7 \xED\xE5\xE4\xE5\xEB\xFF \xEA\xE0\xEA \xE2 \xF2\xE0\xE1\xEB\xE8\xF6\xE5 \xE2\xFB\xF8\xE5',
-        #rows, weekTotal))
-    if #rows > ET_PUNISH_UI_MAX then
-        drawSettingsHint(string.format(
-            '\xC2 \xF2\xE0\xE1\xEB\xE8\xF6\xE5 \xEF\xEE\xF1\xEB\xE5\xE4\xED\xE8\xE5 %d \xE8\xE7 %d',
-            ET_PUNISH_UI_MAX, #rows))
-    end
+        '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE %d \xE8\xE7 %d',
+        shown, #rows))
 end
 
 local function etAnsCount(dateKey)
@@ -27824,86 +28124,7 @@ local function etDrawActivityBar(valueMin, normMin, fillColor)
     if frac > 0.001 then
         dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), etToU32(fillColor or ET_COL.accent), 2.0)
     end
-    imgui.Dummy(imgui.ImVec2(0, barH + 10))
-end
-
-local function etDrawNormHoursInline(label, var, id, vmin, vmax, onApply)
-    imgui.TextColored(col_muted2, uiText(label))
-    imgui.SameLine(0, 10)
-    imgui.PushItemWidth(56)
-    deskPushFlatInputStyle()
-    if imgui.InputInt('##' .. id, var) then
-        var[0] = math.max(vmin, math.min(vmax, var[0]))
-        if onApply then onApply(var[0]) end
-    end
-    deskPopFlatInputStyle()
-    imgui.PopItemWidth()
-    imgui.SameLine(0, 8)
-    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
-    imgui.TextColored(col_muted2, uiText('\xF7'))
-end
-
-local function etDrawNormHoursPairRow()
-    if not uiExactTimeDailyH and not uiExactTimeMonthlyH then return end
-    local rowW = math.max(280, imgui.GetContentRegionAvail().x)
-    local halfW = math.floor(rowW * 0.5)
-    imgui.Columns(2, '##et_norm_inputs', false)
-    if imgui.SetColumnWidth then
-        imgui.SetColumnWidth(0, halfW)
-        imgui.SetColumnWidth(1, halfW)
-    end
-    if uiExactTimeDailyH then
-        etDrawNormHoursInline('\xC4\xE5\xED\xFC', uiExactTimeDailyH, 'et_day', 1, 24, function(v)
-            settings.exact_time_daily_norm_h = v
-            markDirtySettings()
-        end)
-    end
-    imgui.NextColumn()
-    if uiExactTimeMonthlyH then
-        etDrawNormHoursInline('\xCC\xE5\xF1\xFF\xF6', uiExactTimeMonthlyH, 'et_month', 1, 744, function(v)
-            settings.exact_time_monthly_norm_h = v
-            markDirtySettings()
-        end)
-    end
-    imgui.NextColumn()
-    imgui.Columns(1)
-    imgui.Dummy(imgui.ImVec2(0, 4))
-end
-
-local function etDrawNormHoursRow(label, var, id, vmin, vmax, onApply, hint)
-    local suffix = '\xF7'
-    local suffixW = imgui.CalcTextSize(uiText(suffix)).x + 14
-    deskFormRowAvail(label, DESK_FORM_LABEL_W)
-    local avail = math.max(56, imgui.GetContentRegionAvail().x)
-    local inputW = math.max(88, math.min(116, avail - suffixW - 2))
-    imgui.PushItemWidth(inputW)
-    deskPushFlatInputStyle()
-    if imgui.InputInt('##' .. id, var) then
-        var[0] = math.max(vmin, math.min(vmax, var[0]))
-        if onApply then onApply(var[0]) end
-    end
-    deskPopFlatInputStyle()
-    imgui.PopItemWidth()
-    imgui.SameLine(0, 8)
-    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
-    imgui.TextColored(col_muted2, uiText(suffix))
-    if hint and hint ~= '' then
-        drawSettingsHint(hint)
-    end
-end
-
-local function etDrawNormProgressRow(label, valueMin, normMin, barColor)
-    valueMin = math.max(0, tonumber(valueMin) or 0)
-    normMin = math.max(1, tonumber(normMin) or 1)
-    local ok = valueMin >= normMin
-    local statusCol = ok and ET_COL_OK or ET_COL_FAIL
-    imgui.TextColored(col_muted2, uiText(label))
-    imgui.SameLine(0, 10)
-    imgui.TextColored(statusCol, uiText(string.format('%s / %s',
-        etFormatMinutesAsRussianDuration(valueMin),
-        etFormatMinutesAsRussianDuration(normMin))))
-    etDrawActivityBar(valueMin, normMin, barColor or ET_COL.accent)
-    imgui.Dummy(imgui.ImVec2(0, 2))
+    imgui.Dummy(imgui.ImVec2(0, barH + 8))
 end
 
 local function etDrawHelpWeekNav(viewWeekKey)
@@ -27958,7 +28179,6 @@ local function etDrawHelpWeekTable()
         drawSettingsHint('\xCD\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE')
         return
     end
-    local dailyNorm = etDailyNormMin()
     local weekAns = etWeekAnsTotal(viewWeekKey)
 
     etDrawHelpWeekNav(viewWeekKey)
@@ -28012,15 +28232,22 @@ local function etDrawHelpWeekTable()
         imgui.NextColumn()
     end
 
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
+    imgui.Separator()
+    imgui.PopStyleColor()
+
+    imgui.TextColored(hdrCol, uiText(ET_HELP_TOTAL_LABEL))
+    imgui.NextColumn()
+    imgui.NextColumn()
+    imgui.NextColumn()
+    imgui.NextColumn()
+    local ansTotalCol = weekAns > 0 and valCol or col_muted2
+    imgui.TextColored(ansTotalCol, uiText(tostring(weekAns)))
+    imgui.NextColumn()
+
     imgui.Columns(1)
 
     local offset = tonumber(etState.helpWeekOffset) or 0
-    local ansLabel = offset > 0
-        and '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE'
-        or '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE'
-    drawSettingsHint(string.format(
-        '%s: %d \xB7 \xC7\xE5\xEB\xE5\xED\xEE \xB7 \xEA\xF0\xE0\xF1\xED\xFB\xE9 \xED\xE5 \xE4\xEE\xED\xEE\xF0 \xB7 %s \xB7 \xEF\xEE\xF1\xEB\xE5 /c 60',
-        ansLabel, weekAns, etFormatMinutesAsRussianDuration(dailyNorm)))
     if offset > 0 then
         drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xE4\xE0\xF2\xF3 \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE9 \xED\xE5\xE4\xE5\xEB\xE8')
     end
@@ -28386,22 +28613,30 @@ function drawExactTimeTab()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##help_norms')
-    drawSettingsCardHeader('\xCD\xEE\xF0\xEC\xFB \xEE\xED\xEB\xE0\xE9\xED\xE0',
-        '\xC4\xED\xE5\xE2\xED\xE0\xFF \xE8 \xEC\xE5\xF1\xFF\xF7\xED\xE0\xFF \xED\xEE\xF0\xEC\xE0 \xE2 \xF7\xE0\xF1\xE0\xF5')
-    etDrawNormHoursPairRow()
-    etDrawNormProgressRow('\xC4\xE5\xED\xFC', etGetTodayCleanMin(), etDailyNormMin(), ET_COL.accent)
-    etDrawNormProgressRow('\xCC\xE5\xF1\xFF\xF6', etGetMonthlyCleanMin(), etMonthlyNormMin(), ET_MONTHLY_COLOR)
+    drawSettingsCardHeader('\xCD\xEE\xF0\xEC\xFB \xEE\xED\xEB\xE0\xE9\xED\xE0', '')
+    if uiExactTimeDailyH and drawSettingsInputInt then
+        drawSettingsInputInt('\xC4\xE5\xED\xFC', uiExactTimeDailyH, 'et_day', 1, 24, function(v)
+            settings.exact_time_daily_norm_h = v
+            markDirtySettings()
+        end, '\xF7')
+    end
+    if uiExactTimeMonthlyH and drawSettingsInputInt then
+        drawSettingsInputInt('\xCC\xE5\xF1\xFF\xF6', uiExactTimeMonthlyH, 'et_month', 1, 744, function(v)
+            settings.exact_time_monthly_norm_h = v
+            markDirtySettings()
+        end, '\xF7')
+    end
     deskFormPanelEnd()
 
     deskFormPanelBegin('##help_stats')
     drawSettingsCardHeader('\xD1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE0',
-        '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE8 \xEE\xF2\xE2\xE5\xF2\xFB \xE2 \xF0\xE5\xEF\xEE\xF0\xF2 \xEF\xEE \xE4\xED\xFF\xEC \xED\xE5\xE4\xE5\xEB\xE8 \xB7 \xF1\xF2\xF0\xE5\xEB\xEA\xE8 \xE4\xEB\xFF \xE4\xF0\xF3\xE3\xE8\xF5 \xED\xE5\xE4\xE5\xEB\xFC')
+        '\xD1\xE2\xEE\xE4\xED\xE0\xFF \xF2\xE0\xE1\xEB\xE8\xF6\xE0 \xEF\xEE \xE2\xE0\xF8\xE5\xEC\xF3 \xEE\xED\xEB\xE0\xE9\xED\xF3 \xE8 \xE0\xEA\xF2\xE8\xE2\xED\xEE\xF1\xF2\xE8 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2')
     etDrawHelpWeekTable()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##help_punish')
     drawSettingsCardHeader('\xC2\xFB\xE4\xE0\xED\xED\xFB\xE5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF',
-        '\xCF\xF0\xFF\xEC\xFB\xE5 \xEA\xEE\xEC\xE0\xED\xE4\xFB \xE8 \xE7\xE0\xEF\xF0\xEE\xF1\xFB /a \xEA\xEE\xE3\xE4\xE0 \xED\xE5\xF2 \xEF\xF0\xE0\xE2 \xED\xE0 \xEF\xF0\xFF\xEC\xF3\xFE \xE2\xFB\xE4\xE0\xF7\xF3')
+        '\xCB\xEE\xE3\x20\xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9\x2C\x20\xEA\xEE\xF2\xEE\xF0\xFB\xE5\x20\xE2\xFB\x20\xE2\xFB\xE4\xE0\xE2\xE0\xEB\xE8\x2E')
     etDrawHelpPunishLog()
     deskFormPanelEnd()
 
@@ -28465,8 +28700,8 @@ end
 function drawSettingsHotkeyBind()
     local hkPreview = deskCache.hotkeyCapture and cheatLiveBindPreview() or vkToLabel(settings.hotkey or vkeys.VK_F7)
     drawDeskBindRow({
-        label = '\xCE\xF2\xEA\xF0\xFB\xF2\xFC \xEE\xEA\xED\xEE',
-        inline = true,
+        label = '\xCE\xF2\xEA\xF0\xFB\xF2\xFC \xEC\xE5\xED\xFE',
+        inline = false,
         previewText = hkPreview,
         idleText = 'F7, M4, M5...',
         capturing = deskCache.hotkeyCapture,
@@ -29488,383 +29723,6 @@ function markRuleEditorDirty()
     rulesEditorDirty = true
 end
 
--- Fill Scenario Editor
-function fillScenarioEditor(idx)
-    local sc = quickScenarios[idx]
-    if not sc then return end
-    setInputBuf(editScLabel, sc.label or '')
-    setInputBuf(editScReply, sc.reply or '')
-    syncScKwEditFromScenario(sc)
-    editScEnabled[0] = sc.enabled ~= false
-    editScWatch[0] = sc.action == 'watch'
-    editScSkipReportId[0] = sc.skip_if_report_id ~= false
-    editScPriority[0] = tonumber(sc.priority) or 0
-    scenariosEditorDirty = false
-end
-
--- Сброс/отправка очереди.
-function flushScenarioKeywordsPreview()
-    if selectedScenarioIdx < 1 or selectedScenarioIdx > #quickScenarios then return end
-    local sc = quickScenarios[selectedScenarioIdx]
-    if not sc then return end
-    local kw = {}
-    for _, k in ipairs(scKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    sc.keywords = kw
-    markDirtySettings()
-    bumpScenariosGen()
-end
-
--- Сброс/отправка очереди.
-function flushScenarioEditorToScenario()
-    if selectedScenarioIdx < 1 or selectedScenarioIdx > #quickScenarios then return end
-    local sc = quickScenarios[selectedScenarioIdx]
-    if not sc then return end
-    local label = readInputBuf(editScLabel)
-    if label ~= '' then
-        sc.label = label
-    elseif trim(sc.label or '') == '' then
-        sc.label = '\xD1\xE1\xE5\xE7 \xED\xE0\xE7\xE2\xE0\xED\xE8\xFF'
-    end
-    sc.reply = readInputBuf(editScReply)
-    sc.enabled = editScEnabled[0]
-    sc.match = 'contains'
-    sc.priority = tonumber(editScPriority[0]) or 0
-    sc.action = editScWatch[0] and 'watch' or 'reply'
-    sc.skip_if_report_id = editScWatch[0] and false or editScSkipReportId[0]
-    local kw = {}
-    for _, k in ipairs(scKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    sc.keywords = kw
-    markDirtySettings()
-    bumpScenariosGen()
-end
-
--- Mark Scenario Editor Dirty
-function markScenarioEditorDirty()
-    scenariosEditorDirty = true
-end
-
--- Sync Sc Kw Edit From Scenario
-function syncScKwEditFromScenario(sc)
-    scKwEdit = {}
-    if not sc then
-        setInputBuf(scKwBulk, '')
-        return
-    end
-    local seen = {}
-    local lines = {}
-    for _, k in ipairs(sc.keywords or {}) do
-        local part = trim(k)
-        if part ~= '' then
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                scKwEdit[#scKwEdit + 1] = part
-                lines[#lines + 1] = part
-            end
-        end
-    end
-    setInputBuf(scKwBulk, table.concat(lines, '\n'))
-    setInputBuf(scKwNew, '')
-end
-
--- Sync Scenario Keywords From Bulk Buf
-function syncScenarioKeywordsFromBulkBuf()
-    local block = readInputBuf(scKwBulk)
-    scKwEdit = {}
-    if block == '' then
-        markScenarioEditorDirty()
-        return
-    end
-    local seen = {}
-    for line in block:gmatch('[^\r\n]+') do
-        for _, part in ipairs(parseKeywordList(line)) do
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                scKwEdit[#scKwEdit + 1] = part
-            end
-        end
-    end
-    markScenarioEditorDirty()
-end
-
--- Remove Scenario Keyword At
-function removeScenarioKeywordAt(idx)
-    if not scKwEdit[idx] then return end
-    table.remove(scKwEdit, idx)
-    markScenarioEditorDirty()
-    flushScenarioEditorToScenario()
-end
-
--- Add Keywords To Scenario Edit
-function addKeywordsToScenarioEdit(words)
-    local seen = {}
-    for _, ex in ipairs(scKwEdit) do
-        seen[keywordDedupeKey(ex)] = true
-    end
-    local added = 0
-    for _, w in ipairs(words) do
-        local part = trim(w)
-        if part ~= '' then
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                scKwEdit[#scKwEdit + 1] = part
-                added = added + 1
-            end
-        end
-    end
-    if added > 0 then
-        markScenarioEditorDirty()
-        flushScenarioEditorToScenario()
-    end
-    return added
-end
-
--- Try Add Scenario Keyword From Input
-function tryAddScenarioKeywordFromInput()
-    local line = trim(readInputBuf(scKwNew))
-    if line == '' then return 0 end
-    local words
-    if line:find('[,;]') then
-        words = parseKeywordList(line)
-    else
-        words = { line }
-    end
-    local n = addKeywordsToScenarioEdit(words)
-    setInputBuf(scKwNew, '')
-    return n
-end
-
--- Try Add Scenario Keywords From Bulk
-function tryAddScenarioKeywordsFromBulk()
-    local block = trim(readInputBuf(scKwBulk))
-    if block == '' then return 0 end
-    block = block:gsub('[\r\n]+', ',')
-    return addKeywordsToScenarioEdit(parseKeywordList(block))
-end
-
--- Apply Scenario Editor
-function applyScenarioEditor()
-    if selectedScenarioIdx < 1 or selectedScenarioIdx > #quickScenarios then return false end
-    local label = readInputBuf(editScLabel)
-    if label == '' then return false end
-    local action = editScWatch[0] and 'watch' or 'reply'
-    local kw = {}
-    for _, k in ipairs(scKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    if action == 'reply' and #kw == 0 then return false end
-    quickScenarios[selectedScenarioIdx] = {
-        label = label,
-        enabled = editScEnabled[0],
-        match = 'contains',
-        keywords = kw,
-        reply = readInputBuf(editScReply),
-        action = action,
-        priority = tonumber(editScPriority[0]) or 0,
-        skip_if_report_id = action == 'watch' and false or editScSkipReportId[0],
-    }
-    markDirtySettings()
-    bumpScenariosGen()
-    scenariosEditorDirty = false
-    return true
-end
-
--- Sync Scenario Editor If Dirty
-function syncScenarioEditorIfDirty()
-    if not scenariosEditorDirty then return end
-    if #quickScenarios < 1 then
-        scenariosEditorDirty = false
-        return
-    end
-    if selectedScenarioIdx < 1 or selectedScenarioIdx > #quickScenarios then
-        scenariosEditorDirty = false
-        return
-    end
-    applyScenarioEditor()
-end
-
--- Run Scenario Match Test
-function runScenarioMatchTest()
-    local sample = trim(readInputBuf(scTestBuf))
-    if sample == '' then
-        setInputBuf(scTestResult, uiText('\xE2\xE2\xE5\xE4\xE8\xF2\xE5 \xF2\xE5\xEA\xF1\xF2'))
-        return
-    end
-    local summary = formatIntentResolveSummary(sample)
-    local btns = collectQuickButtonsForMessage(sample)
-    if #btns < 1 then
-        setInputBuf(scTestResult, summary .. ' | ' .. uiText('\xED\xE5\xF2 \xEA\xED\xEE\xEF\xEE\xEA'))
-        return
-    end
-    local labels = {}
-    for _, qb in ipairs(btns) do
-        labels[#labels + 1] = qb.scenario and qb.scenario.label or '?'
-    end
-    setInputBuf(scTestResult, summary .. ' | ' .. table.concat(labels, ', '))
-end
-
--- Draw Scenarios Edit Panel
-function drawScenariosEditPanel()
-    imgui.TextColored(col_muted2, uiText('\xCD\xE0\xE7\xE2\xE0\xED\xE8\xE5'))
-    imgui.PushItemWidth(-1)
-    imgui.InputText('##sc_label', editScLabel, sizeof(editScLabel))
-    if imguiItemEdited() then flushScenarioEditorToScenario() end
-    imgui.PopItemWidth()
-
-    imgui.TextColored(col_muted2, uiText('\xD2\xF0\xE8\xE3\xE3\xE5\xF0\xFB (\xEF\xEE \xF1\xF2\xF0\xEE\xEA\xE5, + \xE4\xEB\xFF \xE2\xF1\xE5\xF5 \xF1\xEB\xEE\xE2)'))
-    imgui.TextColored(col_muted, string.format('(%d)', #scKwEdit))
-    imgui.PushItemWidth(-1)
-    if imgui.InputTextMultiline('##sc_kw_bulk', scKwBulk, sizeof(scKwBulk), imgui.ImVec2(-1, 120)) then
-        syncScenarioKeywordsFromBulkBuf()
-        flushScenarioEditorToScenario()
-    end
-    if imguiItemEdited() then
-        syncScenarioKeywordsFromBulkBuf()
-        flushScenarioEditorToScenario()
-    end
-    imgui.PopItemWidth()
-
-    if deskFormToggleRow('\xD1\xEB\xE5\xE4\xE8\xF2\xFC', editScWatch, function()
-        flushScenarioEditorToScenario()
-    end) then end
-
-    if not editScWatch[0] then
-        imgui.TextColored(col_muted2, uiText('\xCE\xF2\xE2\xE5\xF2 /ans'))
-        imgui.PushItemWidth(-1)
-        if imgui.InputTextMultiline('##sc_reply', editScReply, sizeof(editScReply), imgui.ImVec2(-1, 64)) then
-            flushScenarioEditorToScenario()
-        end
-        if imguiItemEdited() then flushScenarioEditorToScenario() end
-        imgui.PopItemWidth()
-
-        if deskFormToggleRow('\xD1\xEA\xF0\xFB\xF2\xE0\xF2\xFC \xED\xE0 \xE6\xE0\xEB\xEE\xE1\xE0\xF5 \xF1 ID \xED\xE0\xF0\xF3\xF8\xE8\xF2\xE5\xEB\xFF', editScSkipReportId, function()
-            flushScenarioEditorToScenario()
-        end) then end
-    else
-        imgui.TextColored(col_muted2, uiText('\xD1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xE4\xEB\xFF sp'))
-        imgui.PushItemWidth(-1)
-        local scWatchChanged = false
-        if imgui.InputTextWithHint then
-            scWatchChanged = imgui.InputTextWithHint(
-                '##sc_reply', uiText(TEMPLATE_PAYLOAD_HINT), editScReply, sizeof(editScReply))
-        else
-            scWatchChanged = imgui.InputText('##sc_reply', editScReply, sizeof(editScReply))
-        end
-        if scWatchChanged then flushScenarioEditorToScenario() end
-        if imguiItemEdited() then flushScenarioEditorToScenario() end
-        imgui.PopItemWidth()
-    end
-
-    if deskFormToggleRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED\xEE', editScEnabled, function()
-        flushScenarioEditorToScenario()
-    end, 'sc_en') then end
-
-    imgui.Dummy(imgui.ImVec2(0, 6))
-    imgui.TextColored(col_muted2, uiText('\xD2\xE5\xF1\xF2'))
-    local testBtnW = 64
-    imgui.PushItemWidth(math.max(80, imgui.GetContentRegionAvail().x - testBtnW - 8))
-    imgui.InputText('##sc_test', scTestBuf, sizeof(scTestBuf))
-    imgui.PopItemWidth()
-    imgui.SameLine(0, 8)
-    if imgui.Button(uiText('\xD2\xE5\xF1\xF2') .. '##sc_test_go', imgui.ImVec2(testBtnW, DESK_FORM_ROW_H)) then
-        runScenarioMatchTest()
-    end
-    imgui.TextColored(col_muted, readInputBuf(scTestResult))
-
-    imgui.Dummy(imgui.ImVec2(0, 8))
-    if imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC \xF1\xF6\xE5\xED\xE0\xF0\xE8\xE9'), imgui.ImVec2(-1, 26)) then
-        if selectedScenarioIdx >= 1 and selectedScenarioIdx <= #quickScenarios then
-            table.remove(quickScenarios, selectedScenarioIdx)
-            if selectedScenarioIdx > #quickScenarios then selectedScenarioIdx = #quickScenarios end
-            if selectedScenarioIdx < 1 then selectedScenarioIdx = 1 end
-            if #quickScenarios > 0 then fillScenarioEditor(selectedScenarioIdx) end
-            markDirtySettings()
-            bumpScenariosGen()
-        end
-    end
-end
-
--- Draw Scenarios Tab Inner
-function drawScenariosTabInner()
-    pushPanelStyle()
-    imgui.BeginChild('##sc_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
-    if imgui.Button(uiText('+ \xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9'), imgui.ImVec2(-1, 28)) then
-        flushScenarioEditorToScenario()
-        table.insert(quickScenarios, {
-            label = '\xCD\xEE\xE2\xEE\xE5',
-            enabled = true,
-            match = 'contains',
-            keywords = {},
-            reply = '',
-            action = 'reply',
-            priority = 0,
-            skip_if_report_id = true,
-        })
-        selectedScenarioIdx = #quickScenarios
-        fillScenarioEditor(selectedScenarioIdx)
-        markDirtySettings()
-        bumpScenariosGen()
-    end
-    imgui.Dummy(imgui.ImVec2(0, 6))
-    for i, sc in ipairs(quickScenarios) do
-        local name = trim(sc.label or '')
-        if name == '' then
-            name = '\xD1\xE1\xE5\xE7 \xED\xE0\xE7\xE2\xE0\xED\xE8\xFF'
-        end
-        local label = name .. (sc.enabled and '' or ' (off)')
-        if drawEditorListSelectable(label, '##sc' .. i, selectedScenarioIdx == i) then
-            if selectedScenarioIdx ~= i then
-                flushScenarioEditorToScenario()
-                selectedScenarioIdx = i
-                fillScenarioEditor(i)
-            end
-        end
-    end
-    imgui.EndChild()
-    popPanelStyle()
-
-    imgui.SameLine()
-    pushPanelStyle(col_chat_bg)
-    imgui.BeginChild('##sc_edit', imgui.ImVec2(0, -1), true)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
-    if #quickScenarios == 0 then
-        imgui.Dummy(imgui.ImVec2(0, 24))
-        imgui.TextColored(col_muted, uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 + \xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9'))
-    else
-        drawScenariosEditPanel()
-    end
-    imgui.PopStyleVar(2)
-    imgui.EndChild()
-    popPanelStyle()
-end
-
--- Draw Scenarios Tab
-function drawScenariosTab()
-    if not scenariosUiSynced then
-        if selectedScenarioIdx < 1 then selectedScenarioIdx = 1 end
-        if selectedScenarioIdx > #quickScenarios then selectedScenarioIdx = math.max(1, #quickScenarios) end
-        if #quickScenarios > 0 then fillScenarioEditor(selectedScenarioIdx) end
-        scenariosUiSynced = true
-    end
-    local okSc, errSc = pcall(drawScenariosTabInner)
-    syncScenarioEditorIfDirty()
-    if not okSc then
-        imgui.TextColored(col_warn, 'Scenarios UI error:')
-        imgui.TextWrapped(tostring(errSc))
-        print('[Report Desk] scenarios UI: ' .. tostring(errSc))
-    end
-end
-
 -- Fill Composer Quick Editor
 function fillComposerQuickEditor(idx)
     ensureComposerQuickButtons()
@@ -30302,37 +30160,18 @@ function drawThreadList()
     popPanelStyle()
 end
 
--- Sync Rules Checkboxes From Settings
-function syncRulesCheckboxesFromSettings()
-    uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
-    uiAutoOnlyUnread[0] = settings.auto_only_unread == true
-    uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
-    uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
-end
-
--- Draw Rules Tab Inner
-function drawRulesTabInner()
-    deskFormPanelBegin('##auto_general')
-    drawSettingsCardHeader('\xCE\xE1\xF9\xE5\xE5')
+-- Draw Auto Replies Settings
+function drawAutoRepliesSettings()
     if deskFormCheckboxRow('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB \xE2\xEA\xEB\xFE\xF7\xE5\xED\xFB', uiAutoRulesEnabled, function(v)
         settings.auto_rules_enabled = v
         markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xD2\xEE\xEB\xFC\xEA\xEE \xED\xE0 \xED\xE5\xEF\xF0\xEE\xF7\xE8\xF2\xE0\xED\xED\xFB\xE5', uiAutoOnlyUnread, function(v)
-        settings.auto_only_unread = v
-        markDirtySettings()
-    end) then end
-    imgui.TextColored(col_muted, uiText(
-        '\xD1\xEB\xEE\xE2\xE0-\xF2\xF0\xE8\xE3\xE3\xE5\xF0\xFB \xE2 \xEA\xEE\xE4\xE5 (\xF6\xE5\xEB\xEE\xE5 \xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5). \xC7\xE4\xE5\xF1\xFC \xF2\xEE\xEB\xFC\xEA\xEE \xE2\xEA\xEB/ \xE2\xFB\xEA\xEB \xE8 \xF2\xE5\xEA\xF1\xF2.'))
-    deskFormPanelEnd()
+    end, 'auto_on') then end
 
-    deskFormPanelBegin('##auto_time')
-    drawSettingsCardHeader('\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF')
+    drawSettingsSubsection('\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF')
     if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED\xEE', uiAutoTimeEnabled, function(v)
         settings.auto_time_enabled = v
         markDirtySettings()
     end, 'auto_time_en') then end
-    imgui.TextColored(col_muted2, uiText('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0'))
     imgui.PushItemWidth(-1)
     deskPushFlatInputStyle()
     local timeChanged
@@ -30349,16 +30188,13 @@ function drawRulesTabInner()
         markDirtySettings()
     end
     imgui.PopItemWidth()
-    imgui.TextColored(col_muted, uiText('{datetime}'))
-    deskFormPanelEnd()
+    drawSettingsHint('{datetime}')
 
-    deskFormPanelBegin('##auto_gg')
-    drawSettingsCardHeader('\xD1\xEF\xE0\xF1\xE8\xE1\xEE / GG')
+    drawSettingsSubsection('\xD1\xEF\xE0\xF1\xE8\xE1\xEE / GG')
     if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED\xEE', uiAutoGgEnabled, function(v)
         settings.auto_gg_enabled = v
         markDirtySettings()
     end, 'auto_gg_en') then end
-    imgui.TextColored(col_muted2, uiText('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0'))
     imgui.PushItemWidth(-1)
     deskPushFlatInputStyle()
     local ggChanged
@@ -30375,44 +30211,14 @@ function drawRulesTabInner()
         markDirtySettings()
     end
     imgui.PopItemWidth()
-    deskFormPanelEnd()
-end
-
--- Draw Rules Tab
-function drawRulesTab()
-    if not rulesUiSynced then
-        setInputBuf(deskReplyBuf.time, getTimeReplyText())
-        setInputBuf(deskReplyBuf.gg, getGgReplyText())
-        syncRulesCheckboxesFromSettings()
-        rulesUiSynced = true
-    end
-
-    pushPanelStyle(col_chat_bg)
-    local childFlags = 0
-    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
-        childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
-    end
-    imgui.BeginChild('##auto_rules_panel', imgui.ImVec2(-1, -1), false, childFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
-
-    local okRules, errRules = pcall(drawRulesTabInner)
-    if not okRules then
-        imgui.TextColored(col_warn, 'Rules UI error:')
-        imgui.TextWrapped(tostring(errRules))
-        print('[Report Desk] rules UI: ' .. tostring(errRules))
-    end
-
-    imgui.PopStyleVar()
-    imgui.EndChild()
-    popPanelStyle()
 end
 
 -- Sync Settings Ui From Settings
 function syncSettingsUiFromSettings()
-    uiSound[0] = settings.sound
-    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
+    uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
+    uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
+    uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
     uiSpecHud[0] = settings.spectate_hud ~= false
-    uiSpecAutoSt[0] = settings.spectate_auto_st ~= false
     uiSpecAutoRefresh[0] = settings.spectate_auto_refresh ~= false
     uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
     uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
@@ -30428,6 +30234,8 @@ end
 function drawSettingsTab()
     if not settingsUiSynced then
         syncSettingsUiFromSettings()
+        setInputBuf(deskReplyBuf.time, getTimeReplyText())
+        setInputBuf(deskReplyBuf.gg, getGgReplyText())
         settingsUiSynced = true
     end
 
@@ -30440,47 +30248,20 @@ function drawSettingsTab()
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     deskFormPanelBegin('##set_main')
-    drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5',
-        '\xC3\xEE\xF0\xFF\xF7\xE0\xFF \xEA\xEB\xE0\xE2\xE8\xF8\xE0 \xE8 \xF3\xE2\xE5\xE4\xEE\xEC\xEB\xE5\xED\xE8\xFF')
+    drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5', '')
     drawSettingsHotkeyBind()
 
-    drawSettingsSubsection('\xC7\xE2\xF3\xEA')
-    if deskFormCheckboxRow('\xCD\xEE\xE2\xFB\xE9 \xF0\xE5\xEF\xEE\xF0\xF2', uiSound, function(v)
-        settings.sound = v
+    uiAdminLevel[0] = getLocalAdminLevel()
+    drawSettingsSliderInt('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0', uiAdminLevel, 'adm_lvl', 1, 4, function(v)
+        settings.admin_level = v
         markDirtySettings()
-    end, 'snd_report') then end
-
-    drawSettingsSubsection('\xD1\xF6\xE5\xED\xE0\xF0\xE8\xE9 \xAB\xD1\xEB\xE5\xE4\xE8\xF2\xFC\xBB')
-    if deskFormCheckboxRow('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xFF\xF2\xFC \xEE\xF2\xE2\xE5\xF2 \xE0\xE2\xF2\xEE\xEC\xE0\xF2\xE8\xF7\xE5\xF1\xEA\xE8', uiWatchAutoNotify, function(v)
-        settings.watch_auto_notify = v
-        markDirtySettings()
-    end, 'watch_auto') then end
-    if uiWatchAutoNotify[0] then
-        deskFormRowLabel('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0')
-        imgui.PushItemWidth(-1)
-        local wnChanged
-        if imgui.InputTextWithHint then
-            wnChanged = imgui.InputTextWithHint('##watch_notify',
-                uiText(TEMPLATE_PAYLOAD_HINT),
-                deskReplyBuf.watch, sizeof(deskReplyBuf.watch))
-        else
-            wnChanged = imgui.InputText('##watch_notify', deskReplyBuf.watch, sizeof(deskReplyBuf.watch))
-        end
-        deskKeepInputOnActiveItem()
-        if wnChanged or imguiItemEdited() then
-            settings.watch_notify = readInputBuf(deskReplyBuf.watch)
-            markDirtySettings()
-        end
-        imgui.PopItemWidth()
-    end
+    end)
     deskFormPanelEnd()
 
     deskFormPanelBegin('##set_chat')
-    drawSettingsCardHeader('\xD7\xE0\xF2',
-        'Bubble-\xF0\xE5\xF7\xFC \xE8\xE3\xF0\xEE\xEA\xEE\xE2, \xF4\xE8\xEB\xFC\xF2\xF0 \xEC\xE0\xF2\xE0')
+    drawSettingsCardHeader('\xD7\xE0\xF2', '')
 
-    drawSettingsSubsection('Bubble-\xF0\xE5\xF7\xFC [B]')
-    if deskFormCheckboxRow('\xC4\xF3\xE1\xEB\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xE2 SAMP-\xF7\xE0\xF2', uiRemoteChatSamp, function(v)
+    if deskFormCheckboxRow('\xC4\xE0\xEB\xFC\xED\xE8\xE9 \xF7\xE0\xF2', uiRemoteChatSamp, function(v)
         settings.remote_chat_samp_mirror = v
         if type(remoteChatSetMirrorEnabled) == 'function' then
             pcall(remoteChatSetMirrorEnabled, v)
@@ -30489,10 +30270,8 @@ function drawSettingsTab()
         end
         markDirtySettings()
     end, 'remote_chat_samp') then end
-    drawSettingsHint('\xD0\xE5\xF7\xFC, /me \xE8 /do \xE8\xE3\xF0\xEE\xEA\xEE\xE2 \xF1 \xF2\xE5\xE3\xEE\xEC [B] \xE2 \xEE\xE1\xF9\xE8\xE9 \xF7\xE0\xF2')
 
-    drawSettingsSubsection('\xD4\xE8\xEB\xFC\xF2\xF0 \xEC\xE0\xF2\xE0')
-    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED', uiProfanityFilter, function(v)
+    if deskFormCheckboxRow('\xCE\xF2\xF1\xEB\xE5\xE6\xE8\xE2\xE0\xF2\xFC \xEC\xE0\xF2', uiProfanityFilter, function(v)
         settings.profanity_filter_enabled = v
         markDirtySettings()
     end, 'prof_on') then end
@@ -30502,29 +30281,26 @@ function drawSettingsTab()
             markDirtySettings()
         end, 'prof_snd') then end
     end
-    drawSettingsHint('\xD2\xEE\xEB\xFC\xEA\xEE bubble-\xF0\xE5\xF7\xFC \xE8\xE3\xF0\xEE\xEA\xEE\xE2 \xB7 ' .. tostring(#profanity_words) .. ' \xF1\xEB\xEE\xE2 \xE2 \xF1\xEB\xEE\xE2\xE0\xF0\xE5')
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##set_auto')
+    drawSettingsCardHeader('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB', '')
+    drawAutoRepliesSettings()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##set_spec')
-    drawSettingsCardHeader('\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2 /sp',
-        'HUD \xE8 \xEF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5 \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC')
-    uiAdminLevel[0] = getLocalAdminLevel()
-    drawSettingsSliderInt('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0', uiAdminLevel, 'adm_lvl', 1, 4, function(v)
-        settings.admin_level = v
-        markDirtySettings()
-    end)
-    drawSettingsHint('1\x962 \x97 tr \xF7\xE5\xF0\xE5\xE7 /a \xB7 3+ \x97 \xEA\xEE\xEC\xE0\xED\xE4\xE0 /tr')
+    drawSettingsCardHeader('\xCF\xEE\xEC\xEE\xF9\xED\xE8\xEA /sp', '')
 
     drawSettingsSubsection('HUD')
-    if deskFormCheckboxRow('\xCF\xE0\xED\xE5\xEB\xFC \xF1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE8', uiSpecHud, function(v)
+    if deskFormCheckboxRow('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xF2\xFC \xF1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xF3 \xE8\xE3\xF0\xEE\xEA\xE0', uiSpecHud, function(v)
         settings.spectate_hud = v
         markDirtySettings()
     end, 'spec_hud') then end
-    if deskFormCheckboxRow('\xD1\xEF\xE8\xE4\xEE\xEC\xE5\xF2\xF0 \xE2 \xEC\xE0\xF8\xE8\xED\xE5', uiSpecVehicleHud, function(v)
+    if deskFormCheckboxRow('\xCA\xE0\xF1\xF2\xEE\xEC\xED\xFB\xE9 \xF1\xEF\xE8\xE4\xEE\xEC\xE5\xF2\xF0', uiSpecVehicleHud, function(v)
         settings.spectate_vehicle_hud = v
         markDirtySettings()
     end, 'spec_vehicle_hud') then end
-    if deskFormCheckboxRow('\xCA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xE0 \xE8\xE3\xF0\xEE\xEA\xE0', uiSpecKeysHud, function(v)
+    if deskFormCheckboxRow('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xF2\xFC \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xF3 \xE8\xE3\xF0\xEE\xEA\xE0', uiSpecKeysHud, function(v)
         settings.spectate_keys_hud = v
         markDirtySettings()
     end, 'spec_keys_hud') then end
@@ -30532,13 +30308,8 @@ function drawSettingsTab()
         settings.spectate_wheel_zoom = v
         markDirtySettings()
     end, 'spec_wheel_zoom') then end
-    drawSettingsHint('\xCF\xE0\xED\xE5\xEB\xE8 \xEC\xEE\xE6\xED\xEE \xEF\xE5\xF0\xE5\xF2\xE0\xF1\xEA\xE8\xE2\xE0\xF2\xFC \xEC\xFB\xF8\xFC\xFE \xE2 /sp \xB7 \xEA\xEB\xE0\xE2\xE8\xE0\xF2\xF3\xF0\xF3 \xE2 \xE7\xEE\xED\xE5 \xF6\xE5\xED\xF2\xF0\xE0 \xF1\xED\xE8\xE7\xF3')
 
     drawSettingsSubsection('\xCF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5')
-    if deskFormCheckboxRow('\xC7\xE0\xEF\xF0\xE0\xF8\xE8\xE2\xE0\xF2\xFC /st \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5', uiSpecAutoSt, function(v)
-        settings.spectate_auto_st = v
-        markDirtySettings()
-    end, 'spec_st') then end
     if deskFormCheckboxRow('\xCE\xE1\xED\xEE\xE2\xEB\xFF\xF2\xFC /sp \xEF\xF0\xE8 \xF2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xE5 \xE8 \xE8\xED\xF2\xE5\xF0\xFC\xE5\xF0\xE5', uiSpecAutoRefresh, function(v)
         settings.spectate_auto_refresh = v
         markDirtySettings()
@@ -30548,7 +30319,6 @@ function drawSettingsTab()
         markDirtySettings()
     end, 'spec_persist') then end
 
-    drawSettingsSubsection('\xC7\xE2\xF3\xEA \xEC\xE5\xED\xFE')
     if deskFormCheckboxRow('\xCD\xE0\xE2\xE8\xE3\xE0\xF6\xE8\xFF /sp', uiSpecSpMenuSound, function(v)
         settings.spectate_sp_menu_sound = v
         markDirtySettings()
@@ -30614,11 +30384,9 @@ function toggleWindow()
         deskRememberSpectateCursorMode()
         deskEnableUiCursorForSamp()
     end
-    rulesUiSynced = false
     settingsUiSynced = false
     adminPunishUiSynced = false
     exactTimeUiSynced = false
-    scenariosUiSynced = false
     local selThread = getSelectedThread()
     deskInputState.focusReplyNext = selThread ~= nil
     deskInputState.focusReplyReason = selThread ~= nil and 'open' or nil
@@ -30676,14 +30444,6 @@ function drawMainWindow()
             drawThreadList()
             imgui.SameLine(0, 0)
             drawChatPanel()
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB') .. '##tab_rules') then
-            drawRulesTab()
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xD1\xF6\xE5\xED\xE0\xF0\xE8\xE8') .. '##tab_sc') then
-            drawScenariosTab()
             imgui.EndTabItem()
         end
         if imgui.BeginTabItem(uiText('\xC1\xFB\xF1\xF2\xF0\xFB\xE5 \xEE\xF2\xE2\xE5\xF2\xFB') .. '##tab_cq') then
@@ -30858,6 +30618,8 @@ function deskPassesGameKey(wparam)
     end
     return false
 end
+
+_G.deskPassesGameKey = deskPassesGameKey
 
 
 -- Draw Desk Sp Spectate Overlay
@@ -32617,7 +32379,6 @@ function main()
     pcall(installDeskSpMenuRpcBlock)
     pcall(installDeskCheckerRpcProbe)
     uiSound[0] = settings.sound
-    uiAutoOnlyUnread[0] = settings.auto_only_unread
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
     uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
@@ -32631,7 +32392,7 @@ function main()
     end
     pcall(flushDirtyConfigNow)
 
-    sampRegisterChatCommand('reps', function()
+    sampRegisterChatCommand('adesk', function()
         pcall(toggleWindow)
     end)
     sampRegisterChatCommand('reportdesk', function()
@@ -32744,6 +32505,7 @@ function main()
     local lastHookCheck = 0
     local lastCheckerTickAt = 0
     local CHECKER_TICK_SP_INTERVAL = 0.5
+    local CHECKER_TICK_IDLE_INTERVAL = 0.5
     local deskWasSampInGame = type(deskSampInGame) == 'function' and deskSampInGame() or false
 
     local function resolveIngestPollInterval()
@@ -32754,7 +32516,7 @@ function main()
     end
 
     local function mainLoopWaitMs()
-        if showWindow[0] then return 8 end
+        if showWindow[0] then return 16 end
         if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
@@ -32767,7 +32529,13 @@ function main()
                 and deskSpectateStats.isHudDragActive() then return 1 end
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
         if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 16 end
-        if type(settings) == 'table' and settings.admin_punish_enabled == true then return 16 end
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then
+            local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+            local profOk = deskCache and deskCache.profHooksInstalled == true
+            if not hookOk or not profOk then
+                return 25
+            end
+        end
         return 50
     end
 
@@ -32855,8 +32623,10 @@ function main()
         pcall(cheatsProcessKeybinds)
         pcall(cheatsMaintain)
         local nowLoop = os.clock()
-        local checkerInterval = (deskIsSpectating() and type(checkerIsHudVisible) == 'function'
-            and not checkerIsHudVisible() and CHECKER_TICK_SP_INTERVAL) or 0
+        local checkerInterval = CHECKER_TICK_IDLE_INTERVAL
+        if deskIsSpectating() and type(checkerIsHudVisible) == 'function' and not checkerIsHudVisible() then
+            checkerInterval = CHECKER_TICK_SP_INTERVAL
+        end
         if nowLoop - lastCheckerTickAt >= checkerInterval then
             pcall(checkerTick)
             lastCheckerTickAt = nowLoop
@@ -32864,6 +32634,12 @@ function main()
         pcall(function()
             if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
                 deskSpectateStats.tickPendingSp()
+            end
+        end)
+        pcall(function()
+            local specSession = package.loaded['report_desk_spectate_session']
+            if specSession and specSession.tickTdHooksLifecycle then
+                specSession.tickTdHooksLifecycle()
             end
         end)
         pcall(cheatsTickMarker)
@@ -35900,7 +35676,7 @@ function checkerIsSyncBlocked()
     return false
 end
 
--- Spawn catalog sync: не ждём произвольный диалог игрока — только pause и окно /reps.
+-- Spawn catalog sync: не ждём произвольный диалог игрока — только pause и окно /adesk.
 function checkerIsSpawnCatalogSyncBlocked()
     if checkerIsSuspended() then return true end
     if type(showWindow) == 'table' and showWindow[0] then return true end
@@ -36072,7 +35848,7 @@ function checkerScheduleSpawnCatalogSync(delaySec)
     checkerState.spawnCatalogSyncAt = os.clock() + delaySec
 end
 
--- Возобновить spawn catalog sync после закрытия /reps.
+-- Возобновить spawn catalog sync после закрытия /adesk.
 function checkerOnDeskWindowClosed()
     if settings.checker_auto_sync == false then return end
     if checkerState.spawnCatalogSyncDone then return end
@@ -36129,7 +35905,7 @@ function checkerManualSync()
     end
     if checkerIsSyncBlocked() then
         if type(say) == 'function' then
-            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3 \xE8\xEB\xE8 /reps')
+            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3 \xE8\xEB\xE8 /adesk')
         end
         return
     end
@@ -37840,7 +37616,7 @@ do
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local CMD_BIND_RESERVED = {
-    ans = true, reps = true, reportdesk = true, hist = true, iget = true, ilog = true, iskill = true,
+    ans = true, adesk = true, reportdesk = true, hist = true, iget = true, ilog = true, iskill = true,
     warnlast = true, banlast = true, jaillast = true, mutelast = true,
     acar = true, guns = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
@@ -38067,7 +37843,6 @@ end
 
 -- Draw Cmd Bind Edit Panel
 function drawCmdBindEditPanel()
-    drawSettingsSubsection('\xCA\xEE\xEC\xE0\xED\xE4\xE0')
     local cmdRowW = math.max(120, imgui.GetContentRegionAvail().x - 18)
     imgui.TextColored(col_muted, '/')
     imgui.SameLine(0, 4)
@@ -38120,9 +37895,6 @@ end
 -- Draw Cmd Binds Tab Inner
 function drawCmdBindsTabInner()
     ensureCmdBinds()
-    drawSettingsHint(
-        '\xD1\xE2\xEE\xE8 \xEA\xEE\xEC\xE0\xED\xE4\xFB \xE4\xEB\xFF \xE1\xFB\xF1\xF2\xF0\xEE\xE3\xEE /ans \xE8\xE3\xF0\xEE\xEA\xF3 \xEF\xEE ID')
-    imgui.Dummy(imgui.ImVec2(0, 4))
     pushPanelStyle()
     imgui.BeginChild('##cmd_bind_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
     if imgui.Button(uiText('+ \xCA\xEE\xEC\xE0\xED\xE4\xE0'), imgui.ImVec2(-1, 28)) then

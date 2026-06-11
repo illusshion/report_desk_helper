@@ -82,15 +82,25 @@ local function overlayEnabled(opts)
     return getOverlay() ~= nil
 end
 
+local function wantsMinimalOverlay(opts)
+    opts = opts or activeOverlayOpts
+    return opts and (opts.minimalOverlay == true or opts.firstInstall == true)
+end
+
 local function overlayShow(title, detail, opts)
+    opts = opts or activeOverlayOpts
     if not overlayEnabled(opts) then return end
     local ov = getOverlay()
-    if ov and ov.show then
+    if not ov then return end
+    if wantsMinimalOverlay(opts) and ov.showMinimal then
+        ov.showMinimal(detail or title or OVERLAY_FRIENDLY_CHECK)
+    elseif ov.show then
         ov.show(title, detail)
     end
 end
 
 local function overlayUpdate(detail, fraction, opts)
+    opts = opts or activeOverlayOpts
     if not overlayEnabled(opts) then return end
     local ov = getOverlay()
     if ov and ov.update then
@@ -98,6 +108,7 @@ local function overlayUpdate(detail, fraction, opts)
             detail = detail,
             fraction = fraction,
             indeterminate = fraction == nil,
+            minimal = wantsMinimalOverlay(opts),
         })
     end
 end
@@ -113,9 +124,13 @@ function M.hideUpdateOverlay()
 end
 
 function M.showUpdateOverlay(title, detail, opts)
-    opts = opts or { showOverlay = true, userFacing = true }
+    opts = M.resolveUserNotifyOpts(opts or { showOverlay = true, userFacing = true })
     setOverlayContext(opts)
-    overlayShow(title or OVERLAY_TITLE, detail or OVERLAY_CHECK, opts)
+    if wantsMinimalOverlay(opts) then
+        overlayShow(nil, detail or OVERLAY_FRIENDLY_CHECK, opts)
+    else
+        overlayShow(title or OVERLAY_TITLE, detail or OVERLAY_CHECK, opts)
+    end
 end
 
 local function setOverlayContext(opts)
@@ -133,12 +148,27 @@ local function notify(msg, opts)
     M.chatSay(msg)
 end
 
+local function sayFriendly(msg, opts)
+    opts = opts or {}
+    if opts.userFacing then
+        M.chatSay(msg)
+    end
+end
+
 local OVERLAY_TITLE = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk'
 local OVERLAY_CHECK = '\xCF\xF0\xEE\xE2\xE5\xF0\xEA\xE0 \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE9...'
 local OVERLAY_DOWNLOAD = '\xCA\xE0\xF7\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
 local OVERLAY_INSTALL = '\xD3\xF1\xF2\xE0\xED\xE0\xE2\xEB\xE8\xE2\xE0\xE5\xEC \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5...'
 local OVERLAY_ASSETS = '\xCA\xE0\xF7\xE0\xE5\xEC \xEF\xF0\xE5\xE2\xFC\xFE \xF1\xEA\xE8\xED\xEE\xE2 \xE8 \xD2\xD1...'
 local OVERLAY_DONE = '\xC3\xEE\xF2\xEE\xE2\xEE'
+local OVERLAY_FRIENDLY_CHECK = '\xCF\xF0\xEE\xE2\xE5\xF0\xFF\xFE \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF...'
+local OVERLAY_FRIENDLY_DOWNLOAD = '\xC7\xE0\xE3\xF0\xF3\xE6\xE0\xFE...'
+local OVERLAY_FRIENDLY_INSTALL = '\xD3\xF1\xF2\xE0\xED\xE0\xE2\xEB\xE8\xE2\xE0\xFE...'
+local FIRST_RUN_CHAT = '\xD6\xF2\xEE \xE2\xE0\xF8 \xEF\xE5\xF0\xE2\xFB\xE9 \xE7\xE0\xEF\xF3\xF1\xEA. \xCF\xF0\xEE\xE2\xE5\xF0\xFE \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF \xE8 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xFE \xE2\xF1\xB8 \xED\xF3\xE6\xED\xEE\xE5. \xC2\xEE\xE7\xEC\xEE\xE6\xED\xE0 \xEF\xF0\xEE\xF1\xE0\xE4\xEA\xE0 FPS \xED\xE0 \xEF\xE0\xF0\xF3 \xF1\xE5\xEA\xF3\xED\xE4 \xB7 \xFD\xF2\xEE \xED\xEE\xF0\xEC\xE0\xEB\xFC\xED\xEE.'
+local FIRST_RUN_READY = '\xC3\xEE\xF2\xEE\xE2\xEE! \xCE\xF2\xEA\xF0\xEE\xE9\xF2\xE5 \xEE\xEA\xED\xEE \xEA\xEE\xEC\xE0\xED\xE4\xEE\xE9 /adesk'
+local FIRST_RUN_FAIL = '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF3\xF1\xF2\xE0\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xF0\xEE\xE2\xE5\xF0\xFC\xF2\xE5 \xE8\xED\xF2\xE5\xF0\xED\xE5\xF2 \xE8 \xEF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair'
+local UPDATE_START = '\xC2\xFB\xF8\xEB\xE0 \xED\xEE\xE2\xE0\xFF \xE2\xE5\xF0\xF1\xE8\xFF, \xEE\xE1\xED\xEE\xE2\xEB\xFF\xFE\xF1\xFC...'
+local UPDATE_DONE = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xE7\xE0\xE2\xE5\xF0\xF8\xE5\xED\xEE.'
 
 local OVERLAY_ASSET_LABELS = {
     ['AdminDeskCore.luac'] = '\xFF\xE4\xF0\xEE',
@@ -195,8 +225,20 @@ function M.resolveUserNotifyOpts(opts)
         if opts.showOverlay == nil then
             opts.showOverlay = true
         end
+        if opts.minimalOverlay == nil then
+            opts.minimalOverlay = true
+        end
     end
     return opts
+end
+
+function M.isFirstInstall()
+    if M.isDevEnvironment() then return false end
+    return not M.corePresent()
+end
+
+function M.sayFirstRunIntro()
+    M.chatSay(FIRST_RUN_CHAT)
 end
 
 -- Read Manifest Changelog
@@ -276,17 +318,22 @@ function M.showUpdateSuccessMessage(manifest)
 end
 
 -- Show Update Fail Message
-function M.showUpdateFailMessage()
-    M.chatSay('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xE1\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair')
+function M.showUpdateFailMessage(opts)
+    opts = opts or {}
+    if opts.firstInstall then
+        M.chatSay(FIRST_RUN_FAIL)
+    else
+        M.chatSay('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xE1\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair')
+    end
 end
 
 -- Show Welcome Message
-function M.showWelcomeMessage(manifest)
-    local ver = tostring(manifest and manifest.version or M.readLocalVersion() or '')
-    if ver == '' or ver == '0.0.0' then
-        ver = (thisScript and thisScript().version) and tostring(thisScript().version) or '?'
+function M.showWelcomeMessage(manifest, opts)
+    opts = opts or {}
+    if opts.firstInstall or opts.skipWelcome then
+        return
     end
-    M.chatSay('Report Desk Beta 1 \xB7 F7, /deskupdate')
+    M.chatSay('Report Desk \xB7 /adesk')
 end
 
 local function overlayAssetLabel(assetOrFallback)
@@ -297,6 +344,18 @@ local function overlayAssetLabel(assetOrFallback)
 end
 
 local function overlayProgressDetail(opts, step, total, fallback)
+    if wantsMinimalOverlay(opts) then
+        if total and total > 0 and step > 0 then
+            local frac = (step - 1) / total
+            if frac < 0.2 then
+                return OVERLAY_FRIENDLY_CHECK
+            elseif frac < 0.82 then
+                return OVERLAY_FRIENDLY_DOWNLOAD
+            end
+            return OVERLAY_FRIENDLY_INSTALL
+        end
+        return OVERLAY_FRIENDLY_DOWNLOAD
+    end
     if opts and opts.userFacing then
         if total and total > 0 then
             local label = overlayAssetLabel(fallback)
@@ -314,15 +373,23 @@ local function finishUserFacingUpdate(manifest, opts)
         setOverlayContext(nil)
         return
     end
-    local cl = M.readManifestChangelog(manifest)
+    if opts.firstInstall then
+        if overlayEnabled(opts) then
+            overlayUpdate(OVERLAY_DONE, 1.0, opts)
+            wait(900)
+        end
+        overlayHide()
+        setOverlayContext(nil)
+        M.chatSay(FIRST_RUN_READY)
+        return
+    end
     if overlayEnabled(opts) then
-        overlayShow(OVERLAY_TITLE, OVERLAY_DONE, opts)
-        overlayUpdate(cl ~= '' and cl or OVERLAY_DONE, 1.0, opts)
-        wait(1400)
+        overlayUpdate(OVERLAY_DONE, 1.0, opts)
+        wait(900)
     end
     overlayHide()
     setOverlayContext(nil)
-    M.showUpdateSuccessMessage(manifest)
+    sayFriendly(UPDATE_DONE, opts)
 end
 
 local function failUserFacingUpdate(opts, technical)
@@ -330,7 +397,7 @@ local function failUserFacingUpdate(opts, technical)
     log(tostring(technical or 'update failed'))
     overlayHide()
     if opts.userFacing then
-        M.showUpdateFailMessage()
+        M.showUpdateFailMessage(opts)
     else
         notify(tostring(technical or 'update failed'), opts)
     end
@@ -358,6 +425,14 @@ end
 -- Публичный API модуля.
 function M.parseVersion(v)
     v = tostring(v or ''):gsub('^v', '')
+    local majorBeta, betaNum = v:match('^(%d+)%s+[Bb]eta%.?(%d*)$')
+    if majorBeta then
+        local n = tonumber(betaNum) or 0
+        if n < 0 then n = 0 end
+        if n > 9999 then n = 9999 end
+        local base = tonumber(majorBeta) * 1000000
+        return base - 10000 + n
+    end
     local major, minor, patch, pre = v:match('^(%d+)%.(%d+)%.(%d+)(%-(.+))?$')
     if not major then
         return 0
@@ -1020,13 +1095,9 @@ local function buildUpdatePlan(manifest, opts)
         end
         local need = force
         if not need then
-            if remoteVer ~= tostring(state.version or '') then
+            local ok = localFileMatches(spec)
+            if not ok then
                 need = true
-            else
-                local ok = localFileMatches(spec)
-                if not ok then
-                    need = true
-                end
             end
         end
         if need then
@@ -1035,21 +1106,43 @@ local function buildUpdatePlan(manifest, opts)
     end
 
     local rt = runtimeSpec(manifest)
-    local needRuntime = force or needsRuntimeLibs()
-    if needRuntime then
+    if force or needsRuntimeLibs() then
         plan.runtime = rt
     end
 
-    if force or not M.hasMimgui() or not M.canRequireMimgui() then
+    if force or not M.hasMimgui() then
         plan.mimgui = mimguiSpec(manifest)
     end
 
     local iv = iconvSpec(manifest)
-    if force or not doesFileExist(M.path(iv.dest)) then
+    if force then
         plan.iconv = iv
+    elseif not doesFileExist(M.path(iv.dest)) then
+        plan.iconv = iv
+    elseif iv.sha256 ~= '' then
+        local ok = localFileMatches({
+            dest = iv.dest,
+            sha256 = iv.sha256,
+            bytes = iv.bytes,
+            pending = false,
+        })
+        if not ok then
+            plan.iconv = iv
+        end
     end
 
     return plan, state, files
+end
+
+function M.buildUpdatePlan(manifest, opts)
+    return buildUpdatePlan(manifest, opts)
+end
+
+function M.planHasWork(manifest, opts)
+    local plan = buildUpdatePlan(manifest, opts or {})
+    local fileCount = #plan
+    local hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil
+    return fileCount > 0 or hasExtra
 end
 
 local function downloadPlan(plan, manifest, opts)
@@ -1180,7 +1273,8 @@ end
 
 local function commitPlan(downloaded, manifest, allFiles, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
-    local installLabel = opts.userFacing and OVERLAY_INSTALL or '\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xF4\xE0\xE9\xEB\xEE\xE2...'
+    local installLabel = wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL
+        or (opts.userFacing and OVERLAY_INSTALL or '\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xF4\xE0\xE9\xEB\xEE\xE2...')
     local stateFiles = {}
     for _, item in ipairs(downloaded) do
         local ok, err = installToDest(item.tmp, item.spec)
@@ -1198,7 +1292,7 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
     overlayUpdate(installLabel, 0.92, opts)
 
     if downloaded.runtime then
-        overlayUpdate(opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 runtime...', 0.94, opts)
+        overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or (opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 runtime...'), 0.94, opts)
         if not M.installRuntimeLibsZip(downloaded.runtime) then
             return false, 'runtime unpack failed'
         end
@@ -1206,7 +1300,7 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
     end
 
     if downloaded.mimgui then
-        overlayUpdate(opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...', 0.96, opts)
+        overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or (opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...'), 0.96, opts)
         if not M.installMimguiZip(downloaded.mimgui) then
             return false, 'mimgui unpack failed'
         end
@@ -1304,13 +1398,18 @@ function M.sync(manifest, opts)
     local remoteVer = tostring(manifest.version or '')
     if opts.userFacing then
         log('sync ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' items)')
+        if not opts.firstInstall then
+            sayFriendly(UPDATE_START, opts)
+        end
     else
         notify('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 ' .. remoteVer .. ' (' .. tostring(fileCount + (hasExtra and 1 or 0)) .. ' files)...', opts)
     end
 
     setOverlayContext(opts)
     if overlayEnabled(opts) then
-        if opts.userFacing then
+        if wantsMinimalOverlay(opts) then
+            overlayShow(nil, OVERLAY_FRIENDLY_CHECK, opts)
+        elseif opts.userFacing then
             overlayShow(OVERLAY_TITLE, OVERLAY_DOWNLOAD, opts)
         else
             overlayShow('\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 Report Desk', '\xC2\xE5\xF0\xF1\xE8\xFF ' .. remoteVer, opts)
@@ -1685,38 +1784,88 @@ function M.writeLocalAssetsManifest(data)
     return writeJsonFile(M.path(M.ASSETS_MANIFEST), data)
 end
 
+function M.assetsInstalledFor(manifest)
+    manifest = manifest or {}
+    if not assetMarkerOk() then
+        return false
+    end
+    local assets = manifest.assets
+    if type(assets) ~= 'table' then
+        return true
+    end
+    local remoteSha = tostring(assets.sha256 or ''):lower()
+    if remoteSha == '' then
+        return true
+    end
+    local localMan = M.readLocalAssetsManifest() or {}
+    local localSha = tostring(localMan.sha256 or ''):lower()
+    return localSha ~= '' and localSha == remoteSha
+end
+
+function M.reconcileAssetsState(manifest)
+    manifest = manifest or {}
+    local assets = manifest.assets
+    if type(assets) ~= 'table' or not assetMarkerOk() then
+        return false
+    end
+    if M.needsAssets(manifest) then
+        return false
+    end
+    local remoteVer = tostring(assets.version or manifest.version or '')
+    local remoteSha = tostring(assets.sha256 or ''):lower()
+    local state = migrateLegacyState() or { files = {} }
+    state.assets_version = remoteVer
+    writeState(state)
+    M.writeLocalAssetsManifest({
+        version = remoteVer,
+        sha256 = remoteSha,
+        installed = true,
+    })
+    log('assets state reconciled: ' .. remoteVer)
+    return true
+end
+
 function M.needsAssets(manifest)
     manifest = manifest or {}
+    if M.isDevEnvironment() then
+        return false
+    end
     local assets = manifest.assets
     if type(assets) ~= 'table' then
         return not assetMarkerOk()
     end
-    local remoteVer = tostring(assets.version or '')
     local remoteSha = tostring(assets.sha256 or ''):lower()
-    if remoteVer == '' and remoteSha == '' then
+    local remoteVer = tostring(assets.version or '')
+    if remoteSha == '' and remoteVer == '' then
         return not assetMarkerOk()
     end
-    local localMan = M.readLocalAssetsManifest() or {}
-    local localSha = tostring(localMan.sha256 or ''):lower()
-    if remoteSha ~= '' and localSha ~= '' and localSha == remoteSha then
+    if M.assetsInstalledFor(manifest) then
         return false
-    end
-    if assetMarkerOk() and localMan.installed == true then
-        if remoteSha == '' or localSha == remoteSha then
-            return false
-        end
     end
     if not assetMarkerOk() then
         return true
     end
-    if tostring(localMan.version or '') == remoteVer then
-        if remoteSha == '' or localSha == remoteSha then
-            return false
+    if remoteSha ~= '' then
+        local zipPath = M.path(M.ASSETS_CACHE_DIR .. '\\' .. M.ASSETS_ZIP)
+        if doesFileExist(zipPath) then
+            local ok = select(1, verifyFile(zipPath, {
+                sha256 = remoteSha,
+                bytes = tonumber(assets.bytes) or 0,
+            }))
+            if ok then
+                return false
+            end
         end
     end
-    local state = M.readState() or {}
-    if tostring(state.assets_version or '') == remoteVer then
-        return false
+    if remoteVer ~= '' then
+        local localMan = M.readLocalAssetsManifest() or {}
+        if tostring(localMan.version or '') == remoteVer then
+            return false
+        end
+        local state = M.readState() or {}
+        if tostring(state.assets_version or '') == remoteVer then
+            return false
+        end
     end
     return true
 end
@@ -1762,15 +1911,16 @@ function M.ensureAssets(manifest, opts)
         end
         return true, false
     end
-    if opts.userFacing then
+    if opts.showOverlay ~= false and opts.userFacing then
         log('downloading assets')
         setOverlayContext(opts)
-        overlayShow(OVERLAY_TITLE, OVERLAY_ASSETS, opts)
-    else
-        notify('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE (assets)...', opts)
-        if overlayEnabled(opts) then
-            overlayShow('\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0 \xEF\xF0\xE5\xE2\xFC\xFE', '~50 \xCC\xE1', opts)
+        if wantsMinimalOverlay(opts) then
+            overlayShow(nil, OVERLAY_FRIENDLY_DOWNLOAD, opts)
+        else
+            overlayShow(OVERLAY_TITLE, OVERLAY_ASSETS, opts)
         end
+    else
+        log('downloading assets (background)')
     end
     local zipPath = M.path(M.ASSETS_CACHE_DIR .. '\\' .. M.ASSETS_ZIP)
     deskFs.ensureDirForFile(zipPath)
@@ -1802,8 +1952,8 @@ function M.ensureAssets(manifest, opts)
             return false, false
         end
     end
-    if opts.userFacing then
-        overlayUpdate(OVERLAY_INSTALL, 0.85, opts)
+    if opts.showOverlay ~= false and opts.userFacing then
+        overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or OVERLAY_INSTALL, 0.85, opts)
     end
     local extracted, extractErr = extractAssetsZip(zipPath)
     if not extracted then
@@ -1846,7 +1996,10 @@ function M.deferAssets(manifest, opts)
     end
     opts = M.resolveUserNotifyOpts(opts or {})
     manifest = manifest or {}
+    opts.showOverlay = false
+    opts.quietChat = true
     if not M.needsAssets(manifest) then
+        M.reconcileAssetsState(manifest)
         return false
     end
     if not lua_thread or not lua_thread.create then
@@ -2019,13 +2172,17 @@ function M.ensureDependencies(manifest, opts)
         changed = true
     end
 
-    if not M.hasMimgui() or not M.canRequireMimgui() then
+    if not M.hasMimgui() then
         local spec = mimguiSpec(manifest)
         if opts.userFacing then
             log('installing mimgui')
             if overlayEnabled(opts) then
                 setOverlayContext(opts)
-                overlayShow(OVERLAY_TITLE, OVERLAY_DOWNLOAD, opts)
+                if wantsMinimalOverlay(opts) then
+                    overlayShow(nil, OVERLAY_FRIENDLY_DOWNLOAD, opts)
+                else
+                    overlayShow(OVERLAY_TITLE, OVERLAY_DOWNLOAD, opts)
+                end
             end
         else
             notify('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 mimgui...', opts)
@@ -2057,7 +2214,7 @@ function M.ensureDependencies(manifest, opts)
             end
         end
         if opts.userFacing then
-            overlayUpdate(OVERLAY_INSTALL, 0.9, opts)
+            overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or OVERLAY_INSTALL, 0.9, opts)
         end
         if not M.installMimguiZip(zipPath) then
             overlayHide()
@@ -2088,6 +2245,8 @@ function M.ensureDependencies(manifest, opts)
         end
         log('mimgui OK')
         changed = true
+    elseif not M.canRequireMimgui() then
+        log('mimgui present but require failed (not re-downloading)')
     end
 
     overlayHide()
