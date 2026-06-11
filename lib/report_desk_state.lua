@@ -45,7 +45,6 @@ BUILTIN_AUTO_RULE_GG = {
 settings = {
     hotkey = vkeys.VK_F7,
     sound = false,
-    auto_only_unread = false,
     watch_notify = 'see',
     watch_auto_notify = true,
     gg_reply = DEFAULT_GG_REPLY,
@@ -109,6 +108,14 @@ settings = {
     checker_auto_sync = true,
     checker_auto_promote = true,
     checker_auto_admin = true,
+    admin_punish_enabled = false,
+    admin_punish_confirm_key = vkeys.VK_DELETE,
+    admin_punish_cancel_key = vkeys.VK_END,
+    admin_punish_send_ans = false,
+    admin_punish_sign_cmd = true,
+    exact_time_enabled = true,
+    exact_time_daily_norm_h = 4,
+    exact_time_monthly_norm_h = 112,
 }
 
 -- Default Cheats Settings
@@ -134,23 +141,9 @@ local function defaultCheatsSettings()
         ab_shift = false,
         ab_alt = false,
         marker_wheel = true,
-        marker_key1 = vkeys.VK_MBUTTON,
-        marker_key2 = 0,
-        marker_ctrl = false,
-        marker_shift = false,
-        marker_alt = false,
-        tp_key1 = vkeys.VK_LBUTTON,
-        tp_key2 = 0,
-        tp_ctrl = false,
-        tp_shift = false,
-        tp_alt = false,
-        veh_key1 = vkeys.VK_RBUTTON,
-        veh_key2 = 0,
-        veh_ctrl = false,
-        veh_shift = false,
-        veh_alt = false,
         hud_x = 12,
         hud_y = 80,
+        mask_player_id = true,
     }
 end
 
@@ -170,7 +163,7 @@ function ensureCheatsSettings()
         ch.wh_key1 = vkeys.VK_F3
         ch.wh_key2 = 0
     end
-    for _, p in ipairs({ 'gm', 'wh', 'ab', 'marker', 'tp', 'veh' }) do
+    for _, p in ipairs({ 'gm', 'wh', 'ab' }) do
         ch[p .. '_ctrl'] = ch[p .. '_ctrl'] == true
         ch[p .. '_shift'] = ch[p .. '_shift'] == true
         ch[p .. '_alt'] = ch[p .. '_alt'] == true
@@ -182,8 +175,9 @@ function ensureCheatsSettings()
     ch.wh_on_start = ch.wh_on_start == true or tonumber(ch.wh_on_start) == 1
     ch.show_hud = not (ch.show_hud == false or tonumber(ch.show_hud) == 0)
     ch.marker_wheel = not (ch.marker_wheel == false or tonumber(ch.marker_wheel) == 0)
+    ch.mask_player_id = not (ch.mask_player_id == false or tonumber(ch.mask_player_id) == 0)
 end
-local profanity_words = {}
+profanity_words = {}
 local DEFAULT_QUICK_SCENARIOS = {
     {
         label = '\xD1\xEE\xE1\xE5\xF1\xE5\xE4\xEE\xE2\xE0\xED\xE8\xE5',
@@ -209,10 +203,12 @@ local DEFAULT_QUICK_SCENARIOS = {
         skip_if_report_id = false,
     },
 }
-local quickScenarios = {}
-local threads = {}
-local threadOrder = {}
-local threadCount = 0
+--[[ Shared mutable state (no `local`): core split into loadstring chunks (core_a/b/c).
+    Reassignment or cross-chunk reads must use the same env binding — see report_desk_env_export.lua. ]]
+quickScenarios = {}
+threads = {}
+threadOrder = {}
+threadCount = 0
 
 local showWindow = new.bool(false)
 local activeTab = new.int(0)
@@ -220,9 +216,7 @@ local filterMode = new.int(0)
 local searchBuf = new.char[96]()
 local replyBuf = new.char[512]()
 local cmdBuf = new.char[64]()
-local selectedKey = nil
-local focusReplyNext = false
-local focusReplyReason = nil  -- 'open' | 'select' | 'send'
+selectedKey = nil
 local pendingAuto = {}
 local ruleCooldowns = {}
 local deskInputState = {
@@ -244,6 +238,8 @@ local deskInputState = {
     snapPending = false,
     snapKey = nil,
     hasUnseenMessages = false,
+    focusReplyNext = false,
+    focusReplyReason = nil, -- 'open' | 'select' | 'send'
 }
 local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
@@ -283,13 +279,14 @@ local uiCheatAb = new.bool(false)
 local uiCheatGmStart = new.bool(false)
 local uiCheatWhStart = new.bool(false)
 local uiCheatHud = new.bool(true)
+local uiCheatMaskId = new.bool(true)
 local uiCheatAbSpeed = new.float(1.0)
-local cheatsUiSynced = false
-local cheatsStartupDone = false
-local skinCatalog = nil
-local skinCatalogById = {}
-local skinUiTabActive = false
-local skinTabEntered = false
+cheatsUiSynced = false
+cheatsStartupDone = false
+skinCatalog = nil
+skinCatalogById = {}
+skinUiTabActive = false
+skinTabEntered = false
 local skinSelectedId = 1
 local skinNearbyCache = { t = 0, n = 0, r = -1 }
 local skinLoadFailLogged = false
@@ -309,8 +306,8 @@ local MOUSE_BIND_VKS = {
     [0x01] = true, [0x02] = true, [0x04] = true, [0x05] = true, [0x06] = true,
 }
 local rulesEditorDirty = false
-local dirtySettings = false
-local dirtyThreads = false
+dirtySettings = false
+dirtyThreads = false
 
 local RECENT = {
     ingest = {}, ingestOrd = {},
@@ -318,12 +315,10 @@ local RECENT = {
     out = {}, outOrd = {},
     prof = {}, profOrd = {},
 }
-local lastMapPrune = 0
-local lastSettingsSave = 0
-local lastThreadsSave = 0
+lastMapPrune = 0
+lastSettingsSave = 0
+lastThreadsSave = 0
 local scenariosGen = 0
-local cachedSortedScenarioIdx = nil
-local cachedSortedScenariosGen = -1
 local deskCache = {
     monthRu = {
         January = '\xFF\xED\xE2\xE0\xF0\xFF', February = '\xF4\xE5\xE2\xF0\xE0\xEB\xFF',
@@ -342,12 +337,17 @@ local deskCache = {
     hotkeyCapture = false,
     hotkeyCaptureAt = 0,
     cheatBindPrev = {},
+    adminPunishBindPrev = {},
     cheatCapture = nil,
     cheatCaptureAt = 0,
     cheatCaptureSlot = 'main',
+    adminPunishBindCapture = false,
+    adminPunishBindCaptureAt = 0,
+    adminPunishBindField = nil,
     bindCapVk = nil,
     bindCapIgnoreMouseUntil = 0,
     bindCapPollPrev = nil,
+    bindCapKbPrev = nil,
     ui = { kwBulkOpen = {}, panelStart = {}, panelStack = {} },
     filterKeys = nil,
     filterSig = '',
@@ -451,33 +451,17 @@ local deskCache = {
 }
 
 local uiSound = new.bool(false)
-local uiAutoOnlyUnread = new.bool(false)
 local deskReplyBuf = {
     watch = new.char[256](),
     time = new.char[512](),
     gg = new.char[512](),
     tech = new.char[512](),
 }
-selectedScenarioIdx = 1
-scenariosUiSynced = false
 composerQuickSelected = 1
 composerQuickUiSynced = false
 composerQuickEditorDirty = false
 local editCqLabel = new.char[48]()
 local editCqText = new.char[512]()
-scenariosEditorDirty = false
-local editScLabel = new.char[48]()
-local editScReply = new.char[512]()
-editScMatch = new.int(1)
-editScPriority = new.int(0)
-editScEnabled = new.bool(true)
-editScWatch = new.bool(false)
-editScSkipReportId = new.bool(true)
-local scKwNew = new.char[96]()
-scKwEdit = {}
-local scKwBulk = new.char[2048]()
-local scTestBuf = new.char[256]()
-local scTestResult = new.char[128]()
 local uiAutoRulesEnabled = new.bool(true)
 local uiAutoTimeEnabled = new.bool(true)
 local uiAutoGgEnabled = new.bool(true)
@@ -493,6 +477,9 @@ local uiSpecWheelZoom = new.bool(true)
 local uiProfanityFilter = new.bool(true)
 local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
+local uiAdminPunishEnabled = new.bool(false)
+local uiAdminPunishSendAns = new.bool(false)
+local uiAdminPunishSignCmd = new.bool(true)
 editRuleMatch = new.int(1)
 editRulePriority = new.int(0)
 editRuleSkipReportId = new.bool(true)
@@ -500,22 +487,23 @@ local ruleKwBulk = new.char[2048]()
 local ruleTestBuf = new.char[256]()
 local ruleTestResult = new.char[128]()
 rulesTestOpen = new.bool(false)
+adminPunishUiSynced = false
 
 local AUTO_RETRY_MS = 280  -- retry auto-reply, мс
 local AUTO_RETRY_MAX = 4
 local AUTO_REPLY_DELAY_MS = 250
-local myPlayerNick = ''
-local myNickTick = 0
+myPlayerNick = ''
+myNickTick = 0
 local PLAYER_NICK_CACHE_INTERVAL = 2.0  -- интервал кэша nick→id, сек
 local CHAT_UI_RENDER_MAX = 100
-local playerNickToId = {}
-local playerNickCacheAt = 0
+playerNickToId = {}
+playerNickCacheAt = 0
 local chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
-local chatLogReady = false
-local styleApplied = false
-local sessionLive = false
-local deskConfigReady = false
-local totalUnread = 0
+chatLogReady = false
+styleApplied = false
+sessionLive = false
+deskConfigReady = false
+totalUnread = 0
 
 local editRuleName = new.char[64]()
 local editRulePayload = new.char[512]()
@@ -524,6 +512,5 @@ editRuleEnabled = new.bool(true)
 local ruleKwNew = new.char[96]()
 ruleKwEdit = {}
 selectedRuleIdx = 1
-rulesUiSynced = false
 settingsUiSynced = false
 deskWantsKeyboard = false

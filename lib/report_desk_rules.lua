@@ -61,12 +61,14 @@ function processAutoRules(t, body)
     end
     if rule.mode == 'confirm' then
         pendingAuto[tk] = { rule = rule, body = body }
-        addAutoSystemNote(t, rule.name, '\xEE\xE6\xE8\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF')
+        addAutoSystemNote(t, rule.name, nil, 'pending')
         markAutoFired(t, body)
         return true
     end
     local ok, executed = executeRuleAction(t, rule)
-    addAutoSystemNote(t, rule.name, executed)
+    if not ok then
+        addAutoSystemNote(t, rule.name, executed, 'fail')
+    end
     if ok then
         setRuleCooldown(tk, rule)
         markAutoFired(t, body)
@@ -307,9 +309,7 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     if reportChannel then
         t.reportChannel = reportChannel
     end
-    local hadUnread = false
     if isLive then
-        hadUnread = (t.unread or 0) > 0
         t.unread = (t.unread or 0) + 1
         totalUnread = totalUnread + 1
         local reportHasProfanity = settings.profanity_filter_enabled and findProfanityMatch(body)
@@ -322,25 +322,19 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
         channel = channel,
     })
     markDirtyThreads()
-    if isLive then
-        local runAuto = not (settings.auto_only_unread and hadUnread)
-        if runAuto and not deskAutoReplyAllowed() then runAuto = false end
+    if isLive and settings.auto_rules_enabled ~= false then
         local src = source or 'live'
         local nickCopy, idCopy, bodyCopy = nick, id, body
         lua_thread.create(function()
             if settings.profanity_filter_enabled then
                 pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
             end
-            if runAuto then
-                wait(AUTO_REPLY_DELAY_MS)
-                if not deskAutoReplyAllowed() then return end
-                local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
-                local th = threads[tk]
-                if th then
-                    if settings.auto_rules_enabled ~= false then
-                        pcall(runAutoRulesForReport, th, bodyCopy, src)
-                    end
-                end
+            wait(AUTO_REPLY_DELAY_MS)
+            if not deskAutoReplyAllowed() then return end
+            local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
+            local th = threads[tk]
+            if th then
+                pcall(runAutoRulesForReport, th, bodyCopy, src)
             end
         end)
     end
@@ -402,6 +396,10 @@ function normalizeComposerQuickButton(raw, fromUtf8)
     fromUtf8 = fromUtf8 or raw._utf8
     local label = trim(normalizeStoredText(raw.label or '', fromUtf8))
     local text = trim(normalizeStoredText(raw.text or '', fromUtf8))
+    if type(ensureWireCp1251) == 'function' then
+        label = ensureWireCp1251(label)
+        text = ensureWireCp1251(text)
+    end
     if label == '' or text == '' then return nil end
     local id = trim(tostring(raw.id or ''))
     if id == '' then id = 'qb_' .. tostring(os.clock()):gsub('%.', '') end
@@ -413,6 +411,10 @@ function ensureComposerQuickButtons()
     if type(settings.composer_quick_buttons) ~= 'table' or #settings.composer_quick_buttons == 0 then
         local gg = trim(settings.gg_reply or '')
         local tech = trim(settings.tech_reply or '')
+        if type(ensureWireCp1251) == 'function' then
+            gg = ensureWireCp1251(gg)
+            tech = ensureWireCp1251(tech)
+        end
         settings.composer_quick_buttons = {
             { id = 'gg', label = 'GG', text = gg ~= '' and gg or DEFAULT_GG_REPLY },
             { id = 'tech', label = '\xD2\xE5\xF5\xED\xE8\xF7\xEA\xE0', text = tech ~= '' and tech or DEFAULT_TECH_REPLY },
@@ -446,6 +448,7 @@ end
 function getTimeReplyText()
     local text = trim(settings.time_reply or '')
     if text == '' then text = DEFAULT_TIME_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -464,10 +467,15 @@ end
 function getGgReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
-        if b.id == 'gg' then return b.text end
+        if b.id == 'gg' then
+            local text = b.text
+            if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
+            return text
+        end
     end
     local text = trim(settings.gg_reply or '')
     if text == '' then text = DEFAULT_GG_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -475,10 +483,15 @@ end
 function getTechReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
-        if b.id == 'tech' then return b.text end
+        if b.id == 'tech' then
+            local text = b.text
+            if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
+            return text
+        end
     end
     local text = trim(settings.tech_reply or '')
     if text == '' then text = DEFAULT_TECH_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -596,7 +609,12 @@ function lastPreview(t)
     local msgs = t.messages
     if not msgs or #msgs == 0 then return '' end
     local m = msgs[#msgs]
-    if m.dir == 'system' then return m.note or '' end
+    if m.dir == 'system' then
+        if type(formatAutoSystemDisplay) == 'function' then
+            return formatAutoSystemDisplay(m)
+        end
+        return m.note or ''
+    end
     local k = messageKind(m)
     if k == 'action' then
         return '* ' .. (m.text or '')

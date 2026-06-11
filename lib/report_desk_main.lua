@@ -17,6 +17,7 @@ function main()
     end
     pcall(ensureComposerQuickButtons)
     pcall(syncLegacyGgTechFromComposerButtons)
+    pcall(ensureAdminPunishSettings)
     pcall(initDeskIngest)
     if settings.spectate_sp_ui == nil then settings.spectate_sp_ui = true end
     if settings.spectate_vehicle_hud == nil then
@@ -126,7 +127,6 @@ function main()
     pcall(installDeskSpMenuRpcBlock)
     pcall(installDeskCheckerRpcProbe)
     uiSound[0] = settings.sound
-    uiAutoOnlyUnread[0] = settings.auto_only_unread
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
     uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
@@ -148,6 +148,27 @@ function main()
     end)
     sampRegisterChatCommand('hist', function(arg)
         pcall(sendHistoryByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('iget', function(arg)
+        pcall(sendGetByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('ilog', function(arg)
+        pcall(sendLogByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('iskill', function(arg)
+        pcall(sendAskillByPlayerId, arg)
+    end)
+    sampRegisterChatCommand('warnlast', function(arg)
+        pcall(sendWarnLast, arg)
+    end)
+    sampRegisterChatCommand('banlast', function(arg)
+        pcall(sendBanLast, arg)
+    end)
+    sampRegisterChatCommand('jaillast', function(arg)
+        pcall(sendJailLast, arg)
+    end)
+    sampRegisterChatCommand('mutelast', function(arg)
+        pcall(sendMuteLast, arg)
     end)
     sampRegisterChatCommand('acar', function(arg)
         pcall(deskAcarEnter, arg)
@@ -192,6 +213,7 @@ function main()
     })
     pcall(ensureDeskCatalogWarmup)
     pcall(announceDeskStartup)
+    if type(exactTimeInit) == 'function' then pcall(exactTimeInit) end
 
     lua_thread.create(function()
         pcall(checkerInit)
@@ -209,7 +231,6 @@ function main()
                 end
             end
         end
-        chatLogReady = true
         if sampGetChatString and type(profanityMarkLineSeen) == 'function'
                 and type(chatLineSeenKey) == 'function' then
             local pollMax = CHAT_POLL_LINES_OPEN or 100
@@ -221,10 +242,12 @@ function main()
                 if i % 20 == 19 then wait(0) end
             end
         end
+        chatLogReady = true
         pcall(getFilteredThreadKeys)
     end)
 
     local lastPoll = 0
+    local lastApHookCheck = 0
     local pollInterval = 0.25
     local lastNickCacheTick = 0
     local lastHookCheck = 0
@@ -251,7 +274,9 @@ function main()
         if type(deskSpectateStats) == 'table'
                 and deskSpectateStats.isHudDragActive
                 and deskSpectateStats.isHudDragActive() then return 1 end
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then return 1 end
+        if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
+        if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 16 end
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then return 16 end
         return 50
     end
 
@@ -279,9 +304,23 @@ function main()
             deskWasSampInGame = inGame
         end
 
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then
+            if type(adminPunishEnsureServerHook) == 'function'
+                    and os.clock() - lastApHookCheck >= 1.0 then
+                pcall(adminPunishEnsureServerHook)
+                lastApHookCheck = os.clock()
+            end
+            if type(pollAdminPunishChat) == 'function' then
+                pcall(pollAdminPunishChat)
+            end
+            if type(adminPunishTick) == 'function' then
+                pcall(adminPunishTick)
+            end
+        end
+
         deskSampChatGuardFrame()
         deskApplyInputPolicy()
-        if deskCache.hotkeyCapture or deskCache.cheatCapture then
+        if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then
             pcall(deskBindCapturePollFrame)
         end
         pcall(deskTickAdminPauseState)
@@ -337,6 +376,7 @@ function main()
             end
         end)
         pcall(cheatsTickMarker)
+        pcall(maskIdTick)
         pcall(tickScheduledConfigFlush)
 
         local nowSave = os.clock()

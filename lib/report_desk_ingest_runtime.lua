@@ -187,12 +187,21 @@ function setRuleCooldown(threadKey, rule)
     ruleCooldowns[key] = os.time() + (tonumber(rule.cooldown) or 120)
 end
 
--- Normalize Match Text
+local EDGE_PUNCT = '[%s%.%!%?,:;%-]+'
+
+-- Normalize Match Text (shared with intent engine when loaded first)
+if type(normalizeMatchText) ~= 'function' then
 function normalizeMatchText(s)
-    s = trim(stripTags(s or ''):lower():gsub('%s+', ' '))
+    s = trim(stripTags(s or ''))
+    if type(isUtf8Text) == 'function' and isUtf8Text(s)
+            and type(utf8ToCp1251) == 'function' then
+        s = utf8ToCp1251(s)
+    end
+    s = s:lower():gsub('%s+', ' ')
     s = s:gsub('\xB8', '\xE5')
-    s = s:gsub('^[%s%.%!%?,:;%-–—]+', ''):gsub('[%s%.%!%?,:;%-–—]+$', '')
+    s = s:gsub('^' .. EDGE_PUNCT, ''):gsub(EDGE_PUNCT .. '$', '')
     return s
+end
 end
 
 -- Rule Match Mode Label
@@ -350,17 +359,6 @@ function keywordMatchScore(kw, msg, msgAlt, mode, msgTypo)
         return math.max(#normalizeMatchText(raw), 3)
     end
     return 0
-end
-
--- Scenario Match Score
-function scenarioMatchScore(sc, text)
-    local msg, msgAlt, msgTypo = matchMessageVariants(text)
-    local mode = sc.match or 'contains'
-    local best = 0
-    for _, kw in ipairs(sc.keywords or {}) do
-        best = math.max(best, keywordMatchScore(kw, msg, msgAlt, mode, msgTypo))
-    end
-    return best
 end
 
 -- Trigger Matches Keyword

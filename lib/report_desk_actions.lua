@@ -26,28 +26,169 @@ function sendTrPlayer(targetId)
     end
 end
 
--- Отправка команды/сообщения на сервер.
-function sendHistoryByPlayerId(arg)
+-- ID онлайн-игрока -> ник (общая логика /hist, /iget, /ilog, /iskill).
+function resolveOnlinePlayerNickByArg(arg)
     local id = clampSuspectPlayerId(tonumber(trim(tostring(arg or '')):match('(%d+)')))
-    if not id then
-        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /hist [ID \xE8\xE3\xF0\xEE\xEA\xE0].')
-        return false
-    end
-    if not isSampAvailable() then return false end
+    if not id then return nil, 'usage' end
+    if not isSampAvailable() then return nil, 'samp' end
     if type(sampIsPlayerConnected) ~= 'function' or not sampIsPlayerConnected(id) then
-        say('\xC8\xE3\xF0\xEE\xEA\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5 \xED\xE5\xF2.')
-        return false
+        return nil, 'offline'
     end
     local nick = (type(sampGetPlayerNickname) == 'function' and sampGetPlayerNickname(id)) or ''
     nick = trim(nick)
-    if nick == '' then
-        say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xEE\xEB\xF3\xF7\xE8\xF2\xFC \xED\xE8\xEA \xE8\xE3\xF0\xEE\xEA\xE0.')
+    if nick == '' then return nil, 'nick' end
+    return id, nick
+end
+
+function sendNickLookupCommand(arg, serverCmd, minLevel, usageMsg, levelDeniedMsg)
+    serverCmd = trim(tostring(serverCmd or ''))
+    if serverCmd == '' then return false end
+    minLevel = tonumber(minLevel) or 1
+    if getLocalAdminLevel() < minLevel then
+        if levelDeniedMsg and levelDeniedMsg ~= '' then
+            say(levelDeniedMsg)
+        end
         return false
     end
-    if sendChat('history ' .. nick) then
-        return true
+    local _, nickOrErr = resolveOnlinePlayerNickByArg(arg)
+    if not _ then
+        if nickOrErr == 'usage' then
+            say(usageMsg or '\xCD\xE5\xE2\xE5\xF0\xED\xFB\xE9 \xE0\xF0\xE3\xF3\xEC\xE5\xED\xF2 \xEA\xEE\xEC\xE0\xED\xE4\xFB.')
+        elseif nickOrErr == 'offline' then
+            say('\xC8\xE3\xF0\xEE\xEA\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5 \xED\xE5\xF2.')
+        elseif nickOrErr == 'nick' then
+            say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xEE\xEB\xF3\xF7\xE8\xF2\xFC \xED\xE8\xEA \xE8\xE3\xF0\xEE\xEA\xE0.')
+        end
+        return false
     end
-    return false
+    return sendChat(serverCmd .. ' ' .. nickOrErr) == true
+end
+
+function getLastSpectateSubject()
+    if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.getLastSubject) ~= 'function' then
+        return nil
+    end
+    local ok, subj = pcall(deskSpectateStats.getLastSubject)
+    if not ok or type(subj) ~= 'table' then return nil end
+    local nick = trim(subj.nick or '')
+    if nick == '' then return nil end
+    return {
+        id = tonumber(subj.id) or -1,
+        nick = nick,
+        offline = subj.offline == true,
+    }
+end
+
+function sendLastOffPunish(cmdBody, minDirectLevel)
+    cmdBody = trim(tostring(cmdBody or ''))
+    if cmdBody == '' then return false end
+    minDirectLevel = tonumber(minDirectLevel) or 4
+    if getLocalAdminLevel() >= minDirectLevel then
+        return sendChat('/' .. cmdBody) == true
+    end
+    return sendChat('/a /' .. cmdBody) == true
+end
+
+function sendLastOffCommand(arg, usageMsg, minDirectLevel, offCmd, needLeadingNumber)
+    arg = trim(tostring(arg or ''))
+    if arg == '' then
+        say(usageMsg)
+        return false
+    end
+    if needLeadingNumber and not arg:match('^(%d+)') then
+        say(usageMsg)
+        return false
+    end
+    local subj = getLastSpectateSubject()
+    if not subj then
+        say('\xC2\xFB \xE5\xF9\xE5 \xED\xE8 \xE7\xE0 \xEA\xE5\xEC \xED\xE5 \xF1\xEB\xE5\xE4\xE8\xEB\xE8.')
+        return false
+    end
+    offCmd = trim(tostring(offCmd or ''))
+    if offCmd == '' then return false end
+    return sendLastOffPunish(string.format('%s %s %s.', offCmd, subj.nick, arg), minDirectLevel)
+end
+
+function sendHistoryByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'history',
+        1,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /hist [ID \xE8\xE3\xF0\xEE\xEA\xE0].'
+    )
+end
+
+function sendGetByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'get',
+        3,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /iget [ID \xE8\xE3\xF0\xEE\xEA\xE0].',
+        '\xC4\xE0\xED\xED\xE0\xFF \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xEF\xF0\xE5\xE4\xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE0 \xE4\xEB\xFF \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2 3 \xF3\xF0\xEE\xE2\xED\xFF \xE8\xEB\xE8 \xE2\xFB\xF8\xE5.'
+    )
+end
+
+function sendLogByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'log',
+        2,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /ilog [ID \xE8\xE3\xF0\xEE\xEA\xE0].',
+        '\xC4\xE0\xED\xED\xE0\xFF \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xEF\xF0\xE5\xE4\xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE0 \xE4\xEB\xFF \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2 2 \xF3\xF0\xEE\xE2\xED\xFF \xE8\xEB\xE8 \xE2\xFB\xF8\xE5.'
+    )
+end
+
+function sendAskillByPlayerId(arg)
+    return sendNickLookupCommand(
+        arg,
+        'askill',
+        1,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /iskill [ID \xE8\xE3\xF0\xEE\xEA\xE0].'
+    )
+end
+
+function sendWarnLast(arg)
+    arg = trim(tostring(arg or ''))
+    if arg == '' then
+        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /warnlast [\xCF\xF0\xE8\xF7\xE8\xED\xE0].')
+        return false
+    end
+    local subj = getLastSpectateSubject()
+    if not subj then
+        say('\xC2\xFB \xE5\xF9\xE5 \xED\xE8 \xE7\xE0 \xEA\xE5\xEC \xED\xE5 \xF1\xEB\xE5\xE4\xE8\xEB\xE8.')
+        return false
+    end
+    return sendLastOffPunish(string.format('offwarn %s %s.', subj.nick, arg), 4)
+end
+
+function sendBanLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /banlast [\xCA\xEE\xEB\xE8\xF7\xE5\xF1\xF2\xE2\xEE \xE4\xED\xE5\xE9] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        4,
+        'offban',
+        true
+    )
+end
+
+function sendJailLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /jaillast [\xCC\xE8\xED\xF3\xF2\xFB] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        3,
+        'offjail',
+        true
+    )
+end
+
+function sendMuteLast(arg)
+    return sendLastOffCommand(
+        arg,
+        '\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /mutelast [\xCC\xE8\xED\xF3\xF2\xFB] [\xCF\xF0\xE8\xF7\xE8\xED\xE0].',
+        3,
+        'offmute',
+        true
+    )
 end
 
 -- Header Action Btn Width
@@ -125,12 +266,26 @@ function extractSuspectIdFromReport(text)
     return nil
 end
 
+-- Message Eligible For Watch Button
+function messageEligibleForWatchButton(text, context)
+    if context == INTENT_CONTEXT_THANKS then
+        return false
+    end
+    return extractSuspectIdForWatch(text) ~= nil
+end
+
 --[[ ID для кнопки «Следить»: строгие правила + первое число в тексте (кроме HH:MM:SS). ]]
 function extractSuspectIdForWatch(text)
     text = trim(text or '')
     if text == '' then return nil end
+    if type(stripChatTimestamp) == 'function' then
+        text = trim(stripChatTimestamp(text))
+    end
+    if text == '' then return nil end
     if deskIngest.looksLikePlayerStatusBody and deskIngest.looksLikePlayerStatusBody(text) then return nil end
-    local id = extractSuspectIdFromReport(text)
+    local id = text:match('^(%d+)%s+%S')
+    if id then return clampSuspectPlayerId(id) end
+    id = extractSuspectIdFromReport(text)
     if id then return id end
     text = trim(text or '')
     if text == '' or not text:find('%d') then return nil end
@@ -144,26 +299,6 @@ function extractSuspectIdForWatch(text)
         if id then return id end
     end
     return nil
-end
-
--- Find Enabled Watch Scenario
-function findEnabledWatchScenario()
-    for _, sc in ipairs(quickScenarios) do
-        if sc.action == 'watch' and sc.enabled then return sc end
-    end
-    return nil
-end
-
--- Get Watch Button Scenario
-function getWatchButtonScenario()
-    local sc = findEnabledWatchScenario()
-    if sc then return sc end
-    return {
-        label = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC',
-        enabled = true,
-        action = 'watch',
-        reply = settings.watch_notify or 'see',
-    }
 end
 
 -- Schedule Watch Notify
@@ -223,43 +358,6 @@ function cloneQuickScenarios(src, fromUtf8)
         }
     end
     return out
-end
-
--- Quick Scenario Matches
-function quickScenarioMatches(sc, body)
-    local keywords = sc.keywords or {}
-    return keywordMatches({
-        match = sc.match or 'contains',
-        keywords = keywords,
-    }, body)
-end
-
--- Quick Scenario Negative Matches
-function quickScenarioNegativeMatches(sc, body)
-    local neg = sc.negative_keywords
-    if type(neg) ~= 'table' or #neg < 1 then return false end
-    return keywordMatches({
-        match = sc.match or 'contains',
-        keywords = neg,
-    }, body)
-end
-
--- Get Sorted Quick Scenario Indices
-function getSortedQuickScenarioIndices()
-    if cachedSortedScenarioIdx and cachedSortedScenariosGen == scenariosGen then
-        return cachedSortedScenarioIdx
-    end
-    local idx = {}
-    for i = 1, #quickScenarios do idx[i] = i end
-    table.sort(idx, function(a, b)
-        local la = quickScenarios[a].label or ''
-        local lb = quickScenarios[b].label or ''
-        if la ~= lb then return la < lb end
-        return a < b
-    end)
-    cachedSortedScenarioIdx = idx
-    cachedSortedScenariosGen = scenariosGen
-    return idx
 end
 
 -- Push Quick Scenario Btn Style
@@ -375,13 +473,24 @@ function getLastPlayerScenarioBody(t)
     return ''
 end
 
+-- Message Qualifies For Scenario Actions
+function messageQualifiesForScenarioActions(body)
+    body = trim(body or '')
+    if body == '' then return false end
+    if #collectQuickButtonsForMessage(body) > 0 then return true end
+    if type(intentMessageCorpusCandidate) == 'function' and intentMessageCorpusCandidate(body) then
+        return true
+    end
+    return false
+end
+
 -- Find Last Player Scenario Msg Idx
 function findLastPlayerScenarioMsgIdx(msgs, renderFrom)
     renderFrom = tonumber(renderFrom) or 1
     if type(msgs) ~= 'table' then return nil end
     for i = #msgs, renderFrom, -1 do
         local body = playerMessageScenarioBody(msgs[i])
-        if body ~= '' and #collectQuickButtonsForMessage(body) > 0 then
+        if messageQualifiesForScenarioActions(body) then
             return i
         end
     end
@@ -485,132 +594,188 @@ function drawQuickScenarioButtons(quickBtns, localX, localY, btnRowY, rowW, padS
     imgui.PopID()
 end
 
--- Scenario Guard Blocks
-function scenarioGuardBlocks(sc, text)
-    if not sc or not text then return false end
-    local reply = trim(sc.reply or '')
-    local msg, _, msgTypo = matchMessageVariants(text)
-    local bags = { msg, msgTypo }
-    local function anyPat(pat)
-        for _, bag in ipairs(bags) do
-            if bag ~= '' and bag:find(pat) then return true end
-        end
-        return false
-    end
-    if reply:find('/c 090', 1, true) then
-        if anyPat('\xEA\xE2\xE5\xF1\xF2') and anyPat('\xEC\xE5\xF5\xE0\xED\xE8\xEA') then return true end
-        if anyPat('\xE7\xE0\xEA\xEB\xE0\xE4') then return true end
-        if anyPat('\xF3\xF7\xE0\xF1\xF2\xEA') and not anyPat('090') then return true end
-        if anyPat('\xEC\xE5\xF5\xE0\xED\xE8\xEA') and not anyPat('\xE2\xFB\xE7\xE2\xE0\xF2\xFC')
-            and not anyPat('090') and not anyPat('\xFD\xE2\xE0\xEA\xF3\xE0\xF2\xEE\xF0')
-            and not anyPat('010') and not anyPat('\xEF\xEE\xEB\xEE\xEC') then
-            return true
-        end
-    end
-    if reply:find('\xC0\xC7\xD1', 1, true) or reply:find('\xEA\xE0\xED\xE8\xF1\xF2\xF0', 1, true) then
-        if anyPat('\xE7\xE0\xEF\xF0\xE0\xE2') and anyPat('\xE8\xE3\xF0\xEE\xEA')
-            and not anyPat('\xE1\xE5\xED\xE7\xE8\xED') and not anyPat('\xF2\xEE\xEF\xEB\xE8\xE2')
-            and not anyPat('\xEA\xE0\xED\xE8\xF1\xF2\xF0') then
-            return true
-        end
-        if anyPat('\xEA\xEE\xED\xF2\xF0\xE0\xEA\xF2') and not anyPat('\xE1\xE5\xED\xE7\xE8\xED')
-            and not anyPat('\xE0\xE7\xF1') then
-            return true
-        end
-    end
-    if reply:find('creditshelp', 1, true) then
-        if not anyPat('\xE0\xE4\xE2\xE0\xED\xF1') and not anyPat('credits') and not anyPat('donate')
-            and not anyPat('credit') and anyPat('\xEA\xF0\xE5\xE4\xE8\xF2') then
-            return true
-        end
-    end
-    if reply:find('/bp', 1, true) or reply:find('/mn 8', 1, true) then
-        if anyPat('\xEA\xE2\xE5\xF1\xF2') and not anyPat('\xE1\xEF') and not anyPat('battle')
-            and not anyPat('\xE1\xE0\xF2\xEB') then
-            return true
-        end
-    end
-    return false
-end
-
--- Scenario Visible On Message
-function scenarioVisibleOnMessage(sc, text)
-    if not sc or not sc.enabled then return false end
-    if sc.action == 'watch' then
-        return extractSuspectIdForWatch(text) ~= nil
-    end
-    if sc.skip_if_report_id ~= false
-        and textLooksLikePlayerReport(text)
-        and extractSuspectIdFromReport(text) then
-        return false
-    end
-    if scenarioGuardBlocks(sc, text) then return false end
-    if not quickScenarioMatches(sc, text) then return false end
-    if quickScenarioNegativeMatches(sc, text) then return false end
-    return true
-end
-
 -- Collect Quick Buttons For Message
 function collectQuickButtonsForMessage(text)
-    local cacheKey = normalizeMatchText(text)
-    local sig = tostring(scenariosGen) .. '|' .. tostring(#quickScenarios)
-    if cacheKey ~= '' then
+    local bags = intentNormalizeBags(text)
+    local cacheKey = bags.key
+    local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
+    if cacheKey ~= '' and type(deskCache) == 'table' and deskCache.quickBtn then
         local hit = deskCache.quickBtn[cacheKey]
         if hit and hit.sig == sig then return hit.btns end
     end
-    local candidates = {}
-    for i = 1, #quickScenarios do
-        local sc = quickScenarios[i]
-        if scenarioVisibleOnMessage(sc, text) then
-            local score = scenarioMatchScore(sc, text)
-            if score <= 0 and quickScenarioMatches(sc, text) then
-                score = 10
-            end
-            if score > 0 then
-                candidates[#candidates + 1] = {
-                    scenario = sc,
-                    idx = i,
-                    score = score,
-                    btnW = quickBtnWidth(sc.label),
-                    suspectId = sc.action == 'watch' and extractSuspectIdForWatch(text) or nil,
-                }
-            end
-        end
-    end
-    table.sort(candidates, function(a, b)
-        local pa = tonumber(a.scenario.priority) or 0
-        local pb = tonumber(b.scenario.priority) or 0
-        if pa ~= pb then return pa > pb end
-        if a.score ~= b.score then return a.score > b.score end
-        return (a.scenario.label or '') < (b.scenario.label or '')
-    end)
+
+    local results, ctx = resolveMessageIntents(text)
     local out = {}
-    for i = 1, math.min(6, #candidates) do
-        out[i] = candidates[i]
-    end
-    local watchId = extractSuspectIdForWatch(text)
-    if watchId then
-        local hasWatch = false
-        for _, qb in ipairs(out) do
-            if qb.scenario and qb.scenario.action == 'watch' then
-                hasWatch = true
-                break
-            end
-        end
-        if not hasWatch then
-            local wsc = getWatchButtonScenario()
-            table.insert(out, 1, {
-                scenario = wsc,
+    for _, r in ipairs(results) do
+        local sc = intentToQuickScenario(r.intent)
+        if sc then
+            out[#out + 1] = {
+                scenario = sc,
                 idx = 0,
-                btnW = quickBtnWidth(wsc.label),
-                suspectId = watchId,
-            })
+                score = r.score,
+                btnW = quickBtnWidth(sc.label),
+                suspectId = sc.action == 'watch' and extractSuspectIdForWatch(text) or nil,
+                intentId = r.id,
+                context = ctx,
+            }
         end
     end
-    if cacheKey ~= '' then
+
+    if cacheKey ~= '' and type(deskCache) == 'table' then
+        deskCache.quickBtn = deskCache.quickBtn or {}
         deskCache.quickBtn[cacheKey] = { sig = sig, btns = out }
     end
     return out
+end
+
+-- Intent corpus queue: ручное «В базу» у промахов в чате треда.
+INTENT_CORPUS_BTN_H = 20
+intentCorpusQueue = intentCorpusQueue or { seen = {}, loaded = false }
+
+local function intentCorpusJsonStr(s)
+    s = tostring(s or '')
+    s = s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\r', '\\r'):gsub('\n', '\\n')
+    return '"' .. s .. '"'
+end
+
+function loadIntentCorpusQueueSeen()
+    if intentCorpusQueue.loaded then return end
+    intentCorpusQueue.loaded = true
+    intentCorpusQueue.seen = {}
+    local path = INTENT_CORPUS_QUEUE_PATH
+    if not path or path == '' then return end
+    local f = io.open(path, 'rb')
+    if not f then return end
+    for line in f:lines() do
+        local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+        if phrase then
+            phrase = phrase:gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\"', '"'):gsub('\\\\', '\\')
+            local key = normalizeMatchText(phrase)
+            if key ~= '' then intentCorpusQueue.seen[key] = true end
+        end
+    end
+    f:close()
+end
+
+function intentCorpusQueueContains(phrase)
+    loadIntentCorpusQueueSeen()
+    local key = normalizeMatchText(phrase)
+    return key ~= '' and intentCorpusQueue.seen[key] == true
+end
+
+function appendIntentCorpusPhrase(phrase, meta)
+    phrase = trim(phrase or '')
+    if phrase == '' or #phrase < 3 then return false, 'empty' end
+    loadIntentCorpusQueueSeen()
+    local key = normalizeMatchText(phrase)
+    if key == '' then return false, 'empty' end
+    if intentCorpusQueue.seen[key] then return false, 'dup' end
+
+    local ctx = meta and meta.context or ''
+    if ctx == '' and type(resolveMessageIntents) == 'function' then
+        ensureDeskIntentsLoaded()
+        local _, c = resolveMessageIntents(phrase)
+        ctx = c or ''
+    end
+
+    local path = INTENT_CORPUS_QUEUE_PATH
+    if not path or path == '' then return false, 'io' end
+    local f = io.open(path, 'ab')
+    if not f then return false, 'io' end
+    local ts = os.date('!%Y-%m-%dT%H:%M:%SZ')
+    local thread = trim(meta and meta.thread or '')
+    local threadId = tonumber(meta and meta.threadId) or 0
+    f:write(string.format(
+        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d}\n',
+        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(ctx),
+        intentCorpusJsonStr(thread), threadId
+    ))
+    f:close()
+    intentCorpusQueue.seen[key] = true
+    return true, 'ok'
+end
+
+function intentMessageCorpusCandidate(text)
+    text = trim(text or '')
+    if text == '' or #text < 3 then return false end
+    ensureDeskIntentsLoaded()
+    local results, ctx = resolveMessageIntents(text)
+    if #results > 0 then return false end
+    if ctx == 'thanks' or ctx == 'unknown' then return false end
+    return true
+end
+
+function intentCorpusBtnWidth(phrase)
+    local saved = intentCorpusQueueContains(phrase)
+    local label = saved and '\xC2\xE1\xE0\xE7\xE5' or '\xC2\xE1\xE0\xE7\xF3'
+    local w = imgui.CalcTextSize(uiText(label)).x + 14
+    if w < 44 then w = 44 end
+    if w > 72 then w = 72 end
+    return w
+end
+
+function pushIntentCorpusBtnStyle(saved)
+    if saved then
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.10, 0.24, 0.16, 0.72))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50, 0.82, 0.58, 0.92))
+    else
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.16, 0.14, 0.20, 0.42))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.24, 0.20, 0.30, 0.78))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.28, 0.22, 0.36, 0.92))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.68, 0.64, 0.78, 0.88))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(6, 2))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, saved and 0 or 1)
+    if not saved then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.38, 0.34, 0.48, 0.35))
+    end
+end
+
+function popIntentCorpusBtnStyle(saved)
+    imgui.PopStyleVar(3)
+    imgui.PopStyleColor(4)
+    if not saved then imgui.PopStyleColor() end
+end
+
+function drawIntentCorpusQueueButton(phrase, reporter, msgIdx, btnX, btnY)
+    phrase = trim(phrase or '')
+    if phrase == '' then return end
+    local saved = intentCorpusQueueContains(phrase)
+    local label = saved and '\xC2\xE1\xE0\xE7\xE5' or '\xC2\xE1\xE0\xE7\xF3'
+    local btnW = intentCorpusBtnWidth(phrase)
+
+    imgui.PushID((msgIdx or 0) * 1000 + 99)
+    imgui.SetCursorPos(imgui.ImVec2(btnX, btnY))
+    pushIntentCorpusBtnStyle(saved)
+    local clicked = false
+    if saved then
+        imgui.Button(uiText(label) .. '##icq', imgui.ImVec2(btnW, INTENT_CORPUS_BTN_H))
+    else
+        clicked = imgui.Button(uiText(label) .. '##icq', imgui.ImVec2(btnW, INTENT_CORPUS_BTN_H))
+    end
+    if imgui.IsItemHovered() and imgui.SetTooltip then
+        if saved then
+            imgui.SetTooltip(uiText(
+                '\xD3\xE6\xE5 \xE2 \xE1\xE0\xE7\xE5 \xE4\xEB\xFF \xF0\xE0\xF1\xF8\xE8\xF0\xE5\xED\xE8\xFF \xF2\xF0\xE8\xE3\xE3\xE5\xF0\xEE\xE2'))
+        else
+            imgui.SetTooltip(uiText(
+                '\xD1\xEE\xF5\xF0\xE0\xED\xE8\xF2\xFC \xE2\xEE\xEF\xF0\xEE\xF1 \xE2 \xE1\xE0\xE7\xF3 \xEF\xF0\xEE\xEC\xE0\xF5\xEE\xE2'))
+        end
+    end
+    popIntentCorpusBtnStyle(saved)
+    if clicked then
+        local ok = appendIntentCorpusPhrase(phrase, {
+            thread = reporter and reporter.nick or '',
+            threadId = reporter and reporter.id or 0,
+        })
+        if ok and type(say) == 'function' then
+            say('\xC4\xEE\xE1\xE0\xE2\xEB\xE5\xED\xEE \xE2 \xE1\xE0\xE7\xF3 intent')
+        end
+    end
+    imgui.PopID()
 end
 
 -- Execute Quick Scenario
@@ -636,7 +801,6 @@ function executeQuickScenario(sc, reporter, messageText)
     })
     if ok then
         clearThreadRuleCooldowns(tk)
-        say('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE: ' .. (sc.label or ''))
     elseif res then
         say(res)
     end
@@ -826,11 +990,6 @@ end
 -- Rule Name Exists
 function ruleNameExists(name)
     return false
-end
-
--- Append Faq Pack Rules
-function appendFaqPackRules()
-    return 0
 end
 
 -- Trim Messages

@@ -15,6 +15,7 @@ config/report_desk_checker_catalog.lua
 config/report_desk_checker_catalog.bak.lua
 !config/admin_report_desk_user.default.lua
 config/admin_report_desk_stats.lua
+config/intent_corpus_queue.jsonl
 config/*.ini
 config/mimgui/
 

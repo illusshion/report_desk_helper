@@ -26,6 +26,8 @@ col_composer = imgui.ImVec4(0.09, 0.09, 0.12, 1.0)
 col_row_sel = imgui.ImVec4(0.22, 0.14, 0.32, 0.85)
 col_row_hover = imgui.ImVec4(0.14, 0.14, 0.18, 0.6)
 col_unread = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
+col_player_nick = imgui.ImVec4(0.58, 0.76, 0.96, 1.0)
+col_player_nick_offline = imgui.ImVec4(0.38, 0.44, 0.52, 0.72)
 
 LIST_W = 310  -- ширина sidebar списка тредов, px
 THREAD_ROW_H = 74
@@ -33,16 +35,16 @@ THREAD_PAD_L = 10
 THREAD_TEXT_OFF = 16
 THREAD_BADGE_W = 18
 THREAD_ACCENT_W = 4
-CHAT_HEADER_H = 62
+CHAT_HEADER_H = 58
 COMPOSER_H = 86
 COMPOSER_INPUT_H = 34
 COMPOSER_SEND_SZ = 34
 COMPOSER_QUICK_H = 26
 COMPOSER_QUICK_GAP = 6
 COMPOSER_ROW_GAP = 6
-local DEFAULT_GG_REPLY = '\xCF\xF0\xE8\xFF\xF2\xED\xEE\xE9 \xE8\xE3\xF0\xFB \xED\xE0 ARP Blue)'
-local DEFAULT_TIME_REPLY = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}'
-local DEFAULT_TECH_REPLY = '\xCB\xF3\xF7\xF8\xE5 \xEE\xE1\xF0\xE0\xF2\xE8\xF2\xE5\xF1\xFC \xE2 \xF2\xE5\xF5\xED\xE8\xF7\xE5\xF1\xEA\xE8\xE9 \xF0\xE0\xE7\xE4\xE5\xEB \xED\xE0 \xF4\xEE\xF0\xF3\xEC\xE5 ARP'
+DEFAULT_GG_REPLY = '\xCF\xF0\xE8\xFF\xF2\xED\xEE\xE9 \xE8\xE3\xF0\xFB \xED\xE0 ARP Blue)'
+DEFAULT_TIME_REPLY = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}'
+DEFAULT_TECH_REPLY = '\xCB\xF3\xF7\xF8\xE5 \xEE\xE1\xF0\xE0\xF2\xE8\xF2\xE5\xF1\xFC \xE2 \xF2\xE5\xF5\xED\xE8\xF7\xE5\xF1\xEA\xE8\xE9 \xF0\xE0\xE7\xE4\xE5\xEB \xED\xE0 \xF4\xEE\xF0\xF3\xEC\xE5 ARP'
 PANEL_PAD = 12
 BUBBLE_PAD_X = 14
 BUBBLE_PAD_Y = 10
@@ -74,8 +76,8 @@ RULE_TRIG_MAX = 150
 RULE_ADD_ROW_H = 36
 RULE_ACTIONS_H = 88
 MIN_CONTAINS_TRIGGER_LEN = 3
-local ANS_CHAT_LINE_MAX = 125
-local ANS_SPLIT_DELAY_MS = 200
+ANS_CHAT_LINE_MAX = 125
+ANS_SPLIT_DELAY_MS = 200
 
 -- ImGui тёмная тема Report Desk.
 function applyModernDarkStyle()

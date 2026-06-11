@@ -54,14 +54,36 @@ git push origin main
 
 ## Разработка (локально)
 
-| Режим | Файлы |
-|-------|--------|
-| **Dev** | `admin_report_desk.lua` + модули `lib/report_desk_*.lua` |
-| **Пользователи** | launcher stub + `report_desk_autoupdate.lua` + `report_desk_deps.lua` + `report_desk\admin_report_desk_core.*` |
+| Режим | Где лежит | Что грузит GTA |
+|-------|-----------|----------------|
+| **Dev** (по умолчанию) | `moonloader\` — git-репо | `admin_report_desk.lua` + `lib/report_desk_*.lua` |
+| **Test release** | `moonloader-test\` — соседняя папка | zip-релиз, как у админа |
 
-Не держи одновременно dev-entry и launcher с одним именем `admin_report_desk.lua`.
+**Dev-папка при тесте не трогается.** Во время test dev временно переименовывается в `moonloader-dev`, а `moonloader` становится junction на `moonloader-test`.
 
-Сборка bundle без релиза (только для отладки):
+### Тест релиза (одна GTA, без мусора в dev)
+
+```powershell
+cd "C:\Program Files (x86)\Advance Games\moonloader\tools"
+
+# 1. Собрать zip и разложить в ..\..\moonloader-test\
+.\release_test.ps1 -Build -Version 1.0.3
+
+# 2. GTA закрыта → включить test-режим
+.\ml_test.bat
+
+# 3. Играть, проверить релиз. Вернуть dev:
+.\ml_dev.bat
+```
+
+Статус: `.\ml_mode.ps1` (dev / test / готов ли test).
+
+Опции:
+- `-KeepConfig` — после распаковки подставить твой `config/` из dev
+- `-Activate` — сразу переключить GTA на test после сборки
+- готовый zip: `.\release_test.ps1 -ZipPath ..\dist\report_desk_helper_main.zip`
+
+Сборка bundle без релиза:
 
 ```powershell
 .\bundle_report_desk.ps1
@@ -70,7 +92,7 @@ git push origin main
 Полный релиз (bundle + verify + zip + manifest):
 
 ```powershell
-.\build_release.ps1 -Version 1.0.9 -SkipLuac
+.\build_release.ps1 -Version 1.0.9
 ```
 
 ## Требования

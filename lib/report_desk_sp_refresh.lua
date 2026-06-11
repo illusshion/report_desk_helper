@@ -3,7 +3,7 @@
      Тихий /sp без markPendingSp. ]]
 local M = {}
 
-local COOLDOWN_SEC = 2.0
+local COOLDOWN_SEC = 3.0
 local AUTO_ST_SKIP_SEC = 2.5
 local RPC_MOBILITY_TTL = 1.2
 local SYNC_MOBILITY_TTL = 3.0
@@ -84,11 +84,6 @@ local function readMobility()
         return 'vehicle'
     end
     if pAt > 0 and (now - pAt) < SYNC_MOBILITY_TTL then
-        return 'onfoot'
-    end
-    local ped = readTargetPed()
-    if ped then
-        if isCharInAnyCar and isCharInAnyCar(ped) then return 'vehicle' end
         return 'onfoot'
     end
     return ctx.mobility
@@ -221,6 +216,7 @@ local function tryRefresh(reason)
     if not autoRefreshEnabled() then return false end
     if not watchingTarget() then return false end
     if deps.hasPendingSp and deps.hasPendingSp() then return false end
+    if deps.hasOutboundPending and deps.hasOutboundPending() then return false end
     if not ctx.seeded then return false end
     local now = os.clock()
     if now - (ctx.lastRefreshAt or 0) < COOLDOWN_SEC then return false end
@@ -368,14 +364,14 @@ function M.onTargetVehicleSync(playerId)
     playerId = tonumber(playerId)
     if not playerId or playerId ~= getTargetId() then return end
     ctx.lastVehicleSyncAt = os.clock()
-    flushPending()
+    if ctx.pending then flushPending() end
 end
 
 function M.onTargetPassengerSync(playerId)
     playerId = tonumber(playerId)
     if not playerId or playerId ~= getTargetId() then return end
     ctx.lastVehicleSyncAt = os.clock()
-    flushPending()
+    if ctx.pending then flushPending() end
 end
 
 function M.onTargetPlayerSync(playerId)

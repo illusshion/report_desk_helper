@@ -3,25 +3,46 @@ local M = {}
 
 local MODULE_DIR = 'lib\\'
 
-local CORE_A_FILES = {
+-- Lua 5.1 / LuaJIT: один loadstring-chunk не может иметь >200 local-переменных.
+-- Делим core на части; после core_a report_desk_env_export публикует shared state в env.
+local CORE_A_FILES_A = {
     'report_desk_bootstrap.lua',
     'report_desk_constants.lua',
     'report_desk_theme.lua',
     'report_desk_state.lua',
     'report_desk_util.lua',
+    'report_desk_match_normalize.lua',
+    'report_desk_match_context.lua',
+    'report_desk_intent_match.lua',
+    'report_desk_intent_legacy.lua',
+    'report_desk_intent_extensions.lua',
+    'report_desk_intents.lua',
     'report_desk_profanity.lua',
     'report_desk_chat.lua',
     'report_desk_cheats.lua',
+    'report_desk_mask_id.lua',
     'report_desk_skins.lua',
     'report_desk_input.lua',
     'report_desk_actions.lua',
+    'report_desk_env_export.lua',
+}
+
+local CORE_A_FILES_B = {
+    'report_desk_admin_punish.lua',
     'report_desk_threads.lua',
     'report_desk_config.lua',
     'report_desk_ingest_runtime.lua',
     'report_desk_rules.lua',
+}
+
+-- exact_time отдельно: вместе с admin_punish превышает лимит 200 local в одном chunk.
+local CORE_A_FILES_B2 = {
+    'report_desk_exact_time.lua',
+}
+
+local CORE_A_FILES_C = {
     'report_desk_ui.lua',
     'report_desk_hooks.lua',
-    'report_desk_env_export.lua',
     'report_desk_main.lua',
 }
 
@@ -88,7 +109,10 @@ function M.load()
     env.outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
     env.chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
 
-    runChunkBundle(wd, CORE_A_FILES, env, 'core')
+    runChunkBundle(wd, CORE_A_FILES_A, env, 'core_a')
+    runChunkBundle(wd, CORE_A_FILES_B, env, 'core_b')
+    runChunkBundle(wd, CORE_A_FILES_B2, env, 'core_b2')
+    runChunkBundle(wd, CORE_A_FILES_C, env, 'core_c')
     local okRemote, errRemote = pcall(runChunkBundle, wd, REMOTE_CHAT_CHUNK_FILES, env, 'remote_chat')
     if not okRemote then
         print('[Report Desk] remote chat disabled: ' .. tostring(errRemote))

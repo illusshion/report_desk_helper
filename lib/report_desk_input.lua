@@ -45,7 +45,7 @@ function drawCheatsTab()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##ch_mk')
-    drawCheatCardTitle('\xCC\xE0\xF0\xEA\xE5\xF0 \xE8 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2', '')
+    drawCheatCardTitle('CLICKWARP', '')
     cheatState.uiMarkerWheel[0] = settings.cheats.marker_wheel ~= false
     if deskFormCheckboxRow('\xD2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xED\xE0 \xEA\xEE\xEB\xB8\xF1\xE8\xEA\xEE \xEC\xFB\xF8\xE8', cheatState.uiMarkerWheel, function(v)
         settings.cheats.marker_wheel = v and true or false
@@ -53,9 +53,6 @@ function drawCheatsTab()
         markDirtySettings()
     end) then end
     imgui.TextColored(col_muted2, uiText('\xD1\xCA\xCC \x97 \xF0\xE5\xE6\xE8\xEC \xB7 \xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xB7 \xCF\xCA\xCC \x97 \xEF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xEC\xE0\xF8\xE8\xED\xF3'))
-    drawCheatBindRow('marker', 'mk', '\xD0\xE5\xE6\xE8\xEC \xEC\xE0\xF0\xEA\xE5\xF0\xE0')
-    drawCheatBindRow('tp', 'tp', '\xD2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xED\xE0 \xEC\xE5\xF2\xEA\xF3')
-    drawCheatBindRow('veh', 'vb', '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xEC\xE0\xF8\xE8\xED\xF3')
     if cheatState.marker.active then
         local btnW = deskFormRowAvail('\xD1\xF2\xE0\xF2\xF3\xF1', DESK_FORM_LABEL_W)
         imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.38, 0.22, 0.10, 0.85))
@@ -76,6 +73,14 @@ function drawCheatsTab()
         markDirtySettings()
         flushDirtyConfigNow()
     end) then end
+    if deskFormCheckboxRow('\xCD \xED\xE0 \xE3\xEE\xEB\xEE\xE2\xE5 \xE2 \xEC\xE0\xF1\xEA\xE5 \xE8 \xCC\xC2\xC4', uiCheatMaskId, function(v)
+        ensureCheatsSettings()
+        settings.cheats.mask_player_id = v and true or false
+        if not v and type(maskIdCleanup) == 'function' then pcall(maskIdCleanup) end
+        markDirtySettings()
+        flushDirtyConfigNow()
+    end, 'mask_id') then end
+    drawSettingsHint('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xE5\xF2 \xED\xEE\xEC\xE5\xF0 ID \xED\xE0\xE4 \xED\xE8\xEA\xEE\xEC, \xE5\xF1\xEB\xE8 \xED\xE8\xEA \xF2\xB8\xEC\xED\xFB\xE9 \xE8\xEB\xE8 \xED\xE5 \xF7\xE8\xF2\xE0\xE5\xF2\xF1\xFF')
     deskFormPanelEnd()
 
     imgui.PopStyleVar(2)
@@ -191,7 +196,7 @@ end
 
 -- Desk hook/helper.
 function deskImguiNeedsInput()
-    if showWindow[0] or deskCache.hotkeyCapture or deskCache.cheatCapture then
+    if showWindow[0] or (type(deskAnyBindCapture) == 'function' and deskAnyBindCapture()) then
         return true
     end
     if deskSpectateCameraOwnsInput() then
@@ -219,6 +224,9 @@ function deskImguiNeedsInput()
         if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
         if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
         if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
+    end
+    if type(exactTimeWantsImguiInput) == 'function' and exactTimeWantsImguiInput() then
+        return true
     end
     return false
 end
@@ -280,7 +288,7 @@ function deskSpectateCameraBlocked()
     if deskSpectateHudWantsInput() then return true end
     if cheatState.marker.active then return true end
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if sampIsDialogActive and sampIsDialogActive() then return true end
+    if deskSampDialogActive() then return true end
     return false
 end
 
@@ -481,6 +489,14 @@ function deskDeskOrAnsUiOpen()
     return showWindow[0]
 end
 
+-- Активный SAMP-диалог (кроме подавленного оверлеем /c 60).
+function deskSampDialogActive()
+    if type(exactTimeWantsImguiInput) == 'function' and exactTimeWantsImguiInput() then
+        return false
+    end
+    return sampIsDialogActive and sampIsDialogActive() or false
+end
+
 -- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
 local deskSampInputFfiReady = false
 local deskSampInputEnableHook = nil
@@ -603,8 +619,7 @@ local function deskInstallSampInputEnableHook()
     local function detour(this)
         if this ~= nil then deskSampCInputThis = this end
         if deskDeskOrAnsUiOpen() then
-            if (sampIsChatInputActive and sampIsChatInputActive())
-                    or (sampIsDialogActive and sampIsDialogActive()) then
+            if (sampIsChatInputActive and sampIsChatInputActive()) or deskSampDialogActive() then
                 hookObj(this)
             end
             return
@@ -652,7 +667,7 @@ end
 function deskSampChatGuardFrame()
     if not deskDeskOrAnsUiOpen() then return end
     if sampIsChatInputActive and sampIsChatInputActive() then return end
-    if sampIsDialogActive and sampIsDialogActive() then return end
+    if deskSampDialogActive() then return end
     pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
@@ -663,9 +678,9 @@ end
 function deskShouldBlockSampChatKey(msg, wparam)
     if not deskDeskOrAnsUiOpen() then return false end
     if sampIsChatInputActive and sampIsChatInputActive() then return false end
-    if sampIsDialogActive and sampIsDialogActive() then return false end
+    if deskSampDialogActive() and not showWindow[0] then return false end
     if not deskCache or not deskCache.wm then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return false end
     msg = tonumber(msg) or 0
     wparam = tonumber(wparam) or 0
     local vkReturn = (vkeys and vkeys.VK_RETURN) or 0x0D
@@ -738,7 +753,7 @@ function updateMimguiGameInputPassthrough()
         imgui.DisableInput = not needsInput
         return
     end
-    if sampIsDialogActive and sampIsDialogActive() then
+    if deskSampDialogActive() then
         imgui.DisableInput = true
         return
     end
@@ -775,7 +790,7 @@ end
 
 -- Desk hook/helper.
 function deskOpenLocksPlayer()
-    if sampIsDialogActive and sampIsDialogActive() then return false end
+    if deskSampDialogActive() then return false end
     return showWindow[0] and not cheatState.airbreak and not deskSpectatingNow()
 end
 
@@ -836,6 +851,8 @@ function closeDeskWindow()
     finishDeskBindCapture()
     deskInputState.replyFocused = false
     deskInputState.replyInputActive = false
+    deskInputState.focusReplyNext = false
+    deskInputState.focusReplyReason = nil
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0
     deskWantsKeyboard = false
@@ -860,13 +877,17 @@ function sendGameCmd(cmd)
     if stId then
         deskSpectateStats.markPendingSt(tonumber(stId))
     end
-    local spId = cmd:match('^sp%s+(%d+)%s*$')
-    if spId and deskSpectateStats.markPendingSpCommand then
-        deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
-    end
     releaseDeskInputCapture(true)
     closeDeskWindow()
-    sendChat(cmd)
+    if sendMenuOutbound then
+        sendMenuOutbound(cmd)
+    else
+        local spId = cmd:match('^sp%s+(%d+)%s*$')
+        if spId and deskSpectateStats.markPendingSpCommand then
+            deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
+        end
+        sendChat(cmd)
+    end
 end
 
 -- Get Local Admin Level

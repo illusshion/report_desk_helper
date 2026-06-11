@@ -25,15 +25,24 @@ function cp1251ToUtf8(text)
     return text
 end
 
-function utf8ToCp1251(text)
-    if not text or text == '' then return '' end
-    if not text:find('[\208-\209][\128-\191]') then return text end
-    local ok, r = pcall(function() return u8:decode(text) end)
-    return ok and r or text
-end
-
 function isUtf8Text(s)
     return type(s) == 'string' and s:find('[\208-\209][\128-\191]') ~= nil
+end
+
+function utf8ToCp1251(text)
+    if not text or text == '' then return '' end
+    if not isUtf8Text(text) then return text end
+    if type(u8) ~= 'table' or type(u8.decode) ~= 'function' then return text end
+    local ok, r = pcall(function() return u8:decode(text) end)
+    if ok and type(r) == 'string' then return r end
+    return text
+end
+
+-- Текст для SAMP wire (/ans, чат): всегда CP1251.
+function ensureWireCp1251(text)
+    text = trim(tostring(text or ''))
+    if text == '' then return '' end
+    return normalizeStoredText(text, isUtf8Text(text))
 end
 
 -- Безопасный вызов предыдущего хука в цепочке SAMP (изоляция ошибок чужих скриптов).
@@ -249,8 +258,39 @@ function stripChatTimestamp(line)
     return line
 end
 
+-- Lowercase для match (Lua :lower() не трогает cp1251 кириллицу).
+function cp1251Lower(s)
+    if not s or s == '' then return '' end
+    if isUtf8Text(s) then
+        s = utf8ToCp1251(s)
+    end
+    return (s:gsub('[\192-\223]', function(c)
+        return string.char(c:byte() + 32)
+    end):gsub('\168', '\184'))
+end
+
+-- Снять обёрточную пунктуацию/пробелы (Спасибо! ), !!!, «спасибо»).
+local function isMatchEdgeByte(b)
+    if not b then return false end
+    if b == 0x20 or (b >= 0x09 and b <= 0x0D) then return true end
+    if b >= 0x21 and b <= 0x2F then return true end
+    if b >= 0x3A and b <= 0x40 then return true end
+    if b >= 0x5B and b <= 0x60 then return true end
+    if b >= 0x7B and b <= 0x7E then return true end
+    if b == 0x85 or b == 0x96 or b == 0x97 or b == 0xAB or b == 0xBB then return true end
+    return false
+end
+
+function peelMatchEdges(s)
+    if not s or s == '' then return '' end
+    local from, to = 1, #s
+    while from <= to and isMatchEdgeByte(s:byte(from)) do from = from + 1 end
+    while to >= from and isMatchEdgeByte(s:byte(to)) do to = to - 1 end
+    return s:sub(from, to)
+end
+
 function normalizeIngestBody(body)
-    return trim(stripTags(body or '')):lower()
+    return cp1251Lower(trim(stripTags(body or '')))
 end
 
 -- Типичные опечатки в репортах для fuzzy match правил.
@@ -268,6 +308,10 @@ local MATCH_TYPO_WORDS = {
     ['обьявление'] = 'объявление',
     ['скилы'] = 'скиллы',
     ['inventar'] = 'инвентарь',
+    ['провеить'] = 'проверить',
+    ['прсмотреть'] = 'посмотреть',
+    ['какиквесты'] = 'как квесты',
+    ['ремкомлект'] = 'ремкомплект',
 }
 
 function normalizeMatchTextTypo(s)
@@ -325,6 +369,9 @@ function invalidateUiCaches()
     deskCache.filterSig = ''
     deskCache.quickBtn = {}
     deskCache.quickBtnGen = -1
+    if type(deskCache.intentResolve) == 'table' then
+        deskCache.intentResolve = {}
+    end
 end
 
 function invalidateFilterCache()
@@ -378,23 +425,8 @@ function findFilterInsertPos(keys, key)
 end
 
 function bumpThreadInFilterCache(key)
-    if not key or not deskCache.filterKeys then return end
-    if type(getFilterListSig) ~= 'function' then return end
-    if type(threadMatchesFilter) ~= 'function' or type(threadMatchesSearch) ~= 'function' then return end
-    local sig = getFilterListSig()
-    if deskCache.filterSig ~= sig then return end
-    local t = threads[key]
-    if not t then return end
-    local keys = deskCache.filterKeys
-    for i = #keys, 1, -1 do
-        if keys[i] == key then
-            table.remove(keys, i)
-            break
-        end
-    end
-    if threadMatchesFilter(t) and threadMatchesSearch(t, key) then
-        table.insert(keys, findFilterInsertPos(keys, key), key)
-    end
+    if not key then return end
+    invalidateFilterCache()
 end
 
 function invalidateEllipsizeCache()
@@ -434,10 +466,13 @@ function rebuildNickIndex()
     end
 end
 
-function bumpScenariosGen()
+function bumpScenariosGen(preferLegacyScenarios)
     scenariosGen = scenariosGen + 1
     deskCache.quickBtnGen = -1
     deskCache.quickBtn = {}
+    if type(reloadDeskIntentsFromSources) == 'function' then
+        pcall(reloadDeskIntentsFromSources, preferLegacyScenarios == true)
+    end
 end
 
 -- LRU-подобная timed map с порядком eviction.
@@ -717,7 +752,8 @@ function expandTemplate(template, playerId)
             :gsub('{date}', dateOnly)
             :gsub('{datetime}', datetime)
     end
-    return template:gsub('{id}', tostring(playerId or ''))
+    template = template:gsub('{id}', tostring(playerId or ''))
+    return ensureWireCp1251(template)
 end
 
 function drawTemplateTagsHint()
@@ -762,6 +798,21 @@ function sendChat(line)
     line = trim(line)
     if line == '' then return false end
     local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    if cmdBody:match('^ans%s') then
+        local ansId, ansBody = cmdBody:match('^ans%s+(%d+)%s+(.*)$')
+        if ansId and ansBody and ansBody ~= '' then
+            ansBody = ensureWireCp1251(ansBody)
+            local prefix = line:sub(1, 1) == '/' and '/ans ' or 'ans '
+            line = prefix .. ansId .. ' ' .. ansBody
+            cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+        end
+        if type(helpStatsRecordAns) == 'function' then
+            pcall(helpStatsRecordAns)
+        end
+        if type(deskCache) == 'table' then
+            deskCache.skipAnsStatsHook = (tonumber(deskCache.skipAnsStatsHook) or 0) + 1
+        end
+    end
     local spId = cmdBody:match('^sp%s+(%d+)%s*$')
     if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
         local skip = deskCache and tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0
@@ -771,7 +822,12 @@ function sendChat(line)
     end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
     if type(sampSendChat) ~= 'function' then return false end
-    return pcall(sampSendChat, line)
+    local ok = pcall(sampSendChat, line)
+    if cmdBody:match('^ans%s') and type(deskCache) == 'table' then
+        local n = (tonumber(deskCache.skipAnsStatsHook) or 0) - 1
+        deskCache.skipAnsStatsHook = n > 0 and n or nil
+    end
+    return ok
 end
 
 -- Меню /sp: sampSendChat идёт через onSendCommand — skipSpHookLocal не дублирует локальный /sp.

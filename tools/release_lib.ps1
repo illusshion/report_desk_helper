@@ -418,7 +418,10 @@ function Test-DeskReleaseArtifacts {
         'lib\report_desk_sha256.lua',
         'lib\report_desk_zip.lua',
         'lib\report_desk_fs.lua',
-        'config\admin_report_desk_user.lua'
+        'config\admin_report_desk_user.lua',
+        'config\report_desk_intents.lua',
+        'config\intent_trigger_extensions.lua',
+        'config\intent_stem_blocklist.lua'
     )
     $runtimeZipPath = Join-Path $MoonloaderRoot 'dist\report_desk_runtime_libs.zip'
     $iconvDistPath = Join-Path $MoonloaderRoot 'dist\iconv.dll'

@@ -15,6 +15,9 @@ function installProfanityHooks()
     if prevChat == deskCache.profChatHandler then prevChat = nil end
     deskCache.hookPrevProfChat = prevChat
     deskCache.profChatHandler = function(playerId, text)
+        if type(adminPunishOnChatMessage) == 'function' then
+            pcall(adminPunishOnChatMessage, playerId, text)
+        end
         pcall(checkProfanityFromChatMessage, playerId, text)
         if type(prevChat) == 'function' then
             return prevChat(playerId, text)
@@ -189,6 +192,9 @@ end
 
 -- Normalize Outbound Body
 function normalizeOutboundBody(body)
+    if type(ensureWireCp1251) == 'function' then
+        return ensureWireCp1251(body)
+    end
     return trim(body or '')
 end
 
@@ -410,14 +416,68 @@ function appendOutgoingMessage(t, body, opts)
     return threadApplyOutgoing(t, key, body, opts)
 end
 
+local AUTO_RULE_LABELS = {
+    time = '\xC2\xF0\xE5\xEC\xFF',
+    GG = 'GG',
+}
+
+-- Auto Rule Display Name
+function autoRuleDisplayName(ruleName)
+    ruleName = trim(ruleName or '')
+    if ruleName == '' then return '?' end
+    return AUTO_RULE_LABELS[ruleName] or ruleName
+end
+
+-- Human-readable auto-reply note (legacy auto: … → /ans … тоже нормализуется).
+function formatAutoSystemDisplay(m)
+    if type(m) ~= 'table' then return '' end
+    local note = trim(m.note or '')
+    if m.autoStatus and note ~= '' then return note end
+    local rule, rest = note:match('^auto:%s*(.-)%s*\xE2\x86\x92%s*(.+)$')
+    if rule then
+        rest = trim(rest)
+        if rest:match('^/ans') or rest:match('^/ ') then
+            return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB', autoRuleDisplayName(rule))
+        end
+        if rest:find('\xEE\xE6\xE8\xE4\xE0\xE5\xF2', 1, true) then
+            return string.format(
+                '\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\xEE\xE6\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF',
+                autoRuleDisplayName(rule))
+        end
+        return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\x80\x94 %s', autoRuleDisplayName(rule), rest)
+    end
+    return note
+end
+
+-- Format Auto System Line
+function formatAutoSystemLine(ruleName, detail, status)
+    local label = autoRuleDisplayName(ruleName)
+    if status == 'pending' then
+        return string.format(
+            '\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\xEE\xE6\xE4\xE0\xE5\xF2 \xEF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xFF',
+            label)
+    end
+    if status == 'fail' then
+        detail = trim(tostring(detail or ''))
+        if detail == '' or detail:match('^/ans') or detail:match('^/ ') then
+            detail = '\xED\xE5 \xEE\xF2\xEF\xF0\xE0\xE2\xEB\xE5\xED\xEE'
+        end
+        return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB \xE2\x80\x94 %s', label, detail)
+    end
+    return string.format('\xC0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2 \xAB%s\xBB', label)
+end
+
 -- Add Auto System Note
-function addAutoSystemNote(t, ruleName, result)
+function addAutoSystemNote(t, ruleName, detail, status)
     if not t then return end
+    status = status or 'info'
     local key = findThreadKeyByNick(t.nick) or nickKey(t.nick)
     addMessageToKey(key, {
         dir = 'system',
         text = '',
-        note = string.format('auto: %s \xE2\x86\x92 %s', ruleName or '', result or ''),
+        autoRule = ruleName,
+        autoStatus = status,
+        note = formatAutoSystemLine(ruleName, detail, status),
         ts = os.time(),
     })
 end
@@ -516,7 +576,7 @@ function sendOutgoingAns(t, text, opts)
     if not ansId then
         if err then say(err) end
         if opts.showSystemOnFail then
-            addAutoSystemNote(t, opts.ruleName or '', err or 'fail')
+            addAutoSystemNote(t, opts.ruleName or '', err or 'fail', 'fail')
         end
         return false, err
     end

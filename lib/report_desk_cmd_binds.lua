@@ -2,7 +2,9 @@
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local CMD_BIND_RESERVED = {
-    ans = true, reps = true, reportdesk = true, hist = true, acar = true, guns = true,
+    ans = true, reps = true, reportdesk = true, hist = true, iget = true, ilog = true, iskill = true,
+    warnlast = true, banlast = true, jaillast = true, mutelast = true,
+    acar = true, guns = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
     deskupdate = true, deskrepair = true, reload = true, r = true,
     c = true, cc = true, me = true, b = true, w = true, f = true, g = true,
@@ -140,17 +142,22 @@ function runCmdBind(entry, arg)
     sendChat(string.format('ans %d %s', id, text))
 end
 
+-- Register one chat command bind (MoonLoader cannot unregister; new names register on rename).
+local function registerOneCmdBind(name)
+    name = trim(tostring(name or '')):lower()
+    if name == '' or cmdBindRegistered[name] then return false end
+    cmdBindRegistered[name] = true
+    sampRegisterChatCommand(name, function(arg)
+        runCmdBind(findCmdBindByName(name), arg)
+    end)
+    return true
+end
+
 -- Register Cmd Binds
 function registerCmdBinds()
     ensureCmdBinds()
     for _, entry in ipairs(settings.cmd_binds) do
-        local name = entry.cmd
-        if name and name ~= '' and not cmdBindRegistered[name] then
-            cmdBindRegistered[name] = true
-            sampRegisterChatCommand(name, function(arg)
-                runCmdBind(findCmdBindByName(name), arg)
-            end)
-        end
+        registerOneCmdBind(entry.cmd)
     end
 end
 
@@ -175,6 +182,7 @@ end
 function applyCmdBindEditor()
     ensureCmdBinds()
     if cmdBindSelected < 1 or cmdBindSelected > #settings.cmd_binds then return false end
+    local entry = settings.cmd_binds[cmdBindSelected]
     local cmd = trim(readInputBuf(editCmdBindCmd)):lower()
     local text = readInputBuf(editCmdBindText)
     if not cmdBindIsValidName(cmd) then
@@ -189,11 +197,15 @@ function applyCmdBindEditor()
         cmdBindSetStatus('\xD2\xE5\xEA\xF1\xF2 \xED\xE5 \xEC\xEE\xE6\xE5\xF2 \xE1\xFB\xF2\xFC \xEF\xF3\xF1\xF2\xFB\xEC')
         return false
     end
+    local prevCmd = trim(tostring(entry.cmd or '')):lower()
     settings.cmd_binds[cmdBindSelected] = {
         cmd = cmd,
         text = text,
         enabled = editCmdBindEnabled[0],
     }
+    if cmd ~= prevCmd then
+        registerOneCmdBind(cmd)
+    end
     markDirtySettings()
     cmdBindEditorDirty = false
     return true
@@ -217,7 +229,6 @@ end
 
 -- Draw Cmd Bind Edit Panel
 function drawCmdBindEditPanel()
-    drawSettingsSubsection('\xCA\xEE\xEC\xE0\xED\xE4\xE0')
     local cmdRowW = math.max(120, imgui.GetContentRegionAvail().x - 18)
     imgui.TextColored(col_muted, '/')
     imgui.SameLine(0, 4)
@@ -270,9 +281,6 @@ end
 -- Draw Cmd Binds Tab Inner
 function drawCmdBindsTabInner()
     ensureCmdBinds()
-    drawSettingsHint(
-        '\xD1\xE2\xEE\xE8 \xEA\xEE\xEC\xE0\xED\xE4\xFB \xE4\xEB\xFF \xE1\xFB\xF1\xF2\xF0\xEE\xE3\xEE /ans \xE8\xE3\xF0\xEE\xEA\xF3 \xEF\xEE ID')
-    imgui.Dummy(imgui.ImVec2(0, 4))
     pushPanelStyle()
     imgui.BeginChild('##cmd_bind_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
     if imgui.Button(uiText('+ \xCA\xEE\xEC\xE0\xED\xE4\xE0'), imgui.ImVec2(-1, 28)) then

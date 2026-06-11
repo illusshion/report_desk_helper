@@ -118,6 +118,77 @@ function isVkDown(vk)
     return isKeyDown and isKeyDown(vk)
 end
 
+-- NumLock OFF: та же физическая клавиша numpad шлёт HOME/END/… вместо VK_NUMPAD*.
+local DESK_NUMPAD_EQUIV = {
+    { vkeys.VK_NUMPAD0 or 0x60, vkeys.VK_INSERT or 0x2D },
+    { vkeys.VK_NUMPAD1 or 0x61, vkeys.VK_END or 0x23 },
+    { vkeys.VK_NUMPAD2 or 0x62, vkeys.VK_DOWN or 0x28 },
+    { vkeys.VK_NUMPAD3 or 0x63, vkeys.VK_NEXT or 0x22 },
+    { vkeys.VK_NUMPAD4 or 0x64, vkeys.VK_LEFT or 0x25 },
+    { vkeys.VK_NUMPAD5 or 0x65, vkeys.VK_CLEAR or 0x0C },
+    { vkeys.VK_NUMPAD6 or 0x66, vkeys.VK_RIGHT or 0x27 },
+    { vkeys.VK_NUMPAD7 or 0x67, vkeys.VK_HOME or 0x24 },
+    { vkeys.VK_NUMPAD8 or 0x68, vkeys.VK_UP or 0x26 },
+    { vkeys.VK_NUMPAD9 or 0x69, vkeys.VK_PRIOR or 0x21 },
+    { vkeys.VK_DECIMAL or 0x6E, vkeys.VK_DELETE or 0x2E },
+}
+local DESK_VK_EQUIV = {}
+for _, group in ipairs(DESK_NUMPAD_EQUIV) do
+    for _, vk in ipairs(group) do
+        DESK_VK_EQUIV[vk] = group
+    end
+end
+
+function deskBindVkEquivList(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return {} end
+    return DESK_VK_EQUIV[vk] or { vk }
+end
+
+function deskCanonicalBindVk(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return vk end
+    local group = DESK_VK_EQUIV[vk]
+    if group then return group[1] end
+    return vk
+end
+
+function deskBindKeysOverlap(a, b)
+    a, b = tonumber(a) or 0, tonumber(b) or 0
+    if a <= 0 or b <= 0 then return false end
+    if a == b then return true end
+    local ga, gb = DESK_VK_EQUIV[a], DESK_VK_EQUIV[b]
+    return ga ~= nil and ga == gb
+end
+
+function deskBindAnyVkDown(vk)
+    for _, ev in ipairs(deskBindVkEquivList(vk)) do
+        if isVkDown(ev) == true then return true end
+    end
+    return false
+end
+
+function deskBindJustPressed(vk, prev)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or type(prev) ~= 'table' then return false end
+    local down = deskBindAnyVkDown(vk)
+    if not down then
+        prev[vk] = false
+        return false
+    end
+    if not prev[vk] then
+        prev[vk] = true
+        return true
+    end
+    return false
+end
+
+function deskBindSyncKeyPrev(vk, prev)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or type(prev) ~= 'table' then return end
+    prev[vk] = deskBindAnyVkDown(vk)
+end
+
 -- Cheat Mod Down
 function cheatModDown(vk)
     return isVkDown(vk)
@@ -150,18 +221,7 @@ end
 
 -- Is Cheat Bind Hit
 function isCheatBindHit(vk)
-    vk = tonumber(vk) or 0
-    if vk <= 0 then return false end
-    local down = isVkDown(vk)
-    if not down then
-        deskCache.cheatBindPrev[vk] = false
-        return false
-    end
-    if not deskCache.cheatBindPrev[vk] then
-        deskCache.cheatBindPrev[vk] = true
-        return true
-    end
-    return false
+    return deskBindJustPressed(vk, deskCache.cheatBindPrev)
 end
 
 -- Is Cheat Bind Pressed
@@ -514,6 +574,17 @@ function cheatsToggleWallhack()
     cheatsApplyWallhack(not cheatState.wallhack)
 end
 
+-- Фиксированные клавиши маркера (не настраиваются): СКМ / ЛКМ / ПКМ.
+MARKER_BIND_TOGGLE = vkeys.VK_MBUTTON
+MARKER_BIND_TP = vkeys.VK_LBUTTON
+MARKER_BIND_VEH = vkeys.VK_RBUTTON
+
+local function markerFixedBindHit(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    return isCheatBindHit(vk)
+end
+
 -- Cheats Toggle Airbreak
 function cheatsToggleAirbreak()
     cheatsSetAirbreak(not cheatState.airbreak)
@@ -525,9 +596,7 @@ function deskHotkeyBlockedByMarkerWheel(vk)
     if settings.cheats.marker_wheel == false then return false end
     vk = tonumber(vk) or 0
     if vk <= 0 then return false end
-    local mk = tonumber(settings.cheats.marker_key1) or vkeys.VK_MBUTTON
-    if mk <= 0 then mk = vkeys.VK_MBUTTON end
-    return vk == mk
+    return vk == MARKER_BIND_TOGGLE
 end
 
 -- Cheats Process Keybinds
@@ -535,8 +604,7 @@ function cheatsProcessKeybinds()
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return end
     if deskInputState.playerSpectating and deskModifierKeysDown() then return end
     ensureCheatsSettings()
-    local c = settings.cheats
-    local markerToggle = isCheatBindPressed(c, 'marker')
+    local markerToggle = markerFixedBindHit(MARKER_BIND_TOGGLE)
     if markerToggle then
         if not cheatState.marker.active then
             markerToggleMode()
@@ -545,6 +613,7 @@ function cheatsProcessKeybinds()
         end
     end
     if not cheatState.marker.active then
+        local c = settings.cheats
         if isCheatBindPressed(c, 'gm') then cheatsToggleGodmode() end
         if isCheatBindPressed(c, 'wh') then cheatsToggleWallhack() end
         if isCheatBindPressed(c, 'ab') then cheatsToggleAirbreak() end
@@ -591,6 +660,7 @@ function cheatsCleanup()
     if cheatState.airbreak then cheatsSetAirbreak(false) end
     if cheatState.godmode then cheatsApplyGodmode(false) end
     if cheatState.wallhack then cheatsApplyWallhack(false) end
+    if type(maskIdCleanup) == 'function' then pcall(maskIdCleanup) end
     cheatState.ntBackup = nil
 end
 
@@ -1054,8 +1124,21 @@ function cheatsTickMarker()
         markerRemove3d()
         m.userMarker = createUser3dMarker(pick.x, pick.y, pick.z + 0.3, 4)
     end
-    if isCheatBindPressed(settings.cheats, 'tp') then
-        markerExecuteTeleport(pick)
+    if markerFixedBindHit(MARKER_BIND_TP) then
+        markerTeleportTo(pick)
+        markerSetMode(false)
+    elseif markerFixedBindHit(MARKER_BIND_VEH) then
+        local targetCar = m.aimCar or pick.car or m.hoverCar
+        if targetCar and doesVehicleExist(targetCar) then
+            local myCar = isCharInAnyCar(PLAYER_PED) and storeCarCharIsInNoSave(PLAYER_PED) or nil
+            if not myCar or targetCar ~= myCar then
+                local ok, err = markerEnterVehicle(targetCar, pick)
+                if not ok and err then
+                    say(tostring(err))
+                end
+            end
+        end
+        markerSetMode(false)
     end
 end
 
@@ -1069,23 +1152,24 @@ function syncCheatsUiFromSettings()
     uiCheatGmStart[0] = c.gm_on_start and true or false
     uiCheatWhStart[0] = c.wh_on_start and true or false
     uiCheatHud[0] = c.show_hud and true or false
+    if uiCheatMaskId then uiCheatMaskId[0] = c.mask_player_id ~= false end
     cheatState.uiMarkerWheel[0] = c.marker_wheel ~= false
     uiCheatAbSpeed[0] = tonumber(c.ab_speed) or 1.0
     cheatsUiSynced = true
 end
 
-local CHEATS_HUD_W = 54
-local CHEATS_HUD_H = 68
-local CHEATS_HUD_PAD_X = 10
-local CHEATS_HUD_PAD_Y = 8
-local CHEATS_HUD_LINE_H = 16
-local CHEATS_HUD_LABEL_W = 96
-local CHEATS_OVERLAY_PANEL_W = 188
-local CHEATS_AB_HUD_W = 108
-local CHEATS_AB_HUD_H = 28
-local CHEATS_AB_HUD_SIDE_PAD = 12
+CHEATS_HUD_W = 54
+CHEATS_HUD_H = 68
+CHEATS_HUD_PAD_X = 10
+CHEATS_HUD_PAD_Y = 8
+CHEATS_HUD_LINE_H = 16
+CHEATS_HUD_LABEL_W = 96
+CHEATS_OVERLAY_PANEL_W = 188
+CHEATS_AB_HUD_W = 108
+CHEATS_AB_HUD_H = 28
+CHEATS_AB_HUD_SIDE_PAD = 12
 
-local CHEATS_HUD_LINES = {
+CHEATS_HUD_LINES = {
     { 'WH', function() return cheatState.wallhack end },
     { 'GM', function() return cheatState.godmode end },
     { 'AB', function() return cheatState.airbreak end },
@@ -1391,7 +1475,7 @@ function drawAirbreakHudOverlay()
 end
 
 CHEAT_BIND_PREFIX = {
-    gm = 'gm', wh = 'wh', ab = 'ab', mk = 'marker', tp = 'tp', vb = 'veh',
+    gm = 'gm', wh = 'wh', ab = 'ab',
 }
 
 CHEAT_CARD_H = 142
@@ -1451,6 +1535,13 @@ function cheatLiveBindPreview()
     return uiText(table.concat(parts, '+'))
 end
 
+-- Активен ли любой режим захвата бинда (hotkey / cheats / автовыдача).
+function deskAnyBindCapture()
+    return deskCache.hotkeyCapture == true
+        or deskCache.cheatCapture ~= nil
+        or deskCache.adminPunishBindCapture == true
+end
+
 -- Finish Desk Bind Capture
 function finishDeskBindCapture()
     deskCache.hotkeyCapture = false
@@ -1459,6 +1550,10 @@ function finishDeskBindCapture()
     deskCache.bindCapVk = nil
     deskCache.bindCapIgnoreMouseUntil = 0
     deskCache.bindCapPollPrev = nil
+    deskCache.bindCapKbPrev = nil
+    if deskCache.adminPunishBindCapture and type(finishAdminPunishBindCapture) == 'function' then
+        finishAdminPunishBindCapture()
+    end
 end
 
 -- Обычные клавиши для WM_KEY* (без кнопок мыши — их см. deskBindMouseKeyboardVk).
@@ -1517,7 +1612,7 @@ function deskBindMouseCommitsOnDown(vk)
 end
 
 -- Begin Desk Bind Capture Session
-local function deskBindCaptureResetPollState()
+function deskBindCaptureResetPollState()
     local prev = {}
     for vk in pairs(MOUSE_BIND_VKS) do
         prev[vk] = isVkDown(vk) == true
@@ -1537,16 +1632,22 @@ local function deskBindCapturePollSave(vk)
     if deskCache.hotkeyCapture then
         return deskBindCapSaveHotkey(vk)
     end
+    if deskCache.adminPunishBindCapture and type(adminPunishBindCaptureSave) == 'function' then
+        return adminPunishBindCaptureSave(vk)
+    end
     return false
 end
 
 -- M4/M5/MMB часто видны только через GetAsyncKeyState; WM_* / WM_KEY* в SA до Lua не доходят.
 function deskBindCapturePollFrame()
-    if not deskCache.hotkeyCapture and not deskCache.cheatCapture then
+    if not deskAnyBindCapture() then
         deskCache.bindCapPollPrev = nil
+        deskCache.bindCapKbPrev = nil
         return
     end
-    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt or deskCache.hotkeyCaptureAt
+    local startedAt = deskCache.cheatCapture and deskCache.cheatCaptureAt
+        or deskCache.adminPunishBindCapture and deskCache.adminPunishBindCaptureAt
+        or deskCache.hotkeyCaptureAt
     if os.clock() - (tonumber(startedAt) or 0) < PF.HOTKEY_CAPTURE_GRACE then return end
 
     local prev = deskCache.bindCapPollPrev
@@ -1586,6 +1687,28 @@ function deskBindCapturePollFrame()
             return
         end
         prev[capVk] = down
+    end
+
+    -- Запасной путь для клавиатуры, если WM съели chat/imgui-слой.
+    local kbPrev = deskCache.bindCapKbPrev
+    if type(kbPrev) ~= 'table' then
+        kbPrev = {}
+        deskCache.bindCapKbPrev = kbPrev
+    end
+    for vk = 1, 255 do
+        if not cheatBindIsModifier(vk) and not MOUSE_BIND_VKS[vk] then
+            local down = isVkDown(vk) == true
+            local was = kbPrev[vk] == true
+            if down and not was then
+                deskCache.bindCapVk = vk
+                if deskBindMouseCommitsOnDown(vk) then
+                    if deskBindCapturePollSave(vk) then return end
+                end
+            elseif was and not down and tonumber(deskCache.bindCapVk) == vk then
+                if deskBindCapturePollSave(vk) then return end
+            end
+            kbPrev[vk] = down
+        end
     end
 end
 
@@ -1712,6 +1835,17 @@ function deskHotkeyMessageIsDown(msg, wparam, lparam, hk)
     return false
 end
 
+function deskBindMessageIsDown(msg, wparam, lparam, vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    for _, ev in ipairs(deskBindVkEquivList(vk)) do
+        if deskHotkeyMessageIsDown(msg, wparam, lparam, ev) then
+            return true
+        end
+    end
+    return false
+end
+
 -- Desk hook/helper.
 function deskResetHotkeyDebounce(vk)
     vk = tonumber(vk) or tonumber(settings.hotkey or vkeys.VK_F7) or 0
@@ -1721,7 +1855,8 @@ end
 -- Try Handle Desk Hotkey Message
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     if not sessionLive then return false end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture then return false end
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return false end
+    if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     local hk = (type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7
     hk = tonumber(hk) or 0

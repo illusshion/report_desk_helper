@@ -272,6 +272,8 @@ function requestChatSnapBottom(key)
     deskInputState.snapPending = true
     deskInputState.snapKey = key
     deskInputState.chatFollowBottom = true
+    deskInputState.hasUnseenMessages = false
+    deskInputState.chatScrollUntil = os.clock() + 0.5
 end
 
 -- Request Chat Scroll For Thread

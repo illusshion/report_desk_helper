@@ -29,6 +29,9 @@ local orphanRecoveryTried = false
 local targetOfflineSinceAt = nil
 local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
+local STEP_CONNECTED_CACHE_TTL = 0.5
+local stepConnectedCache = nil
+local stepConnectedCacheAt = 0
 local lastSpecStepAt = 0
 local lastSpectateHealthAt = 0
 local expectSpectateOff = false
@@ -65,7 +68,83 @@ local state = {
     pendingSpNick = '',
     pendingSpAt = 0,
     lastSpOutboundAt = 0,
+    pendingSpStepDelta = nil,
+    skipSpecIds = {},
+    lastSubjectId = -1,
+    lastSubjectNick = '',
 }
+
+local SPEC_SKIP_SEC = 45
+
+local function rememberLastSubject(id, nick)
+    id = tonumber(id)
+    nick = trim(nick or '')
+    if nick == '' then return end
+    state.lastSubjectNick = nick
+    if id and id >= 0 then
+        state.lastSubjectId = id
+    end
+end
+
+local function markSpecIdSkipped(id)
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    state.skipSpecIds[id] = os.clock() + SPEC_SKIP_SEC
+end
+
+local function isSpecIdSkipped(id)
+    id = tonumber(id)
+    if not id then return false end
+    local untilAt = state.skipSpecIds[id]
+    if not untilAt then return false end
+    if os.clock() > untilAt then
+        state.skipSpecIds[id] = nil
+        return false
+    end
+    return true
+end
+
+local function isSpectateStepCandidate(id)
+    if isSpecIdSkipped(id) then return false end
+    return M.isSpectateCandidate(id)
+end
+
+local function getSpectateStepBaseId()
+    if specSession.getTargetId then
+        local sid = tonumber(specSession.getTargetId())
+        if sid and sid >= 0 then return sid end
+    end
+    local tid = tonumber(state.targetId)
+    if tid and tid >= 0 then return tid end
+    return -1
+end
+
+local function sendSpectateStepCommand(nextId)
+    nextId = tonumber(nextId)
+    if not nextId or nextId < 0 then return false end
+    M.markPendingSpCommand(nextId, '')
+    local cmd = 'sp ' .. tostring(nextId)
+    if sendMenuOutbound then
+        sendMenuOutbound(cmd, { skipPendingMark = true })
+    elseif sendChat then
+        sendChat(cmd)
+    else
+        return false
+    end
+    return true
+end
+
+local function tryAdvanceAfterFailedSpec(failedId, delta)
+    failedId = tonumber(failedId)
+    delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    if not failedId or not specPlayerActive() then return false end
+    markSpecIdSkipped(failedId)
+    local nextId = M.findAdjacentSpectateId(failedId, delta)
+    if not nextId then return false end
+    state.pendingSpStepDelta = delta
+    lastSpecStepAt = os.clock()
+    return sendSpectateStepCommand(nextId)
+end
 
 -- ID цели на handshake /sp: pending → session → локальный state.
 local function resolveSpectateHandshakeId()
@@ -715,6 +794,39 @@ function M.getTargetId()
     return -1
 end
 
+-- Последняя цель /sp для warnlast/banlast/… (ник сохраняется после выхода).
+function M.getLastSubject()
+    local id = -1
+    local nick = ''
+
+    local curId = M.getTargetId()
+    if curId >= 0 then
+        id = curId
+        nick = trim(state.targetNick or '')
+    elseif state.lastSubjectId and state.lastSubjectId >= 0 then
+        id = state.lastSubjectId
+        nick = trim(state.lastSubjectNick or '')
+    elseif state.lastSubjectNick and state.lastSubjectNick ~= '' then
+        nick = state.lastSubjectNick
+        id = tonumber(state.lastSubjectId) or -1
+    end
+
+    if nick == '' then return nil end
+
+    local offline = true
+    if id >= 0 and sampIsPlayerConnected and sampIsPlayerConnected(id) then
+        offline = false
+        if sampGetPlayerNickname then
+            local live = trim(sampGetPlayerNickname(id) or '')
+            if live ~= '' then nick = live end
+        end
+    elseif state.lastSubjectNick and state.lastSubjectNick ~= '' then
+        nick = state.lastSubjectNick
+    end
+
+    return { id = id, nick = nick, offline = offline }
+end
+
 -- Публичный API модуля.
 function M.getMyPlayerId()
     if sampGetPlayerIdByCharHandle then
@@ -745,34 +857,45 @@ function M.isSpectateCandidate(id)
 end
 
 -- Публичный API модуля.
+local function invalidateStepConnectedCache()
+    stepConnectedCache = nil
+    stepConnectedCacheAt = 0
+end
+
+local function buildStepConnectedCache()
+    local now = os.clock()
+    if stepConnectedCache and (now - stepConnectedCacheAt) < STEP_CONNECTED_CACHE_TTL then
+        return stepConnectedCache
+    end
+    local ids = {}
+    local maxId = M.getMaxPlayerId()
+    for i = 0, maxId do
+        if isSpectateStepCandidate(i) then
+            ids[#ids + 1] = i
+        end
+    end
+    table.sort(ids)
+    stepConnectedCache = ids
+    stepConnectedCacheAt = now
+    return ids
+end
+
 function M.findAdjacentSpectateId(curId, delta)
     curId = tonumber(curId)
     if curId == nil then return nil end
-    local maxId = M.getMaxPlayerId()
-    local me = M.getMyPlayerId()
     delta = (tonumber(delta) or 0) >= 0 and 1 or -1
-    local function candidate(id)
-        id = tonumber(id)
-        if not id or id < 0 then return false end
-        if me >= 0 and id == me then return false end
-        return sampIsPlayerConnected and sampIsPlayerConnected(id)
-    end
+    local ids = buildStepConnectedCache()
+    if #ids == 0 then return nil end
     if delta > 0 then
-        for i = curId + 1, maxId do
-            if candidate(i) then return i end
+        for _, id in ipairs(ids) do
+            if id > curId then return id end
         end
-        for i = 0, curId - 1 do
-            if candidate(i) then return i end
-        end
-    else
-        for i = curId - 1, 0, -1 do
-            if candidate(i) then return i end
-        end
-        for i = maxId, curId + 1, -1 do
-            if candidate(i) then return i end
-        end
+        return ids[1]
     end
-    return nil
+    for i = #ids, 1, -1 do
+        if ids[i] < curId then return ids[i] end
+    end
+    return ids[#ids]
 end
 
 -- Публичный API модуля.
@@ -781,22 +904,21 @@ function M.stepSpectate(delta)
     if now - lastSpecStepAt < SPEC_STEP_COOLDOWN then
         return false
     end
-    lastSpecStepAt = now
-    local cur = M.getTargetId()
+    delta = (tonumber(delta) or 0) >= 0 and 1 or -1
+    if state.pendingSpId then
+        M.cancelPendingSp()
+    end
+    local cur = getSpectateStepBaseId()
     if cur < 0 then
         cur = M.getMyPlayerId()
         if cur < 0 then cur = 0 end
     end
     local nextId = M.findAdjacentSpectateId(cur, delta)
     if not nextId then return false end
-    M.markPendingSpCommand(nextId, '')
-    local cmd = 'sp ' .. tostring(nextId)
-    if sendMenuOutbound then
-        sendMenuOutbound(cmd, { skipPendingMark = true })
-    elseif sendChat then
-        sendChat(cmd)
-    end
-    return true
+    lastSpecStepAt = now
+    invalidateStepConnectedCache()
+    state.pendingSpStepDelta = delta
+    return sendSpectateStepCommand(nextId)
 end
 
 -- Публичный API модуля.
@@ -857,6 +979,11 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = id
+    end
+    rememberLastSubject(id, state.targetNick)
     pcall(spRefresh.onTargetConfirmed, id, { fullBaseline = prevId ~= id })
     if inputDeps and inputDeps.setPlayerSpectating then
         inputDeps.setPlayerSpectating(true)
@@ -878,7 +1005,7 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     end
     local s = settings
     if not s and getSettings then s = getSettings() end
-    if not (e and s and s.spectate_auto_st ~= false) or syncOpts.skipAutoSt then
+    if not (e and s and s.spectate_hud ~= false) or syncOpts.skipAutoSt then
         return
     end
     local mustForce = syncOpts.forceAutoSt == true or prevId ~= id
@@ -936,6 +1063,7 @@ function M.cancelPendingSp()
     state.pendingSpId = nil
     state.pendingSpNick = ''
     state.pendingSpAt = 0
+    state.pendingSpStepDelta = nil
     pcall(specSession.markAwaitingSpectate, false)
 end
 
@@ -1088,7 +1216,7 @@ function M.tickSpectateHealth()
         orphanSinceAt = nil
         orphanRecoveryTried = false
         -- Локальная очистка UI: сервер может быть в валидном SP refresh, sp toggle опасен.
-        M.forceExitSpectate({ reason = 'orphan', sendServer = false })
+        M.forceExitSpectate({ reason = 'orphan', sendServer = true })
         return
     end
     orphanSinceAt = nil
@@ -1121,6 +1249,7 @@ function M.setSpectateTarget(id, nick, settings)
     end
     state.targetId = id
     state.targetNick = trim(nick or '')
+    rememberLastSubject(id, state.targetNick)
     local e = ensureEntry(id)
     if e then
         if prevId ~= id then
@@ -1174,6 +1303,10 @@ function M.clearSpectateTarget(force)
     state.targetId = -1
     state.targetNick = ''
     state.persistHudId = -1
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = -1
+    end
     pcall(spRefresh.resetContext)
     M.cancelPendingSp()
     pcall(specMenuMod.resetMenuSelection)
@@ -1329,7 +1462,7 @@ end
 
 -- Публичный API модуля.
 function M.maybeAutoRequest(id, settings, force)
-    if not settings or settings.spectate_auto_st == false then return end
+    if not settings or settings.spectate_hud == false then return end
     id = tonumber(id) or state.targetId
     if not id or id < 0 then return end
     local now = os.clock()
@@ -1340,7 +1473,7 @@ end
 
 -- Публичный API модуля.
 function M.autoRequestIfEnabled(id, settings)
-    if not settings or settings.spectate_auto_st == false then return end
+    if not settings or settings.spectate_hud == false then return end
     M.requestStats(tonumber(id), {})
 end
 
@@ -1348,7 +1481,12 @@ end
 function M.onServerMessage(color, text)
     if not text or text == '' then return false end
     if state.pendingSpId and isSpCommandRejected(text) then
+        local failed = tonumber(state.pendingSpId)
+        local stepDelta = state.pendingSpStepDelta or 1
         M.cancelPendingSp()
+        if failed then
+            tryAdvanceAfterFailedSpec(failed, stepDelta)
+        end
         return false
     end
     color = tonumber(color) or 0
@@ -2326,9 +2464,9 @@ end
 
 -- Публичный API модуля.
 function M.shouldBlockSpectateOff()
-    if state.pendingSpId then return true end
     if expectSpectateOff then return false end
-    if specSession.isActive and specSession.isActive() then return true end
+    if state.pendingSpId then return true end
+    if specSession.isAwaitingSpectate and specSession.isAwaitingSpectate() then return true end
     local outboundAt = tonumber(state.lastSpOutboundAt) or 0
     if outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0) then
         return true
@@ -2413,6 +2551,7 @@ local function configureSpRefresh()
         isSpectating = specPlayerActive,
         sessionActive = function() return specSession.isActive() end,
         hasPendingSp = M.hasPendingSp,
+        hasOutboundPending = M.hasOutboundPending,
         sendMenuOutbound = sendMenuOutbound,
         sendChat = sendChat,
         getTargetPed = function()
@@ -2535,6 +2674,7 @@ end
 function M.notifyTargetQuit(playerId)
     playerId = tonumber(playerId)
     if not playerId or M.getTargetId() ~= playerId then return end
+    rememberLastSubject(playerId, state.targetNick)
     M.forceExitSpectate({ reason = 'quit', sendServer = true })
 end
 

@@ -146,6 +146,17 @@ if (-not (Test-Path $mainDefault)) { Write-Error "Missing $mainDefault" }
 Copy-Item $mainDefault (Join-Path $configDir 'admin_report_desk.lua')
 Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.lua')
 Copy-Item $userDefault (Join-Path $configDir 'admin_report_desk_user.default.lua')
+foreach ($intentCfg in @(
+    'report_desk_intents.lua',
+    'intent_trigger_extensions.lua',
+    'intent_stem_blocklist.lua'
+)) {
+    $src = Join-Path $MoonloaderRoot "config\$intentCfg"
+    if (-not (Test-Path $src)) {
+        Write-Error "Missing intent config for release zip: config\$intentCfg"
+    }
+    Copy-Item $src (Join-Path $configDir $intentCfg) -Force
+}
 
 function Copy-PreviewAssets($srcSub, $dstSub) {
     $src = Resolve-DeskPreviewAssetsRoot $MoonloaderRoot $srcSub

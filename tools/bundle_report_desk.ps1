@@ -244,49 +244,49 @@ $libModules = @(
 
 
 
-$appChunks = @(
-
+# Как report_desk_app.lua: три loadstring-chunk (лимит Lua 5.1 — 200 local на chunk).
+$appChunksCoreA = @(
     'report_desk_bootstrap.lua',
-
     'report_desk_constants.lua',
-
     'report_desk_theme.lua',
-
     'report_desk_state.lua',
-
     'report_desk_util.lua',
-
+    'report_desk_match_normalize.lua',
+    'report_desk_match_context.lua',
+    'report_desk_intent_match.lua',
+    'report_desk_intent_legacy.lua',
+    'report_desk_intent_extensions.lua',
+    'report_desk_intents.lua',
     'report_desk_profanity.lua',
-
     'report_desk_chat.lua',
-
     'report_desk_cheats.lua',
-
+    'report_desk_mask_id.lua',
     'report_desk_skins.lua',
-
     'report_desk_input.lua',
-
     'report_desk_actions.lua',
+    'report_desk_env_export.lua'
+)
 
+$appChunksCoreB = @(
+    'report_desk_admin_punish.lua',
     'report_desk_threads.lua',
-
     'report_desk_config.lua',
-
     'report_desk_ingest_runtime.lua',
+    'report_desk_rules.lua'
+)
 
-    'report_desk_rules.lua',
+# exact_time отдельно: вместе с admin_punish превышает лимит 200 local в одном chunk.
+$appChunksCoreB2 = @(
+    'report_desk_exact_time.lua'
+)
 
+$appChunksCoreC = @(
     'report_desk_ui.lua',
-
-    'report_desk_env_export.lua',
-
+    'report_desk_hooks.lua',
     'report_desk_main.lua'
-
 )
 
-$appChunksHooks = @(
-    'report_desk_hooks.lua'
-)
+$appChunks = $appChunksCoreA + $appChunksCoreB + $appChunksCoreB2 + $appChunksCoreC
 
 $allBundleInputs = @(
     'report_desk_catalog_grid.lua',
@@ -397,19 +397,19 @@ foreach ($m in $libModules) {
 
 [void]$sb.Append("`n")
 
-$appParts = New-Object System.Collections.Generic.List[string]
-foreach ($chunk in $appChunks) {
-    $path = Join-Path $libDir $chunk
-    [void]$appParts.Add((Read-ModuleText $path))
+function Append-AppChunkGroup($builder, $label, $chunkNames) {
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $chunkNames) {
+        $path = Join-Path $libDir $chunk
+        [void]$parts.Add((Read-ModuleText $path))
+    }
+    [void]$builder.Append((Wrap-AppChunkGroup $label $parts.ToArray()))
 }
-[void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_core' $appParts.ToArray()))
 
-$hooksParts = New-Object System.Collections.Generic.List[string]
-foreach ($chunk in $appChunksHooks) {
-    $path = Join-Path $libDir $chunk
-    [void]$hooksParts.Add((Read-ModuleText $path))
-}
-[void]$sb.Append((Wrap-AppChunkGroup 'report_desk_app_hooks' $hooksParts.ToArray()))
+Append-AppChunkGroup $sb 'report_desk_app_core_a' $appChunksCoreA
+Append-AppChunkGroup $sb 'report_desk_app_core_b' $appChunksCoreB
+Append-AppChunkGroup $sb 'report_desk_app_core_b2' $appChunksCoreB2
+Append-AppChunkGroup $sb 'report_desk_app_core_c' $appChunksCoreC
 
 $remoteChatPath = Join-Path $libDir 'report_desk_remote_chat.lua'
 $remoteChatText = Read-ModuleText $remoteChatPath
@@ -452,11 +452,26 @@ $mustHave = @(
     "package.preload['lib.samp.events']",
     "package.preload['encoding']",
     'report_desk_wm_dispatch',
-    'report_desk_spectate_fsm'
+    'report_desk_spectate_fsm',
+    'resolveMessageIntents',
+    'function compileIntentIndex',
+    'drawAdminPunishTab',
+    'adminPunishTick',
+    'maskIdTick',
+    'sendWarnLast',
+    'getLastSubject',
+    'applyIntentExtensionsToList',
+    'report_desk_app_core_a',
+    'report_desk_app_core_b',
+    'report_desk_app_core_b2',
+    'report_desk_app_core_c'
 )
 $missing = @($mustHave | Where-Object { $coreText -notmatch [regex]::Escape($_) })
 if ($missing.Count -gt 0) {
     throw "Bundle verification failed - missing in core: $($missing -join ', ')"
+}
+if ($coreText -match "'@report_desk_app_core'\)") {
+    throw 'Bundle verification failed - monolithic report_desk_app_core chunk still present'
 }
 Write-Host 'Bundle verification OK'
 
@@ -550,6 +565,14 @@ if (Test-Path (Join-Path $distDir 'admin_report_desk.lua')) {
 Write-Host "Wrote dist\report_desk_autoupdate.lua"
 
 
+
+$repoDeskDir = Join-Path $MoonloaderRoot 'report_desk'
+if (-not (Test-Path $repoDeskDir)) {
+    New-Item -ItemType Directory -Path $repoDeskDir -Force | Out-Null
+}
+Copy-Item $coreLua (Join-Path $repoDeskDir 'AdminDeskCore.lua') -Force
+Copy-Item $coreLua (Join-Path $repoDeskDir 'admin_report_desk_core.lua') -Force
+Write-Host "Synced report_desk\AdminDeskCore.lua (+ legacy name)"
 
 Write-Host 'Done.'
 Write-Host 'NOTE: bundle alone is NOT a full release (no version.json, no zip verify, no git sync).'

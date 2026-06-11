@@ -372,6 +372,11 @@ function Catalog.getAdmin(nick)
     return idx.admins[key]
 end
 
+-- Для admin_punish и других модулей вне checker chunk.
+function checkerIsCatalogAdmin(nick)
+    return Catalog.getAdmin(nick) ~= nil
+end
+
 -- Получить запись leader из каталога.
 function Catalog.getLeader(nick)
     ensureCheckerCatalog()
@@ -1063,7 +1068,7 @@ function checkerLeaderDisplayRole(entry)
         else
             role = role:gsub('^%[%d+%]%s*', '')
             role = role:gsub('^LV%s*[%•%-%·]%s*', ''):gsub('^LS%s*|%s*', ''):gsub('^SF%s*|%s*', '')
-            role = role:gsub('^LV%s*[%-–—]%s*', '')
+            role = role:gsub('^LV%s*%-%s*', '')
         end
     end
     if role ~= '' then return role end
@@ -1679,6 +1684,31 @@ function checkerEnsureChiefCatalog()
     return changed
 end
 
+-- Checker (admin HUD/catalog): Ringo/Smart и прочие top admins — всегда в каталоге с валидным lvl.
+function checkerEnsureTopAdminCatalog()
+    ensureCheckerCatalog()
+    local changed = false
+    for _, nick in ipairs(checkerTopAdminList()) do
+        local ex = Catalog.getAdmin(nick)
+        local lv = math.floor(tonumber(ex and ex.level) or 0)
+        if not ex then
+            checkerCatalog.admins[#checkerCatalog.admins + 1] = {
+                nick = nick,
+                level = ADMIN_LEVEL_7,
+            }
+            changed = true
+        elseif not checkerIsValidAdminLevel(lv) then
+            ex.level = ADMIN_LEVEL_7
+            changed = true
+        end
+    end
+    if changed then
+        checkerSortCatalogAdmins(checkerCatalog.admins)
+        checkerMarkCatalogDirty()
+    end
+    return changed
+end
+
 -- Checker (admin HUD/catalog).
 function checkerMergeChiefCatalog(list)
     for _, chief in ipairs(checkerChiefList()) do
@@ -1692,6 +1722,26 @@ function checkerMergeChiefCatalog(list)
         end
         if not found then
             list[#list + 1] = { nick = chief.nick, level = chief.level }
+        end
+    end
+    return list
+end
+
+-- Checker (admin HUD/catalog).
+function checkerMergeTopAdminCatalog(list)
+    for _, nick in ipairs(checkerTopAdminList()) do
+        local found = false
+        for _, e in ipairs(list) do
+            if nickKey(e.nick) == nickKey(nick) then
+                if not checkerIsValidAdminLevel(e.level) then
+                    e.level = ADMIN_LEVEL_7
+                end
+                found = true
+                break
+            end
+        end
+        if not found then
+            list[#list + 1] = { nick = nick, level = ADMIN_LEVEL_7 }
         end
     end
     return list
@@ -1727,6 +1777,7 @@ function checkerMergeAdminsIntoCatalog(list)
         ::continue::
     end
     checkerMergeChiefCatalog(checkerCatalog.admins)
+    checkerMergeTopAdminCatalog(checkerCatalog.admins)
     checkerSortCatalogAdmins(checkerCatalog.admins)
     return changed
 end
@@ -2519,6 +2570,12 @@ function checkerManualSync()
         end
         return
     end
+    if checkerState.spawnCatalogSyncRunning then
+        if type(say) == 'function' then
+            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF...')
+        end
+        return
+    end
     checkerRequestAdmsSync()
     if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
         lua_thread.create(function()
@@ -2683,6 +2740,9 @@ function checkerApplyCatalogSnapshot(c)
         bumpCatalogRev()
     end
     if checkerEnsureChiefCatalog() then
+        changed = true
+    end
+    if checkerEnsureTopAdminCatalog() then
         changed = true
     end
     checkerSanitizeAdminCatalog()
@@ -2904,13 +2964,19 @@ function checkerRebuildOnline(force)
     local byNick = checkerState.onlineNickIndex and checkerState.onlineNickIndex.byNick
     local admins, leaders, friends = {}, {}, {}
     for _, e in ipairs(checkerCatalog.admins) do
-        if e and e.nick and checkerIsValidAdminLevel(e.level)
-                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level) then
+        local topAdmin = e and e.nick and checkerIsTopAdmin(e.nick)
+        local includeAdmin = e and e.nick and (topAdmin
+            or (checkerIsValidAdminLevel(e.level)
+                and not checkerLeaderRoleConflictsAdminLevel(e.nick, e.level)))
+        if includeAdmin then
             local id = checkerLookupOnlineId(e.nick)
             if id then
                 local prev = OnlineIndex.getById('admin', id)
                 local nick = checkerSafeNick(id, e.nick)
                 local level = checkerEffectiveAdminLevel(e.nick, e.level)
+                if topAdmin and not checkerIsValidAdminLevel(level) then
+                    level = ADMIN_LEVEL_7
+                end
                 local snap = checkerState.admsOnlineSnapshot
                 if type(snap) == 'table' and type(snap.byId) == 'table' and snap.byId[id] then
                     level = snap.byId[id].level or level
@@ -3342,7 +3408,6 @@ function checkerTick()
         checkerState.syncInFlight = false
         checkerClearAdmsFlow()
         checkerState.leadersFlowUntil = 0
-        checkerState.spawnCatalogSyncRunning = false
         return
     end
     local suspended = checkerIsSuspended()
@@ -3390,6 +3455,12 @@ function checkerSanitizeAdminCatalog()
         local level = math.floor(tonumber(e and e.level) or 0)
         if nick == '' then
             changed = true
+        elseif checkerIsTopAdmin(nick) then
+            if not checkerIsValidAdminLevel(level) then
+                e.level = ADMIN_LEVEL_7
+                changed = true
+            end
+            out[#out + 1] = e
         elseif not checkerIsValidAdminLevel(level) then
             changed = true
         elseif checkerLeaderRoleConflictsAdminLevel(nick, level) then
@@ -3434,6 +3505,7 @@ function checkerInit()
         ensureCheckerSettings()
         ensureCheckerCatalog()
         checkerEnsureChiefCatalog()
+        checkerEnsureTopAdminCatalog()
         if not checkerLoadCatalogStorage() then
             local pending = rawget(_G, '__desk_pendingCheckerCatalog')
             if type(pending) == 'table' then

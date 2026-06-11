@@ -55,7 +55,6 @@ function migrateScenariosPackIfNeeded()
     if added > 0 then
         quickScenarios = merged
         bumpScenariosGen()
-        scenariosUiSynced = false
         print(string.format('[Report Desk] scenarios: +%d new (pack v%d)', added, SCENARIOS_PACK_VERSION))
     end
     settings.scenarios_pack_version = SCENARIOS_PACK_VERSION
@@ -86,7 +85,12 @@ end
 
 -- Load Config
 function loadConfig()
-    quickScenarios = cloneQuickScenarios(DEFAULT_QUICK_SCENARIOS)
+    local scenarioDefaults = DEFAULT_QUICK_SCENARIOS
+    if type(scenarioDefaults) ~= 'table' then
+        local pack = loadDefaultScenarioPack()
+        scenarioDefaults = pack and pack.quick_scenarios or {}
+    end
+    quickScenarios = cloneQuickScenarios(scenarioDefaults)
     reloadProfanityWordsFromDict()
     threads = {}
     threadOrder = {}
@@ -148,17 +152,22 @@ function loadConfig()
     end
     if settings.gg_reply then
         if looksCorruptedConfigText(settings.gg_reply) then markDirtySettings() end
-        settings.gg_reply = repairStoredConfigText(settings.gg_reply, DEFAULT_GG_REPLY)
+        settings.gg_reply = repairStoredConfigText(
+            normalizeStoredText(settings.gg_reply, true), DEFAULT_GG_REPLY)
     end
     if settings.time_reply then
         if looksCorruptedConfigText(settings.time_reply) then markDirtySettings() end
-        settings.time_reply = repairStoredConfigText(settings.time_reply, DEFAULT_TIME_REPLY)
+        settings.time_reply = repairStoredConfigText(
+            normalizeStoredText(settings.time_reply, true), DEFAULT_TIME_REPLY)
     end
     if settings.tech_reply then
         if looksCorruptedConfigText(settings.tech_reply) then markDirtySettings() end
-        settings.tech_reply = repairStoredConfigText(settings.tech_reply, DEFAULT_TECH_REPLY)
+        settings.tech_reply = repairStoredConfigText(
+            normalizeStoredText(settings.tech_reply, true), DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
+    if type(ensureExactTimeSettings) == 'function' then pcall(ensureExactTimeSettings) end
     settings.poll_chat_log = nil
     settings.poll_events_only = nil
     settings.ingest_pc = nil
@@ -291,6 +300,9 @@ function loadConfig()
         end
     end
     migrateScenariosPackIfNeeded()
+    if type(reloadDeskIntentsFromSources) == 'function' then
+        reloadDeskIntentsFromSources()
+    end
     deskConfigReady = true
 end
 
@@ -444,6 +456,11 @@ function loadUserConfig()
         quickScenarios = cloneQuickScenarios(data.quick_scenarios, true)
         bumpScenariosGen()
     end
+    if type(data.intents) == 'table' and #data.intents > 0 then
+        setDeskIntents(data.intents, data)
+    elseif type(reloadDeskIntentsFromSources) == 'function' then
+        reloadDeskIntentsFromSources()
+    end
     if type(data.checker) == 'table' then
         local catalogPath = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.lua'
         if not doesFileExist(catalogPath) then
@@ -455,7 +472,6 @@ function loadUserConfig()
         ensureComposerQuickButtons()
         syncLegacyGgTechFromComposerButtons()
     end
-    scenariosUiSynced = false
     return true
 end
 
@@ -485,7 +501,6 @@ function saveConfig()
     f:write('  settings = {\n')
     f:write(string.format('    hotkey = %d,\n', settings.hotkey or vkeys.VK_F7))
     f:write(string.format('    sound = %s,\n', settings.sound and 'true' or 'false'))
-    f:write(string.format('    auto_only_unread = %s,\n', settings.auto_only_unread and 'true' or 'false'))
     f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
     f:write(string.format('    watch_auto_notify = %s,\n', settings.watch_auto_notify ~= false and 'true' or 'false'))
     f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
@@ -556,6 +571,14 @@ function saveConfig()
     f:write(string.format('    checker_auto_promote = %s,\n', settings.checker_auto_promote ~= false and 'true' or 'false'))
     f:write(string.format('    checker_auto_admin = %s,\n', settings.checker_auto_admin ~= false and 'true' or 'false'))
     f:write(string.format('    checker_dev_rpc_probe = %s,\n', settings.checker_dev_rpc_probe == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_enabled = %s,\n', settings.admin_punish_enabled == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_confirm_key = %d,\n', tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE))
+    f:write(string.format('    admin_punish_cancel_key = %d,\n', tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END))
+    f:write(string.format('    admin_punish_send_ans = %s,\n', settings.admin_punish_send_ans == true and 'true' or 'false'))
+    f:write(string.format('    admin_punish_sign_cmd = %s,\n', settings.admin_punish_sign_cmd ~= false and 'true' or 'false'))
+    f:write(string.format('    exact_time_enabled = %s,\n', settings.exact_time_enabled ~= false and 'true' or 'false'))
+    f:write(string.format('    exact_time_daily_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)))
+    f:write(string.format('    exact_time_monthly_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112)))
     if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
         f:write('    cmd_binds = {\n')
         for _, row in ipairs(settings.cmd_binds) do
@@ -596,21 +619,6 @@ function saveConfig()
     f:write(string.format('      ab_ctrl = %s,\n', ch.ab_ctrl and 'true' or 'false'))
     f:write(string.format('      ab_shift = %s,\n', ch.ab_shift and 'true' or 'false'))
     f:write(string.format('      ab_alt = %s,\n', ch.ab_alt and 'true' or 'false'))
-    f:write(string.format('      marker_key1 = %d,\n', tonumber(ch.marker_key1) or 0))
-    f:write(string.format('      marker_key2 = %d,\n', tonumber(ch.marker_key2) or 0))
-    f:write(string.format('      marker_ctrl = %s,\n', ch.marker_ctrl and 'true' or 'false'))
-    f:write(string.format('      marker_shift = %s,\n', ch.marker_shift and 'true' or 'false'))
-    f:write(string.format('      marker_alt = %s,\n', ch.marker_alt and 'true' or 'false'))
-    f:write(string.format('      tp_key1 = %d,\n', tonumber(ch.tp_key1) or 0))
-    f:write(string.format('      tp_key2 = %d,\n', tonumber(ch.tp_key2) or 0))
-    f:write(string.format('      tp_ctrl = %s,\n', ch.tp_ctrl and 'true' or 'false'))
-    f:write(string.format('      tp_shift = %s,\n', ch.tp_shift and 'true' or 'false'))
-    f:write(string.format('      tp_alt = %s,\n', ch.tp_alt and 'true' or 'false'))
-    f:write(string.format('      veh_key1 = %d,\n', tonumber(ch.veh_key1) or 0))
-    f:write(string.format('      veh_key2 = %d,\n', tonumber(ch.veh_key2) or 0))
-    f:write(string.format('      veh_ctrl = %s,\n', ch.veh_ctrl and 'true' or 'false'))
-    f:write(string.format('      veh_shift = %s,\n', ch.veh_shift and 'true' or 'false'))
-    f:write(string.format('      veh_alt = %s,\n', ch.veh_alt and 'true' or 'false'))
     f:write(string.format('      hud_x = %d,\n', math.floor(tonumber(ch.hud_x) or 12)))
     f:write(string.format('      hud_y = %d,\n', math.floor(tonumber(ch.hud_y) or 80)))
     f:write('    },\n')

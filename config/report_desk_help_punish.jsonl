@@ -1,0 +1,22 @@
+{"term":"80","src":"manual","pid":129,"dateKey":"2026-06-11","reason":"dm","cmd":"\/jail 129 80 dm","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Rodion_Iyaevich","ts":1781132129}
+{"term":"50","src":"manual","pid":129,"dateKey":"2026-06-11","reason":"osk","cmd":"\/mute 129 50 osk","kind":"mute","reqAdmin":"","action":"Замутить","player":"Rodion_Iyaevich","ts":1781132136}
+{"term":"40","src":"manual","pid":238,"dateKey":"2026-06-11","reason":"osk","cmd":"\/mute 238 40 osk","kind":"mute","reqAdmin":"","action":"Замутить","player":"Teodor_Nimak","ts":1781132150}
+{"term":"60","src":"manual","pid":152,"dateKey":"2026-06-11","reason":"dm","cmd":"\/jail 152 60 dm","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Trevor_Joseph","ts":1781133841}
+{"term":"-","src":"manual","pid":251,"dateKey":"2026-06-11","reason":"гражданский авик","cmd":"\/kick 251 гражданский авик","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"William_Marshman","ts":1781133896}
+{"term":"30","src":"manual","pid":36,"dateKey":"2026-06-11","reason":"mat voice","cmd":"\/mute 36 30 mat voice","kind":"mute","reqAdmin":"","action":"Замутить","player":"Joper_Popz","ts":1781133969}
+{"term":"60","src":"manual","pid":251,"dateKey":"2026-06-11","reason":"dm \/ Katana","cmd":"\/jail 251 60 dm \/ Katana","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"William_Marshman","ts":1781134250}
+{"term":"30","src":"manual","pid":13,"dateKey":"2026-06-11","reason":"offtop","cmd":"\/mute 13 30 offtop","kind":"mute","reqAdmin":"","action":"Замутить","player":"Viki_Blare","ts":1781134341}
+{"term":"60","src":"manual","pid":251,"dateKey":"2026-06-11","reason":"offtop","cmd":"\/mute 251 60 offtop","kind":"mute","reqAdmin":"","action":"Замутить","player":"William_Marshman","ts":1781134368}
+{"term":"-","src":"manual","pid":48,"dateKey":"2026-06-11","reason":"dm","cmd":"\/kick 48 dm","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Vasya_Karatist","ts":1781135629}
+{"term":"60","src":"manual","pid":3,"dateKey":"2026-06-11","reason":"osk","cmd":"\/mute 3 60 osk","kind":"mute","reqAdmin":"","action":"Замутить","player":"Sasuki_Fujimato","ts":1781135986}
+{"term":"-","src":"manual","pid":242,"dateKey":"2026-06-11","reason":"db","cmd":"\/kick 242 db","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Kuru_Geeked","ts":1781136188}
+{"term":"-","src":"manual","pid":85,"dateKey":"2026-06-11","reason":"dm","cmd":"\/kick 85 dm","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Alexander_Malyshev","ts":1781136191}
+{"term":"20","src":"manual","pid":36,"dateKey":"2026-06-11","reason":"репорт","cmd":"\/jail 36 20 репорт","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Raphael_LaGuerra","ts":1781137234}
+{"term":"-","src":"manual","pid":86,"dateKey":"2026-06-11","reason":"-","cmd":"\/unjail 86","kind":"jail","reqAdmin":"","action":"Выпустить из тюрьмы","player":"ID 86","ts":1781137265}
+{"term":"-","src":"manual","pid":91,"dateKey":"2026-06-11","reason":"nrp","cmd":"\/kick 91 nrp","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"William_Marshman","ts":1781138375}
+{"term":"60","src":"manual","pid":27,"dateKey":"2026-06-11","reason":"osk","cmd":"\/mute 27 60 osk","kind":"mute","reqAdmin":"","action":"Замутить","player":"Pavel_Streltsov","ts":1781138911}
+{"term":"30","src":"manual","pid":79,"dateKey":"2026-06-11","reason":"mat \/re","cmd":"\/mute 79 30 mat \/re","kind":"mute","reqAdmin":"","action":"Замутить","player":"Shuler_Rukabludov","ts":1781139721}
+{"term":"-","src":"manual","pid":168,"dateKey":"2026-06-11","reason":"dm kpz next warn","cmd":"\/kick 168 dm kpz next warn","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Jamie_Foxx","ts":1781139753}
+{"term":"5","src":"a_request","pid":184,"dateKey":"2026-06-11","reason":"cheat","cmd":"\/a \/ban 184 5 cheat","kind":"ban","reqAdmin":"","action":"Забанить","player":"Emil_Feltsman","ts":1781140166}
+{"term":"5","src":"a_request","pid":105,"dateKey":"2026-06-11","reason":"cheat","cmd":"\/a \/ban 105 5 cheat","kind":"ban","reqAdmin":"","action":"Забанить","player":"Werner_Tyrone","ts":1781140199}
+{"term":"80","src":"manual","pid":81,"dateKey":"2026-06-11","reason":"nrp","cmd":"\/jail 81 80 nrp","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Pavel_BIessed","ts":1781140746}

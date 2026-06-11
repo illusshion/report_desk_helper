@@ -4071,6 +4071,9 @@ local showTdHook, setStrHook, hookPrevShowTd, hookPrevSetStr
 local lastBeginSessionId = nil
 local lastBeginSessionAt = 0
 local BEGIN_SESSION_DEDUPE_SEC = 0.6
+local SUPPRESS_MENU_CACHE_TTL = 0.05
+local suppressMenuCached = false
+local suppressMenuCachedAt = 0
 
 local function trim(s)
     if trimFn then return trimFn(s) end
@@ -4101,6 +4104,21 @@ end
 -- Clear Menu Column State
 local function clearMenuColumnState()
     session.menuColumnX = nil
+end
+
+-- Cached shouldSuppressServerSpMenu for TD hot path (vehicle HUD — отдельно, без кеша).
+local function suppressSpMenuActive()
+    local now = os.clock()
+    if now - suppressMenuCachedAt < SUPPRESS_MENU_CACHE_TTL then
+        return suppressMenuCached
+    end
+    suppressMenuCached = M.shouldSuppressServerSpMenu()
+    suppressMenuCachedAt = now
+    return suppressMenuCached
+end
+
+local function invalidateSuppressCache()
+    suppressMenuCachedAt = -1
 end
 
 -- Normalize Menu Text
@@ -4241,6 +4259,7 @@ end
 -- Публичный API модуля.
 function M.markAwaitingSpectate(on)
     session.awaitingSpectate = on and true or false
+    invalidateSuppressCache()
 end
 
 -- Custom Vehicle Hud Enabled — ingest/block server TD спидометра.
@@ -4330,9 +4349,13 @@ end
 
 -- Публичный API модуля.
 function M.onShowTextDraw(id, data)
+    if not data then return end
     if handleVehicleTextDraw(id, data) then return false end
-    if not M.shouldSuppressServerSpMenu() then return end
-    if isServerSpMenuTextDrawOnly(id, data, data and data.text) then return false end
+    if not suppressSpMenuActive() then return end
+    local x = tdPosX(data)
+    local tdText = data.text
+    if x and x < SP_MENU_COLUMN_LEFT_X and not isServerSpMenuText(tdText) then return end
+    if isServerSpMenuTextDrawOnly(id, data, tdText) then return false end
 end
 
 -- Публичный API модуля.
@@ -4341,7 +4364,7 @@ function M.onTextDrawSetString(id, text)
         return false
     end
     if handleVehicleTextDraw(id, nil, text) then return false end
-    if not M.shouldSuppressServerSpMenu() then return end
+    if not suppressSpMenuActive() then return end
     if isServerSpMenuTextDrawOnly(id, nil, text) then return false end
 end
 
@@ -4521,6 +4544,11 @@ function M.beginSession(id, nick, opts)
     session.awaitingSpectate = false
     session.targetId = id
     session.targetNick = nick
+    invalidateSuppressCache()
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = id
+    end
     if changed then
         pcall(vehicleHud.reset)
         if cbResetMenuSelection then pcall(cbResetMenuSelection)
@@ -4541,11 +4569,16 @@ function M.endSession()
     session.awaitingSpectate = false
     session.targetId = -1
     session.targetNick = ''
+    invalidateSuppressCache()
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = -1
+    end
     session.menuWantsCursor = false
     session.menuHovered = false
     session.outbound = {}
     clearMenuColumnState()
-    vehicleHud.reset()
+    pcall(vehicleHud.reset)
     if cbResetMenuSelection then pcall(cbResetMenuSelection) end
     if cbOnEnd then pcall(cbOnEnd) end
 end
@@ -4676,6 +4709,21 @@ function M.uninstallSampevHooks(sampev)
     end
     playerHandler = nil
     hookPrevPlayer = nil
+    if showTdHook and sampev.onShowTextDraw == showTdHook then
+        sampev.onShowTextDraw = hookPrevShowTd
+    end
+    if setStrHook and sampev.onTextDrawSetString == setStrHook then
+        sampev.onTextDrawSetString = hookPrevSetStr
+    end
+    showTdHook = nil
+    setStrHook = nil
+    hookPrevShowTd = nil
+    hookPrevSetStr = nil
+    if vehicleHandler and sampev.onSpectateVehicle == vehicleHandler then
+        sampev.onSpectateVehicle = hookPrevVehicle
+    end
+    vehicleHandler = nil
+    hookPrevVehicle = nil
 end
 
 -- Публичный API модуля.
@@ -6054,7 +6102,7 @@ package.preload['report_desk_sp_refresh'] = function()
      Тихий /sp без markPendingSp. ]]
 local M = {}
 
-local COOLDOWN_SEC = 2.0
+local COOLDOWN_SEC = 3.0
 local AUTO_ST_SKIP_SEC = 2.5
 local RPC_MOBILITY_TTL = 1.2
 local SYNC_MOBILITY_TTL = 3.0
@@ -6135,11 +6183,6 @@ local function readMobility()
         return 'vehicle'
     end
     if pAt > 0 and (now - pAt) < SYNC_MOBILITY_TTL then
-        return 'onfoot'
-    end
-    local ped = readTargetPed()
-    if ped then
-        if isCharInAnyCar and isCharInAnyCar(ped) then return 'vehicle' end
         return 'onfoot'
     end
     return ctx.mobility
@@ -6272,6 +6315,7 @@ local function tryRefresh(reason)
     if not autoRefreshEnabled() then return false end
     if not watchingTarget() then return false end
     if deps.hasPendingSp and deps.hasPendingSp() then return false end
+    if deps.hasOutboundPending and deps.hasOutboundPending() then return false end
     if not ctx.seeded then return false end
     local now = os.clock()
     if now - (ctx.lastRefreshAt or 0) < COOLDOWN_SEC then return false end
@@ -6419,14 +6463,14 @@ function M.onTargetVehicleSync(playerId)
     playerId = tonumber(playerId)
     if not playerId or playerId ~= getTargetId() then return end
     ctx.lastVehicleSyncAt = os.clock()
-    flushPending()
+    if ctx.pending then flushPending() end
 end
 
 function M.onTargetPassengerSync(playerId)
     playerId = tonumber(playerId)
     if not playerId or playerId ~= getTargetId() then return end
     ctx.lastVehicleSyncAt = os.clock()
-    flushPending()
+    if ctx.pending then flushPending() end
 end
 
 function M.onTargetPlayerSync(playerId)
@@ -6510,6 +6554,9 @@ local orphanRecoveryTried = false
 local targetOfflineSinceAt = nil
 local gameAppActive = true
 local MAX_SPEC_PLAYER_ID = 1000
+local STEP_CONNECTED_CACHE_TTL = 0.5
+local stepConnectedCache = nil
+local stepConnectedCacheAt = 0
 local lastSpecStepAt = 0
 local lastSpectateHealthAt = 0
 local expectSpectateOff = false
@@ -7335,25 +7382,45 @@ function M.isSpectateCandidate(id)
 end
 
 -- Публичный API модуля.
+local function invalidateStepConnectedCache()
+    stepConnectedCache = nil
+    stepConnectedCacheAt = 0
+end
+
+local function buildStepConnectedCache()
+    local now = os.clock()
+    if stepConnectedCache and (now - stepConnectedCacheAt) < STEP_CONNECTED_CACHE_TTL then
+        return stepConnectedCache
+    end
+    local ids = {}
+    local maxId = M.getMaxPlayerId()
+    for i = 0, maxId do
+        if isSpectateStepCandidate(i) then
+            ids[#ids + 1] = i
+        end
+    end
+    table.sort(ids)
+    stepConnectedCache = ids
+    stepConnectedCacheAt = now
+    return ids
+end
+
 function M.findAdjacentSpectateId(curId, delta)
     curId = tonumber(curId)
     if curId == nil then return nil end
     delta = (tonumber(delta) or 0) >= 0 and 1 or -1
-    -- AdminTools: +1/-1 with wrap 0..1000 until connected (not sampGetMaxPlayerId cap).
-    local maxScan = MAX_SPEC_PLAYER_ID
-    local id = curId
-    for _ = 1, maxScan + 1 do
-        id = id + delta
-        if id > maxScan then
-            id = 0
-        elseif id < 0 then
-            id = maxScan
+    local ids = buildStepConnectedCache()
+    if #ids == 0 then return nil end
+    if delta > 0 then
+        for _, id in ipairs(ids) do
+            if id > curId then return id end
         end
-        if isSpectateStepCandidate(id) then
-            return id
-        end
+        return ids[1]
     end
-    return nil
+    for i = #ids, 1, -1 do
+        if ids[i] < curId then return ids[i] end
+    end
+    return ids[#ids]
 end
 
 -- Публичный API модуля.
@@ -7374,6 +7441,7 @@ function M.stepSpectate(delta)
     local nextId = M.findAdjacentSpectateId(cur, delta)
     if not nextId then return false end
     lastSpecStepAt = now
+    invalidateStepConnectedCache()
     state.pendingSpStepDelta = delta
     return sendSpectateStepCommand(nextId)
 end
@@ -7436,6 +7504,10 @@ function M.syncFromSession(id, nick, settings, syncOpts)
     expectSpectateOff = false
     state.targetId = id
     state.targetNick = trim(nick or '')
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = id
+    end
     rememberLastSubject(id, state.targetNick)
     pcall(spRefresh.onTargetConfirmed, id, { fullBaseline = prevId ~= id })
     if inputDeps and inputDeps.setPlayerSpectating then
@@ -7669,7 +7741,7 @@ function M.tickSpectateHealth()
         orphanSinceAt = nil
         orphanRecoveryTried = false
         -- Локальная очистка UI: сервер может быть в валидном SP refresh, sp toggle опасен.
-        M.forceExitSpectate({ reason = 'orphan', sendServer = false })
+        M.forceExitSpectate({ reason = 'orphan', sendServer = true })
         return
     end
     orphanSinceAt = nil
@@ -7756,6 +7828,10 @@ function M.clearSpectateTarget(force)
     state.targetId = -1
     state.targetNick = ''
     state.persistHudId = -1
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = -1
+    end
     pcall(spRefresh.resetContext)
     M.cancelPendingSp()
     pcall(specMenuMod.resetMenuSelection)
@@ -8913,9 +8989,9 @@ end
 
 -- Публичный API модуля.
 function M.shouldBlockSpectateOff()
-    if state.pendingSpId then return true end
     if expectSpectateOff then return false end
-    if specSession.isActive and specSession.isActive() then return true end
+    if state.pendingSpId then return true end
+    if specSession.isAwaitingSpectate and specSession.isAwaitingSpectate() then return true end
     local outboundAt = tonumber(state.lastSpOutboundAt) or 0
     if outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0) then
         return true
@@ -9000,6 +9076,7 @@ local function configureSpRefresh()
         isSpectating = specPlayerActive,
         sessionActive = function() return specSession.isActive() end,
         hasPendingSp = M.hasPendingSp,
+        hasOutboundPending = M.hasOutboundPending,
         sendMenuOutbound = sendMenuOutbound,
         sendChat = sendChat,
         getTargetPed = function()
@@ -13622,6 +13699,9 @@ settings = {
     admin_punish_cancel_key = vkeys.VK_END,
     admin_punish_send_ans = false,
     admin_punish_sign_cmd = true,
+    exact_time_enabled = true,
+    exact_time_daily_norm_h = 4,
+    exact_time_monthly_norm_h = 112,
 }
 
 -- Default Cheats Settings
@@ -13647,21 +13727,6 @@ local function defaultCheatsSettings()
         ab_shift = false,
         ab_alt = false,
         marker_wheel = true,
-        marker_key1 = vkeys.VK_MBUTTON,
-        marker_key2 = 0,
-        marker_ctrl = false,
-        marker_shift = false,
-        marker_alt = false,
-        tp_key1 = vkeys.VK_LBUTTON,
-        tp_key2 = 0,
-        tp_ctrl = false,
-        tp_shift = false,
-        tp_alt = false,
-        veh_key1 = vkeys.VK_RBUTTON,
-        veh_key2 = 0,
-        veh_ctrl = false,
-        veh_shift = false,
-        veh_alt = false,
         hud_x = 12,
         hud_y = 80,
         mask_player_id = true,
@@ -13684,7 +13749,7 @@ function ensureCheatsSettings()
         ch.wh_key1 = vkeys.VK_F3
         ch.wh_key2 = 0
     end
-    for _, p in ipairs({ 'gm', 'wh', 'ab', 'marker', 'tp', 'veh' }) do
+    for _, p in ipairs({ 'gm', 'wh', 'ab' }) do
         ch[p .. '_ctrl'] = ch[p .. '_ctrl'] == true
         ch[p .. '_shift'] = ch[p .. '_shift'] == true
         ch[p .. '_alt'] = ch[p .. '_alt'] == true
@@ -13858,6 +13923,7 @@ local deskCache = {
     hotkeyCapture = false,
     hotkeyCaptureAt = 0,
     cheatBindPrev = {},
+    adminPunishBindPrev = {},
     cheatCapture = nil,
     cheatCaptureAt = 0,
     cheatCaptureSlot = 'main',
@@ -14079,15 +14145,24 @@ function cp1251ToUtf8(text)
     return text
 end
 
-function utf8ToCp1251(text)
-    if not text or text == '' then return '' end
-    if not text:find('[\208-\209][\128-\191]') then return text end
-    local ok, r = pcall(function() return u8:decode(text) end)
-    return ok and r or text
-end
-
 function isUtf8Text(s)
     return type(s) == 'string' and s:find('[\208-\209][\128-\191]') ~= nil
+end
+
+function utf8ToCp1251(text)
+    if not text or text == '' then return '' end
+    if not isUtf8Text(text) then return text end
+    if type(u8) ~= 'table' or type(u8.decode) ~= 'function' then return text end
+    local ok, r = pcall(function() return u8:decode(text) end)
+    if ok and type(r) == 'string' then return r end
+    return text
+end
+
+-- Текст для SAMP wire (/ans, чат): всегда CP1251.
+function ensureWireCp1251(text)
+    text = trim(tostring(text or ''))
+    if text == '' then return '' end
+    return normalizeStoredText(text, isUtf8Text(text))
 end
 
 -- Безопасный вызов предыдущего хука в цепочке SAMP (изоляция ошибок чужих скриптов).
@@ -14470,23 +14545,8 @@ function findFilterInsertPos(keys, key)
 end
 
 function bumpThreadInFilterCache(key)
-    if not key or not deskCache.filterKeys then return end
-    if type(getFilterListSig) ~= 'function' then return end
-    if type(threadMatchesFilter) ~= 'function' or type(threadMatchesSearch) ~= 'function' then return end
-    local sig = getFilterListSig()
-    if deskCache.filterSig ~= sig then return end
-    local t = threads[key]
-    if not t then return end
-    local keys = deskCache.filterKeys
-    for i = #keys, 1, -1 do
-        if keys[i] == key then
-            table.remove(keys, i)
-            break
-        end
-    end
-    if threadMatchesFilter(t) and threadMatchesSearch(t, key) then
-        table.insert(keys, findFilterInsertPos(keys, key), key)
-    end
+    if not key then return end
+    invalidateFilterCache()
 end
 
 function invalidateEllipsizeCache()
@@ -14812,7 +14872,8 @@ function expandTemplate(template, playerId)
             :gsub('{date}', dateOnly)
             :gsub('{datetime}', datetime)
     end
-    return template:gsub('{id}', tostring(playerId or ''))
+    template = template:gsub('{id}', tostring(playerId or ''))
+    return ensureWireCp1251(template)
 end
 
 function drawTemplateTagsHint()
@@ -14857,6 +14918,21 @@ function sendChat(line)
     line = trim(line)
     if line == '' then return false end
     local cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+    if cmdBody:match('^ans%s') then
+        local ansId, ansBody = cmdBody:match('^ans%s+(%d+)%s+(.*)$')
+        if ansId and ansBody and ansBody ~= '' then
+            ansBody = ensureWireCp1251(ansBody)
+            local prefix = line:sub(1, 1) == '/' and '/ans ' or 'ans '
+            line = prefix .. ansId .. ' ' .. ansBody
+            cmdBody = line:sub(1, 1) == '/' and line:sub(2) or line
+        end
+        if type(helpStatsRecordAns) == 'function' then
+            pcall(helpStatsRecordAns)
+        end
+        if type(deskCache) == 'table' then
+            deskCache.skipAnsStatsHook = (tonumber(deskCache.skipAnsStatsHook) or 0) + 1
+        end
+    end
     local spId = cmdBody:match('^sp%s+(%d+)%s*$')
     if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
         local skip = deskCache and tonumber(deskCache.skipSpHookLocal) and deskCache.skipSpHookLocal > 0
@@ -14866,7 +14942,12 @@ function sendChat(line)
     end
     if line:sub(1, 1) ~= '/' then line = '/' .. line end
     if type(sampSendChat) ~= 'function' then return false end
-    return pcall(sampSendChat, line)
+    local ok = pcall(sampSendChat, line)
+    if cmdBody:match('^ans%s') and type(deskCache) == 'table' then
+        local n = (tonumber(deskCache.skipAnsStatsHook) or 0) - 1
+        deskCache.skipAnsStatsHook = n > 0 and n or nil
+    end
+    return ok
 end
 
 -- Меню /sp: sampSendChat идёт через onSendCommand — skipSpHookLocal не дублирует локальный /sp.
@@ -15242,8 +15323,8 @@ function classifyContext(body, bags)
     if messageHasFaqHints(bags) then
         return INTENT_CONTEXT_FAQ
     end
-    if extractSuspectIdForWatch(body or bags.raw) and not messageLooksLikeReportContext(bags, body) then
-        return INTENT_CONTEXT_FAQ
+    if extractSuspectIdForWatch(body or bags.raw) then
+        return INTENT_CONTEXT_REPORT
     end
     return INTENT_CONTEXT_FAQ
 end
@@ -15633,6 +15714,18 @@ function bumpIntentsGen()
     resetIntentContextConfig()
 end
 
+local function normalizeIntentText(s)
+    if type(ensureWireCp1251) == 'function' then
+        return ensureWireCp1251(s)
+    end
+    s = trim(s or '')
+    if s == '' then return '' end
+    if type(normalizeStoredText) == 'function' then
+        return normalizeStoredText(s, type(isUtf8Text) == 'function' and isUtf8Text(s))
+    end
+    return s
+end
+
 function normalizeIntentRecord(raw)
     if type(raw) ~= 'table' then return nil end
     local id = trim(raw.id or '')
@@ -15640,13 +15733,20 @@ function normalizeIntentRecord(raw)
     local action = raw.action
     if type(action) ~= 'table' then
         local actionType = raw.action == 'watch' and 'watch' or 'reply'
-        action = { type = actionType, text = trim(raw.reply or ''), notify = trim(raw.reply or '') }
+        local reply = normalizeIntentText(raw.reply or '')
+        action = { type = actionType, text = reply, notify = reply }
+    else
+        action = {
+            type = action.type == 'watch' and 'watch' or 'reply',
+            text = normalizeIntentText(action.text or action.notify or raw.reply or ''),
+            notify = normalizeIntentText(action.notify or action.text or raw.reply or ''),
+        }
     end
     return {
         id = id,
         context = raw.context or INTENT_CONTEXT_FAQ,
         category = raw.category or 'general',
-        label = trim(raw.label or id),
+        label = normalizeIntentText(raw.label or id),
         enabled = raw.enabled ~= false,
         stem = raw.stem == true,
         action = action,
@@ -15766,7 +15866,7 @@ function intentToQuickScenario(intent)
         match = 'contains',
         keywords = {},
         negative_keywords = {},
-        reply = trim(action.text or action.notify or ''),
+        reply = normalizeIntentText(action.text or action.notify or ''),
         action = actionType,
         priority = 0,
         skip_if_report_id = intent.context == INTENT_CONTEXT_FAQ,
@@ -15790,45 +15890,38 @@ function resolveMessageIntents(text)
     end
 
     local context = classifyContext(text, bags)
-    if context == INTENT_CONTEXT_THANKS or context == INTENT_CONTEXT_UNKNOWN then
-        local empty = {}
-        if type(deskCache) == 'table' then
-            deskCache.intentResolve = deskCache.intentResolve or {}
-            deskCache.intentResolve[bags.key] = { sig = sig, results = empty, context = context }
-        end
-        return empty, context
-    end
-
     local minConf = tonumber(INTENT_MIN_CONFIDENCE) or 12
     local closeRatio = tonumber(INTENT_CLOSE_RATIO) or 0.92
     local maxBtns = tonumber(INTENT_MAX_BUTTONS) or 2
 
-    local candidates = {}
-    local indices = intentCandidateIndices(bags, context)
-    for _, idx in ipairs(indices) do
-        local intent = deskIntents[idx]
-        local ok, score = intentMatches(bags, intent, context)
-        if ok and score >= minConf then
-            candidates[#candidates + 1] = {
-                intent = intent,
-                score = score,
-                id = intent.id,
-            }
-        end
-    end
-
-    table.sort(candidates, function(a, b)
-        if a.score ~= b.score then return a.score > b.score end
-        return (a.id or '') < (b.id or '')
-    end)
-
     local results = {}
-    if #candidates > 0 then
-        results[1] = candidates[1]
-        if #candidates > 1 and maxBtns > 1 then
-            local second = candidates[2]
-            if second.score / candidates[1].score >= closeRatio then
-                results[2] = second
+    if context ~= INTENT_CONTEXT_THANKS and context ~= INTENT_CONTEXT_UNKNOWN then
+        local candidates = {}
+        local indices = intentCandidateIndices(bags, context)
+        for _, idx in ipairs(indices) do
+            local intent = deskIntents[idx]
+            local ok, score = intentMatches(bags, intent, context)
+            if ok and score >= minConf then
+                candidates[#candidates + 1] = {
+                    intent = intent,
+                    score = score,
+                    id = intent.id,
+                }
+            end
+        end
+
+        table.sort(candidates, function(a, b)
+            if a.score ~= b.score then return a.score > b.score end
+            return (a.id or '') < (b.id or '')
+        end)
+
+        if #candidates > 0 then
+            results[1] = candidates[1]
+            if #candidates > 1 and maxBtns > 1 then
+                local second = candidates[2]
+                if second.score / candidates[1].score >= closeRatio then
+                    results[2] = second
+                end
             end
         end
     end
@@ -16357,6 +16450,9 @@ function installProfanityHooks()
     if prevChat == deskCache.profChatHandler then prevChat = nil end
     deskCache.hookPrevProfChat = prevChat
     deskCache.profChatHandler = function(playerId, text)
+        if type(adminPunishOnChatMessage) == 'function' then
+            pcall(adminPunishOnChatMessage, playerId, text)
+        end
         pcall(checkProfanityFromChatMessage, playerId, text)
         if type(prevChat) == 'function' then
             return prevChat(playerId, text)
@@ -16531,6 +16627,9 @@ end
 
 -- Normalize Outbound Body
 function normalizeOutboundBody(body)
+    if type(ensureWireCp1251) == 'function' then
+        return ensureWireCp1251(body)
+    end
     return trim(body or '')
 end
 
@@ -17097,6 +17196,77 @@ function isVkDown(vk)
     return isKeyDown and isKeyDown(vk)
 end
 
+-- NumLock OFF: та же физическая клавиша numpad шлёт HOME/END/… вместо VK_NUMPAD*.
+local DESK_NUMPAD_EQUIV = {
+    { vkeys.VK_NUMPAD0 or 0x60, vkeys.VK_INSERT or 0x2D },
+    { vkeys.VK_NUMPAD1 or 0x61, vkeys.VK_END or 0x23 },
+    { vkeys.VK_NUMPAD2 or 0x62, vkeys.VK_DOWN or 0x28 },
+    { vkeys.VK_NUMPAD3 or 0x63, vkeys.VK_NEXT or 0x22 },
+    { vkeys.VK_NUMPAD4 or 0x64, vkeys.VK_LEFT or 0x25 },
+    { vkeys.VK_NUMPAD5 or 0x65, vkeys.VK_CLEAR or 0x0C },
+    { vkeys.VK_NUMPAD6 or 0x66, vkeys.VK_RIGHT or 0x27 },
+    { vkeys.VK_NUMPAD7 or 0x67, vkeys.VK_HOME or 0x24 },
+    { vkeys.VK_NUMPAD8 or 0x68, vkeys.VK_UP or 0x26 },
+    { vkeys.VK_NUMPAD9 or 0x69, vkeys.VK_PRIOR or 0x21 },
+    { vkeys.VK_DECIMAL or 0x6E, vkeys.VK_DELETE or 0x2E },
+}
+local DESK_VK_EQUIV = {}
+for _, group in ipairs(DESK_NUMPAD_EQUIV) do
+    for _, vk in ipairs(group) do
+        DESK_VK_EQUIV[vk] = group
+    end
+end
+
+function deskBindVkEquivList(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return {} end
+    return DESK_VK_EQUIV[vk] or { vk }
+end
+
+function deskCanonicalBindVk(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return vk end
+    local group = DESK_VK_EQUIV[vk]
+    if group then return group[1] end
+    return vk
+end
+
+function deskBindKeysOverlap(a, b)
+    a, b = tonumber(a) or 0, tonumber(b) or 0
+    if a <= 0 or b <= 0 then return false end
+    if a == b then return true end
+    local ga, gb = DESK_VK_EQUIV[a], DESK_VK_EQUIV[b]
+    return ga ~= nil and ga == gb
+end
+
+function deskBindAnyVkDown(vk)
+    for _, ev in ipairs(deskBindVkEquivList(vk)) do
+        if isVkDown(ev) == true then return true end
+    end
+    return false
+end
+
+function deskBindJustPressed(vk, prev)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or type(prev) ~= 'table' then return false end
+    local down = deskBindAnyVkDown(vk)
+    if not down then
+        prev[vk] = false
+        return false
+    end
+    if not prev[vk] then
+        prev[vk] = true
+        return true
+    end
+    return false
+end
+
+function deskBindSyncKeyPrev(vk, prev)
+    vk = tonumber(vk) or 0
+    if vk <= 0 or type(prev) ~= 'table' then return end
+    prev[vk] = deskBindAnyVkDown(vk)
+end
+
 -- Cheat Mod Down
 function cheatModDown(vk)
     return isVkDown(vk)
@@ -17129,18 +17299,7 @@ end
 
 -- Is Cheat Bind Hit
 function isCheatBindHit(vk)
-    vk = tonumber(vk) or 0
-    if vk <= 0 then return false end
-    local down = isVkDown(vk)
-    if not down then
-        deskCache.cheatBindPrev[vk] = false
-        return false
-    end
-    if not deskCache.cheatBindPrev[vk] then
-        deskCache.cheatBindPrev[vk] = true
-        return true
-    end
-    return false
+    return deskBindJustPressed(vk, deskCache.cheatBindPrev)
 end
 
 -- Is Cheat Bind Pressed
@@ -17493,6 +17652,17 @@ function cheatsToggleWallhack()
     cheatsApplyWallhack(not cheatState.wallhack)
 end
 
+-- Фиксированные клавиши маркера (не настраиваются): СКМ / ЛКМ / ПКМ.
+MARKER_BIND_TOGGLE = vkeys.VK_MBUTTON
+MARKER_BIND_TP = vkeys.VK_LBUTTON
+MARKER_BIND_VEH = vkeys.VK_RBUTTON
+
+local function markerFixedBindHit(vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    return isCheatBindHit(vk)
+end
+
 -- Cheats Toggle Airbreak
 function cheatsToggleAirbreak()
     cheatsSetAirbreak(not cheatState.airbreak)
@@ -17504,9 +17674,7 @@ function deskHotkeyBlockedByMarkerWheel(vk)
     if settings.cheats.marker_wheel == false then return false end
     vk = tonumber(vk) or 0
     if vk <= 0 then return false end
-    local mk = tonumber(settings.cheats.marker_key1) or vkeys.VK_MBUTTON
-    if mk <= 0 then mk = vkeys.VK_MBUTTON end
-    return vk == mk
+    return vk == MARKER_BIND_TOGGLE
 end
 
 -- Cheats Process Keybinds
@@ -17514,8 +17682,7 @@ function cheatsProcessKeybinds()
     if deskCache.hotkeyCapture or deskCache.cheatCapture then return end
     if deskInputState.playerSpectating and deskModifierKeysDown() then return end
     ensureCheatsSettings()
-    local c = settings.cheats
-    local markerToggle = isCheatBindPressed(c, 'marker')
+    local markerToggle = markerFixedBindHit(MARKER_BIND_TOGGLE)
     if markerToggle then
         if not cheatState.marker.active then
             markerToggleMode()
@@ -17524,6 +17691,7 @@ function cheatsProcessKeybinds()
         end
     end
     if not cheatState.marker.active then
+        local c = settings.cheats
         if isCheatBindPressed(c, 'gm') then cheatsToggleGodmode() end
         if isCheatBindPressed(c, 'wh') then cheatsToggleWallhack() end
         if isCheatBindPressed(c, 'ab') then cheatsToggleAirbreak() end
@@ -18034,8 +18202,21 @@ function cheatsTickMarker()
         markerRemove3d()
         m.userMarker = createUser3dMarker(pick.x, pick.y, pick.z + 0.3, 4)
     end
-    if isCheatBindPressed(settings.cheats, 'tp') then
-        markerExecuteTeleport(pick)
+    if markerFixedBindHit(MARKER_BIND_TP) then
+        markerTeleportTo(pick)
+        markerSetMode(false)
+    elseif markerFixedBindHit(MARKER_BIND_VEH) then
+        local targetCar = m.aimCar or pick.car or m.hoverCar
+        if targetCar and doesVehicleExist(targetCar) then
+            local myCar = isCharInAnyCar(PLAYER_PED) and storeCarCharIsInNoSave(PLAYER_PED) or nil
+            if not myCar or targetCar ~= myCar then
+                local ok, err = markerEnterVehicle(targetCar, pick)
+                if not ok and err then
+                    say(tostring(err))
+                end
+            end
+        end
+        markerSetMode(false)
     end
 end
 
@@ -18372,7 +18553,7 @@ function drawAirbreakHudOverlay()
 end
 
 CHEAT_BIND_PREFIX = {
-    gm = 'gm', wh = 'wh', ab = 'ab', mk = 'marker', tp = 'tp', vb = 'veh',
+    gm = 'gm', wh = 'wh', ab = 'ab',
 }
 
 CHEAT_CARD_H = 142
@@ -18732,6 +18913,17 @@ function deskHotkeyMessageIsDown(msg, wparam, lparam, hk)
     return false
 end
 
+function deskBindMessageIsDown(msg, wparam, lparam, vk)
+    vk = tonumber(vk) or 0
+    if vk <= 0 then return false end
+    for _, ev in ipairs(deskBindVkEquivList(vk)) do
+        if deskHotkeyMessageIsDown(msg, wparam, lparam, ev) then
+            return true
+        end
+    end
+    return false
+end
+
 -- Desk hook/helper.
 function deskResetHotkeyDebounce(vk)
     vk = tonumber(vk) or tonumber(settings.hotkey or vkeys.VK_F7) or 0
@@ -18742,6 +18934,7 @@ end
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     if not sessionLive then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return false end
+    if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return false end
     if isPauseMenuActive and isPauseMenuActive() then return false end
     local hk = (type(settings) == 'table' and settings.hotkey) or vkeys.VK_F7
     hk = tonumber(hk) or 0
@@ -19907,9 +20100,6 @@ function drawCheatsTab()
         markDirtySettings()
     end) then end
     imgui.TextColored(col_muted2, uiText('\xD1\xCA\xCC \x97 \xF0\xE5\xE6\xE8\xEC \xB7 \xCB\xCA\xCC \x97 \xF2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xB7 \xCF\xCA\xCC \x97 \xEF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xEC\xE0\xF8\xE8\xED\xF3'))
-    drawCheatBindRow('marker', 'mk', '\xD0\xE5\xE6\xE8\xEC \xEC\xE0\xF0\xEA\xE5\xF0\xE0')
-    drawCheatBindRow('tp', 'tp', '\xD2\xE5\xEB\xE5\xEF\xEE\xF0\xF2 \xED\xE0 \xEC\xE5\xF2\xEA\xF3')
-    drawCheatBindRow('veh', 'vb', '\xCF\xEE\xF1\xE0\xE4\xEA\xE0 \xE2 \xEC\xE0\xF8\xE8\xED\xF3')
     if cheatState.marker.active then
         local btnW = deskFormRowAvail('\xD1\xF2\xE0\xF2\xF3\xF1', DESK_FORM_LABEL_W)
         imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.38, 0.22, 0.10, 0.85))
@@ -20082,6 +20272,9 @@ function deskImguiNeedsInput()
         if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
         if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
     end
+    if type(exactTimeWantsImguiInput) == 'function' and exactTimeWantsImguiInput() then
+        return true
+    end
     return false
 end
 
@@ -20142,7 +20335,7 @@ function deskSpectateCameraBlocked()
     if deskSpectateHudWantsInput() then return true end
     if cheatState.marker.active then return true end
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if sampIsDialogActive and sampIsDialogActive() then return true end
+    if deskSampDialogActive() then return true end
     return false
 end
 
@@ -20343,6 +20536,14 @@ function deskDeskOrAnsUiOpen()
     return showWindow[0]
 end
 
+-- Активный SAMP-диалог (кроме подавленного оверлеем /c 60).
+function deskSampDialogActive()
+    if type(exactTimeWantsImguiInput) == 'function' and exactTimeWantsImguiInput() then
+        return false
+    end
+    return sampIsDialogActive and sampIsDialogActive() or false
+end
+
 -- SAMP CInput: блок Enable-хука + тихий clamp iInputEnabled (без мигания open/close).
 local deskSampInputFfiReady = false
 local deskSampInputEnableHook = nil
@@ -20465,8 +20666,7 @@ local function deskInstallSampInputEnableHook()
     local function detour(this)
         if this ~= nil then deskSampCInputThis = this end
         if deskDeskOrAnsUiOpen() then
-            if (sampIsChatInputActive and sampIsChatInputActive())
-                    or (sampIsDialogActive and sampIsDialogActive()) then
+            if (sampIsChatInputActive and sampIsChatInputActive()) or deskSampDialogActive() then
                 hookObj(this)
             end
             return
@@ -20514,7 +20714,7 @@ end
 function deskSampChatGuardFrame()
     if not deskDeskOrAnsUiOpen() then return end
     if sampIsChatInputActive and sampIsChatInputActive() then return end
-    if sampIsDialogActive and sampIsDialogActive() then return end
+    if deskSampDialogActive() then return end
     pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
@@ -20525,7 +20725,7 @@ end
 function deskShouldBlockSampChatKey(msg, wparam)
     if not deskDeskOrAnsUiOpen() then return false end
     if sampIsChatInputActive and sampIsChatInputActive() then return false end
-    if sampIsDialogActive and sampIsDialogActive() then return false end
+    if deskSampDialogActive() and not showWindow[0] then return false end
     if not deskCache or not deskCache.wm then return false end
     if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return false end
     msg = tonumber(msg) or 0
@@ -20600,7 +20800,7 @@ function updateMimguiGameInputPassthrough()
         imgui.DisableInput = not needsInput
         return
     end
-    if sampIsDialogActive and sampIsDialogActive() then
+    if deskSampDialogActive() then
         imgui.DisableInput = true
         return
     end
@@ -20637,7 +20837,7 @@ end
 
 -- Desk hook/helper.
 function deskOpenLocksPlayer()
-    if sampIsDialogActive and sampIsDialogActive() then return false end
+    if deskSampDialogActive() then return false end
     return showWindow[0] and not cheatState.airbreak and not deskSpectatingNow()
 end
 
@@ -20724,13 +20924,17 @@ function sendGameCmd(cmd)
     if stId then
         deskSpectateStats.markPendingSt(tonumber(stId))
     end
-    local spId = cmd:match('^sp%s+(%d+)%s*$')
-    if spId and deskSpectateStats.markPendingSpCommand then
-        deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
-    end
     releaseDeskInputCapture(true)
     closeDeskWindow()
-    sendChat(cmd)
+    if sendMenuOutbound then
+        sendMenuOutbound(cmd)
+    else
+        local spId = cmd:match('^sp%s+(%d+)%s*$')
+        if spId and deskSpectateStats.markPendingSpCommand then
+            deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
+        end
+        sendChat(cmd)
+    end
 end
 
 -- Get Local Admin Level
@@ -21028,22 +21232,24 @@ end
 
 -- Message Eligible For Watch Button
 function messageEligibleForWatchButton(text, context)
-    if context == INTENT_CONTEXT_THANKS or context == INTENT_CONTEXT_UNKNOWN then
+    if context == INTENT_CONTEXT_THANKS then
         return false
     end
-    if not extractSuspectIdForWatch(text) then return false end
-    if context == INTENT_CONTEXT_FAQ and not textLooksLikePlayerReport(text) then
-        return false
-    end
-    return true
+    return extractSuspectIdForWatch(text) ~= nil
 end
 
 --[[ ID для кнопки «Следить»: строгие правила + первое число в тексте (кроме HH:MM:SS). ]]
 function extractSuspectIdForWatch(text)
     text = trim(text or '')
     if text == '' then return nil end
+    if type(stripChatTimestamp) == 'function' then
+        text = trim(stripChatTimestamp(text))
+    end
+    if text == '' then return nil end
     if deskIngest.looksLikePlayerStatusBody and deskIngest.looksLikePlayerStatusBody(text) then return nil end
-    local id = extractSuspectIdFromReport(text)
+    local id = text:match('^(%d+)%s+%S')
+    if id then return clampSuspectPlayerId(id) end
+    id = extractSuspectIdFromReport(text)
     if id then return id end
     text = trim(text or '')
     if text == '' or not text:find('%d') then return nil end
@@ -22174,13 +22380,30 @@ local AP_HINT_GAP = 20
 
 local apState = {
     pending = nil,
-    keyPrev = {},
     bindField = nil,
     bindCapture = false,
-    ingestDedup = {},
-    ingestDedupOrd = {},
+    handled = {},
+    handledOrd = {},
+    handledPerm = {},
+    pendingOfflineSince = nil,
+    punishLogDedup = { key = '', at = 0 },
 }
-local AP_INGEST_DEDUP_SEC = 4
+local AP_LINE_REJECT_SEC = 50
+local AP_POLL_RECENT = 40
+local AP_OFFLINE_CANCEL_SEC = 2.0
+local AP_HANDLED_MAX = 256
+
+local function apMono()
+    if type(getGameTimer) == 'function' then
+        local ok, ms = pcall(getGameTimer)
+        if ok and ms then return (tonumber(ms) or 0) / 1000.0 end
+    end
+    return os.clock()
+end
+
+local function apWallSec()
+    return os.time()
+end
 
 local spThemeMod
 
@@ -22203,8 +22426,13 @@ function ensureAdminPunishSettings()
     if not ck or ck <= 0 then settings.admin_punish_confirm_key = vkeys.VK_DELETE end
     local xk = tonumber(settings.admin_punish_cancel_key)
     if not xk or xk <= 0 then settings.admin_punish_cancel_key = vkeys.VK_END end
-    if tonumber(settings.admin_punish_confirm_key) == tonumber(settings.admin_punish_cancel_key) then
-        settings.admin_punish_cancel_key = vkeys.VK_END
+    if type(deskBindKeysOverlap) == 'function'
+            and deskBindKeysOverlap(settings.admin_punish_confirm_key, settings.admin_punish_cancel_key) then
+        if deskBindKeysOverlap(settings.admin_punish_confirm_key, vkeys.VK_END) then
+            settings.admin_punish_cancel_key = vkeys.VK_ESCAPE
+        else
+            settings.admin_punish_cancel_key = vkeys.VK_END
+        end
     end
 end
 
@@ -22229,18 +22457,45 @@ local function apPlainText(text)
     return trim(text or '')
 end
 
+-- AdminTools: onServerMessage color == -1714683649 (0x99CC00FF). SAMP может отдать uint32.
+local function apIsAdminChatColor(color)
+    color = tonumber(color) or 0
+    if ADMIN_CHAT_COLORS[color] then return true end
+    if color == ADMIN_CHAT_COLOR then return true end
+    if type(normColor) ~= 'function' then return false end
+    local nc = normColor(color)
+    return nc == normColor(ADMIN_CHAT_COLOR) or nc == normColor(-1717986817)
+end
+
+-- AdminTools: string.find(text, "]: /") — только строки с командой, не весь /a чат.
+local function apHasPunishCommand(plain)
+    plain = trim(plain or '')
+    if plain == '' then return false end
+    if plain:find(']: /', 1, true) then return true end
+    if plain:match('%]:%s*/') then return true end
+    if plain:find('^%[A%]%s', 1) and plain:match('/[%a_]') then return true end
+    if plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1) then return true end
+    return false
+end
+
 local function apIsAdminChatLine(color, plain)
+    if apHasPunishCommand(plain) then return true end
     plain = trim(plain or '')
     if plain:find('^%[A%]%s', 1) then return true end
     if plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1) then return true end
-    return ADMIN_CHAT_COLORS[tonumber(color) or 0] == true
-        or tonumber(color) == ADMIN_CHAT_COLOR
+    return apIsAdminChatColor(color)
+end
+
+-- Строка похожа на запрос наказания в /a (для poll, не зависит от chatSeen).
+function lineLooksLikeAdminPunishRequest(plain, color)
+    return apIsAdminChatLine(color, plain)
 end
 
 -- Lua: a,b,c = s:match(p1) or s:match(p2) оставляет только первый capture при or — нельзя.
 local function apParseAdminRequest(plain)
     plain = trim(plain or '')
     if plain == '' then return nil end
+    -- Как AdminTools: [A] Name[id]: /cmd (пробел после [A] необязателен)
     local admName, admId, admCommand = plain:match('^%[A%]%s*(.-)%[(%d+)%]%:%s*(.*)')
     if not admId then
         admName, admId, admCommand = plain:match('^([%w][%w_]*)%[(%d+)%]%:%s*(/.*)$')
@@ -22324,21 +22579,145 @@ local function apOutboundCmd(cmd, admName)
     return cmd
 end
 
-local function apIngestSeen(key)
-    if not key or key == '' then return false end
-    local now = os.clock()
-    if apState.ingestDedup[key] and (now - apState.ingestDedup[key]) < AP_INGEST_DEDUP_SEC then
-        return true
-    end
-    apState.ingestDedup[key] = now
-    apState.ingestDedupOrd[#apState.ingestDedupOrd + 1] = key
-    while #apState.ingestDedupOrd > 48 do
-        local old = table.remove(apState.ingestDedupOrd, 1)
-        if old and apState.ingestDedup[old] and (now - apState.ingestDedup[old]) > AP_INGEST_DEDUP_SEC then
-            apState.ingestDedup[old] = nil
+-- Ключ без метки времени: hook и poll дают разный chatLineSeenKey, plain одинаковый.
+local function apStableLineKey(text)
+    return apPlainText(text)
+end
+
+local function apNormalizeCommand(cmd)
+    cmd = trim(tostring(cmd or ''))
+    if cmd == '' then return '' end
+    return (cmd:gsub('%s+', ' '))
+end
+
+local function apRequestKey(admId, admCommand)
+    admId = tonumber(admId) or 0
+    admCommand = apNormalizeCommand(admCommand)
+    if admCommand == '' then return '' end
+    return tostring(admId) .. '|' .. admCommand
+end
+
+local function apIsOwnAutovydachaLog(plain)
+    plain = trim(plain or '')
+    if plain == '' then return false end
+    if plain:find('[\xC0\xE2\xF2\xEE\xE2\xFB\xE4\xE0\xF7\xE0]', 1, true) then return true end
+    if plain:find('[ReportDesk]', 1, true) and plain:find('/[%a_]', 1) == nil then return true end
+    return false
+end
+
+local function apIsAdminRequestLine(plain)
+    plain = trim(plain or '')
+    if plain == '' then return false end
+    if plain:find('^%[A%]%s', 1) and plain:match('/[%a_]') then return true end
+    if plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1) then return true end
+    return false
+end
+
+local function apPruneHandled()
+    local guard = 0
+    while #apState.handledOrd > AP_HANDLED_MAX and guard < AP_HANDLED_MAX do
+        guard = guard + 1
+        local old = table.remove(apState.handledOrd, 1)
+        if not old then break end
+        if apState.handledPerm[old] then
+            apState.handledOrd[#apState.handledOrd + 1] = old
+        else
+            apState.handled[old] = nil
         end
     end
-    return false
+end
+
+local function apLineHandledEntry(lineKey)
+    if not lineKey or lineKey == '' then return nil end
+    local e = apState.handled[lineKey]
+    if not e then return nil end
+    if e.perm or e.kind == 'ok' then return e end
+    if apWallSec() - (e.at or 0) >= AP_LINE_REJECT_SEC then
+        apState.handled[lineKey] = nil
+        return nil
+    end
+    return e
+end
+
+local function apLineAlreadyHandled(lineKey)
+    if apState.handledPerm[lineKey] then return true end
+    return apLineHandledEntry(lineKey) ~= nil
+end
+
+local function apMarkLineConsumed(lineKey)
+    if not lineKey or lineKey == '' then return end
+    apState.handledPerm[lineKey] = true
+end
+
+local function apMarkLineRejected(lineKey)
+    if not lineKey or lineKey == '' then return end
+    apState.handled[lineKey] = { at = apWallSec(), kind = 'rej' }
+    apState.handledOrd[#apState.handledOrd + 1] = lineKey
+    apPruneHandled()
+end
+
+local function apSealPending(p)
+    if not p then return end
+    if p.stableLineKey and p.stableLineKey ~= '' then
+        apMarkLineConsumed(p.stableLineKey)
+    end
+end
+
+local AP_PUNISH_HEADS = {
+    jail = true, unjail = true, mute = true, unmute = true, kick = true, warn = true,
+    ban = true, skick = true, tr = true, unwarn = true, unban = true,
+    offmute = true, offjail = true, offban = true, offwarn = true,
+}
+
+local AP_PUNISH_HEAD_TO_KIND = {
+    jail = 'jail', unjail = 'jail', offjail = 'jail',
+    mute = 'mute', unmute = 'mute', offmute = 'mute',
+    kick = 'kick', skick = 'kick',
+    ban = 'ban', unban = 'ban', offban = 'ban',
+    warn = 'warn', unwarn = 'warn', offwarn = 'warn',
+    tr = 'tr',
+}
+
+local AP_PUNISH_SKIP_FIRST = {
+    ans = true, sp = true, spec = true, st = true, c = true, cc = true,
+    history = true, hist = true, iget = true, ilog = true, iskill = true,
+    admins = true, adms = true, leaders = true, pm = true, me = true, ['do'] = true,
+    r = true, report = true, time = true, watch = true,
+}
+
+local function apCommandHead(cmd)
+    cmd = trim(tostring(cmd or ''))
+    if cmd == '' then return '' end
+    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
+    local head = cmd:match('^/(%S+)')
+    return head and head:lower() or ''
+end
+
+local function apCommandLooksSupported(cmd)
+    return AP_PUNISH_HEADS[apCommandHead(cmd)] == true
+end
+
+local function apPunishKindFromCommand(cmd)
+    return AP_PUNISH_HEAD_TO_KIND[apCommandHead(cmd)] or 'other'
+end
+
+-- Быстрый фильтр в chat/command hooks: не парсим /ans, /sp и прочий шум.
+function adminPunishOutgoingLooksRelevant(message)
+    message = trim(tostring(message or ''))
+    if message == '' then return false end
+    local lc = message:lower()
+    if lc:sub(1, 4) == '/ans' or lc:match('^ans%s') then return false end
+    local first = message:match('^/?(%S+)')
+    if not first then return false end
+    first = first:lower()
+    if AP_PUNISH_SKIP_FIRST[first] then return false end
+    if first == 'a' then
+        local punishPart = message:match('^/?a%s+(/.*)$')
+        if not punishPart then return false end
+        return apCommandLooksSupported(trim(punishPart))
+    end
+    local cmd = message:sub(1, 1) == '/' and message or '/' .. message
+    return apCommandLooksSupported(cmd)
 end
 
 local function apNotifyPending(p)
@@ -22352,10 +22731,27 @@ local function apNotifyPending(p)
 end
 
 local function apClearPending(reason)
-    if apState.pending and reason then
+    local p = apState.pending
+    if p then
+        apSealPending(p)
+    end
+    if p and reason then
         say(reason)
     end
     apState.pending = nil
+    apState.pendingOfflineSince = nil
+end
+
+local function apSyncBindKeyPrev()
+    ensureAdminPunishSettings()
+    local prev = deskCache.adminPunishBindPrev
+    local keys = {
+        tonumber(settings.admin_punish_confirm_key) or 0,
+        tonumber(settings.admin_punish_cancel_key) or 0,
+    }
+    for _, vk in ipairs(keys) do
+        deskBindSyncKeyPrev(vk, prev)
+    end
 end
 
 local function apSetPending(p)
@@ -22370,6 +22766,8 @@ local function apSetPending(p)
         p.snapshotNickKey = p.snapshotNick:lower()
     end
     apState.pending = p
+    apState.pendingOfflineSince = nil
+    apSyncBindKeyPrev()
     apNotifyPending(p)
     if settings.sound and playSoundFrontEnd then
         pcall(playSoundFrontEnd, 4)
@@ -22421,7 +22819,26 @@ local function apLiveTargetStatus(p)
     }
 end
 
+local function apRefreshPendingNick(p)
+    if not p then return end
+    local pid = tonumber(p.playerId)
+    if not pid or pid < 0 or not apPlayerConnected(pid) then return end
+    local live = trim(sampGetPlayerNickname(pid) or '')
+    if live == '' then return end
+    local snap = trim(p.snapshotNick or p.playerName or '')
+    if snap == '' or snap:match('^ID %d+$') then
+        p.playerName = live
+        p.snapshotNick = live
+        if type(nickKey) == 'function' then
+            p.snapshotNickKey = nickKey(live)
+        else
+            p.snapshotNickKey = live:lower()
+        end
+    end
+end
+
 local function apCanExecutePending(p)
+    apRefreshPendingNick(p)
     local st = apLiveTargetStatus(p)
     if not st then return false, nil, nil end
     if st.mode == 'offline_nick' or st.status == 'na' then
@@ -22445,126 +22862,73 @@ local function apBuildOutboundPreview(p)
     return apOutboundCmd(p.command, p.admName)
 end
 
-local function apTryParse(admCommand)
+local function apResolveOnlineNick(id)
+    id = tonumber(id)
+    if not id then return nil, nil end
+    local nick = 'ID ' .. tostring(id)
+    if apPlayerConnected(id) and type(sampGetPlayerNickname) == 'function' then
+        local live = trim(sampGetPlayerNickname(id) or '')
+        if live ~= '' then nick = live end
+    end
+    return id, nick
+end
+
+local function apMakeOnlineCmd(cmd, action, id, term, reason)
+    local pid, nick = apResolveOnlineNick(id)
+    if not pid then return nil end
+    return {
+        command = cmd,
+        action = action,
+        playerId = pid,
+        playerName = nick,
+        term = term or '-',
+        reason = reason or '-',
+    }
+end
+
+-- Разбор команды наказания без проверки уровня (для /a и журнала).
+function apParsePunishCommand(admCommand)
     local cmd = trim(tostring(admCommand or ''))
     if cmd == '' or cmd:sub(1, 1) ~= '/' then return nil end
-    local lvl = apMinLevel()
 
     local id, term, reason = cmd:match('^/jail%s+(%d+)%s+(%d+)%s+(.+)$')
-    if id and term and reason and lvl >= 2 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xCF\xEE\xF1\xE0\xE4\xE8\xF2\xFC \xE2 \xF2\xFE\xF0\xFC\xEC\xF3',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = term,
-            reason = reason,
-        }
+    if id and term and reason then
+        return apMakeOnlineCmd(cmd, '\xCF\xEE\xF1\xE0\xE4\xE8\xF2\xFC \xE2 \xF2\xFE\xF0\xFC\xEC\xF3', id, term, reason)
     end
 
     id = cmd:match('^/unjail%s+(%d+)$')
-    if id and lvl >= 2 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xC2\xFB\xEF\xF3\xF1\xF2\xE8\xF2\xFC \xE8\xE7 \xF2\xFE\xF0\xFC\xEC\xFB',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = '-',
-        }
+    if id then
+        return apMakeOnlineCmd(cmd, '\xC2\xFB\xEF\xF3\xF1\xF2\xE8\xF2\xFC \xE8\xE7 \xF2\xFE\xF0\xFC\xEC\xFB', id)
     end
 
     id = cmd:match('^/unmute%s+(%d+)$')
-    if id and lvl >= 2 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xD1\xED\xFF\xF2\xFC \xE7\xE0\xF2\xFB\xF7\xEA\xF3',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = '-',
-        }
+    if id then
+        return apMakeOnlineCmd(cmd, '\xD1\xED\xFF\xF2\xFC \xE7\xE0\xF2\xFB\xF7\xEA\xF3', id)
     end
 
     id, reason = cmd:match('^/kick%s+(%d+)%s+(.+)$')
-    if id and reason and lvl >= 2 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xCA\xE8\xEA\xED\xF3\xF2\xFC',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = reason,
-        }
+    if id and reason then
+        return apMakeOnlineCmd(cmd, '\xCA\xE8\xEA\xED\xF3\xF2\xFC', id, '-', reason)
     end
 
     id, term = cmd:match('^/mute%s+(%d+)%s+(%d+)')
-    if id and term and lvl >= 2 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
+    if id and term then
         reason = cmd:match('^/mute%s+%d+%s+%d+%s+(.+)$') or '-'
-        return {
-            command = cmd,
-            action = '\xC7\xE0\xEC\xF3\xF2\xE8\xF2\xFC',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = term,
-            reason = reason,
-        }
+        return apMakeOnlineCmd(cmd, '\xC7\xE0\xEC\xF3\xF2\xE8\xF2\xFC', id, term, reason)
     end
 
     id, reason = cmd:match('^/warn%s+(%d+)%s+(.+)$')
-    if id and reason and lvl >= 3 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xC7\xE0\xE2\xE0\xF0\xED\xE8\xF2\xFC',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = reason,
-        }
+    if id and reason then
+        return apMakeOnlineCmd(cmd, '\xC7\xE0\xE2\xE0\xF0\xED\xE8\xF2\xFC', id, '-', reason)
     end
 
     id, term, reason = cmd:match('^/ban%s+(%d+)%s+(%d+)%s+(.+)$')
-    if id and term and reason and lvl >= 3 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xC7\xE0\xE1\xE0\xED\xE8\xF2\xFC',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = term,
-            reason = reason,
-        }
+    if id and term and reason then
+        return apMakeOnlineCmd(cmd, '\xC7\xE0\xE1\xE0\xED\xE8\xF2\xFC', id, term, reason)
     end
 
     local nick, offTerm, offReason = cmd:match('^/offmute%s+(%S+)%s+(%d+)%s+(.+)$')
-    if nick and offTerm and offReason and lvl >= 3 then
+    if nick and offTerm and offReason then
         return {
             command = cmd,
             action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE7\xE0\xF2\xFB\xF7\xEA\xE0',
@@ -22576,7 +22940,7 @@ local function apTryParse(admCommand)
     end
 
     nick, offTerm, offReason = cmd:match('^/offjail%s+(%S+)%s+(%d+)%s+(.+)$')
-    if nick and offTerm and offReason and lvl >= 3 then
+    if nick and offTerm and offReason then
         return {
             command = cmd,
             action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xF2\xFE\xF0\xFC\xEC\xE0',
@@ -22588,55 +22952,31 @@ local function apTryParse(admCommand)
     end
 
     id = cmd:match('^/skick%s+(%d+)$')
-    if id and lvl >= 3 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xD1\xEA\xE8\xEA',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = '-',
-        }
+    if id then
+        return apMakeOnlineCmd(cmd, '\xD1\xEA\xE8\xEA', id)
     end
 
-    id = cmd:match('^/tr%s+(%d+)%s*$')
-    if id and lvl >= 3 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
+    id = cmd:match('^/tr%s+(%d+)')
+    if id then
+        local pid, resolvedNick = apResolveOnlineNick(id)
+        if not pid then return nil end
         return {
-            command = string.format('/tr %d', id),
+            command = string.format('/tr %d', pid),
             action = '\xC4\xEE\xF1\xF2\xE0\xF2\xFC \xE8\xE7 \xE2\xEE\xE4\xFB',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
+            playerId = pid,
+            playerName = resolvedNick,
             term = '-',
             reason = '-',
         }
     end
 
     id = cmd:match('^/unwarn%s+(%d+)$')
-    if id and lvl >= 4 then
-        id = tonumber(id)
-        if not apPlayerConnected(id) then
-            return nil, string.format('\xC8\xE3\xF0\xEE\xEA \xF1 ID %d \xED\xE5 \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5.', id)
-        end
-        return {
-            command = cmd,
-            action = '\xD1\xED\xFF\xF2\xFC \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5',
-            playerId = id,
-            playerName = sampGetPlayerNickname(id) or ('ID ' .. id),
-            term = '-',
-            reason = '-',
-        }
+    if id then
+        return apMakeOnlineCmd(cmd, '\xD1\xED\xFF\xF2\xFC \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5', id)
     end
 
     nick, offTerm, offReason = cmd:match('^/offban%s+(%S+)%s+(%d+)%s+(.+)$')
-    if nick and offTerm and offReason and lvl >= 4 then
+    if nick and offTerm and offReason then
         return {
             command = cmd,
             action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE1\xE0\xED',
@@ -22648,7 +22988,7 @@ local function apTryParse(admCommand)
     end
 
     nick, offReason = cmd:match('^/offwarn%s+(%S+)%s+(.+)$')
-    if nick and offReason and lvl >= 4 then
+    if nick and offReason then
         return {
             command = cmd,
             action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE2\xE0\xF0\xED',
@@ -22660,7 +23000,7 @@ local function apTryParse(admCommand)
     end
 
     nick = cmd:match('^/unban%s+(%S+)$')
-    if nick and lvl >= 4 then
+    if nick then
         return {
             command = cmd,
             action = '\xD0\xE0\xE7\xE1\xE0\xED\xE8\xF2\xFC',
@@ -22672,7 +23012,7 @@ local function apTryParse(admCommand)
     end
 
     nick = cmd:match('^/unwarn%s+(%S+)$')
-    if nick and lvl >= 4 then
+    if nick then
         return {
             command = cmd,
             action = '\xD1\xED\xFF\xF2\xFC \xE2\xE0\xF0\xED',
@@ -22684,10 +23024,10 @@ local function apTryParse(admCommand)
     end
 
     nick = cmd:match('^/unmute%s+(%S+)$')
-    if nick and lvl >= 2 then
+    if nick then
         return {
             command = cmd,
-            action = '\xD1\xED\xFF\xF2\xFC \xEE\xF4\xF4\xE0\xE9\xED \xEC\xF3\xF2',
+            action = '\xD1\xED\xFF\xF2\xFC \xEE\xF4\xF4\xEB\xE0\xE9\xED \xEC\xF3\xF2',
             playerId = -1,
             playerName = nick,
             term = '-',
@@ -22696,10 +23036,10 @@ local function apTryParse(admCommand)
     end
 
     nick = cmd:match('^/unjail%s+(%S+)$')
-    if nick and lvl >= 2 then
+    if nick then
         return {
             command = cmd,
-            action = '\xCE\xF4\xF4\xE0\xE9\xED \xE2\xFB\xEF\xF3\xF1\xEA',
+            action = '\xCE\xF4\xF4\xEB\xE0\xE9\xED \xE2\xFB\xEF\xF3\xF1\xEA',
             playerId = -1,
             playerName = nick,
             term = '-',
@@ -22707,7 +23047,38 @@ local function apTryParse(admCommand)
         }
     end
 
+    if apCommandLooksSupported(cmd) then
+        return nil
+    end
     return nil
+end
+
+local function apPunishCommandAllowedAtLevel(cmd, lvl)
+    lvl = tonumber(lvl) or 0
+    if cmd:match('^/jail') or cmd:match('^/unjail%s+%d')
+            or cmd:match('^/unmute%s+%d') or cmd:match('^/kick')
+            or cmd:match('^/mute') or cmd:match('^/unjail%s+%S')
+            or cmd:match('^/unmute%s+%S') then
+        return lvl >= 2
+    end
+    if cmd:match('^/warn') or cmd:match('^/ban') or cmd:match('^/offmute')
+            or cmd:match('^/offjail') or cmd:match('^/skick') or cmd:match('^/tr') then
+        return lvl >= 3
+    end
+    if cmd:match('^/unwarn%s+%d') or cmd:match('^/offban') or cmd:match('^/offwarn')
+            or cmd:match('^/unban') or cmd:match('^/unwarn%s+%S') then
+        return lvl >= 4
+    end
+    return false
+end
+
+local function apTryParse(admCommand)
+    local cmd = trim(tostring(admCommand or ''))
+    if cmd == '' or cmd:sub(1, 1) ~= '/' then return nil end
+    local parsed = apParsePunishCommand(cmd)
+    if not parsed then return nil end
+    if not apPunishCommandAllowedAtLevel(cmd, apMinLevel()) then return nil end
+    return parsed
 end
 
 local function apAnotherAdminExecuted(text)
@@ -22715,8 +23086,17 @@ local function apAnotherAdminExecuted(text)
     if not p then return false end
     local plain = apPlainText(text)
     if plain == '' then return false end
+    if apIsOwnAutovydachaLog(plain) then return false end
+    if apIsAdminRequestLine(plain) then return false end
     local target = trim(p.playerName or p.snapshotNick or '')
     if target == '' then return false end
+    local pid = tonumber(p.playerId)
+    local mayRelate = plain:find(target, 1, true)
+        or plain:find('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ', 1, true)
+    if not mayRelate and pid and pid >= 0 and p.command and p.command:match('^/tr') then
+        mayRelate = plain:find('/tr%s+' .. tostring(pid), 1) ~= nil
+    end
+    if not mayRelate then return false end
     local needles = {
         ' \xEF\xEE\xF1\xE0\xE4\xE8\xEB \xE2 \xF2\xFE\xF0\xFC\xEC\xF3 ' .. target,
         ' \xE2\xFB\xF2\xE0\xF9\xE8\xEB \xE8\xE7 \xF2\xFE\xF0\xFC\xEC\xFB ' .. target,
@@ -22729,7 +23109,7 @@ local function apAnotherAdminExecuted(text)
         ' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
         ' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xEE\xF4\xF4\xEB\xE0\xE9\xED \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
         ' \xF1\xED\xFF\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xF1 \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
-        ' \xF1\xED\xFF\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xEE\xF4\xF4\xE0\xE9\xED \xF1 \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
+        ' \xF1\xED\xFF\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 \xEE\xF4\xF4\xEB\xE0\xE9\xED \xF1 \xE8\xE3\xF0\xEE\xEA\xE0 ' .. target,
         ' \xF1\xED\xFF\xEB 1 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 \xE8\xE3\xF0\xEE\xEA\xF3 ' .. target,
         '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ',
     }
@@ -22747,12 +23127,20 @@ local function apAnotherAdminExecuted(text)
             return true
         end
     end
-    local pid = tonumber(p.playerId)
-    if pid and pid >= 0 then
-        if plain:find('[' .. pid .. ']', 1, true) then
+    if pid and pid >= 0 and p.command and p.command:match('^/tr') then
+        if plain:find('/tr%s+' .. tostring(pid) .. '(%s|$)') then
             return true
         end
-        if p.command and p.command:match('^/tr') and plain:find('/tr%s+' .. pid, 1) then
+    end
+    if pid and pid >= 0 then
+        local idTag = '[' .. tostring(pid) .. ']'
+        if plain:find(idTag, 1, true)
+                and (plain:find('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 ', 1, true)
+                    or plain:find(' \xEF\xEE\xF1\xF2\xE0\xE2\xE8\xEB \xE7\xE0\xF2\xFB\xF7\xEA\xF3 ', 1, true)
+                    or plain:find(' \xEA\xE8\xEA\xED\xF3\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ', 1, true)
+                    or plain:find(' \xEF\xEE\xF1\xE0\xE4\xE8\xEB \xE2 \xF2\xFE\xF0\xFC\xEC\xF3 ', 1, true)
+                    or plain:find(' \xE7\xE0\xE1\xE0\xED\xE8\xEB \xE8\xE3\xF0\xEE\xEA\xE0 ', 1, true)
+                    or plain:find(' \xE2\xFB\xE4\xE0\xEB \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xE5 ', 1, true)) then
             return true
         end
     end
@@ -22764,38 +23152,58 @@ function adminPunishIngestChatLine(color, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
     local plain = apPlainText(text)
+    if apIsOwnAutovydachaLog(plain) then return end
 
     if apState.pending and apAnotherAdminExecuted(text) then
         apClearPending('\xCA\xEE\xEC\xE0\xED\xE4\xF3 \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xE8\xEB \xE4\xF0\xF3\xE3\xEE\xE9 \xE0\xE4\xEC\xE8\xED.')
         return
     end
 
-    if apState.pending then return end
     if not apIsAdminChatLine(color, plain) then return end
-    if type(isGamePaused) == 'function' and isGamePaused() then return end
-    if type(isPauseMenuActive) == 'function' and isPauseMenuActive() then return end
 
     local admName, admId, admCommand = apParseAdminRequest(plain)
     if not admName or not admId or not admCommand then return end
-    if type(isMyAdminReply) == 'function' and isMyAdminReply(admName, admId) then return end
 
-    local dedupKey = tostring(admId) .. '|' .. admCommand
-    if apIngestSeen(dedupKey) then return end
+    local stableLineKey = apStableLineKey(text)
+    if stableLineKey == '' then return end
+    if apLineAlreadyHandled(stableLineKey) then return end
 
-    local parsed, errMsg = apTryParse(admCommand)
+    if type(isMyAdminReply) == 'function' and isMyAdminReply(admName, admId) then
+        apMarkLineConsumed(stableLineKey)
+        return
+    end
+
+    local dedupKey = apRequestKey(admId, admCommand)
+
+    if apState.pending then
+        local old = apState.pending
+        local oldKey = apRequestKey(old.admId, old.command)
+        if oldKey == dedupKey then
+            apMarkLineConsumed(stableLineKey)
+            return
+        end
+        apClearPending()
+    end
+
+    local parsed = apTryParse(admCommand)
     if not parsed then
-        if errMsg then say(errMsg) end
+        apMarkLineConsumed(stableLineKey)
         return
     end
 
     if apBlocksTargetAdmin(admCommand) and apIsCatalogAdmin(parsed.playerName) then
         say('{EE0000}\xC2\xED\xE8\xEC\xE0\xED\xE8\xE5! \xD6\xE5\xEB\xFC \xE2 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xEE\xE2.')
+        apMarkLineConsumed(stableLineKey)
         return
     end
 
     parsed.admName = admName
     parsed.admId = admId
-    parsed.tick = os.clock()
+    parsed.command = admCommand
+    parsed.tick = apMono()
+    parsed.stableLineKey = stableLineKey
+    parsed.dedupKey = dedupKey
+    apMarkLineConsumed(stableLineKey)
     apSetPending(parsed)
 end
 
@@ -22804,20 +23212,97 @@ function adminPunishOnServerMessage(color, text)
     adminPunishIngestChatLine(color, text)
 end
 
-local function apVkJustPressed(vk)
-    vk = tonumber(vk) or 0
-    if vk <= 0 then return false end
-    local down = isVkDown(vk) == true
-    local was = apState.keyPrev[vk] == true
-    apState.keyPrev[vk] = down
-    return down and not was
+-- CHAT RPC (/a иногда не дублируется в onServerMessage, только в onChatMessage + sampGetChatString).
+function adminPunishOnChatMessage(playerId, text)
+    if not apEnabled() then return end
+    if not text or text == '' then return end
+    local plain = apPlainText(text)
+    if apHasPunishCommand(plain) then
+        adminPunishIngestChatLine(0, text)
+        return
+    end
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return end
+    local cmd = trim(text)
+    if cmd:sub(1, 1) ~= '/' or not apCommandLooksSupported(cmd) then return end
+    local nick = trim(sampGetPlayerNickname and sampGetPlayerNickname(playerId) or '')
+    if nick == '' then return end
+    if not apIsCatalogAdmin(nick) then return end
+    adminPunishIngestChatLine(0, string.format('[A] %s[%d]: %s', nick, playerId, cmd))
+end
+
+-- Запасной poll: всегда последние N строк (hook может пропустить по color/chain).
+function pollAdminPunishChat()
+    if not apEnabled() then return end
+    if not sampGetChatString then return end
+    for i = 0, AP_POLL_RECENT - 1 do
+        local line = sampGetChatString(i) or ''
+        if line ~= '' then
+            local plain = apPlainText(line)
+            if apIsAdminChatLine(0, plain) then
+                pcall(adminPunishIngestChatLine, 0, line)
+            end
+        end
+    end
+end
+
+-- Health-check hooks автовыдачи (onServerMessage + onChatMessage).
+function adminPunishEnsureServerHook()
+    if not apEnabled() then return end
+    if type(installDeskServerMessageHook) == 'function' then
+        if type(deskIsServerMsgHookActive) ~= 'function' or not deskIsServerMsgHookActive() then
+            pcall(installDeskServerMessageHook)
+        end
+    end
+    if type(installProfanityHooks) == 'function' then
+        if not deskCache.profHooksInstalled
+                or (deskCache.profChatHandler and sampev and sampev.onChatMessage ~= deskCache.profChatHandler) then
+            deskCache.profHooksInstalled = false
+            pcall(installProfanityHooks)
+        end
+    end
+end
+
+local function apPollPendingBindKeys()
+    if not apState.pending then return end
+    ensureAdminPunishSettings()
+    local prev = deskCache.adminPunishBindPrev
+    local ck = tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE
+    local xk = tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END
+    if apInputsBlocked() then
+        deskBindJustPressed(ck, prev)
+        deskBindJustPressed(xk, prev)
+        return
+    end
+    if deskBindJustPressed(ck, prev) then
+        adminPunishConfirm()
+    elseif deskBindJustPressed(xk, prev) then
+        adminPunishCancel()
+    end
 end
 
 local function apInputsBlocked()
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
+        return true
+    end
+    if apState.pending then return false end
     if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if sampIsDialogActive and sampIsDialogActive() then return true end
-    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return true end
+    if type(deskSampDialogActive) == 'function' and deskSampDialogActive() then return true end
     return false
+end
+
+local function apSendOutboundCmd(line)
+    line = trim(tostring(line or ''))
+    if line == '' then return false end
+    if line:sub(1, 1) ~= '/' then line = '/' .. line end
+    local chatBusy = (sampIsChatInputActive and sampIsChatInputActive())
+        or (type(deskSampDialogActive) == 'function' and deskSampDialogActive())
+    if (type(deskDeskOrAnsUiOpen) == 'function' and deskDeskOrAnsUiOpen()) or chatBusy then
+        if type(sendMenuOutbound) == 'function' then
+            return sendMenuOutbound(line, { skipPendingMark = true }) == true
+        end
+    end
+    return sendChat(line) == true
 end
 
 local function apExecutePending()
@@ -22831,20 +23316,112 @@ local function apExecutePending()
     local cmd = p.command
 
     if settings.admin_punish_send_ans and p.playerId and p.playerId >= 0 then
-        sendChat(string.format(
+        apSendOutboundCmd(string.format(
             '/ans %d \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xE2\xFB\xE4\xE0\xED\xEE \xEF\xEE \xEF\xF0\xEE\xF1\xFC\xE1\xE5 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xE0 %s.',
             p.playerId, p.admName or ''))
     end
 
-    sendChat(apOutboundCmd(cmd, p.admName))
+    local outbound = apOutboundCmd(cmd, p.admName)
+    apRecordPunishLog({
+        ts = os.time(),
+        kind = apPunishKindFromCommand(cmd),
+        action = p.action or '-',
+        player = trim(p.snapshotNick or p.playerName or '?'),
+        pid = tonumber(p.playerId) or -1,
+        term = p.term or '-',
+        reason = p.reason or '-',
+        cmd = outbound,
+        reqAdmin = p.admName or '',
+        reqAdminId = tonumber(p.admId),
+        src = 'auto',
+    })
+    if type(deskCache) == 'table' then
+        deskCache.skipPunishStatsHook = (tonumber(deskCache.skipPunishStatsHook) or 0) + 1
+    end
+    local sent = apSendOutboundCmd(outbound)
+    if type(deskCache) == 'table' then
+        local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
+        deskCache.skipPunishStatsHook = n > 0 and n or nil
+    end
+    if not sent then
+        say('{EE0000}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xEA\xEE\xEC\xE0\xED\xE4\xF3.')
+        return
+    end
 
     say('\xCA\xEE\xEC\xE0\xED\xE4\xE0 \xE2\xFB\xEF\xEE\xEB\xED\xE5\xED\xE0.')
+    apSealPending(p)
     apState.pending = nil
+    apState.pendingOfflineSince = nil
 end
 
 -- Admin Punish Confirm
 function adminPunishConfirm()
     apExecutePending()
+end
+
+local function apExtractPunishOutgoing(message)
+    message = trim(tostring(message or ''))
+    if message == '' then return nil end
+    local inner = message:match('^/?a%s+(/.*)$')
+    if inner then
+        inner = trim(inner)
+        if inner ~= '' and inner:sub(1, 1) == '/' then
+            return inner, 'a_request', message
+        end
+        return nil
+    end
+    local cmd = message
+    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
+    return cmd, 'manual', cmd
+end
+
+local function apRecordPunishLog(entry)
+    if type(helpStatsRecordPunish) ~= 'function' then return end
+    entry = type(entry) == 'table' and entry or nil
+    if not entry then return end
+    local pCmd = select(1, apExtractPunishOutgoing(entry.cmd or ''))
+    if not pCmd then
+        pCmd = entry.cmd or ''
+        if pCmd:sub(1, 1) ~= '/' then pCmd = '/' .. pCmd end
+    end
+    if not entry.kind or entry.kind == '' then
+        entry.kind = apPunishKindFromCommand(pCmd)
+    end
+    local cmdKey = apNormalizeCommand(pCmd)
+    local dedupKey = (entry.src or '') .. '|' .. cmdKey
+    local now = os.time()
+    if apState.punishLogDedup.key == dedupKey and (now - (apState.punishLogDedup.at or 0)) <= 2 then
+        return
+    end
+    apState.punishLogDedup.key = dedupKey
+    apState.punishLogDedup.at = now
+    pcall(helpStatsRecordPunish, entry)
+end
+
+-- Журнал «Справка»: прямые команды и запросы /a /ban … (когда нет прав на прямую выдачу).
+function adminPunishNoteOutgoingMessage(message)
+    if type(deskCache) == 'table' and tonumber(deskCache.skipPunishStatsHook) and deskCache.skipPunishStatsHook > 0 then
+        return
+    end
+    if not adminPunishOutgoingLooksRelevant(message) then return end
+    local punishCmd, src, fullLine = apExtractPunishOutgoing(message)
+    if not punishCmd then return end
+    local parsed = apParsePunishCommand(punishCmd)
+    if not parsed then return end
+    if src == 'manual' and not apTryParse(punishCmd) then
+        return
+    end
+    apRecordPunishLog({
+        ts = os.time(),
+        kind = apPunishKindFromCommand(punishCmd),
+        action = parsed.action or '-',
+        player = trim(parsed.playerName or parsed.snapshotNick or '?'),
+        pid = tonumber(parsed.playerId) or -1,
+        term = parsed.term or '-',
+        reason = parsed.reason or '-',
+        cmd = fullLine or punishCmd,
+        src = src,
+    })
 end
 
 -- Admin Punish On Player Quit
@@ -22865,6 +23442,35 @@ function adminPunishCancel()
     apClearPending('\xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.')
 end
 
+-- WM: подтверждение/отмена pending (клавиши, которые доходят через onWindowMessage).
+function tryHandleAdminPunishBindMessage(msg, wparam, lparam)
+    if not apEnabled() or not apState.pending then return false end
+    if deskCache.adminPunishBindCapture or deskCache.hotkeyCapture or deskCache.cheatCapture then
+        return false
+    end
+    if apInputsBlocked() then return false end
+    if type(deskBindMessageIsDown) ~= 'function' then return false end
+
+    ensureAdminPunishSettings()
+    local prev = deskCache.adminPunishBindPrev
+    local ck = tonumber(settings.admin_punish_confirm_key) or 0
+    local xk = tonumber(settings.admin_punish_cancel_key) or 0
+
+    if ck > 0 and deskBindMessageIsDown(msg, wparam, lparam, ck) then
+        prev[ck] = true
+        adminPunishConfirm()
+        if consumeWindowMessage then consumeWindowMessage(true, true, true) end
+        return true
+    end
+    if xk > 0 and deskBindMessageIsDown(msg, wparam, lparam, xk) then
+        prev[xk] = true
+        adminPunishCancel()
+        if consumeWindowMessage then consumeWindowMessage(true, true, true) end
+        return true
+    end
+    return false
+end
+
 -- Admin Punish Has Pending
 function adminPunishHasPending()
     return apState.pending ~= nil
@@ -22875,31 +23481,30 @@ function adminPunishTick()
     local p = apState.pending
     if not p then return end
 
-    if os.clock() - (p.tick or 0) > PUNISH_TIMEOUT_SEC then
+    apRefreshPendingNick(p)
+
+    if apMono() - (p.tick or 0) > PUNISH_TIMEOUT_SEC then
         apClearPending('\xC2\xF0\xE5\xEC\xFF \xEE\xE6\xE8\xE4\xE0\xED\xE8\xFF \xE8\xF1\xF2\xE5\xEA\xEB\xEE.')
         return
     end
 
     local st = apLiveTargetStatus(p)
     if st and st.mode == 'online_id' and st.status == 'offline' then
+        local offAt = tonumber(apState.pendingOfflineSince) or 0
+        if offAt <= 0 then
+            apState.pendingOfflineSince = apMono()
+            return
+        end
+        if apMono() - offAt < AP_OFFLINE_CANCEL_SEC then
+            return
+        end
         apClearPending(string.format(
             '\xC8\xE3\xF0\xEE\xEA %s[%d] \xE2\xFB\xF8\xE5\xEB \xF1 \xF1\xE5\xF0\xE2\xE5\xF0\xE0. \xC7\xE0\xEF\xF0\xEE\xF1 \xEE\xF2\xEC\xE5\xED\xB8\xED.',
             st.snapshotNick or '?', st.playerId or 0))
         return
     end
-
-    local ck = tonumber(settings.admin_punish_confirm_key) or vkeys.VK_DELETE
-    local xk = tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END
-    if apInputsBlocked() then
-        apVkJustPressed(ck)
-        apVkJustPressed(xk)
-        return
-    end
-    if apVkJustPressed(ck) then
-        adminPunishConfirm()
-    elseif apVkJustPressed(xk) then
-        adminPunishCancel()
-    end
+    apState.pendingOfflineSince = nil
+    apPollPendingBindKeys()
 end
 
 local function apBindPreviewCapturing()
@@ -22910,13 +23515,13 @@ end
 
 -- Admin Punish Bind Capture Save
 function adminPunishBindCaptureSave(vk)
-    vk = tonumber(vk) or 0
+    vk = deskCanonicalBindVk(tonumber(vk) or 0)
     if vk <= 0 then return false end
     if cheatBindIsModifier and cheatBindIsModifier(vk) then return false end
     ensureAdminPunishSettings()
     local field = apState.bindField or deskCache.adminPunishBindField or 'confirm'
     local peerKey = field == 'cancel' and settings.admin_punish_confirm_key or settings.admin_punish_cancel_key
-    if vk == tonumber(peerKey) then
+    if deskBindKeysOverlap(vk, peerKey) then
         say('\xCF\xEE\xE4\xF2\xE2\xE5\xF0\xE6\xE4\xE5\xED\xE8\xE5 \xE8 \xEE\xF2\xEC\xE5\xED\xE0 \xED\xE5 \xEC\xEE\xE3\xF3\xF2 \xE1\xFB\xF2\xFC \xEE\xE4\xED\xEE\xE9 \xEA\xEB\xE0\xE2\xE8\xF8\xE5\xE9.')
         return false
     end
@@ -23323,7 +23928,7 @@ function drawAdminPunishTab()
 
     deskFormPanelBegin('##ap_help')
     drawSettingsCardHeader('\xCA\xEE\xEC\xE0\xED\xE4\xFB')
-    drawSettingsHint('/jail ID \xEC\xE8\xED \xEF\xF0\xE8\xF7\xE8\xED\xE0 \xB7 /mute /ban /warn /kick \xB7 /off* \xB7 /un* \xB7 /skick ID \xB7 /tr ID')
+    drawSettingsHint('/jail ID \xEC\xE8\xED \xEF\xF0\xE8\xF7\xE8\xED\xE0 \xB7 /mute /ban /warn /kick \xB7 /off* \xB7 /un* \xB7 /skick ID')
     drawSettingsHint('\xCF\xE5\xF0\xE5\xE4 \xE2\xFB\xE4\xE0\xF7\xE5\xE9 \xF1\xE2\xE5\xF0\xFF\xE5\xF2\xF1\xFF \xED\xE8\xEA \xED\xE0 ID \xB7 \xEF\xF0\xE8 \xF1\xEC\xE5\xED\xE5 \xE8\xE3\xF0\xEE\xEA\xE0 \xEA\xEE\xEC\xE0\xED\xE4\xE0 \xED\xE5 \xF3\xE9\xE4\xB8\xF2')
     drawSettingsHint('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0 \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xED\xE0\xF1\xF2\xF0\xEE\xE5\xEA \xAB\xD1\xEF\xE5\xEA\xF2\xE5\xE9\xF2 /sp\xBB')
     deskFormPanelEnd()
@@ -23353,7 +23958,7 @@ function drawAdminPunishOverlay()
 
     local sw, sh = getScreenResolution()
     sw, sh = tonumber(sw) or 800, tonumber(sh) or 600
-    local elapsed = os.clock() - (p.tick or 0)
+    local elapsed = apMono() - (p.tick or 0)
     local left = math.max(0, PUNISH_TIMEOUT_SEC - elapsed)
     local frac = math.max(0, math.min(1, left / PUNISH_TIMEOUT_SEC))
 
@@ -23935,18 +24540,22 @@ function loadConfig()
     end
     if settings.gg_reply then
         if looksCorruptedConfigText(settings.gg_reply) then markDirtySettings() end
-        settings.gg_reply = repairStoredConfigText(settings.gg_reply, DEFAULT_GG_REPLY)
+        settings.gg_reply = repairStoredConfigText(
+            normalizeStoredText(settings.gg_reply, true), DEFAULT_GG_REPLY)
     end
     if settings.time_reply then
         if looksCorruptedConfigText(settings.time_reply) then markDirtySettings() end
-        settings.time_reply = repairStoredConfigText(settings.time_reply, DEFAULT_TIME_REPLY)
+        settings.time_reply = repairStoredConfigText(
+            normalizeStoredText(settings.time_reply, true), DEFAULT_TIME_REPLY)
     end
     if settings.tech_reply then
         if looksCorruptedConfigText(settings.tech_reply) then markDirtySettings() end
-        settings.tech_reply = repairStoredConfigText(settings.tech_reply, DEFAULT_TECH_REPLY)
+        settings.tech_reply = repairStoredConfigText(
+            normalizeStoredText(settings.tech_reply, true), DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
     if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
+    if type(ensureExactTimeSettings) == 'function' then pcall(ensureExactTimeSettings) end
     settings.poll_chat_log = nil
     settings.poll_events_only = nil
     settings.ingest_pc = nil
@@ -24357,6 +24966,9 @@ function saveConfig()
     f:write(string.format('    admin_punish_cancel_key = %d,\n', tonumber(settings.admin_punish_cancel_key) or vkeys.VK_END))
     f:write(string.format('    admin_punish_send_ans = %s,\n', settings.admin_punish_send_ans == true and 'true' or 'false'))
     f:write(string.format('    admin_punish_sign_cmd = %s,\n', settings.admin_punish_sign_cmd ~= false and 'true' or 'false'))
+    f:write(string.format('    exact_time_enabled = %s,\n', settings.exact_time_enabled ~= false and 'true' or 'false'))
+    f:write(string.format('    exact_time_daily_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)))
+    f:write(string.format('    exact_time_monthly_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112)))
     if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
         f:write('    cmd_binds = {\n')
         for _, row in ipairs(settings.cmd_binds) do
@@ -24397,21 +25009,6 @@ function saveConfig()
     f:write(string.format('      ab_ctrl = %s,\n', ch.ab_ctrl and 'true' or 'false'))
     f:write(string.format('      ab_shift = %s,\n', ch.ab_shift and 'true' or 'false'))
     f:write(string.format('      ab_alt = %s,\n', ch.ab_alt and 'true' or 'false'))
-    f:write(string.format('      marker_key1 = %d,\n', tonumber(ch.marker_key1) or 0))
-    f:write(string.format('      marker_key2 = %d,\n', tonumber(ch.marker_key2) or 0))
-    f:write(string.format('      marker_ctrl = %s,\n', ch.marker_ctrl and 'true' or 'false'))
-    f:write(string.format('      marker_shift = %s,\n', ch.marker_shift and 'true' or 'false'))
-    f:write(string.format('      marker_alt = %s,\n', ch.marker_alt and 'true' or 'false'))
-    f:write(string.format('      tp_key1 = %d,\n', tonumber(ch.tp_key1) or 0))
-    f:write(string.format('      tp_key2 = %d,\n', tonumber(ch.tp_key2) or 0))
-    f:write(string.format('      tp_ctrl = %s,\n', ch.tp_ctrl and 'true' or 'false'))
-    f:write(string.format('      tp_shift = %s,\n', ch.tp_shift and 'true' or 'false'))
-    f:write(string.format('      tp_alt = %s,\n', ch.tp_alt and 'true' or 'false'))
-    f:write(string.format('      veh_key1 = %d,\n', tonumber(ch.veh_key1) or 0))
-    f:write(string.format('      veh_key2 = %d,\n', tonumber(ch.veh_key2) or 0))
-    f:write(string.format('      veh_ctrl = %s,\n', ch.veh_ctrl and 'true' or 'false'))
-    f:write(string.format('      veh_shift = %s,\n', ch.veh_shift and 'true' or 'false'))
-    f:write(string.format('      veh_alt = %s,\n', ch.veh_alt and 'true' or 'false'))
     f:write(string.format('      hud_x = %d,\n', math.floor(tonumber(ch.hud_x) or 12)))
     f:write(string.format('      hud_y = %d,\n', math.floor(tonumber(ch.hud_y) or 80)))
     f:write('    },\n')
@@ -25710,6 +26307,10 @@ function normalizeComposerQuickButton(raw, fromUtf8)
     fromUtf8 = fromUtf8 or raw._utf8
     local label = trim(normalizeStoredText(raw.label or '', fromUtf8))
     local text = trim(normalizeStoredText(raw.text or '', fromUtf8))
+    if type(ensureWireCp1251) == 'function' then
+        label = ensureWireCp1251(label)
+        text = ensureWireCp1251(text)
+    end
     if label == '' or text == '' then return nil end
     local id = trim(tostring(raw.id or ''))
     if id == '' then id = 'qb_' .. tostring(os.clock()):gsub('%.', '') end
@@ -25721,6 +26322,10 @@ function ensureComposerQuickButtons()
     if type(settings.composer_quick_buttons) ~= 'table' or #settings.composer_quick_buttons == 0 then
         local gg = trim(settings.gg_reply or '')
         local tech = trim(settings.tech_reply or '')
+        if type(ensureWireCp1251) == 'function' then
+            gg = ensureWireCp1251(gg)
+            tech = ensureWireCp1251(tech)
+        end
         settings.composer_quick_buttons = {
             { id = 'gg', label = 'GG', text = gg ~= '' and gg or DEFAULT_GG_REPLY },
             { id = 'tech', label = '\xD2\xE5\xF5\xED\xE8\xF7\xEA\xE0', text = tech ~= '' and tech or DEFAULT_TECH_REPLY },
@@ -25754,6 +26359,7 @@ end
 function getTimeReplyText()
     local text = trim(settings.time_reply or '')
     if text == '' then text = DEFAULT_TIME_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -25772,10 +26378,15 @@ end
 function getGgReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
-        if b.id == 'gg' then return b.text end
+        if b.id == 'gg' then
+            local text = b.text
+            if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
+            return text
+        end
     end
     local text = trim(settings.gg_reply or '')
     if text == '' then text = DEFAULT_GG_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -25783,10 +26394,15 @@ end
 function getTechReplyText()
     ensureComposerQuickButtons()
     for _, b in ipairs(settings.composer_quick_buttons) do
-        if b.id == 'tech' then return b.text end
+        if b.id == 'tech' then
+            local text = b.text
+            if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
+            return text
+        end
     end
     local text = trim(settings.tech_reply or '')
     if text == '' then text = DEFAULT_TECH_REPLY end
+    if type(ensureWireCp1251) == 'function' then text = ensureWireCp1251(text) end
     return text
 end
 
@@ -26013,6 +26629,1806 @@ do
 
     local chunkFn, chunkErr = loadstring([=[
 
+--[[ /c 60 — кастомное окно «Точное время» (интеграция ARP Exact Time). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local ET_WIN_W = 408
+local ET_LINE = imgui.ImVec4(1.0, 1.0, 1.0, 0.10)
+local ET_ROW_GAP = 5
+local ET_LABEL_W = 228
+local ET_WEEKLY_COLOR = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
+local ET_MONTHLY_COLOR = imgui.ImVec4(0.52, 0.62, 0.92, 1.0)
+local ET_HELP_WEEK_MAX_BACK = 52
+local ET_ONLINE_RETAIN_DAYS = 400
+local EXACT_TIME_TIMEOUT = 10.0
+local SAMP_DIALOG_ACTIVE_OFF = 40
+
+local ET_ONLINE_PATH = getWorkingDirectory() .. '\\config\\arp_exact_time_online.ini'
+local ET_ANS_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_ans.ini'
+local ET_PUNISH_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_punish.jsonl'
+local ET_PUNISH_MAX_STORE = 2000
+local ET_PUNISH_UI_MAX = 100
+local ET_LEGACY_ONLINE = getWorkingDirectory() .. '\\config\\arp_helper_online.ini'
+local ET_LEGACY_CONFIG = getWorkingDirectory() .. '\\config\\arp_exact_time.ini'
+
+local ET_WD_SHORT = {
+    ['Mon'] = '\xCF\xED', ['Tue'] = '\xC2\xF2', ['Wed'] = '\xD1\xF0',
+    ['Thu'] = '\xD7\xF2', ['Fri'] = '\xCF\xF2', ['Sat'] = '\xD1\xE1', ['Sun'] = '\xC2\xF1',
+}
+local ET_COL_OK = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
+local ET_COL_FAIL = imgui.ImVec4(0.92, 0.42, 0.42, 1.0)
+
+local L_ET_ONLINE_TODAY = '\xCE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
+local L_ET_AFK_TODAY = 'AFK \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
+local L_ET_PER_HOUR = '\xC2\xF0\xE5\xEC\xFF \xE2 \xE8\xE3\xF0\xE5 \xE7\xE0 \xF7\xE0\xF1'
+local L_ET_ONLINE_YDAY = '\xCE\xED\xEB\xE0\xE9\xED \xE2\xF7\xE5\xF0\xE0'
+local L_ET_AFK_YDAY = 'AFK \xE7\xE0 \xE2\xF7\xE5\xF0\xE0'
+local L_ET_CLEAN = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
+local L_ET_CLEAN_WEEK = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE'
+local L_ET_CLEAN_MONTH = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xEC\xE5\xF1\xFF\xF6'
+local L_TITLE = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF'
+local L_CLOSE = '\xC7\xE0\xEA\xF0\xFB\xF2\xFC'
+
+local ET_COL = {
+    accent   = imgui.ImVec4(0.62, 0.48, 0.92, 1.0),
+    muted    = imgui.ImVec4(0.55, 0.55, 0.60, 1.0),
+    label    = imgui.ImVec4(0.92, 0.92, 0.95, 1.0),
+    value    = imgui.ImVec4(0.90, 0.90, 0.93, 1.0),
+    time     = imgui.ImVec4(0.93, 0.93, 0.96, 1.0),
+}
+local LAW_BTN   = imgui.ImVec4(0.16, 0.16, 0.19, 1.0)
+local LAW_BTN_H = imgui.ImVec4(0.20, 0.20, 0.24, 1.0)
+local LAW_BTN_A = imgui.ImVec4(0.24, 0.24, 0.28, 1.0)
+
+local etState = {
+    pendingCmdAt = nil,
+    showOpen = false,
+    data = {},
+    online = { weekKey = nil, monthKey = nil, days = {} },
+    ans = { days = {}, backfilled = false },
+    punish = { entries = {}, filter = 'all', weekCache = nil },
+    helpWeekOffset = 0,
+}
+exactTimeUiSynced = false
+
+local uiExactTimeEnabled = imgui and imgui.new and imgui.new.bool(true) or nil
+local uiExactTimeDailyH = imgui and imgui.new and imgui.new.int(4) or nil
+local uiExactTimeMonthlyH = imgui and imgui.new and imgui.new.int(112) or nil
+local etShowWindowBuf = imgui and imgui.new and imgui.new.bool(false) or nil
+
+local function etToU32(col)
+    return imgui.ColorConvertFloat4ToU32(col)
+end
+
+local function etNeedle(s)
+    if not s or s == '' then return '' end
+    if type(utf8ToCp1251) == 'function' and isUtf8Text and isUtf8Text(s) then
+        return utf8ToCp1251(s) or s
+    end
+    return s
+end
+
+local function etPushWindowStyle()
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.10, 0.10, 0.12, 0.98))
+    imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
+    imgui.PushStyleColor(imgui.Col.TitleBgActive, imgui.ImVec4(0.11, 0.10, 0.14, 1.0))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.22, 0.26, 0.40))
+    imgui.PushStyleColor(imgui.Col.Button, LAW_BTN)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, LAW_BTN_H)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, LAW_BTN_A)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 5)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+end
+
+local function etPopWindowStyle()
+    imgui.PopStyleVar(4)
+    imgui.PopStyleColor(7)
+end
+
+function ensureExactTimeSettings()
+    if type(settings) ~= 'table' then return end
+    if settings.exact_time_enabled == nil then settings.exact_time_enabled = true end
+    if settings.exact_time_daily_norm_h == nil then
+        local wh = tonumber(settings.exact_time_weekly_norm_h)
+        if wh and wh >= 7 then
+            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(wh / 7)))
+        else
+            settings.exact_time_daily_norm_h = 4
+        end
+    end
+    local dh = tonumber(settings.exact_time_daily_norm_h)
+    if not dh or dh < 1 or dh > 24 then settings.exact_time_daily_norm_h = 4 end
+    local mh = tonumber(settings.exact_time_monthly_norm_h)
+    if not mh or mh < 1 or mh > 744 then settings.exact_time_monthly_norm_h = 112 end
+end
+
+local function etEnabled()
+    return type(settings) == 'table' and settings.exact_time_enabled ~= false
+end
+
+local function etDailyNormMin()
+    ensureExactTimeSettings()
+    return math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) * 60
+end
+
+local function etMonthlyNormMin()
+    ensureExactTimeSettings()
+    return math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) * 60
+end
+
+local function etSetNativeDialogVisible(visible)
+    if not sampGetDialogInfoPtr or not memory or not memory.setint32 then return end
+    local ptr = sampGetDialogInfoPtr()
+    if not ptr or ptr == 0 then return end
+    pcall(function()
+        memory.setint32(ptr + SAMP_DIALOG_ACTIVE_OFF, visible and 1 or 0, true)
+    end)
+end
+
+local function etResolveCloseButton(button1, button2)
+    local function isClose(label)
+        label = trim(stripTags(label or ''))
+        return label ~= '' and (label:find(L_CLOSE, 1, true) or label:lower():find('close', 1, true))
+    end
+    if isClose(button1) then return 1 end
+    if isClose(button2) then return 0 end
+    if trim(stripTags(button2 or '')) == '' then return 1 end
+    return 0
+end
+
+-- Скрытый диалог: только RPC-ответ серверу + сброс active (без UI-close и без chat enable).
+local function etSendDialogResponseOnce(dialogId, button1, button2)
+    etSetNativeDialogVisible(false)
+    if not dialogId or not sampSendDialogResponse then return end
+    local btn = etResolveCloseButton(button1, button2)
+    pcall(function() sampSendDialogResponse(dialogId, btn, 0, '') end)
+    etSetNativeDialogVisible(false)
+end
+
+local function etSendDialogClose(dialogId, button1, button2)
+    etSendDialogResponseOnce(dialogId, button1, button2)
+    if not dialogId or not lua_thread or not lua_thread.create then return end
+    local id, b1, b2 = dialogId, button1, button2
+    lua_thread.create(function()
+        wait(150)
+        if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then
+            etSendDialogResponseOnce(id, b1, b2)
+        end
+    end)
+end
+
+local function etClearData()
+    etState.data = {}
+end
+
+local etCloseWindow
+
+etCloseWindow = function()
+    if not etState.showOpen then return end
+    local d = etState.data
+    local id, b1, b2 = d.dialogId, d.button1, d.button2
+    etState.showOpen = false
+    if etShowWindowBuf then etShowWindowBuf[0] = false end
+    etClearData()
+    if id then
+        etSendDialogClose(id, b1, b2)
+    else
+        etSetNativeDialogVisible(false)
+    end
+    if type(updateMimguiGameInputPassthrough) == 'function' then
+        pcall(updateMimguiGameInputPassthrough)
+    end
+end
+
+local function etParseDialogLines(text)
+    text = stripTags(text or '')
+    local rows, seen = {}, {}
+    for raw in (text .. '\n'):gmatch('([^\r\n]+)') do
+        local line = trim(raw)
+        if line ~= '' then
+            local label, value = line:match('^(.-)[:\t]+(.+)$')
+            if label and value then
+                label, value = trim(label), trim(value)
+                if label ~= '' and value ~= '' then
+                    local key = label:lower()
+                    if not seen[key] then
+                        seen[key] = true
+                        rows[#rows + 1] = { label = label, value = value }
+                    end
+                end
+            end
+        end
+    end
+    return rows
+end
+
+local function etParseRussianPlayTimeToMinutes(s)
+    if not s or s == '' then return nil end
+    s = trim(stripTags(s))
+    local h, m = s:match('(%d+)%s*[\xF7ч]%s*(%d+)%s*[\xEC\xE8\xEDmin]+')
+    if h then return tonumber(h) * 60 + tonumber(m) end
+    h = tonumber(s:match('(%d+)%s*[\xF7ч]')) or 0
+    m = tonumber(s:match('(%d+)%s*[\xEC\xE8\xEDmin]+')) or 0
+    if h == 0 and m == 0 then return nil end
+    return h * 60 + m
+end
+
+local function etFormatMinutesAsRussianDuration(totalMin)
+    totalMin = math.max(0, math.floor(tonumber(totalMin) or 0))
+    local h = math.floor(totalMin / 60)
+    local m = totalMin % 60
+    if h > 0 and m > 0 then return string.format('%d \xF7 %d \xEC\xE8\xED', h, m) end
+    if h > 0 then return string.format('%d \xF7', h) end
+    return string.format('%d \xEC\xE8\xED', m)
+end
+
+local ET_HELP_DAY_HDR = '\xC4\xE5\xED\xFC'
+local ET_HELP_DATE_HDR = '\xC4\xE0\xF2\xE0'
+local ET_HELP_ANS_HDR = '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2'
+local ET_HELP_ONLINE_HDR = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
+
+local function etHelpColTextW(text, pad)
+    pad = pad or 8
+    return imgui.CalcTextSize(uiText(text or '')).x + pad
+end
+
+local ET_HELP_COL_GAP = 16
+
+local function etHelpTableWidths(availW)
+    availW = math.max(260, tonumber(availW) or 260)
+    local wDay = etHelpColTextW(ET_HELP_DAY_HDR, 10)
+    for _, wd in pairs(ET_WD_SHORT) do
+        wDay = math.max(wDay, etHelpColTextW(wd, 6))
+    end
+    local wDate = math.max(etHelpColTextW(ET_HELP_DATE_HDR, 10), etHelpColTextW('31.12', 8))
+    local wGap = ET_HELP_COL_GAP
+    local wAns = etHelpColTextW(ET_HELP_ANS_HDR, 10)
+    local wOnline = availW - wDay - wDate - wGap - wAns - 12
+    if wOnline < 80 then
+        wOnline = 80
+        wAns = math.max(etHelpColTextW('0', 10), availW - wDay - wDate - wGap - wOnline - 12)
+    end
+    return wDay, wDate, wGap, wOnline, wAns
+end
+
+local function etFindRowValue(rows, ...)
+    local needles = { ... }
+    for _, row in ipairs(rows) do
+        for _, n in ipairs(needles) do
+            local enc = etNeedle(n)
+            if row.label:find(enc, 1, true) or row.label:find(n, 1, true) then
+                return row.value
+            end
+        end
+    end
+    return nil
+end
+
+local function etExtractTextAfterLabel(text, labelUtf8)
+    text = stripTags(text or '')
+    local label = etNeedle(labelUtf8)
+    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
+    if not chunk then return nil end
+    chunk = trim(chunk)
+    if chunk == '' then return nil end
+    for segment in chunk:gmatch('[^\t]+') do
+        segment = trim(segment)
+        if segment ~= '' then return segment end
+    end
+    return chunk
+end
+
+local function etExtractDurationAfterLabel(text, labelUtf8)
+    text = stripTags(text or '')
+    local label = etNeedle(labelUtf8)
+    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
+    if chunk then
+        for segment in chunk:gmatch('[^\t]+') do
+            local mins = etParseRussianPlayTimeToMinutes(segment)
+            if mins ~= nil then return mins end
+        end
+    end
+    chunk = text:match(label .. '[%s:\r\n]+([^\r\n]+)')
+    if chunk then return etParseRussianPlayTimeToMinutes(chunk) end
+    local idx = text:find(label, 1, true)
+    if idx then
+        local slice = text:sub(idx, idx + 160)
+        local dur = slice:match('(%d+%s*[\xF7ч]%s*%d+%s*[\xEC\xE8\xEDmin]+)')
+            or slice:match('(%d+%s*[\xEC\xE8\xEDmin]+)')
+            or slice:match('(%d+%s*[\xF7ч])')
+        if dur then return etParseRussianPlayTimeToMinutes(dur) end
+    end
+    return nil
+end
+
+local function etMinutesFromDialogRows(rows, ...)
+    local val = etFindRowValue(rows, ...)
+    if val then return etParseRussianPlayTimeToMinutes(val) end
+    return nil
+end
+
+local function etParseServerClock(text, rows)
+    local plain = stripTags(text or '')
+    local serverTime = etFindRowValue(rows, 'Текущее время', 'Точное время', 'Серверное время', 'Время на сервере')
+        or etExtractTextAfterLabel(text, 'Текущее время')
+        or etExtractTextAfterLabel(text, 'Точное время')
+        or plain:match('(%d%d:%d%d:%d%d)') or plain:match('(%d%d:%d%d)')
+    local serverDate = etFindRowValue(rows, 'Дата', 'Текущая дата', 'Сегодняшняя дата')
+        or etExtractTextAfterLabel(text, 'Дата')
+        or plain:match('(%d%d%.%d%d%.%d%d%d%d)')
+        or os.date('%d.%m.%Y')
+    local weekday = etFindRowValue(rows, 'День недели', 'День')
+        or etExtractTextAfterLabel(text, 'День недели')
+    return serverTime, serverDate, weekday
+end
+
+local function etParseClockHms(timeStr)
+    local plain = trim(stripTags(timeStr or ''))
+    if plain == '' then return nil end
+    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
+    if h then return tonumber(h), tonumber(m), tonumber(s) end
+    h, m = plain:match('(%d%d):(%d%d)')
+    if h then return tonumber(h), tonumber(m), 0 end
+    return nil
+end
+
+local function etLiveClockValue(timeStr)
+    local d = etState.data
+    local base = d.clockBase
+    if base then
+        local elapsed = math.floor(os.clock() - base.at)
+        if d._clockTick == elapsed and d._clockStr then
+            return d._clockStr
+        end
+        local total = (base.h * 3600 + base.m * 60 + base.s + elapsed) % 86400
+        d._clockStr = string.format('%02d:%02d:%02d',
+            math.floor(total / 3600), math.floor((total % 3600) / 60), total % 60)
+        d._clockTick = elapsed
+        return d._clockStr
+    end
+    d._clockTick = nil
+    d._clockStr = nil
+    local plain = trim(stripTags(timeStr or ''))
+    if plain == '' then return os.date('%H:%M:%S') end
+    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
+    if h then return string.format('%s:%s:%s', h, m, s) end
+    h, m = plain:match('(%d%d):(%d%d)')
+    if h then return string.format('%s:%s:%02d', h, m, tonumber(os.date('%S'))) end
+    return os.date('%H:%M:%S')
+end
+
+local function etFormatDateLine(parts)
+    if not parts or #parts == 0 then return nil end
+    if #parts == 1 then return parts[1] end
+    local weekday, dateStr = parts[1], parts[2]
+    if weekday:find('%d%d%d%d', 1, true) or weekday:find(' - ', 1, true) then
+        return weekday
+    end
+    return weekday .. '  \xB7  ' .. dateStr
+end
+
+local function etBuildDisplayList(text, dialogRows, cleanStr, playStr, afkStr)
+    local serverTime, serverDate, weekday = etParseServerClock(text, dialogRows)
+    local display = {}
+    local function add(labelCp1251, value, kind)
+        if value and value ~= '' then
+            display[#display + 1] = { label = labelCp1251, value = value, kind = kind }
+        end
+    end
+    add('Текущее время', etFindRowValue(dialogRows, 'Текущее время') or serverTime, 'time')
+    add('День недели', etFindRowValue(dialogRows, 'День недели') or weekday, 'date')
+    add('Сегодняшняя дата', etFindRowValue(dialogRows, 'Сегодняшняя дата', 'Дата', 'Текущая дата') or serverDate, 'date')
+    add(L_ET_ONLINE_TODAY, playStr, 'today')
+    add(L_ET_AFK_TODAY, afkStr, 'today')
+    add(L_ET_PER_HOUR, etFindRowValue(dialogRows, 'Время в игре за час') or etExtractTextAfterLabel(text, 'Время в игре за час'), 'today')
+    add(L_ET_CLEAN, cleanStr, 'accent')
+    local playYdayRaw = etFindRowValue(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
+        or etExtractTextAfterLabel(text, 'Время в игре вчера')
+        or etExtractTextAfterLabel(text, 'Онлайн вчера')
+    local afkYdayRaw = etFindRowValue(dialogRows, 'AFK за вчера', 'AFK вчера')
+        or etExtractTextAfterLabel(text, 'AFK за вчера')
+        or etExtractTextAfterLabel(text, 'AFK вчера')
+    add(L_ET_ONLINE_YDAY, playYdayRaw, 'yesterday')
+    add(L_ET_AFK_YDAY, afkYdayRaw, 'yesterday')
+    return display
+end
+
+local function etIsExactTimeDialog(title, text)
+    local tit = stripTags(title or '')
+    local txt = stripTags(text or '')
+    if tit:find(etNeedle('Точное время'), 1, true) then return true end
+    if tit:find(etNeedle('точного времени'), 1, true) then return true end
+    if tit:find(etNeedle('Служба точного'), 1, true) then return true end
+    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) <= EXACT_TIME_TIMEOUT then
+        if txt:find(etNeedle('Время в игре сегодня'), 1, true)
+            and (txt:find(etNeedle('AFK за сегодня'), 1, true) or txt:find('AFK', 1, true)) then
+            return true
+        end
+    end
+    return false
+end
+
+local function etParseServerDateKey(serverDate)
+    local d, m, y = tostring(serverDate or ''):match('(%d%d)%.(%d%d)%.(%d%d%d%d)')
+    if d then return string.format('%s-%s-%s', y, m, d) end
+    return os.date('%Y-%m-%d')
+end
+
+local function etCurrentWeekMondayKey(ts)
+    ts = ts or os.time()
+    local w = tonumber(os.date('%w', ts)) or 0
+    local daysSinceMonday = (w == 0) and 6 or (w - 1)
+    return os.date('%Y-%m-%d', ts - daysSinceMonday * 86400)
+end
+
+local function etMondayTsFromKey(weekKey)
+    local y, m, d = tostring(weekKey or ''):match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+    if not y then return nil end
+    return os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = 12, min = 0, sec = 0,
+    })
+end
+
+local function etHelpViewWeekMondayKey()
+    local offset = math.max(0, math.min(ET_HELP_WEEK_MAX_BACK,
+        math.floor(tonumber(etState.helpWeekOffset) or 0)))
+    etState.helpWeekOffset = offset
+    if offset == 0 then return etCurrentWeekMondayKey() end
+    local curTs = etMondayTsFromKey(etCurrentWeekMondayKey())
+    if not curTs then return etCurrentWeekMondayKey() end
+    return os.date('%Y-%m-%d', curTs - offset * 7 * 86400)
+end
+
+local function etWeekRangeLabel(weekMondayKey)
+    local baseTs = etMondayTsFromKey(weekMondayKey)
+    if not baseTs then return '' end
+    return string.format('%s \xB7 %s', os.date('%d.%m', baseTs), os.date('%d.%m', baseTs + 6 * 86400))
+end
+
+local function etPruneOldOnlineDays()
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
+    local store = etState.online
+    local changed = false
+    for dateKey in pairs(store.days) do
+        if dateKey < cutoffKey then
+            store.days[dateKey] = nil
+            changed = true
+        end
+    end
+    if changed then pcall(etSaveOnlineStore) end
+end
+
+local function etCurrentMonthKey(ts)
+    ts = ts or os.time()
+    return os.date('%Y-%m', ts)
+end
+
+local function etEnsureOnlinePeriods()
+    local weekKey = etCurrentWeekMondayKey()
+    local monthKey = etCurrentMonthKey()
+    local store = etState.online
+    if store.weekKey ~= weekKey then
+        store.weekKey = weekKey
+    end
+    if store.monthKey ~= monthKey then
+        store.monthKey = monthKey
+    end
+    etPruneOldOnlineDays()
+    return weekKey, monthKey
+end
+
+local function etOpenIni(primary, legacy)
+    local f = io.open(primary, 'r')
+    if f then return f end
+    if legacy then return io.open(legacy, 'r') end
+end
+
+function etLoadOnlineStore()
+    etState.online.weekKey = nil
+    etState.online.monthKey = nil
+    etState.online.days = {}
+    local f = etOpenIni(ET_ONLINE_PATH, ET_LEGACY_ONLINE)
+    if f then
+        for line in f:lines() do
+            local week = line:match('^%s*week%s*=%s*(%S+)%s*$')
+            if week then
+                etState.online.weekKey = week
+            else
+                local month = line:match('^%s*month%s*=%s*(%S+)%s*$')
+                if month then
+                    etState.online.monthKey = month
+                else
+                    local dateKey, mins = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
+                    if dateKey and mins then
+                        etState.online.days[dateKey] = tonumber(mins)
+                    end
+                end
+            end
+        end
+        f:close()
+    end
+    etEnsureOnlinePeriods()
+end
+
+function etSaveOnlineStore()
+    local f = io.open(ET_ONLINE_PATH, 'w')
+    if not f then return end
+    local store = etState.online
+    if store.weekKey then f:write('week=' .. store.weekKey .. '\n') end
+    if store.monthKey then f:write('month=' .. store.monthKey .. '\n') end
+    for dateKey, mins in pairs(store.days) do
+        f:write(string.format('%s=%d\n', dateKey, mins))
+    end
+    f:close()
+end
+
+local function etLoadAnsStore()
+    etState.ans.days = {}
+    local f = io.open(ET_ANS_PATH, 'r')
+    if not f then return end
+    for line in f:lines() do
+        local dateKey, cnt = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
+        if dateKey and cnt then
+            etState.ans.days[dateKey] = tonumber(cnt)
+        end
+    end
+    f:close()
+end
+
+local function etSaveAnsStore()
+    local f = io.open(ET_ANS_PATH, 'w')
+    if not f then return end
+    for dateKey, cnt in pairs(etState.ans.days) do
+        f:write(string.format('%s=%d\n', dateKey, tonumber(cnt) or 0))
+    end
+    f:close()
+end
+
+local function etBackfillAnsFromThreads()
+    if etState.ans.backfilled then return end
+    etState.ans.backfilled = true
+    for _ in pairs(etState.ans.days) do return end
+    if type(threads) ~= 'table' then return end
+    local changed = false
+    for _, t in pairs(threads) do
+        if type(t.messages) == 'table' then
+            for _, m in ipairs(t.messages) do
+                if m and m.dir == 'out' and m.self ~= false and m.ts then
+                    local body = trim(m.text or m.rawText or '')
+                    if body:match('^/ans%s') or body:match('^ans%s') then
+                        local dateKey = os.date('%Y-%m-%d', m.ts)
+                        etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
+                        changed = true
+                    end
+                end
+            end
+        end
+    end
+    if changed then pcall(etSaveAnsStore) end
+end
+
+function helpStatsRecordAns(ts)
+    ts = tonumber(ts) or os.time()
+    local dateKey = os.date('%Y-%m-%d', ts)
+    etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
+    pcall(etSaveAnsStore)
+end
+
+function exactTimeNoteOutgoingAns(msg)
+    if type(msg) ~= 'string' then return end
+    local s = trim(msg)
+    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
+    local id, body = s:match('^ans%s+(%d+)%s+(.+)$')
+    if not id or not body or trim(body) == '' then return end
+    helpStatsRecordAns()
+end
+
+local ET_PUNISH_HEAD_TO_KIND = {
+    jail = 'jail', unjail = 'jail', offjail = 'jail',
+    mute = 'mute', unmute = 'mute', offmute = 'mute',
+    kick = 'kick', skick = 'kick',
+    ban = 'ban', unban = 'ban', offban = 'ban',
+    warn = 'warn', unwarn = 'warn', offwarn = 'warn',
+}
+
+local ET_PUNISH_FILTERS = {
+    { id = 'all',  label = '\xC2\xF1\xE5' },
+    { id = 'jail', label = 'Jail' },
+    { id = 'mute', label = 'Mute' },
+    { id = 'kick', label = 'Kick' },
+    { id = 'ban',  label = 'Ban' },
+    { id = 'warn', label = 'Warn' },
+}
+
+local function etPunishCmdHead(cmd)
+    cmd = trim(tostring(cmd or ''))
+    if cmd == '' then return '' end
+    local inner = cmd:match('^/?a%s+(/.*)$')
+    if inner then cmd = trim(inner) end
+    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
+    local head = cmd:match('^/(%S+)')
+    return head and head:lower() or ''
+end
+
+local function etPunishKindFromCmd(cmd)
+    return ET_PUNISH_HEAD_TO_KIND[etPunishCmdHead(cmd)] or 'other'
+end
+
+local function etPunishIsTrackedEntry(e)
+    if type(e) ~= 'table' then return false end
+    local kind = trim(tostring(e.kind or ''))
+    if kind == 'tr' then return false end
+    local head = etPunishCmdHead(e.cmd)
+    if head == 'tr' then return false end
+    return true
+end
+
+local function etInvalidatePunishWeekCache()
+    etState.punish.weekCache = nil
+end
+
+local function etPunishNormalizeEntry(raw)
+    if type(raw) ~= 'table' then return nil end
+    local ts = tonumber(raw.ts)
+    if not ts or ts <= 0 then return nil end
+    ts = math.floor(ts)
+    local cmd = trim(tostring(raw.cmd or ''))
+    local kind = trim(tostring(raw.kind or ''))
+    if kind == '' then kind = etPunishKindFromCmd(cmd) end
+    return {
+        ts = ts,
+        dateKey = os.date('%Y-%m-%d', ts),
+        kind = kind,
+        action = trim(tostring(raw.action or '-')),
+        player = trim(tostring(raw.player or '?')),
+        pid = tonumber(raw.pid) or -1,
+        term = trim(tostring(raw.term or '-')),
+        reason = trim(tostring(raw.reason or '-')),
+        cmd = cmd,
+        reqAdmin = trim(tostring(raw.reqAdmin or '')),
+        reqAdminId = tonumber(raw.reqAdminId),
+        src = trim(tostring(raw.src or 'manual')),
+    }
+end
+
+local function etPunishEntrySort(a, b)
+    if a.ts ~= b.ts then return a.ts < b.ts end
+    return (a.cmd or '') < (b.cmd or '')
+end
+
+local function etRewritePunishStore()
+    if not encodeJson then return end
+    local f = io.open(ET_PUNISH_PATH, 'w')
+    if not f then return end
+    for _, e in ipairs(etState.punish.entries) do
+        local ok, line = pcall(encodeJson, e)
+        if ok and line then f:write(line .. '\n') end
+    end
+    f:close()
+end
+
+local function etAppendPunishStoreLine(e)
+    if not encodeJson then
+        pcall(etRewritePunishStore)
+        return
+    end
+    local ok, line = pcall(encodeJson, e)
+    if not ok or not line then return end
+    local f = io.open(ET_PUNISH_PATH, 'a')
+    if f then
+        f:write(line .. '\n')
+        f:close()
+    end
+end
+
+local function etLoadPunishStore()
+    etState.punish.entries = {}
+    local f = io.open(ET_PUNISH_PATH, 'r')
+    if not f then return end
+    for line in f:lines() do
+        line = trim(line)
+        if line ~= '' and decodeJson then
+            local ok, row = pcall(decodeJson, line)
+            if ok then
+                local e = etPunishNormalizeEntry(row)
+                if e then etState.punish.entries[#etState.punish.entries + 1] = e end
+            end
+        end
+    end
+    f:close()
+    table.sort(etState.punish.entries, etPunishEntrySort)
+    if #etState.punish.entries > ET_PUNISH_MAX_STORE then
+        local trimmed = {}
+        local start = #etState.punish.entries - ET_PUNISH_MAX_STORE + 1
+        for i = start, #etState.punish.entries do
+            trimmed[#trimmed + 1] = etState.punish.entries[i]
+        end
+        etState.punish.entries = trimmed
+        pcall(etRewritePunishStore)
+    end
+end
+
+function helpStatsRecordPunish(raw)
+    local e = etPunishNormalizeEntry(raw)
+    if not e or not etPunishIsTrackedEntry(e) then return end
+    if not e.ts or e.ts <= 0 then
+        e.ts = os.time()
+        e.dateKey = os.date('%Y-%m-%d', e.ts)
+    end
+    etState.punish.entries[#etState.punish.entries + 1] = e
+    etInvalidatePunishWeekCache()
+    if #etState.punish.entries > ET_PUNISH_MAX_STORE then
+        table.remove(etState.punish.entries, 1)
+        pcall(etRewritePunishStore)
+    else
+        pcall(etAppendPunishStoreLine, e)
+    end
+end
+
+local ET_PUNISH_KIND_LABEL = {
+    jail = 'Jail', mute = 'Mute', kick = 'Kick', ban = 'Ban', warn = 'Warn',
+}
+
+local ET_PUNISH_HEAD_LABEL = {
+    unjail = 'Unjail', unmute = 'Unmute', unwarn = 'Unwarn', unban = 'Unban',
+    offjail = 'OffJail', offmute = 'OffMute', offban = 'OffBan', offwarn = 'OffWarn',
+    skick = 'SKick',
+}
+
+local function etFormatPunishDateLine(ts)
+    ts = tonumber(ts) or 0
+    if ts <= 0 then return '?' end
+    local wd = os.date('%a', ts)
+    local day = ET_WD_SHORT[wd] or wd
+    return string.format('%s \xB7 %s', day, os.date('%d.%m', ts))
+end
+
+local function etFormatPunishClockLine(ts)
+    ts = tonumber(ts) or 0
+    if ts <= 0 then return '?' end
+    return os.date('%H:%M:%S', ts)
+end
+
+local function etFormatPunishKindLabel(e)
+    if type(e) ~= 'table' then return '?' end
+    local head = etPunishCmdHead(e.cmd or '')
+    if head ~= '' and ET_PUNISH_HEAD_LABEL[head] then
+        return ET_PUNISH_HEAD_LABEL[head]
+    end
+    local kind = e.kind or etPunishKindFromCmd(e.cmd)
+    if kind and ET_PUNISH_KIND_LABEL[kind] then
+        return ET_PUNISH_KIND_LABEL[kind]
+    end
+    if kind and kind ~= '' then
+        return kind:sub(1, 1):upper() .. kind:sub(2)
+    end
+    return '?'
+end
+
+local function etFormatPunishPlayer(e)
+    local nick = trim(e.player or '?')
+    local pid = tonumber(e.pid)
+    if pid and pid >= 0 then
+        return string.format('%s[%d]', nick, pid)
+    end
+    return nick
+end
+
+local ET_PUNISH_TERM_EMPTY = '-'
+
+local ET_PUNISH_NO_TERM_KIND = {
+    kick = true, skick = true, warn = true, unwarn = true,
+    unjail = true, unmute = true, unban = true, tr = true,
+}
+
+local ET_PUNISH_NO_TERM_HEAD = {
+    kick = true, skick = true, warn = true, unwarn = true,
+    unjail = true, unmute = true, unban = true, tr = true,
+}
+
+local function etPunishHasTerm(e)
+    if type(e) ~= 'table' then return false end
+    local kind = e.kind or etPunishKindFromCmd(e.cmd or '')
+    if ET_PUNISH_NO_TERM_KIND[kind] then return false end
+    return not ET_PUNISH_NO_TERM_HEAD[etPunishCmdHead(e.cmd or '')]
+end
+
+local function etFormatPunishTerm(e)
+    if type(e) == 'table' and not etPunishHasTerm(e) then
+        return ET_PUNISH_TERM_EMPTY
+    end
+    local term = type(e) == 'table' and e.term or e
+    term = trim(tostring(term or ''))
+    if term == '' or term == '-' then return ET_PUNISH_TERM_EMPTY end
+    local n = tonumber(term)
+    if n then
+        n = math.floor(n)
+        if n <= 0 then return ET_PUNISH_TERM_EMPTY end
+        if n >= 60 and n % 60 == 0 then
+            return string.format('%d \xF7', math.floor(n / 60))
+        end
+        return string.format('%d \xEC\xE8\xED', n)
+    end
+    return term
+end
+
+local function etFormatPunishAction(e)
+    return etFormatPunishKindLabel(e)
+end
+
+local function etPunishKindIsRemoval(e)
+    local head = etPunishCmdHead(e.cmd or '')
+    return head == 'unjail' or head == 'unmute' or head == 'unwarn' or head == 'unban'
+end
+
+local function etPunishKindColor(e)
+    if etPunishKindIsRemoval(e) then
+        return ET_COL_OK
+    end
+    return col_punish_label or ET_COL_FAIL
+end
+
+local function etPunishEntriesForViewWeek()
+    local weekKey = etHelpViewWeekMondayKey()
+    local baseTs = etMondayTsFromKey(weekKey)
+    if not baseTs then return {}, weekKey end
+    local weekEnd = os.date('%Y-%m-%d', baseTs + 6 * 86400)
+    local cache = etState.punish.weekCache
+    if cache and cache.weekKey == weekKey then
+        return cache.rows, weekKey, cache.counts
+    end
+
+    local rows = {}
+    local counts = { all = 0, jail = 0, mute = 0, kick = 0, ban = 0, warn = 0, other = 0 }
+    local entries = etState.punish.entries
+    for i = #entries, 1, -1 do
+        local e = entries[i]
+        if not etPunishIsTrackedEntry(e) then goto continue_entry end
+        local dk = e.dateKey or os.date('%Y-%m-%d', e.ts or 0)
+        if dk < weekKey then break end
+        if dk <= weekEnd then
+            rows[#rows + 1] = e
+            counts.all = counts.all + 1
+            local kind = e.kind or etPunishKindFromCmd(e.cmd)
+            if counts[kind] ~= nil then
+                counts[kind] = counts[kind] + 1
+            else
+                counts.other = counts.other + 1
+            end
+        end
+        ::continue_entry::
+    end
+
+    etState.punish.weekCache = { weekKey = weekKey, rows = rows, counts = counts }
+    return rows, weekKey, counts
+end
+
+local function etPunishFilterRows(rows, filterId)
+    filterId = filterId or 'all'
+    if filterId == 'all' or filterId == '' then return rows end
+    local out = {}
+    for _, e in ipairs(rows) do
+        local kind = e.kind or etPunishKindFromCmd(e.cmd)
+        if kind == filterId then out[#out + 1] = e end
+    end
+    return out
+end
+
+local ET_PUNISH_DATE_HDR = '\xC4\xE0\xF2\xE0'
+local ET_PUNISH_CLOCK_HDR = '\xC2\xF0\xE5\xEC\xFF'
+local ET_PUNISH_PLAYER_HDR = '\xC8\xE3\xF0\xEE\xEA'
+local ET_PUNISH_ACTION_HDR = '\xD2\xE8\xEF'
+local ET_PUNISH_TERM_HDR = '\xD1\xF0\xEE\xEA'
+local ET_PUNISH_REASON_HDR = '\xCF\xF0\xE8\xF7\xE8\xED\xE0'
+
+local ET_PUNISH_COL_PAD = 12
+local ET_PUNISH_ROW_GAP = 8
+local ET_PUNISH_SCROLL_MIN_H = 320
+local ET_PUNISH_SCROLL_MAX_H = 480
+
+local function etPunishClipCol(text, colW)
+    text = text or ''
+    if text == ET_PUNISH_TERM_EMPTY or text == '-' then
+        return uiText(ET_PUNISH_TERM_EMPTY)
+    end
+    colW = tonumber(colW) or 0
+    if colW < 8 then return uiText(ET_PUNISH_TERM_EMPTY) end
+    if type(ellipsizeToWidth) == 'function' then
+        return ellipsizeToWidth(text, colW - 4)
+    end
+    return uiText(text)
+end
+
+local function etPunishLineH()
+    local sp = imgui.GetStyle().ItemSpacing
+    return imgui.GetTextLineHeight() + sp.y
+end
+
+local function etPunishTableLayout(availW, rows)
+    availW = math.floor(math.max(320, tonumber(availW) or 320))
+    local pad = ET_PUNISH_COL_PAD
+
+    local minDate = etHelpColTextW(ET_PUNISH_DATE_HDR, pad)
+    for _, wd in pairs(ET_WD_SHORT) do
+        minDate = math.max(minDate, etHelpColTextW(wd .. ' \xB7 31.12', 8))
+    end
+    local minClock = math.max(
+        etHelpColTextW(ET_PUNISH_CLOCK_HDR, pad),
+        etHelpColTextW('23:59:59', 8))
+    local minPlayer = etHelpColTextW(ET_PUNISH_PLAYER_HDR, pad)
+    local minAction = etHelpColTextW(ET_PUNISH_ACTION_HDR, pad)
+    local minTerm = math.max(
+        etHelpColTextW(ET_PUNISH_TERM_HDR, pad),
+        etHelpColTextW(ET_PUNISH_TERM_EMPTY, 8),
+        etHelpColTextW('999 \xEC\xE8\xED', 8),
+        etHelpColTextW('99 \xF7', 8))
+
+    for _, lbl in pairs(ET_PUNISH_KIND_LABEL) do
+        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
+    end
+    for _, lbl in pairs(ET_PUNISH_HEAD_LABEL) do
+        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
+    end
+
+    local shown = 0
+    for _, e in ipairs(rows or {}) do
+        if shown >= ET_PUNISH_UI_MAX then break end
+        shown = shown + 1
+        minPlayer = math.max(minPlayer, etHelpColTextW(etFormatPunishPlayer(e), 8))
+        minAction = math.max(minAction, etHelpColTextW(etFormatPunishKindLabel(e), 8))
+        minTerm = math.max(minTerm, etHelpColTextW(etFormatPunishTerm(e), 8))
+    end
+
+    local wDate = math.max(minDate, math.floor(availW * 0.11))
+    local wClock = math.max(minClock, math.floor(availW * 0.10))
+    local wPlayer = math.max(minPlayer, math.floor(availW * 0.26))
+    local wAction = math.max(minAction, math.floor(availW * 0.08))
+    local wTerm = math.max(minTerm, math.floor(availW * 0.09))
+    local wReason = availW - wDate - wClock - wPlayer - wAction - wTerm
+
+    if wReason < math.floor(availW * 0.28) then
+        wPlayer = math.max(minPlayer, wPlayer - (math.floor(availW * 0.28) - wReason))
+        wReason = availW - wDate - wClock - wPlayer - wAction - wTerm
+    end
+    if wReason < 80 then
+        wReason = 80
+        wPlayer = math.max(minPlayer, availW - wDate - wClock - wAction - wTerm - wReason)
+    end
+
+    local widths = { wDate, wClock, wPlayer, wAction, wTerm, wReason }
+    local xs = { 0, wDate, wDate + wClock, wDate + wClock + wPlayer,
+        wDate + wClock + wPlayer + wAction,
+        wDate + wClock + wPlayer + wAction + wTerm }
+    return widths, xs, availW
+end
+
+local function etPunishTextCell(x, y, w, text, color)
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    imgui.PushTextWrapPos(x + math.max(16, w) - 4)
+    imgui.TextColored(color, text)
+    imgui.PopTextWrapPos()
+end
+
+local function etPunishDrawSep(x, y, w)
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return y + ET_PUNISH_ROW_GAP end
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    local sp = imgui.GetCursorScreenPos()
+    dl:AddLine(sp, imgui.ImVec2(sp.x + w, sp.y), etToU32(imgui.ImVec4(1.0, 1.0, 1.0, 0.12)), 1.0)
+    return y + ET_PUNISH_ROW_GAP
+end
+
+local function etPunishScrollHeight()
+    local remainY = imgui.GetContentRegionAvail().y
+    local scrollH = remainY - 52
+    if scrollH < ET_PUNISH_SCROLL_MIN_H then scrollH = ET_PUNISH_SCROLL_MIN_H end
+    if scrollH > ET_PUNISH_SCROLL_MAX_H then scrollH = ET_PUNISH_SCROLL_MAX_H end
+    return scrollH
+end
+
+local function etDrawPunishFilterBar(counts)
+    if not etState.punish.filter or etState.punish.filter == '' then
+        etState.punish.filter = 'all'
+    end
+    if etState.punish.filter == 'tr' then
+        etState.punish.filter = 'all'
+    end
+    local sel = etState.punish.filter
+    local gap = 6
+    local btnH = 26
+    local n = #ET_PUNISH_FILTERS
+    local rowW = imgui.GetContentRegionAvail().x
+    local baseW = math.floor((rowW - gap * (n - 1)) / n)
+    local x0 = imgui.GetCursorPosX()
+    local y0 = imgui.GetCursorPosY()
+    local accentDim = col_accent_dim or imgui.ImVec4(0.28, 0.22, 0.42, 0.95)
+    local accent = col_accent or imgui.ImVec4(0.34, 0.26, 0.50, 1.0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 4)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 5))
+
+    local posX = x0
+    for i, f in ipairs(ET_PUNISH_FILTERS) do
+        local btnW = (i == n) and (rowW - (posX - x0)) or baseW
+        imgui.SetCursorPos(imgui.ImVec2(posX, y0))
+        local cnt = tonumber(counts and counts[f.id]) or 0
+        local label = uiText(f.label) .. ' (' .. tostring(cnt) .. ')'
+        local active = sel == f.id
+        if active then
+            imgui.PushStyleColor(imgui.Col.Button, accentDim)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, accent)
+        end
+        if imgui.Button(label .. '##pf_' .. f.id, imgui.ImVec2(btnW, btnH)) then
+            etState.punish.filter = f.id
+        end
+        if active then imgui.PopStyleColor(2) end
+        posX = posX + btnW + gap
+    end
+    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + btnH + 10))
+    imgui.PopStyleVar(2)
+end
+
+local function etDrawHelpPunishLog()
+    local weekRows, _, counts = etPunishEntriesForViewWeek()
+    etDrawPunishFilterBar(counts)
+
+    local filterId = etState.punish.filter or 'all'
+    local rows = etPunishFilterRows(weekRows, filterId)
+    local weekTotal = counts and counts.all or #weekRows
+
+    if weekTotal == 0 then
+        drawSettingsHint('\xCD\xE5\xF2 \xE2\xFB\xE4\xE0\xED\xED\xFB\xF5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9 \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE')
+        return
+    end
+    if #rows == 0 then
+        local filterLabel = filterId
+        for _, f in ipairs(ET_PUNISH_FILTERS) do
+            if f.id == filterId then filterLabel = f.label break end
+        end
+        drawSettingsHint(string.format(
+            '\xCD\xE5\xF2 \xE7\xE0\xEF\xE8\xF1\xE5\xE9 \xAB%s\xBB \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE \xB7 \xE2\xF1\xE5\xE3\xEE %d',
+            filterLabel, weekTotal))
+        return
+    end
+
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    local childFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+
+    imgui.BeginChild('##help_punish_scroll', imgui.ImVec2(-1, etPunishScrollHeight()), true, childFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    local widths, xs, tableW = etPunishTableLayout(imgui.GetContentRegionAvail().x, rows)
+    local x0 = imgui.GetCursorPosX()
+    local y = imgui.GetCursorPosY()
+    local lineH = etPunishLineH()
+
+    etPunishTextCell(x0 + xs[1], y, widths[1], uiText(ET_PUNISH_DATE_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[2], y, widths[2], uiText(ET_PUNISH_CLOCK_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[3], y, widths[3], uiText(ET_PUNISH_PLAYER_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[4], y, widths[4], uiText(ET_PUNISH_ACTION_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[5], y, widths[5], uiText(ET_PUNISH_TERM_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[6], y, widths[6], uiText(ET_PUNISH_REASON_HDR), hdrCol)
+
+    y = y + lineH + 2
+    y = etPunishDrawSep(x0, y, tableW)
+
+    local shown = 0
+    for _, e in ipairs(rows) do
+        if shown >= ET_PUNISH_UI_MAX then break end
+        shown = shown + 1
+        local reason = e.reason or '-'
+        if e.src == 'auto' and trim(e.reqAdmin or '') ~= '' then
+            reason = reason .. string.format(
+                ' \xB7 \xE7\xE0\xEF\xF0\xEE\xF1 %s[%s]',
+                e.reqAdmin, tostring(e.reqAdminId or '?'))
+        elseif e.src == 'a_request' then
+            reason = reason .. ' \xB7 \xE2 \xE0\xE4\xEC\xE8\xED-\xF7\xE0\xF2'
+        end
+        etPunishTextCell(x0 + xs[1], y, widths[1], uiText(etFormatPunishDateLine(e.ts)), valCol)
+        etPunishTextCell(x0 + xs[2], y, widths[2], uiText(etFormatPunishClockLine(e.ts)), col_muted2)
+        etPunishTextCell(x0 + xs[3], y, widths[3], etPunishClipCol(etFormatPunishPlayer(e), widths[3]), valCol)
+        etPunishTextCell(x0 + xs[4], y, widths[4], etPunishClipCol(etFormatPunishKindLabel(e), widths[4]), etPunishKindColor(e))
+        etPunishTextCell(x0 + xs[5], y, widths[5], etPunishClipCol(etFormatPunishTerm(e), widths[5]), col_muted2)
+        etPunishTextCell(x0 + xs[6], y, widths[6], etPunishClipCol(reason, widths[6]), col_muted2)
+        y = y + lineH
+    end
+
+    imgui.SetCursorPos(imgui.ImVec2(x0, y))
+    imgui.Dummy(imgui.ImVec2(tableW, 1))
+    imgui.PopStyleVar()
+    imgui.EndChild()
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+
+    drawSettingsHint(string.format(
+        '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE %d \xE8\xE7 %d \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE \xB7 \xE2\xF0\xE5\xEC\xFF \xE4\xEE \xF1\xE5\xEA\xF3\xED\xE4\xFB \xB7 \xED\xE5\xE4\xE5\xEB\xFF \xEA\xE0\xEA \xE2 \xF2\xE0\xE1\xEB\xE8\xF6\xE5 \xE2\xFB\xF8\xE5',
+        #rows, weekTotal))
+    if #rows > ET_PUNISH_UI_MAX then
+        drawSettingsHint(string.format(
+            '\xC2 \xF2\xE0\xE1\xEB\xE8\xF6\xE5 \xEF\xEE\xF1\xEB\xE5\xE4\xED\xE8\xE5 %d \xE8\xE7 %d',
+            ET_PUNISH_UI_MAX, #rows))
+    end
+end
+
+local function etAnsCount(dateKey)
+    return tonumber(etState.ans.days[dateKey]) or 0
+end
+
+local function etSumAns(filterFn)
+    local total = 0
+    for dateKey, cnt in pairs(etState.ans.days) do
+        if filterFn(dateKey) then
+            total = total + (tonumber(cnt) or 0)
+        end
+    end
+    return total
+end
+
+local function etWeekAnsTotal(weekMondayKey)
+    local baseTs = etMondayTsFromKey(weekMondayKey)
+    if not baseTs then return 0 end
+    local weekEnd = os.date('%Y-%m-%d', baseTs + 6 * 86400)
+    return etSumAns(function(k) return k >= weekMondayKey and k <= weekEnd end)
+end
+
+local function etBuildWeekDayRows(weekMondayKey)
+    weekMondayKey = weekMondayKey or etCurrentWeekMondayKey()
+    local y, m, d = weekMondayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+    if not y then return {} end
+    local baseTs = os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = 12, min = 0, sec = 0,
+    })
+    local todayKey = os.date('%Y-%m-%d')
+    local viewingCurrent = weekMondayKey == etCurrentWeekMondayKey()
+    local dailyNorm = etDailyNormMin()
+    local rows = {}
+    for i = 0, 6 do
+        local ts = baseTs + i * 86400
+        local dateKey = os.date('%Y-%m-%d', ts)
+        local enWd = os.date('%a', ts)
+        local onlineMin = tonumber(etState.online.days[dateKey])
+        local ansCnt = etAnsCount(dateKey)
+        local normOk = nil
+        if onlineMin ~= nil then
+            normOk = onlineMin >= dailyNorm
+        end
+        rows[#rows + 1] = {
+            dateKey = dateKey,
+            weekday = ET_WD_SHORT[enWd] or enWd,
+            dateLabel = os.date('%d.%m', ts),
+            onlineMin = onlineMin,
+            ansCnt = ansCnt,
+            normOk = normOk,
+            isToday = viewingCurrent and dateKey == todayKey,
+        }
+    end
+    return rows
+end
+
+local function etDrawActivityBar(valueMin, normMin, fillColor)
+    valueMin = math.max(0, tonumber(valueMin) or 0)
+    normMin = math.max(1, tonumber(normMin) or 1)
+    local frac = math.max(0, math.min(1, valueMin / normMin))
+    local barW = imgui.GetContentRegionAvail().x
+    local barH = 3
+    local p = imgui.GetCursorScreenPos()
+    local dl = imgui.GetWindowDrawList()
+    dl:AddRectFilled(p, imgui.ImVec2(p.x + barW, p.y + barH), etToU32(imgui.ImVec4(0.18, 0.18, 0.22, 1.0)), 2.0)
+    if frac > 0.001 then
+        dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), etToU32(fillColor or ET_COL.accent), 2.0)
+    end
+    imgui.Dummy(imgui.ImVec2(0, barH + 10))
+end
+
+local function etDrawNormHoursInline(label, var, id, vmin, vmax, onApply)
+    imgui.TextColored(col_muted2, uiText(label))
+    imgui.SameLine(0, 10)
+    imgui.PushItemWidth(56)
+    deskPushFlatInputStyle()
+    if imgui.InputInt('##' .. id, var) then
+        var[0] = math.max(vmin, math.min(vmax, var[0]))
+        if onApply then onApply(var[0]) end
+    end
+    deskPopFlatInputStyle()
+    imgui.PopItemWidth()
+    imgui.SameLine(0, 8)
+    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+    imgui.TextColored(col_muted2, uiText('\xF7'))
+end
+
+local function etDrawNormHoursPairRow()
+    if not uiExactTimeDailyH and not uiExactTimeMonthlyH then return end
+    local rowW = math.max(280, imgui.GetContentRegionAvail().x)
+    local halfW = math.floor(rowW * 0.5)
+    imgui.Columns(2, '##et_norm_inputs', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, halfW)
+        imgui.SetColumnWidth(1, halfW)
+    end
+    if uiExactTimeDailyH then
+        etDrawNormHoursInline('\xC4\xE5\xED\xFC', uiExactTimeDailyH, 'et_day', 1, 24, function(v)
+            settings.exact_time_daily_norm_h = v
+            markDirtySettings()
+        end)
+    end
+    imgui.NextColumn()
+    if uiExactTimeMonthlyH then
+        etDrawNormHoursInline('\xCC\xE5\xF1\xFF\xF6', uiExactTimeMonthlyH, 'et_month', 1, 744, function(v)
+            settings.exact_time_monthly_norm_h = v
+            markDirtySettings()
+        end)
+    end
+    imgui.NextColumn()
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 4))
+end
+
+local function etDrawNormHoursRow(label, var, id, vmin, vmax, onApply, hint)
+    local suffix = '\xF7'
+    local suffixW = imgui.CalcTextSize(uiText(suffix)).x + 14
+    deskFormRowAvail(label, DESK_FORM_LABEL_W)
+    local avail = math.max(56, imgui.GetContentRegionAvail().x)
+    local inputW = math.max(88, math.min(116, avail - suffixW - 2))
+    imgui.PushItemWidth(inputW)
+    deskPushFlatInputStyle()
+    if imgui.InputInt('##' .. id, var) then
+        var[0] = math.max(vmin, math.min(vmax, var[0]))
+        if onApply then onApply(var[0]) end
+    end
+    deskPopFlatInputStyle()
+    imgui.PopItemWidth()
+    imgui.SameLine(0, 8)
+    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+    imgui.TextColored(col_muted2, uiText(suffix))
+    if hint and hint ~= '' then
+        drawSettingsHint(hint)
+    end
+end
+
+local function etDrawNormProgressRow(label, valueMin, normMin, barColor)
+    valueMin = math.max(0, tonumber(valueMin) or 0)
+    normMin = math.max(1, tonumber(normMin) or 1)
+    local ok = valueMin >= normMin
+    local statusCol = ok and ET_COL_OK or ET_COL_FAIL
+    imgui.TextColored(col_muted2, uiText(label))
+    imgui.SameLine(0, 10)
+    imgui.TextColored(statusCol, uiText(string.format('%s / %s',
+        etFormatMinutesAsRussianDuration(valueMin),
+        etFormatMinutesAsRussianDuration(normMin))))
+    etDrawActivityBar(valueMin, normMin, barColor or ET_COL.accent)
+    imgui.Dummy(imgui.ImVec2(0, 2))
+end
+
+local function etDrawHelpWeekNav(viewWeekKey)
+    local offset = tonumber(etState.helpWeekOffset) or 0
+    local rowW = imgui.GetContentRegionAvail().x
+    local btnSz = imgui.GetFrameHeight()
+    local dirLeft = (imgui.Dir and imgui.Dir.Left) or 0
+    local dirRight = (imgui.Dir and imgui.Dir.Right) or 1
+    local rangeText = uiText(etWeekRangeLabel(viewWeekKey))
+    local textW = imgui.CalcTextSize(rangeText).x
+    local y0 = imgui.GetCursorPosY()
+    local x0 = imgui.GetCursorPosX()
+    local textX = x0 + math.max(btnSz + 6, (rowW - textW) * 0.5)
+    local textY = y0 + math.max(0, (btnSz - imgui.GetTextLineHeight()) * 0.5)
+    local labelCol = col_accent or ET_COL.accent
+
+    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+    if offset < ET_HELP_WEEK_MAX_BACK then
+        if imgui.ArrowButton('##et_wk_prev', dirLeft) then
+            etState.helpWeekOffset = offset + 1
+        end
+    else
+        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
+    end
+    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+
+    if offset > 0 then
+        imgui.SetCursorPos(imgui.ImVec2(textX, y0))
+        if imgui.InvisibleButton('##et_wk_now', imgui.ImVec2(textW, btnSz)) then
+            etState.helpWeekOffset = 0
+        end
+    end
+    imgui.SetCursorPos(imgui.ImVec2(textX, textY))
+    imgui.TextColored(labelCol, rangeText)
+
+    imgui.SetCursorPos(imgui.ImVec2(x0 + rowW - btnSz, y0))
+    if offset > 0 then
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        if imgui.ArrowButton('##et_wk_next', dirRight) then
+            etState.helpWeekOffset = offset - 1
+        end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    end
+
+    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + btnSz + 6))
+end
+
+local function etDrawHelpWeekTable()
+    local viewWeekKey = etHelpViewWeekMondayKey()
+    local rows = etBuildWeekDayRows(viewWeekKey)
+    if #rows == 0 then
+        drawSettingsHint('\xCD\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE')
+        return
+    end
+    local dailyNorm = etDailyNormMin()
+    local weekAns = etWeekAnsTotal(viewWeekKey)
+
+    etDrawHelpWeekNav(viewWeekKey)
+
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+
+    local availW = imgui.GetContentRegionAvail().x
+    local wDay, wDate, wGap, wOnline, wAns = etHelpTableWidths(availW)
+
+    imgui.Columns(5, '##help_week_cols', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, wDay)
+        imgui.SetColumnWidth(1, wDate)
+        imgui.SetColumnWidth(2, wGap)
+        imgui.SetColumnWidth(3, wOnline)
+        imgui.SetColumnWidth(4, wAns)
+    end
+
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DAY_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DATE_HDR))
+    imgui.NextColumn()
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ONLINE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ANS_HDR))
+    imgui.NextColumn()
+
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
+    imgui.Separator()
+    imgui.PopStyleColor()
+
+    for _, row in ipairs(rows) do
+        local dayCol = row.isToday and valCol or col_muted2
+        local dateCol = row.isToday and valCol or col_muted2
+        imgui.TextColored(dayCol, uiText(row.weekday))
+        imgui.NextColumn()
+        imgui.TextColored(dateCol, uiText(row.dateLabel))
+        imgui.NextColumn()
+        imgui.NextColumn()
+        if row.onlineMin ~= nil then
+            local onlineCol = row.normOk and ET_COL_OK or ET_COL_FAIL
+            imgui.TextColored(onlineCol, uiText(etFormatMinutesAsRussianDuration(row.onlineMin)))
+        else
+            imgui.TextColored(col_muted2, uiText('\xB7'))
+        end
+        imgui.NextColumn()
+        local ansCol = (row.ansCnt or 0) > 0 and valCol or col_muted2
+        imgui.TextColored(ansCol, uiText(tostring(row.ansCnt or 0)))
+        imgui.NextColumn()
+    end
+
+    imgui.Columns(1)
+
+    local offset = tonumber(etState.helpWeekOffset) or 0
+    local ansLabel = offset > 0
+        and '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE'
+        or '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE'
+    drawSettingsHint(string.format(
+        '%s: %d \xB7 \xC7\xE5\xEB\xE5\xED\xEE \xB7 \xEA\xF0\xE0\xF1\xED\xFB\xE9 \xED\xE5 \xE4\xEE\xED\xEE\xF0 \xB7 %s \xB7 \xEF\xEE\xF1\xEB\xE5 /c 60',
+        ansLabel, weekAns, etFormatMinutesAsRussianDuration(dailyNorm)))
+    if offset > 0 then
+        drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xE4\xE0\xF2\xF3 \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE9 \xED\xE5\xE4\xE5\xEB\xE8')
+    end
+end
+
+local function etUpdateStoredDay(dateKey, minutes)
+    if not dateKey or minutes == nil then return end
+    minutes = math.max(0, math.floor(tonumber(minutes) or 0))
+    etEnsureOnlinePeriods()
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
+    if dateKey < cutoffKey then return end
+    local prev = etState.online.days[dateKey]
+    if prev == nil or minutes > prev then
+        etState.online.days[dateKey] = minutes
+        pcall(etSaveOnlineStore)
+    end
+end
+
+local function etSumCleanMinutes(filterFn)
+    etEnsureOnlinePeriods()
+    local total = 0
+    for dateKey, mins in pairs(etState.online.days) do
+        if filterFn(dateKey) then
+            total = total + (tonumber(mins) or 0)
+        end
+    end
+    return total
+end
+
+local function etGetTodayCleanMin()
+    etEnsureOnlinePeriods()
+    local todayKey = os.date('%Y-%m-%d')
+    return tonumber(etState.online.days[todayKey]) or 0
+end
+
+local function etGetMonthlyCleanMin()
+    local monthKey = etCurrentMonthKey()
+    return etSumCleanMinutes(function(dateKey) return dateKey:sub(1, 7) == monthKey end)
+end
+
+local function etSyncOnlineHistory(serverDate, cleanToday, cleanYesterday)
+    local todayKey = etParseServerDateKey(serverDate)
+    etUpdateStoredDay(todayKey, cleanToday)
+    if cleanYesterday ~= nil then
+        local y, m, d = todayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+        if y then
+            local yesterdayKey = os.date('%Y-%m-%d', os.time({
+                year = tonumber(y), month = tonumber(m), day = tonumber(d),
+                hour = 12, min = 0, sec = 0,
+            }) - 86400)
+            etUpdateStoredDay(yesterdayKey, cleanYesterday)
+        end
+    end
+end
+
+local function etMigrateLegacyNorms()
+    ensureExactTimeSettings()
+    local f = io.open(ET_LEGACY_CONFIG, 'r')
+    if not f then return end
+    local changed = false
+    for line in f:lines() do
+        local weekH = line:match('^%s*week_norm_h%s*=%s*(%d+)')
+        if weekH and tonumber(weekH) > 0 and (tonumber(settings.exact_time_daily_norm_h) or 4) == 4 then
+            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(tonumber(weekH) / 7)))
+            changed = true
+        end
+        local monthH = line:match('^%s*month_norm_h%s*=%s*(%d+)')
+        if monthH and tonumber(monthH) > 0 and (tonumber(settings.exact_time_monthly_norm_h) or 112) == 112 then
+            settings.exact_time_monthly_norm_h = tonumber(monthH)
+            changed = true
+        end
+    end
+    f:close()
+    if changed then markDirtySettings() end
+end
+
+local function etInstallWmHandler()
+    if not deskWmDispatch or not deskWmDispatch.register then return end
+    deskWmDispatch.unregister('exact_time')
+    deskWmDispatch.register('exact_time', 88, function(msg, wparam, lparam)
+        if not etState.showOpen then return false end
+        local wm = deskCache and deskCache.wm
+        if not wm then return false end
+        msg = tonumber(msg) or 0
+        wparam = tonumber(wparam) or 0
+        if msg ~= wm.KEYDOWN and msg ~= wm.SYSKEYDOWN and msg ~= wm.KEYUP and msg ~= wm.SYSKEYUP then
+            return false
+        end
+        local vkEsc = vkeys and vkeys.VK_ESCAPE
+        local vkRet = (vkeys and vkeys.VK_RETURN) or 0x0D
+        if wparam ~= vkEsc and wparam ~= vkRet then return false end
+        if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN then
+            consumeWindowMessage(true, false, true)
+            return true
+        end
+        if etCloseWindow then etCloseWindow() end
+        consumeWindowMessage(true, false, true)
+        return true
+    end)
+end
+
+function exactTimeInit()
+    ensureExactTimeSettings()
+    pcall(etMigrateLegacyNorms)
+    pcall(etLoadOnlineStore)
+    pcall(etLoadAnsStore)
+    pcall(etLoadPunishStore)
+    pcall(etBackfillAnsFromThreads)
+    pcall(etInstallWmHandler)
+end
+
+function exactTimeWantsImguiInput()
+    return etState.showOpen == true
+end
+
+function exactTimeShouldDraw()
+    return etState.showOpen and etState.data.playToday ~= nil
+end
+
+function exactTimeNoteOutgoing(msg)
+    if not etEnabled() then return end
+    if type(msg) ~= 'string' then return end
+    local s = trim(msg)
+    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
+    local num = s:match('^[cC]%s*(%d+)$') or s:match('^[cC](%d+)$')
+    if not num and s:match('^[cC]$') then num = '60' end
+    if num and tonumber(num) == 60 then
+        etState.pendingCmdAt = os.clock()
+    end
+end
+
+function exactTimeOnShowDialog(dialogId, style, title, button1, button2, text)
+    if not etEnabled() then return false end
+    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) > EXACT_TIME_TIMEOUT then
+        etState.pendingCmdAt = nil
+    end
+    if not etIsExactTimeDialog(title, text) then return false end
+    etState.pendingCmdAt = nil
+
+    local dialogRows = etParseDialogLines(text)
+    local playToday = etExtractDurationAfterLabel(text, 'Время в игре сегодня')
+        or etMinutesFromDialogRows(dialogRows, 'Время в игре сегодня', 'Онлайн сегодня')
+    local afkToday = etExtractDurationAfterLabel(text, 'AFK за сегодня')
+        or etExtractDurationAfterLabel(text, 'AFK сегодня')
+        or etMinutesFromDialogRows(dialogRows, 'AFK за сегодня', 'AFK сегодня')
+    if playToday == nil or afkToday == nil then
+        if type(say) == 'function' then
+            say('{FF6666}[Exact Time] {FFFFFF}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xF0\xEE\xF7\xE8\xF2\xE0\xF2\xFC \xE2\xF0\xE5\xEC\xFF.')
+        end
+        etSendDialogClose(dialogId, button1, button2)
+        return true
+    end
+
+    local cleanMin = math.max(0, playToday - afkToday)
+    local serverTime, serverDate = etParseServerClock(text, dialogRows)
+    local playYday = etExtractDurationAfterLabel(text, 'Время в игре вчера')
+        or etMinutesFromDialogRows(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
+    local afkYday = etExtractDurationAfterLabel(text, 'AFK за вчера')
+        or etExtractDurationAfterLabel(text, 'AFK вчера')
+        or etMinutesFromDialogRows(dialogRows, 'AFK за вчера', 'AFK вчера')
+    local cleanYday = (playYday ~= nil and afkYday ~= nil) and math.max(0, playYday - afkYday) or nil
+
+    pcall(function() etSyncOnlineHistory(serverDate, cleanMin, cleanYday) end)
+
+    local d = etState.data
+    d.playToday = playToday
+    d.afkToday = afkToday
+    d.cleanMin = cleanMin
+    d.cleanMonthMin = etGetMonthlyCleanMin()
+    d.dialogId = dialogId
+    d.button1 = button1
+    d.button2 = button2
+    d.displayRows = etBuildDisplayList(text, dialogRows,
+        etFormatMinutesAsRussianDuration(cleanMin),
+        etFormatMinutesAsRussianDuration(playToday),
+        etFormatMinutesAsRussianDuration(afkToday))
+    local ch, cm, cs = etParseClockHms(serverTime)
+    d._clockTick = nil
+    d._clockStr = nil
+    if ch then
+        d.clockBase = { h = ch, m = cm, s = cs, at = os.clock() }
+    else
+        d.clockBase = nil
+    end
+    etState.showOpen = true
+    if etShowWindowBuf then etShowWindowBuf[0] = true end
+    etSetNativeDialogVisible(false)
+    return true
+end
+
+local function etDrawAccentStrip()
+    local dl = imgui.GetWindowDrawList()
+    local pos = imgui.GetWindowPos()
+    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + imgui.GetWindowWidth(), pos.y + 2), etToU32(ET_COL.accent))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+end
+
+local function etCenterText(text, color, scale)
+    scale = scale or 1.0
+    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    local tw = imgui.CalcTextSize(text).x
+    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
+    imgui.TextColored(color, text)
+    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
+local function etCenterLabelValue(labelCp1251, value, valueColor)
+    valueColor = valueColor or ET_COL.accent
+    local label = uiText(labelCp1251 .. ': ')
+    local val = uiText(value)
+    local tw = imgui.CalcTextSize(label).x + imgui.CalcTextSize(val).x
+    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
+    imgui.TextColored(ET_COL.muted, label)
+    imgui.SameLine(0, 0)
+    imgui.TextColored(valueColor, val)
+end
+
+local function etDrawStatRows(rows, colId)
+    if #rows == 0 then return end
+    imgui.Columns(2, colId, false)
+    imgui.SetColumnWidth(0, ET_LABEL_W)
+    for i, row in ipairs(rows) do
+        if row.value and row.value ~= '' then
+            imgui.TextColored(ET_COL.muted, uiText(row.label))
+            imgui.NextColumn()
+            imgui.TextColored(ET_COL.value, uiText(row.value))
+            imgui.NextColumn()
+            if i < #rows then
+                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
+                imgui.NextColumn()
+                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
+                imgui.NextColumn()
+            end
+        end
+    end
+    imgui.Columns(1)
+end
+
+function drawExactTimeWindow()
+    if not exactTimeShouldDraw() then return end
+    etSetNativeDialogVisible(false)
+
+    local io = imgui.GetIO()
+    local sw, sh = io.DisplaySize.x, io.DisplaySize.y
+    if sw < 100 then sw = 1920 end
+    if sh < 100 then sh = 1080 end
+    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
+    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(ET_WIN_W, 0), imgui.ImVec2(ET_WIN_W, 9999))
+
+    local winFlags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoScrollbar
+    etPushWindowStyle()
+    if not etShowWindowBuf then
+        etShowWindowBuf = imgui.new.bool(etState.showOpen)
+    end
+    if not imgui.Begin(uiText(L_TITLE) .. '###desk_exact_time', etShowWindowBuf, winFlags) then
+        etPopWindowStyle()
+        imgui.End()
+        if etState.showOpen then etCloseWindow() end
+        return
+    end
+
+    etDrawAccentStrip()
+    local d = etState.data
+    local timeRow, cleanRow = nil, nil
+    local dateParts, todayRows, yesterdayRows = {}, {}, {}
+    if d.displayRows then
+        for _, row in ipairs(d.displayRows) do
+            if row.kind == 'time' then timeRow = row
+            elseif row.kind == 'accent' then cleanRow = row
+            elseif row.kind == 'date' then dateParts[#dateParts + 1] = row.value
+            elseif row.kind == 'today' then todayRows[#todayRows + 1] = row
+            elseif row.kind == 'yesterday' then yesterdayRows[#yesterdayRows + 1] = row
+            end
+        end
+    end
+
+    if #dateParts > 0 then
+        local dateLine = etFormatDateLine(dateParts)
+        if dateLine then
+            etCenterText(uiText(dateLine), ET_COL.muted, 0.92)
+            imgui.Dummy(imgui.ImVec2(0, 6))
+        end
+    end
+
+    if timeRow and timeRow.value ~= '' then
+        etCenterText(uiText(etLiveClockValue(timeRow.value)), ET_COL.time, 1.42)
+        imgui.Dummy(imgui.ImVec2(0, 4))
+    end
+
+    if cleanRow and cleanRow.value ~= '' then
+        etCenterLabelValue(L_ET_CLEAN, cleanRow.value)
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        etDrawActivityBar(d.cleanMin, etDailyNormMin(), ET_COL.accent)
+    end
+
+    if d.cleanMonthMin ~= nil then
+        etCenterLabelValue(L_ET_CLEAN_MONTH, etFormatMinutesAsRussianDuration(d.cleanMonthMin), ET_MONTHLY_COLOR)
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        etDrawActivityBar(d.cleanMonthMin, etMonthlyNormMin(), ET_MONTHLY_COLOR)
+    end
+
+    if #todayRows > 0 or #yesterdayRows > 0 then
+        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
+        imgui.Separator()
+        imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 6))
+    end
+
+    if #todayRows > 0 then etDrawStatRows(todayRows, '##et_today') end
+    if #todayRows > 0 and #yesterdayRows > 0 then
+        imgui.Dummy(imgui.ImVec2(0, 10))
+        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
+        imgui.Separator()
+        imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 8))
+    end
+    if #yesterdayRows > 0 then etDrawStatRows(yesterdayRows, '##et_yday') end
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+    if imgui.Button(uiText(L_CLOSE) .. '##et_close', imgui.ImVec2(-1, 32)) then
+        etCloseWindow()
+    end
+
+    imgui.End()
+    etPopWindowStyle()
+
+    if etShowWindowBuf and not etShowWindowBuf[0] and etState.showOpen then
+        etCloseWindow()
+    end
+end
+
+function syncExactTimeUiFromSettings()
+    ensureExactTimeSettings()
+    if uiExactTimeEnabled then uiExactTimeEnabled[0] = settings.exact_time_enabled ~= false end
+    if uiExactTimeDailyH then uiExactTimeDailyH[0] = math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) end
+    if uiExactTimeMonthlyH then uiExactTimeMonthlyH[0] = math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) end
+end
+
+function drawExactTimeTab()
+    if not exactTimeUiSynced then
+        syncExactTimeUiFromSettings()
+        exactTimeUiSynced = true
+    end
+    etEnsureOnlinePeriods()
+
+    pushPanelStyle(col_chat_bg)
+    local panelFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.BeginChild('##help_panel', imgui.ImVec2(-1, -1), false, panelFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    deskFormPanelBegin('##help_c60')
+    drawSettingsCardHeader('\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF',
+        '\xCA\xEE\xEC\xE0\xED\xE4\xE0 /c 60 \xE2 \xF7\xE0\xF2\xE5 \xEE\xF2\xEA\xF0\xFB\xE2\xE0\xE5\xF2 \xEE\xEA\xED\xEE \xF1 \xF7\xE0\xF1\xE0\xEC\xE8 \xE8 \xEF\xF0\xEE\xE3\xF0\xE5\xF1\xF1\xEE\xEC')
+    if uiExactTimeEnabled and deskFormCheckboxRow('\xC7\xE0\xEC\xE5\xED\xE0 \xE4\xE8\xE0\xEB\xEE\xE3 /c 60', uiExactTimeEnabled, function(v)
+        settings.exact_time_enabled = v
+        if not v then etCloseWindow() end
+        markDirtySettings()
+    end, 'et_en') then end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##help_norms')
+    drawSettingsCardHeader('\xCD\xEE\xF0\xEC\xFB \xEE\xED\xEB\xE0\xE9\xED\xE0',
+        '\xC4\xED\xE5\xE2\xED\xE0\xFF \xE8 \xEC\xE5\xF1\xFF\xF7\xED\xE0\xFF \xED\xEE\xF0\xEC\xE0 \xE2 \xF7\xE0\xF1\xE0\xF5')
+    etDrawNormHoursPairRow()
+    etDrawNormProgressRow('\xC4\xE5\xED\xFC', etGetTodayCleanMin(), etDailyNormMin(), ET_COL.accent)
+    etDrawNormProgressRow('\xCC\xE5\xF1\xFF\xF6', etGetMonthlyCleanMin(), etMonthlyNormMin(), ET_MONTHLY_COLOR)
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##help_stats')
+    drawSettingsCardHeader('\xD1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE0',
+        '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE8 \xEE\xF2\xE2\xE5\xF2\xFB \xE2 \xF0\xE5\xEF\xEE\xF0\xF2 \xEF\xEE \xE4\xED\xFF\xEC \xED\xE5\xE4\xE5\xEB\xE8 \xB7 \xF1\xF2\xF0\xE5\xEB\xEA\xE8 \xE4\xEB\xFF \xE4\xF0\xF3\xE3\xE8\xF5 \xED\xE5\xE4\xE5\xEB\xFC')
+    etDrawHelpWeekTable()
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##help_punish')
+    drawSettingsCardHeader('\xC2\xFB\xE4\xE0\xED\xED\xFB\xE5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF',
+        '\xCF\xF0\xFF\xEC\xFB\xE5 \xEA\xEE\xEC\xE0\xED\xE4\xFB \xE8 \xE7\xE0\xEF\xF0\xEE\xF1\xFB /a \xEA\xEE\xE3\xE4\xE0 \xED\xE5\xF2 \xEF\xF0\xE0\xE2 \xED\xE0 \xEF\xF0\xFF\xEC\xF3\xFE \xE2\xFB\xE4\xE0\xF7\xF3')
+    etDrawHelpPunishLog()
+    deskFormPanelEnd()
+
+    imgui.PopStyleVar(2)
+    imgui.Dummy(imgui.ImVec2(0, 12))
+    imgui.EndChild()
+    popPanelStyle()
+end
+
+
+
+]=], '@report_desk_app_core_b2')
+
+    if not chunkFn then error('[Report Desk] bundle group report_desk_app_core_b2: ' .. tostring(chunkErr)) end
+
+    setfenv(chunkFn, __desk_bundle_env)
+
+    chunkFn()
+
+end
+
+
+
+do
+
+    local chunkFn, chunkErr = loadstring([=[
+
 --[[ Модуль: ImGui окно Report Desk (список, чат, настройки). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
@@ -26090,6 +28506,29 @@ function drawSettingsSliderInt(label, var, id, vmin, vmax, onApply)
     end
     deskPopFlatInputStyle()
     imgui.PopItemWidth()
+end
+
+-- Draw Settings Input Int
+function drawSettingsInputInt(label, var, id, vmin, vmax, onApply, suffix)
+    local suffixW = 0
+    if suffix and suffix ~= '' then
+        suffixW = imgui.CalcTextSize(uiText(suffix)).x + 14
+    end
+    local rowW = deskFormRowAvail(label, DESK_FORM_LABEL_W)
+    local inputW = math.max(84, math.min(112, rowW - suffixW - 4))
+    imgui.PushItemWidth(inputW)
+    deskPushFlatInputStyle()
+    if imgui.InputInt('##' .. id, var) then
+        var[0] = math.max(vmin, math.min(vmax, var[0]))
+        if onApply then onApply(var[0]) end
+    end
+    deskPopFlatInputStyle()
+    imgui.PopItemWidth()
+    if suffix and suffix ~= '' then
+        imgui.SameLine(0, 8)
+        if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+        imgui.TextColored(col_muted2, uiText(suffix))
+    end
 end
 
 -- Draw Desk Search Clear Row
@@ -26333,8 +28772,9 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
         if scenarioBody == '' then scenarioBody = line end
         quickBtns = collectQuickButtonsForMessage(scenarioBody)
     end
-    local showQuickBtns = opts.noQuickButtons ~= true
-    local watchBtns, replyBtns = splitQuickButtons(showQuickBtns and quickBtns or {})
+    local showReplyBtns = opts.noQuickButtons ~= true
+    local watchBtns, replyBtns = splitQuickButtons(quickBtns)
+    if not showReplyBtns then replyBtns = {} end
     if dir == 'in' and #replyBtns == 0 and intentMessageCorpusCandidate(scenarioBody) then
         corpusCandidate = true
     end
@@ -28177,6 +30617,7 @@ function toggleWindow()
     rulesUiSynced = false
     settingsUiSynced = false
     adminPunishUiSynced = false
+    exactTimeUiSynced = false
     scenariosUiSynced = false
     local selThread = getSelectedThread()
     deskInputState.focusReplyNext = selThread ~= nil
@@ -28328,6 +30769,15 @@ function drawMainWindow()
                 imgui.TextColored(col_warn, 'Admin punish UI error:')
                 imgui.TextWrapped(tostring(errAp))
                 print('[Report Desk] admin punish UI: ' .. tostring(errAp))
+            end
+            imgui.EndTabItem()
+        end
+        if imgui.BeginTabItem(uiText('\xD1\xEF\xF0\xE0\xE2\xEA\xE0') .. '##tab_help') then
+            local okEt, errEt = pcall(drawExactTimeTab)
+            if not okEt then
+                imgui.TextColored(col_warn, 'Help tab UI error:')
+                imgui.TextWrapped(tostring(errEt))
+                print('[Report Desk] help tab UI: ' .. tostring(errEt))
             end
             imgui.EndTabItem()
         end
@@ -28611,6 +31061,19 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
+            if not sessionLive then return false end
+            if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+            return type(exactTimeShouldDraw) == 'function' and exactTimeShouldDraw()
+        end,
+        function(self)
+            self.HideCursor = false
+            self.LockPlayer = false
+            pcall(drawExactTimeWindow)
+        end
+    ), false, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
             return cheatState.marker.active
         end,
         function()
@@ -28787,6 +31250,13 @@ local function installDeskWmHandlers()
     if type(registerDeskChatWmHandler) == 'function' then
         registerDeskChatWmHandler()
     end
+    deskWmDispatch.register('admin_punish', 101, function(msg, wparam, lparam)
+        if type(tryHandleAdminPunishBindMessage) == 'function'
+                and tryHandleAdminPunishBindMessage(msg, wparam, lparam) then
+            return true
+        end
+    end)
+
     deskWmDispatch.register('hotkey', 100, function(msg, wparam, lparam)
         if tryHandleDeskHotkeyMessage(msg, wparam, lparam) then
             return true
@@ -28830,7 +31300,7 @@ local function installDeskWmHandlers()
                 if deskImguiTypingActive() then
                     return
                 end
-                if sampIsDialogActive and sampIsDialogActive() then
+                if type(deskSampDialogActive) == 'function' and deskSampDialogActive() then
                     return
                 end
                 if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
@@ -28963,14 +31433,15 @@ function pollReportIngest()
     for i = 0, maxLine do
         local line = sampGetChatString(i) or ''
         if line == '' then goto continue end
+        local plain = normalizeChatLine(line)
         local key = chatLineSeenKey(line)
         if key == '' then goto continue end
         if chatSeen.lines[key] then goto continue end
-        local plain = normalizeChatLine(line)
         if type(adminPunishIngestChatLine) == 'function' then
-            local apPoll = (type(adminPunishHasPending) == 'function' and adminPunishHasPending())
-                or plain:find('^%[A%]%s', 1)
+            local apPoll = plain:find('^%[A%]%s', 1)
                 or plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1)
+                or (type(lineLooksLikeAdminPunishRequest) == 'function'
+                    and lineLooksLikeAdminPunishRequest(plain, 0))
             if apPoll then
                 pcall(adminPunishIngestChatLine, 0, line)
             end
@@ -28998,8 +31469,11 @@ function pollReportIngest()
         if processChatLineIngest(plain, 0, source, true, line, { delay = 0 }) then
             markChatLineSeen(key)
             chatSeen.deferred[key] = nil
-        elseif not tryParseReport(plain) then
+        elseif not tryParseReport(plain)
+                and not (type(lineLooksLikeAdminPunishRequest) == 'function'
+                    and lineLooksLikeAdminPunishRequest(plain, 0)) then
             -- Не помечаем репорт seen при неудачном ingest — hook/poll смогут повторить.
+            -- Строки /a не помечаем: автовыдача опрашивает их отдельно (pollAdminPunishChat).
             markChatLineSeen(key)
         end
         ::continue::
@@ -29018,13 +31492,13 @@ end
 
 -- Центральный обработчик onServerMessage: checker, spectate, ingest, profanity.
 function deskOnServerMessage(color, text)
-    if type(chatSeen) ~= 'table' or type(chatSeen.lines) ~= 'table' then
-        print('[Report Desk] server msg: chatSeen unavailable (reload script)')
-        return
-    end
     if not text or text == '' then return end
     if type(adminPunishOnServerMessage) == 'function' then
         pcall(adminPunishOnServerMessage, color, text)
+    end
+    if type(chatSeen) ~= 'table' or type(chatSeen.lines) ~= 'table' then
+        print('[Report Desk] server msg: chatSeen unavailable (reload script)')
+        return
     end
     if type(checkerOnServerMessage) == 'function' then
         pcall(checkerOnServerMessage, color, text)
@@ -29085,6 +31559,15 @@ function installDeskSpectateDialogHook()
         end
         if not okSp then
             print('[Report Desk] sp dialog: ' .. tostring(handled))
+        end
+        if type(exactTimeOnShowDialog) == 'function' then
+            local okEt, hideEt = pcall(exactTimeOnShowDialog, dialogId, style, title, button1, button2, text)
+            if okEt and hideEt then
+                return false
+            end
+            if not okEt then
+                print('[Report Desk] exact time dialog: ' .. tostring(hideEt))
+            end
         end
         local checkerHandled = false
         local okChk, chkRes = pcall(checkerOnShowDialog, dialogId, style, title, button1, button2, text)
@@ -29273,6 +31756,14 @@ function installDeskPlayerColorHook()
     sampev.onSetPlayerColor = deskCache.playerColorHandler
 end
 
+
+-- Fast filter: sp refresh hooks only for current spectate target.
+local function spRefreshTargetMatches(playerId)
+    local cache = deskCache
+    if type(cache) ~= 'table' then return false end
+    local tid = tonumber(cache.spWatchTargetId)
+    return tid ~= nil and tid >= 0 and playerId == tid
+end
 -- /sp auto-refresh: RPC enter/exit/interior + sync + onSpectatePlayer/Vehicle.
 function installDeskSpRefreshHooks()
     if not sampev then return end
@@ -29289,7 +31780,7 @@ function installDeskSpRefreshHooks()
         if prevEnter == deskCache.spEnterHandler then prevEnter = deskCache.hookPrevSpEnter end
         if deskCache.hookPrevSpEnter == nil then deskCache.hookPrevSpEnter = prevEnter end
         deskCache.spEnterHandler = function(playerId, vehicleId, passenger)
-            if deskSpectateStats and deskSpectateStats.onSpRefreshEnterVehicle then
+            if spRefreshTargetMatches(playerId) and deskSpectateStats and deskSpectateStats.onSpRefreshEnterVehicle then
                 pcall(deskSpectateStats.onSpRefreshEnterVehicle, playerId, vehicleId)
             end
             return deskCallHookPrev(prevEnter, playerId, vehicleId, passenger)
@@ -29302,7 +31793,7 @@ function installDeskSpRefreshHooks()
         if prevExit == deskCache.spExitHandler then prevExit = deskCache.hookPrevSpExit end
         if deskCache.hookPrevSpExit == nil then deskCache.hookPrevSpExit = prevExit end
         deskCache.spExitHandler = function(playerId, vehicleId)
-            if deskSpectateStats and deskSpectateStats.onSpRefreshExitVehicle then
+            if spRefreshTargetMatches(playerId) and deskSpectateStats and deskSpectateStats.onSpRefreshExitVehicle then
                 pcall(deskSpectateStats.onSpRefreshExitVehicle, playerId, vehicleId)
             end
             return deskCallHookPrev(prevExit, playerId, vehicleId)
@@ -29328,7 +31819,7 @@ function installDeskSpRefreshHooks()
         if prevVehicle == deskCache.spVehicleSyncHandler then prevVehicle = deskCache.hookPrevSpVehicleSync end
         if deskCache.hookPrevSpVehicleSync == nil then deskCache.hookPrevSpVehicleSync = prevVehicle end
         deskCache.spVehicleSyncHandler = function(playerId, vehicleId, data)
-            if deskSpectateStats and deskSpectateStats.onSpRefreshVehicleSync then
+            if spRefreshTargetMatches(playerId) and deskSpectateStats and deskSpectateStats.onSpRefreshVehicleSync then
                 pcall(deskSpectateStats.onSpRefreshVehicleSync, playerId)
             end
             return deskCallHookPrev(prevVehicle, playerId, vehicleId, data)
@@ -29341,7 +31832,7 @@ function installDeskSpRefreshHooks()
         if prevPassenger == deskCache.spPassengerSyncHandler then prevPassenger = deskCache.hookPrevSpPassengerSync end
         if deskCache.hookPrevSpPassengerSync == nil then deskCache.hookPrevSpPassengerSync = prevPassenger end
         deskCache.spPassengerSyncHandler = function(playerId, vehicleId, data)
-            if deskSpectateStats and deskSpectateStats.onSpRefreshPassengerSync then
+            if spRefreshTargetMatches(playerId) and deskSpectateStats and deskSpectateStats.onSpRefreshPassengerSync then
                 pcall(deskSpectateStats.onSpRefreshPassengerSync, playerId)
             end
             return deskCallHookPrev(prevPassenger, playerId, vehicleId, data)
@@ -29354,7 +31845,7 @@ function installDeskSpRefreshHooks()
         if prevPlayer == deskCache.spPlayerSyncHandler then prevPlayer = deskCache.hookPrevSpPlayerSync end
         if deskCache.hookPrevSpPlayerSync == nil then deskCache.hookPrevSpPlayerSync = prevPlayer end
         deskCache.spPlayerSyncHandler = function(playerId, data)
-            if deskSpectateStats and deskSpectateStats.onSpRefreshPlayerSync then
+            if spRefreshTargetMatches(playerId) and deskSpectateStats and deskSpectateStats.onSpRefreshPlayerSync then
                 pcall(deskSpectateStats.onSpRefreshPlayerSync, playerId)
             end
             return deskCallHookPrev(prevPlayer, playerId, data)
@@ -29389,6 +31880,17 @@ function installDeskSendChatHook()
             end
             handleOutgoingAnsCommand(message)
             noteManualStatsCommand(message)
+            if type(exactTimeNoteOutgoing) == 'function' then
+                pcall(exactTimeNoteOutgoing, message)
+            end
+            if not blocked then
+                noteOutgoingAnsCommand(message)
+            end
+            if type(adminPunishOutgoingLooksRelevant) == 'function'
+                    and adminPunishOutgoingLooksRelevant(message)
+                    and type(adminPunishNoteOutgoingMessage) == 'function' then
+                pcall(adminPunishNoteOutgoingMessage, message)
+            end
         end)
         if not ok then
             print('[Report Desk] send chat hook: ' .. tostring(err))
@@ -29397,6 +31899,16 @@ function installDeskSendChatHook()
         return deskCallHookPrev(prev, message)
     end
     sampev.onSendChat = deskCache.sendChatHandler
+end
+
+-- Исходящий /ans из игрового чата (ручной ввод), не дублируем sendChat().
+local function noteOutgoingAnsCommand(message)
+    if tonumber(deskCache.skipAnsStatsHook) and deskCache.skipAnsStatsHook > 0 then
+        return
+    end
+    if type(exactTimeNoteOutgoingAns) == 'function' then
+        pcall(exactTimeNoteOutgoingAns, message)
+    end
 end
 
 -- Note Manual Stats Command — ручной /st из чата: показать server dialog, не HUD-парсинг.
@@ -29473,6 +31985,9 @@ function installDeskSendCommandHook()
             pcall(checkerOnSendCommand, command)
             pcall(tryHandleSpSpectateCommand, command)
             pcall(noteManualStatsCommand, command)
+            if type(exactTimeNoteOutgoing) == 'function' then
+                pcall(exactTimeNoteOutgoing, command)
+            end
             local id, body = command:match('^%/?ans%s+(%d+)%s+(.+)$')
             if id and body then
                 if tryInterceptSplitAnsCommand(command) then
@@ -29480,6 +31995,7 @@ function installDeskSendCommandHook()
                     return
                 end
                 handleOutgoingAnsCommand(command)
+                noteOutgoingAnsCommand(command)
                 ansHandled = true
                 return
             end
@@ -29488,6 +32004,11 @@ function installDeskSendCommandHook()
                 return
             end
             handleOutgoingAnsCommand(command)
+            if type(adminPunishOutgoingLooksRelevant) == 'function'
+                    and adminPunishOutgoingLooksRelevant(command)
+                    and type(adminPunishNoteOutgoingMessage) == 'function' then
+                pcall(adminPunishNoteOutgoingMessage, command)
+            end
         end)
         if not ok then
             print('[Report Desk] send command hook: ' .. tostring(err))
@@ -29739,7 +32260,7 @@ function installDeskSpMenuRpcBlock()
 
     local handler = function(rpcId, bs)
         if rpcId ~= RPC_INIT_MENU and rpcId ~= RPC_SHOW_MENU and rpcId ~= RPC_HIDE_MENU then
-            return
+            return true
         end
         if rpcId == RPC_INIT_MENU then
             local readOk, packed = pcall(menuHandler.on_init_menu_reader, bs)
@@ -29921,6 +32442,10 @@ function deskUninstall()
     if deskCache.profChatHandler and sampev.onChatMessage == deskCache.profChatHandler then
         sampev.onChatMessage = deskCache.hookPrevProfChat
     end
+    if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
+        sampev.onSetPlayerHealth = deskCache.hookPrevSetPlayerHealth
+    end
+    deskCache.gmHealthHandler = nil
     deskCache.serverMsgHandler = nil
     deskCache.specDialogHandler = nil
     deskCache.specToggleHandler = nil
@@ -29952,7 +32477,7 @@ function deskUninstall()
     if type(checkerDismissOpenSyncDialogOnUnload) == 'function' then
         pcall(checkerDismissOpenSyncDialogOnUnload)
     end
-    deskLeaveSpectateMode()
+    pcall(deskLeaveSpectateMode)
     pcall(function()
         if deskWmDispatch and deskWmDispatch.uninstall then
             deskWmDispatch.uninstall()
@@ -30179,6 +32704,7 @@ function main()
     })
     pcall(ensureDeskCatalogWarmup)
     pcall(announceDeskStartup)
+    if type(exactTimeInit) == 'function' then pcall(exactTimeInit) end
 
     lua_thread.create(function()
         pcall(checkerInit)
@@ -30196,7 +32722,6 @@ function main()
                 end
             end
         end
-        chatLogReady = true
         if sampGetChatString and type(profanityMarkLineSeen) == 'function'
                 and type(chatLineSeenKey) == 'function' then
             local pollMax = CHAT_POLL_LINES_OPEN or 100
@@ -30208,10 +32733,12 @@ function main()
                 if i % 20 == 19 then wait(0) end
             end
         end
+        chatLogReady = true
         pcall(getFilteredThreadKeys)
     end)
 
     local lastPoll = 0
+    local lastApHookCheck = 0
     local pollInterval = 0.25
     local lastNickCacheTick = 0
     local lastHookCheck = 0
@@ -30240,6 +32767,7 @@ function main()
                 and deskSpectateStats.isHudDragActive() then return 1 end
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
         if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 16 end
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then return 16 end
         return 50
     end
 
@@ -30265,6 +32793,20 @@ function main()
                 end
             end
             deskWasSampInGame = inGame
+        end
+
+        if type(settings) == 'table' and settings.admin_punish_enabled == true then
+            if type(adminPunishEnsureServerHook) == 'function'
+                    and os.clock() - lastApHookCheck >= 1.0 then
+                pcall(adminPunishEnsureServerHook)
+                lastApHookCheck = os.clock()
+            end
+            if type(pollAdminPunishChat) == 'function' then
+                pcall(pollAdminPunishChat)
+            end
+            if type(adminPunishTick) == 'function' then
+                pcall(adminPunishTick)
+            end
         end
 
         deskSampChatGuardFrame()
@@ -30326,7 +32868,6 @@ function main()
         end)
         pcall(cheatsTickMarker)
         pcall(maskIdTick)
-        pcall(adminPunishTick)
         pcall(tickScheduledConfigFlush)
 
         local nowSave = os.clock()
@@ -33592,6 +36133,12 @@ function checkerManualSync()
         end
         return
     end
+    if checkerState.spawnCatalogSyncRunning then
+        if type(say) == 'function' then
+            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xF3\xE6\xE5 \xE2\xFB\xEF\xEE\xEB\xED\xFF\xE5\xF2\xF1\xFF...')
+        end
+        return
+    end
     checkerRequestAdmsSync()
     if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
         lua_thread.create(function()
@@ -34424,7 +36971,6 @@ function checkerTick()
         checkerState.syncInFlight = false
         checkerClearAdmsFlow()
         checkerState.leadersFlowUntil = 0
-        checkerState.spawnCatalogSyncRunning = false
         return
     end
     local suspended = checkerIsSuspended()

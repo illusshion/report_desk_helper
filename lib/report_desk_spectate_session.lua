@@ -62,6 +62,9 @@ local showTdHook, setStrHook, hookPrevShowTd, hookPrevSetStr
 local lastBeginSessionId = nil
 local lastBeginSessionAt = 0
 local BEGIN_SESSION_DEDUPE_SEC = 0.6
+local SUPPRESS_MENU_CACHE_TTL = 0.05
+local suppressMenuCached = false
+local suppressMenuCachedAt = 0
 
 local function trim(s)
     if trimFn then return trimFn(s) end
@@ -92,6 +95,21 @@ end
 -- Clear Menu Column State
 local function clearMenuColumnState()
     session.menuColumnX = nil
+end
+
+-- Cached shouldSuppressServerSpMenu for TD hot path (vehicle HUD — отдельно, без кеша).
+local function suppressSpMenuActive()
+    local now = os.clock()
+    if now - suppressMenuCachedAt < SUPPRESS_MENU_CACHE_TTL then
+        return suppressMenuCached
+    end
+    suppressMenuCached = M.shouldSuppressServerSpMenu()
+    suppressMenuCachedAt = now
+    return suppressMenuCached
+end
+
+local function invalidateSuppressCache()
+    suppressMenuCachedAt = -1
 end
 
 -- Normalize Menu Text
@@ -232,6 +250,7 @@ end
 -- Публичный API модуля.
 function M.markAwaitingSpectate(on)
     session.awaitingSpectate = on and true or false
+    invalidateSuppressCache()
 end
 
 -- Custom Vehicle Hud Enabled — ingest/block server TD спидометра.
@@ -321,9 +340,13 @@ end
 
 -- Публичный API модуля.
 function M.onShowTextDraw(id, data)
+    if not data then return end
     if handleVehicleTextDraw(id, data) then return false end
-    if not M.shouldSuppressServerSpMenu() then return end
-    if isServerSpMenuTextDrawOnly(id, data, data and data.text) then return false end
+    if not suppressSpMenuActive() then return end
+    local x = tdPosX(data)
+    local tdText = data.text
+    if x and x < SP_MENU_COLUMN_LEFT_X and not isServerSpMenuText(tdText) then return end
+    if isServerSpMenuTextDrawOnly(id, data, tdText) then return false end
 end
 
 -- Публичный API модуля.
@@ -332,7 +355,7 @@ function M.onTextDrawSetString(id, text)
         return false
     end
     if handleVehicleTextDraw(id, nil, text) then return false end
-    if not M.shouldSuppressServerSpMenu() then return end
+    if not suppressSpMenuActive() then return end
     if isServerSpMenuTextDrawOnly(id, nil, text) then return false end
 end
 
@@ -512,6 +535,11 @@ function M.beginSession(id, nick, opts)
     session.awaitingSpectate = false
     session.targetId = id
     session.targetNick = nick
+    invalidateSuppressCache()
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = id
+    end
     if changed then
         pcall(vehicleHud.reset)
         if cbResetMenuSelection then pcall(cbResetMenuSelection)
@@ -532,11 +560,16 @@ function M.endSession()
     session.awaitingSpectate = false
     session.targetId = -1
     session.targetNick = ''
+    invalidateSuppressCache()
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.spWatchTargetId = -1
+    end
     session.menuWantsCursor = false
     session.menuHovered = false
     session.outbound = {}
     clearMenuColumnState()
-    vehicleHud.reset()
+    pcall(vehicleHud.reset)
     if cbResetMenuSelection then pcall(cbResetMenuSelection) end
     if cbOnEnd then pcall(cbOnEnd) end
 end
@@ -667,6 +700,21 @@ function M.uninstallSampevHooks(sampev)
     end
     playerHandler = nil
     hookPrevPlayer = nil
+    if showTdHook and sampev.onShowTextDraw == showTdHook then
+        sampev.onShowTextDraw = hookPrevShowTd
+    end
+    if setStrHook and sampev.onTextDrawSetString == setStrHook then
+        sampev.onTextDrawSetString = hookPrevSetStr
+    end
+    showTdHook = nil
+    setStrHook = nil
+    hookPrevShowTd = nil
+    hookPrevSetStr = nil
+    if vehicleHandler and sampev.onSpectateVehicle == vehicleHandler then
+        sampev.onSpectateVehicle = hookPrevVehicle
+    end
+    vehicleHandler = nil
+    hookPrevVehicle = nil
 end
 
 -- Публичный API модуля.

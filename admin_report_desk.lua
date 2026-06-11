@@ -1,7 +1,7 @@
 --[[ Admin Report Desk — точка входа MoonLoader (/reps, bundle loader). ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('3.98.40')
+script_version('3.98.41')
 script_description('/reps \xF0\xE5\xEF\xEE\xF0\xF2\xFB v3, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS', 'mimgui')
 script_moonloader(26)
@@ -10,6 +10,9 @@ require 'lib.moonloader'
 require 'lib.sampfuncs'
 
 rawset(_G, '__REPORT_DESK_DEV', true)
+
+local deskEnv = nil
+local bundleLoadError = nil
 
 -- MoonLoader кэширует require между /reload — сброс spectate-модулей и bundle.
 local function prepareDeskReload()
@@ -39,25 +42,51 @@ local function prepareDeskReload()
         pcall(app.unload)
     end
     package.loaded['report_desk_app'] = nil
+    deskEnv = nil
+    bundleLoadError = nil
 end
-prepareDeskReload()
 
-local okLoad, loadResult = pcall(function()
-    return require('report_desk_app').load()
-end)
-if not okLoad then
-    print('[Report Desk] core error: ' .. tostring(loadResult))
+local function logBundleError(errText)
+    errText = tostring(errText or '')
+    print('[Report Desk] core error: ' .. errText)
+    pcall(function()
+        local path = getWorkingDirectory() .. '\\report_desk_load_error.txt'
+        local f = io.open(path, 'w')
+        if f then
+            f:write(os.date('%Y-%m-%d %H:%M:%S') .. '\n' .. errText .. '\n')
+            f:close()
+        end
+    end)
+    if isSampAvailable and isSampAvailable() and sampAddChatMessage then
+        pcall(sampAddChatMessage, '{FF6666}[Report Desk] {FFFFFF}ошибка загрузки (см. report_desk_load_error.txt)', 0xE8E8E8)
+    end
 end
-local deskEnv = okLoad and loadResult or nil
-local runDeskMain = deskEnv and deskEnv.main
+
+local function ensureDeskBundle()
+    if deskEnv then return deskEnv end
+    if bundleLoadError then return nil end
+    prepareDeskReload()
+    local okLoad, loadResult = pcall(function()
+        return require('report_desk_app').load()
+    end)
+    if okLoad then
+        deskEnv = loadResult
+        pcall(os.remove, getWorkingDirectory() .. '\\report_desk_load_error.txt')
+        return deskEnv
+    end
+    bundleLoadError = tostring(loadResult)
+    logBundleError(bundleLoadError)
+    return nil
+end
 
 -- Главный цикл MoonLoader: init, hooks, poll ingest, autosave.
 function main()
-    if not okLoad then
-        print('[Report Desk] не запущен: ошибка загрузки core (см. moonloader.log)')
+    local env = ensureDeskBundle()
+    if not env or type(env.main) ~= 'function' then
+        print('[Report Desk] не запущен: ошибка загрузки core')
         while true do wait(1000) end
     end
-    if runDeskMain then return runDeskMain() end
+    return env.main()
 end
 
 -- Cleanup при выгрузке скрипта.
