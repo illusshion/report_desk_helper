@@ -141,9 +141,9 @@ function maskIdTick()
     if maxId > 1000 then maxId = 1000 end
 
     for id = 0, maxId do
-        if sampIsPlayerConnected(id) and maskIdPlayerExists(id) then
+        if sampIsPlayerConnected(id) then
             local color = maskIdPlayerColor(id)
-            if color and maskIdIsMaskedColor(color) then
+            if color and maskIdIsMaskedColor(color) and maskIdPlayerExists(id) then
                 maskIdEnsure(id)
             elseif maskIdIsOurLabel(id) then
                 maskIdDestroy(id)

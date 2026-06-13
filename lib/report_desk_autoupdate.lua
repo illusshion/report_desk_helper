@@ -118,6 +118,10 @@ local function overlayHide()
     if ov and ov.hide then ov.hide() end
 end
 
+local function setOverlayContext(opts)
+    activeOverlayOpts = opts
+end
+
 function M.hideUpdateOverlay()
     overlayHide()
     setOverlayContext(nil)
@@ -131,10 +135,6 @@ function M.showUpdateOverlay(title, detail, opts)
     else
         overlayShow(title or OVERLAY_TITLE, detail or OVERLAY_CHECK, opts)
     end
-end
-
-local function setOverlayContext(opts)
-    activeOverlayOpts = opts
 end
 
 local function log(msg)
@@ -1271,6 +1271,22 @@ local function disableLegacyLauncher()
     end
 end
 
+local function assetMarkerOk()
+    local paths = {
+        M.path('res\\report_desk_skins\\skin-1.png'),
+        M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png'),
+    }
+    for _, p in ipairs(paths) do
+        if doesFileExist(p) then
+            local sz = fileBytes(p)
+            if type(sz) == 'number' and sz > 256 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function commitPlan(downloaded, manifest, allFiles, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
     local installLabel = wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL
@@ -1757,22 +1773,6 @@ function M.corePathFromUrl(url, fallback)
         return M.coreDir() .. '\\' .. name
     end
     return fallback or (M.coreDir() .. '\\AdminDeskCore.luac')
-end
-
-local function assetMarkerOk()
-    local paths = {
-        M.path('res\\report_desk_skins\\skin-1.png'),
-        M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png'),
-    }
-    for _, p in ipairs(paths) do
-        if doesFileExist(p) then
-            local sz = fileBytes(p)
-            if type(sz) == 'number' and sz > 256 then
-                return true
-            end
-        end
-    end
-    return false
 end
 
 function M.readLocalAssetsManifest()

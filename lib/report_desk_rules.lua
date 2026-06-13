@@ -1,48 +1,59 @@
 --[[ Модуль: auto-rules, scenarios, processChatLineIngest. ]]
 local autoReplyQueue = {}
-local autoReplyWorkerOn = false
+local autoReplyHead = 1
+local autoReplyTail = 0
 local AUTO_REPLY_QUEUE_MAX = 48
 
-local function runAutoReplyJob(job)
+local function autoReplyQueueLen()
+    return autoReplyTail - autoReplyHead + 1
+end
+
+local function autoReplyDefaultDelaySec()
+    return (tonumber(AUTO_REPLY_DELAY_MS) or 250) / 1000
+end
+
+local function autoReplySrcAllowsRetry(src)
+    return src == 'srv' or src == 'chat' or src == 'retry'
+end
+
+local function dispatchAutoReplyJob(job)
     if not job then return end
-    local nickCopy, idCopy, bodyCopy, src = job.nick, job.id, job.body, job.src
     if settings.profanity_filter_enabled then
-        pcall(checkProfanityFromPlayer, nickCopy, idCopy, bodyCopy, src)
+        pcall(checkProfanityFromPlayer, job.nick, job.id, job.body, job.src)
     end
-    if not deskAutoReplyAllowed() then return end
-    local tk = findThreadKeyByNick(nickCopy) or nickKey(nickCopy)
+    local tk = findThreadKeyByNick(job.nick) or nickKey(job.nick)
     local th = threads[tk]
-    if th then
-        pcall(runAutoRulesForReport, th, bodyCopy, src)
+    if not th then
+        if (job.attempt or 0) < 2 then
+            enqueueAutoReplyJob(job.nick, job.id, job.body, job.src, {
+                attempt = (job.attempt or 0) + 1,
+                delaySec = 0.15,
+            })
+        end
+        return
+    end
+    local result = processAutoRules(th, job.body)
+    if result == false and autoReplySrcAllowsRetry(job.src) then
+        scheduleAutoRulesRetry(th, job.body, job.attempt or 0)
     end
 end
 
-local function startAutoReplyWorker()
-    if autoReplyWorkerOn then return end
-    if #autoReplyQueue < 1 then return end
-    if not lua_thread or not lua_thread.create then return end
-    autoReplyWorkerOn = true
-    lua_thread.create(function()
-        local okRun, errRun = pcall(function()
-            while #autoReplyQueue > 0 do
-                local job = table.remove(autoReplyQueue, 1)
-                local delayMs = tonumber(AUTO_REPLY_DELAY_MS) or 250
-                local elapsedMs = (os.clock() - (job.enqueuedAt or os.clock())) * 1000
-                local remain = math.floor(delayMs - elapsedMs + 0.5)
-                if remain > 0 then wait(remain) end
-                if deskAutoReplyAllowed() then
-                    pcall(runAutoReplyJob, job)
-                end
-            end
-        end)
-        autoReplyWorkerOn = false
-        if not okRun then
-            print('[Report Desk] auto reply worker: ' .. tostring(errRun))
+function tickAutoReplyQueue()
+    if autoReplyQueueLen() < 1 then return end
+    if not deskAutoReplyAllowed() then return end
+    local now = os.clock()
+    while autoReplyHead <= autoReplyTail do
+        local job = autoReplyQueue[autoReplyHead]
+        if not job then
+            autoReplyHead = autoReplyHead + 1
+        else
+            local fireAt = tonumber(job.fireAt) or now
+            if fireAt > now then break end
+            autoReplyQueue[autoReplyHead] = nil
+            autoReplyHead = autoReplyHead + 1
+            pcall(dispatchAutoReplyJob, job)
         end
-        if #autoReplyQueue > 0 then
-            startAutoReplyWorker()
-        end
-    end)
+    end
 end
 
 function threadHasIncomingReportBody(t, body)
@@ -62,18 +73,23 @@ function threadHasIncomingReportBody(t, body)
     return false
 end
 
-local function enqueueAutoReplyJob(nick, id, body, src)
-    if #autoReplyQueue >= AUTO_REPLY_QUEUE_MAX then
-        table.remove(autoReplyQueue, 1)
+function enqueueAutoReplyJob(nick, id, body, src, opts)
+    opts = opts or {}
+    if autoReplyQueueLen() >= AUTO_REPLY_QUEUE_MAX then
+        autoReplyQueue[autoReplyHead] = nil
+        autoReplyHead = autoReplyHead + 1
     end
-    autoReplyQueue[#autoReplyQueue + 1] = {
+    local delaySec = tonumber(opts.delaySec)
+    if not delaySec then delaySec = autoReplyDefaultDelaySec() end
+    autoReplyTail = autoReplyTail + 1
+    autoReplyQueue[autoReplyTail] = {
         nick = nick,
         id = id,
         body = body,
         src = src or 'live',
-        enqueuedAt = os.clock(),
+        fireAt = os.clock() + delaySec,
+        attempt = tonumber(opts.attempt) or 0,
     }
-    startAutoReplyWorker()
 end
 
 function cloneBuiltinAutoRule(tpl, payload)
@@ -107,10 +123,7 @@ function getActiveBuiltinAutoRules()
     return list
 end
 
--- Get Active Auto Rules
-function getActiveAutoRules()
-    return getActiveBuiltinAutoRules()
-end
+-- Builtin auto-rules (time/GG) are separate from intent/quickScenarios matching (resolveMessageIntents).
 
 -- Process Auto Rules
 function processAutoRules(t, body)
@@ -157,37 +170,36 @@ function processAutoRules(t, body)
     return false
 end
 
--- Clear All Pending Auto
-function clearAllPendingAuto()
+-- Clear confirm-only pending auto (mode=confirm rules).
+function clearPendingAutoConfirm()
     for k in pairs(pendingAuto) do
         pendingAuto[k] = nil
     end
-    for i = #autoReplyQueue, 1, -1 do
+end
+
+function clearAutoReplyQueue()
+    for i = autoReplyHead, autoReplyTail do
         autoReplyQueue[i] = nil
     end
+    autoReplyHead = 1
+    autoReplyTail = 0
+end
+
+-- Clear All Pending Auto
+function clearAllPendingAuto()
+    clearPendingAutoConfirm()
+    clearAutoReplyQueue()
 end
 
 -- Schedule Auto Rules Retry
 function scheduleAutoRulesRetry(t, body, attempt)
     attempt = tonumber(attempt) or 0
     if attempt >= AUTO_RETRY_MAX then return end
-    local nick = t.nick
-    local wantBody = normalizeMatchText(body)
-    if wantBody == '' then wantBody = normalizeIngestBody(body) end
-    lua_thread.create(function()
-        wait(AUTO_RETRY_MS)
-        if not deskAutoReplyAllowed() then return end
-        local key = findThreadKeyByNick(nick) or nickKey(nick)
-        local th = threads[key]
-        if not th then return end
-        local bodyNorm = normalizeMatchText(body)
-        if bodyNorm == '' then bodyNorm = normalizeIngestBody(body) end
-        if bodyNorm ~= wantBody then return end
-        local result = processAutoRules(th, body)
-        if result == false then
-            scheduleAutoRulesRetry(th, body, attempt + 1)
-        end
-    end)
+    if not t or not t.nick then return end
+    enqueueAutoReplyJob(t.nick, t.id, body, 'retry', {
+        attempt = attempt + 1,
+        delaySec = (tonumber(AUTO_RETRY_MS) or 280) / 1000,
+    })
 end
 
 -- Run Auto Rules For Report
@@ -195,9 +207,10 @@ function runAutoRulesForReport(t, body, source)
     if not t or not body then return end
     if not deskAutoReplyAllowed() then return end
     local result = processAutoRules(t, body)
-    if result == false and (source == 'srv' or source == 'chat') then
+    if result == false and autoReplySrcAllowsRetry(source) then
         scheduleAutoRulesRetry(t, body, 0)
     end
+    return result
 end
 
 -- Confirm Pending Auto
@@ -349,10 +362,14 @@ function ingestPunishmentEvent(ev, source, isLive, rawLine)
         return false
     end
     markIngestDedup(dedupId, 'pun|' .. text, rawLine)
+    if type(markDirtyThreads) == 'function' then
+        markDirtyThreads()
+    end
     return true
 end
 
 -- Process Chat Line Ingest
+-- NO-API: chat ingest delegated to report_desk_ingest (server messages only).
 function processChatLineIngest(plain, color, source, isLive, rawLine, ingestMeta)
     local parseOpts = {}
     if source == 'chat' or source == 'srv' then
@@ -389,7 +406,10 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
     if reportChannel then
         t.reportChannel = reportChannel
     end
-    if isLive then
+    local maxAge = tonumber(AUTO_REPLY_MAX_AGE_SEC) or 90
+    local age = type(chatLineAgeSeconds) == 'function' and chatLineAgeSeconds(raw) or nil
+    local fresh = age == nil or age <= maxAge
+    if isLive and fresh then
         t.unread = (t.unread or 0) + 1
         totalUnread = totalUnread + 1
         local reportHasProfanity = settings.profanity_filter_enabled and findProfanityMatch(body)
@@ -402,12 +422,8 @@ function onIncomingReport(nick, id, body, raw, isLive, source, channel)
         channel = channel,
     })
     markDirtyThreads()
-    if isLive and settings.auto_rules_enabled ~= false then
-        local maxAge = tonumber(AUTO_REPLY_MAX_AGE_SEC) or 90
-        local age = type(chatLineAgeSeconds) == 'function' and chatLineAgeSeconds(raw) or nil
-        if age == nil or age <= maxAge then
-            enqueueAutoReplyJob(nick, id, body, source or 'live')
-        end
+    if isLive and fresh and settings.auto_rules_enabled ~= false then
+        enqueueAutoReplyJob(nick, id, body, source or 'live')
     end
 end
 
@@ -630,8 +646,11 @@ end
 function runHelperCmd(cmd)
     local t = getSelectedThread()
     if not t then return end
-    local id = getResolvedAnsId(t)
-    if id < 0 then return end
+    local id, err = resolveAnsIdForReply(t)
+    if not id then
+        if err then say(err) end
+        return
+    end
     cmd = trim(cmd):gsub('^/', '')
     if cmd == '' then return end
     sendChat(cmd .. ' ' .. id)
@@ -647,13 +666,17 @@ end
 
 -- Thread Matches Search
 function threadMatchesSearch(t, key)
-    local q = trim(readInputBuf(searchBuf)):lower()
-    if q == '' then return true end
+    local rawQ = trim(readInputBuf(searchBuf))
+    if rawQ == '' then return true end
+    local q = type(cp1251Lower) == 'function' and cp1251Lower(rawQ) or rawQ:lower()
     if tostring(t.id):find(q, 1, true) then return true end
-    if (t.nick or ''):lower():find(q, 1, true) then return true end
+    local nickHay = type(cp1251Lower) == 'function' and cp1251Lower(t.nick or '') or (t.nick or ''):lower()
+    if nickHay:find(q, 1, true) then return true end
     for i = #t.messages, math.max(1, #t.messages - 5), -1 do
         local m = t.messages[i]
-        if m and (m.text or ''):lower():find(q, 1, true) then return true end
+        local hay = m and (m.text or '') or ''
+        if type(cp1251Lower) == 'function' then hay = cp1251Lower(hay) else hay = hay:lower() end
+        if hay:find(q, 1, true) then return true end
     end
     return false
 end
@@ -662,6 +685,7 @@ end
 function getFilterListSig()
     return tostring(filterMode[0] or 0) .. '|' .. trim(readInputBuf(searchBuf)):lower()
         .. '|' .. tostring(deskCache.threadStructRev or 0)
+        .. '|' .. tostring(deskCache.threadMsgRev or 0)
 end
 
 -- Get Filtered Thread Keys
@@ -707,6 +731,66 @@ function lastPreview(t)
         return '> ' .. (m.text or '')
     end
     return '< ' .. (m.text or '')
+end
+
+-- Poll sampGetChatString: safety reconcile (hook активен) или полный fallback.
+function pollReportIngest()
+    if not sampGetChatString then return end
+    if not chatLogReady then return end
+    local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+    local maxLines
+    if hookActive then
+        if showWindow[0] then
+            maxLines = CHAT_POLL_SAFETY_LINES_OPEN or CHAT_POLL_SAFETY_LINES or 32
+        else
+            maxLines = CHAT_POLL_SAFETY_LINES
+        end
+    else
+        maxLines = showWindow[0] and CHAT_POLL_LINES_OPEN or CHAT_POLL_LINES_CLOSED
+    end
+    local maxLine = maxLines - 1
+    for i = 0, maxLine do
+        local line = sampGetChatString(i) or ''
+        if line == '' then goto continue end
+        local plain = normalizeChatLine(line)
+        local key = chatLineSeenKey(line)
+        if key == '' then goto continue end
+        if chatSeen.lines[key] then goto continue end
+        if tryIngestAdminReplyLine(plain) then
+            markChatLineSeen(key)
+            chatSeen.deferred[key] = nil
+            goto continue
+        end
+        if looksLikeAdminReplyLine(plain) then
+            local deferAt = chatSeen.deferred[key]
+            if not deferAt then
+                chatSeen.deferred[key] = os.clock()
+                goto continue
+            end
+            if os.clock() - deferAt < CHAT_DEFERRED_ADMIN_SEC then
+                goto continue
+            end
+            chatSeen.deferred[key] = nil
+            if tryIngestAdminReplyLine(plain) then
+                markChatLineSeen(key)
+                goto continue
+            end
+            goto continue
+        end
+        if settings.profanity_filter_enabled then
+            pcall(checkProfanityFromChatLine, plain, key)
+        end
+        local source = hookActive and 'srv' or 'chat'
+        if processChatLineIngest(plain, 0, source, false, line, { delay = 0 }) then
+            markChatLineSeen(key)
+            chatSeen.deferred[key] = nil
+        elseif not tryParseReport(plain)
+                and not (type(lineLooksLikeAdminPunishRequest) == 'function'
+                    and lineLooksLikeAdminPunishRequest(plain, 0)) then
+            markChatLineSeen(key)
+        end
+        ::continue::
+    end
 end
 
 -- Draw Accent Strip

@@ -219,17 +219,13 @@ function clampSuspectPlayerId(id)
     return math.floor(id)
 end
 
-local REPORT_ID_MARKERS = {
-    'dm', 'дм', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
-    'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
-}
-
 -- Text Looks Like Player Report
 function textLooksLikePlayerReport(text)
     local low = normalizeMatchText(text)
     if low == '' then return false end
     if deskIngest.looksLikeAdminActionText(text) then return false end
-    for _, m in ipairs(REPORT_ID_MARKERS) do
+    local markers = type(getReportIdMarkers) == 'function' and getReportIdMarkers() or {}
+    for _, m in ipairs(markers) do
         if low:find(m, 1, true) then return true end
     end
     return false
@@ -542,9 +538,39 @@ function drawQuickScenarioTooltip(sc, reporter, messageText)
     imgui.TextWrapped(uiText(truncate(body, 220)))
 end
 
--- Quick Scenario Display Label
-function quickScenarioDisplayLabel(label)
-    return ellipsizeToWidth(uiText(label or '?'), QUICK_BTN_MAX_W - 12)
+-- Текст на кнопке = то, что уйдёт игроку (не заголовок сценария).
+function quickScenarioButtonPlainText(sc, reporter, scenarioText)
+    local body = previewQuickScenarioText(sc, reporter, scenarioText)
+    body = body:gsub('\r\n', '\n'):gsub('\n+', ' · ')
+    return trim(body)
+end
+
+function quickScenarioButtonCaption(sc, reporter, scenarioText)
+    if sc and sc.action == 'watch' then
+        local lbl = trim(sc.label or '') ~= '' and sc.label or '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
+        return ellipsizeToWidth(uiText(lbl), QUICK_BTN_MAX_W - 12)
+    end
+    local body = quickScenarioButtonPlainText(sc, reporter, scenarioText)
+    if body == '' then body = trim(sc and sc.label or '') or '?' end
+    return ellipsizeToWidth(uiText(body), QUICK_BTN_MAX_W - 12)
+end
+
+function quickBtnWidthForScenario(sc, reporter, scenarioText)
+    if sc and sc.action == 'watch' then
+        local lbl = trim(sc.label or '') ~= '' and sc.label or '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
+        return quickBtnWidth(lbl)
+    end
+    local body = quickScenarioButtonPlainText(sc, reporter, scenarioText)
+    if body == '' then body = trim(sc and sc.label or '') or '?' end
+    return quickBtnWidth(body)
+end
+
+function prepareQuickButtonWidths(quickBtns, reporter, scenarioText)
+    for _, qb in ipairs(quickBtns or {}) do
+        if qb.scenario then
+            qb.btnW = quickBtnWidthForScenario(qb.scenario, reporter, scenarioText)
+        end
+    end
 end
 
 -- Draw Quick Scenario Button
@@ -552,20 +578,6 @@ function drawQuickScenarioButton(sc, lbl, btnId, btnW, scenarioText, reporter)
     local isWatch = sc and sc.action == 'watch'
     pushQuickScenarioBtnStyle(isWatch)
     local clicked = imgui.Button(lbl .. btnId, imgui.ImVec2(btnW, QUICK_BTN_H))
-    if imgui.IsItemHovered() then
-        if imgui.BeginTooltip then
-            imgui.BeginTooltip()
-            if imgui.PushTextWrapPos then imgui.PushTextWrapPos(380) end
-            drawQuickScenarioTooltip(sc, reporter, scenarioText)
-            if imgui.PopTextWrapPos then imgui.PopTextWrapPos() end
-            imgui.EndTooltip()
-        elseif imgui.SetTooltip then
-            local body = truncate(previewQuickScenarioText(sc, reporter, scenarioText), 120)
-            if body ~= '' then
-                imgui.SetTooltip(uiText(body))
-            end
-        end
-    end
     if clicked then
         executeQuickScenario(sc, reporter, scenarioText)
     end
@@ -580,7 +592,7 @@ function drawInlineWatchButtons(watchBtns, localX, localY, btnX, btnY, scenarioT
     for qi, qb in ipairs(watchBtns) do
         if qi > 1 then imgui.SameLine(0, QUICK_BTN_PAD) end
         local sc = qb.scenario
-        local disp = quickScenarioDisplayLabel(sc.label or '?')
+        local disp = quickScenarioButtonCaption(sc, reporter, scenarioText)
         drawQuickScenarioButton(sc, disp, '##qbw' .. qi, qb.btnW, scenarioText, reporter)
     end
     imgui.PopID()
@@ -601,7 +613,7 @@ function drawQuickScenarioButtons(quickBtns, localX, localY, btnRowY, rowW, padS
         for qi, qb in ipairs(row) do
             if qi > 1 then imgui.SameLine(0, QUICK_BTN_PAD) end
             local sc = qb.scenario
-            local disp = quickScenarioDisplayLabel(sc.label or '?')
+            local disp = quickScenarioButtonCaption(sc, reporter, scenarioText)
             drawQuickScenarioButton(sc, disp, '##qb' .. ri .. '_' .. qi, qb.btnW, scenarioText, reporter)
         end
     end
@@ -627,7 +639,7 @@ function collectQuickButtonsForMessage(text)
                 scenario = sc,
                 idx = 0,
                 score = r.score,
-                btnW = quickBtnWidth(sc.label),
+                btnW = quickBtnWidth(sc.reply or sc.label),
                 suspectId = sc.action == 'watch' and extractSuspectIdForWatch(text) or nil,
                 intentId = r.id,
                 context = ctx,
@@ -635,9 +647,10 @@ function collectQuickButtonsForMessage(text)
         end
     end
 
-    if cacheKey ~= '' and type(deskCache) == 'table' then
+    if cacheKey ~= '' and type(deskCache) == 'table' and type(touchLruCache) == 'function' then
         deskCache.quickBtn = deskCache.quickBtn or {}
-        deskCache.quickBtn[cacheKey] = { sig = sig, btns = out }
+        deskCache.quickBtnOrder = deskCache.quickBtnOrder or {}
+        touchLruCache(deskCache.quickBtn, deskCache.quickBtnOrder, cacheKey, { sig = sig, btns = out }, 500)
     end
     return out
 end
@@ -690,18 +703,10 @@ local function intentCorpusParseLine(line)
     if not line or line == '' then return nil end
     local phrase = line:match('"phrase"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
     if not phrase then return nil end
-    local ts = line:match('"ts"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"')
-        or line:match('"ts"%s*:%s*([^,}]+)')
-    local context = line:match('"context"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
-    local thread = line:match('"thread"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
-    local threadId = tonumber(line:match('"thread_id"%s*:%s*(%d+)')) or 0
+    local reply = line:match('"reply"%s*:%s*"([^"\\]*(?:\\.[^"\\]*)*)"') or ''
     return {
-        ts = intentCorpusJsonUnescape(ts or ''),
         phrase = phrase,
-        context = context,
-        thread = thread,
-        thread_id = threadId,
-        matched = intentCorpusParseMatchedIds(line),
+        reply = reply,
     }
 end
 
@@ -720,14 +725,10 @@ end
 
 local function intentCorpusFormatLine(entry)
     local phrase = intentCorpusTextToFile(intentCorpusTextFromFile(entry.phrase))
-    local context = intentCorpusTextToFile(intentCorpusTextFromFile(entry.context))
-    local thread = intentCorpusTextToFile(intentCorpusTextFromFile(entry.thread))
-    local ts = entry.ts or os.date('!%Y-%m-%dT%H:%M:%SZ')
+    local reply = intentCorpusTextToFile(intentCorpusTextFromFile(entry.reply or ''))
     return string.format(
-        '{"ts":%s,"phrase":%s,"context":%s,"thread":%s,"thread_id":%d%s}',
-        intentCorpusJsonStr(ts), intentCorpusJsonStr(phrase), intentCorpusJsonStr(context),
-        intentCorpusJsonStr(thread), tonumber(entry.thread_id) or 0,
-        intentCorpusFormatMatchedIds(entry.matched)
+        '{"phrase":%s,"reply":%s}',
+        intentCorpusJsonStr(phrase), intentCorpusJsonStr(reply)
     )
 end
 
@@ -753,8 +754,8 @@ local function migrateIntentCorpusQueueToUtf8(path)
     if not f then return end
     local entries = {}
     for line in f:lines() do
-        local entry = intentCorpusParseLine(line)
-        if entry then entries[#entries + 1] = entry end
+        local ok, entry = pcall(intentCorpusParseLine, line)
+        if ok and entry then entries[#entries + 1] = entry end
     end
     f:close()
     if #entries == 0 then return end
@@ -804,33 +805,13 @@ function appendIntentCorpusPhrase(phrase, meta)
     if key == '' then return false, 'empty' end
     if intentCorpusQueue.seen[key] then return false, 'dup' end
 
-    meta = type(meta) == 'table' and meta or {}
-    local ctx = meta.context or ''
-    if ctx == '' and type(resolveMessageIntents) == 'function' then
-        ensureDeskIntentsLoaded()
-        local _, c = resolveMessageIntents(phrase)
-        ctx = c or ''
-    end
-
-    local matched = meta.matched
-    if type(matched) ~= 'table' or #matched < 1 then
-        matched = nil
-    end
-
     local path = INTENT_CORPUS_QUEUE_PATH
     if not path or path == '' then return false, 'io' end
     local f = io.open(path, 'ab')
     if not f then return false, 'io' end
-    local ts = os.date('!%Y-%m-%dT%H:%M:%SZ')
-    local thread = trim(meta.thread or '')
-    local threadId = tonumber(meta.threadId) or 0
     f:write(intentCorpusFormatLine({
-        ts = ts,
         phrase = phrase,
-        context = ctx,
-        thread = thread,
-        thread_id = threadId,
-        matched = matched,
+        reply = '',
     }) .. '\n')
     f:close()
     intentCorpusQueue.seen[key] = true
@@ -979,22 +960,20 @@ end
 -- Execute Watch Suspect
 function executeWatchSuspect(reporter, suspectId, notifyOverride)
     if not reporter or not suspectId then return end
+    suspectId = clampSuspectPlayerId(suspectId)
+    if not suspectId then return end
     local notify = trim(notifyOverride or settings.watch_notify or 'see')
     if notify == '' then notify = 'see' end
     local ansId, err = resolveAnsIdForReply(reporter)
+    local reporterNick = reporter.nick or ''
     if not ansId then
         say(err or '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC \xF0\xE5\xEF\xEE\xF0\xF2\xE5\xF0\xF3')
-        releaseDeskInputCapture(true)
-        closeDeskWindow()
-        sendChat('sp ' .. suspectId)
-        return
+    else
+        notify = expandTemplate(notify, ansId)
     end
-    notify = expandTemplate(notify, ansId)
-    local reporterNick = reporter.nick or ''
-    releaseDeskInputCapture(true)
-    closeDeskWindow()
-    sendChat('sp ' .. suspectId)
-    if settings.watch_auto_notify ~= false then
+    -- Тот же путь, что /sp в шапке: sendGameCmd → sendMenuOutbound (skipSpHookLocal).
+    sendGameCmd('sp ' .. suspectId)
+    if ansId and settings.watch_auto_notify ~= false then
         scheduleWatchNotify(reporterNick, ansId, notify)
     end
 end
@@ -1159,6 +1138,15 @@ end
 
 -- Rule Name Exists
 function ruleNameExists(name)
+    name = trim(tostring(name or '')):lower()
+    if name == '' then return false end
+    if type(getActiveBuiltinAutoRules) == 'function' then
+        for _, r in ipairs(getActiveBuiltinAutoRules()) do
+            if trim(tostring(r and r.name or '')):lower() == name then
+                return true
+            end
+        end
+    end
     return false
 end
 
@@ -1181,6 +1169,9 @@ end
 
 -- Nick Key
 function nickKey(nick)
+    if type(cp1251Lower) == 'function' then
+        return cp1251Lower(trim(nick or ''))
+    end
     return trim(nick or ''):lower()
 end
 

@@ -116,13 +116,11 @@ function M.looksLikePlayerStatusBody(body)
     body = normalizeStatusText(body)
     if body == '' then return true end
     if body:find('\xCD\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
-    local low = body:lower()
     if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
     if body:match('^%([^)]*lvl') then return true end
     if body:match('^%d+%s*lvl') then return true end
     if body:match('^Voice') then return true end
     if body:match('^%<%s*%(') then return true end
-    if body:find('\xED\xE0 \xEF\xE0\xF3\xE7\xE5', 1, true) then return true end
     if body:find('\xEF\xE0\xF3\xE7', 1, true) then return true end
     if body:find('pause', 1, true) then return true end
     if body:find('paused', 1, true) then return true end
@@ -277,6 +275,7 @@ local function parseAdvanceReportLine(text)
 end
 
 -- Парсинг данных с сервера/чата.
+-- NO-API: player reports arrive only as server chat messages.
 local function parsePlayerReportStrict(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) or text:find('%[A%]%s', 1) then return nil end
@@ -303,9 +302,6 @@ local function parseAdminBracketLine(text)
         if not adminNick then return nil end
         body = trim(body)
         if body == '' then return nil end
-        if not M.looksLikeAdminActionText(body) then
-            return buildAdminActionEv(adminNick, adminId, body)
-        end
         return buildAdminActionEv(adminNick, adminId, body)
     end
 
@@ -350,6 +346,7 @@ function M.formatPunishmentDisplay(adminNick, targetNick, rawText)
 end
 
 -- Парсинг данных с сервера/чата.
+-- NO-API: punishment notifications are server chat messages only.
 local function parsePunishmentLine(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) then return nil end
@@ -409,6 +406,7 @@ function M.tryParsePlayerReport(text)
 end
 
 -- Публичный API модуля.
+-- NO-API: all chat event types parsed from server message text.
 function M.tryParseChatEvent(text, opts)
     opts = opts or {}
     if not text or text == '' then return nil end

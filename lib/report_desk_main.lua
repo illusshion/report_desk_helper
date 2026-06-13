@@ -10,7 +10,6 @@ function main()
     if not okCfg then
         print('[Report Desk] config: ' .. tostring(errCfg))
         pcall(ensureCheatsSettings)
-        if not deskConfigReady then deskConfigReady = true end
     end
     if type(initCmdBinds) == 'function' then
         pcall(initCmdBinds)
@@ -23,26 +22,6 @@ function main()
     if settings.spectate_vehicle_hud == nil then
         settings.spectate_vehicle_hud = true
         markDirtySettings()
-    end
-    -- Флаги layout: только проставить, не трогать сохранённые координаты (saveConfig раньше их не писал).
-    do
-        local layoutFlags = {
-            'spectate_hud_layout_v2',
-            'spectate_sp_ui_layout_v2',
-            'spectate_vehicle_hud_layout_v2',
-            'spectate_vehicle_hud_layout_v3',
-            'spectate_vehicle_hud_layout_v4',
-            'spectate_vehicle_hud_layout_v5',
-            'spectate_vehicle_hud_layout_v6',
-        }
-        local layoutDirty = false
-        for _, key in ipairs(layoutFlags) do
-            if not settings[key] then
-                settings[key] = true
-                layoutDirty = true
-            end
-        end
-        if layoutDirty then markDirtySettings() end
     end
     pcall(updateMimguiGameInputPassthrough)
     if type(deskSpectateStats) ~= 'table' or type(deskSpectateStats.install) ~= 'function' then
@@ -126,6 +105,12 @@ function main()
     pcall(deskReinstallSpMenuHooks)
     pcall(installDeskSpMenuRpcBlock)
     pcall(installDeskCheckerRpcProbe)
+    pcall(function()
+        local specSession = package.loaded['report_desk_spectate_session']
+        if specSession and specSession.syncTextDrawHooks and sampev then
+            specSession.syncTextDrawHooks(sampev)
+        end
+    end)
     uiSound[0] = settings.sound
     uiAutoRulesEnabled[0] = settings.auto_rules_enabled ~= false
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
@@ -181,6 +166,8 @@ function main()
     uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
+    -- Anti-replay + chatLogReady до хуков: live-репорты сразу в UX, не ждём checkerInit/thread.
+    pcall(seedSeenChatLines)
     pcall(installProfanityHooks)
     pcall(installDeskServerMessageHook)
     pcall(installDeskSpectateDialogHook)
@@ -193,7 +180,7 @@ function main()
     pcall(installDeskPlayerColorHook)
     pcall(installDeskGodmodeHealthHook)
     pcall(installDeskSpRefreshHooks)
-    pcall(sampSyncAllPlayerColors)
+    pcall(sampSyncAllPlayerColorsAsync)
     sessionLive = true
     lastSettingsSave = os.clock()
     lastThreadsSave = os.clock()
@@ -218,19 +205,7 @@ function main()
     lua_thread.create(function()
         pcall(checkerInit)
         wait(0)
-        if type(chatSeen) == 'table' then
-            chatSeen.lines = {}
-            chatSeen.order = {}
-            chatSeen.deferred = {}
-            chatSeen.consumed = {}
-            chatSeen.consumedOrder = {}
-            if sampGetChatString then
-                for i = 0, 99 do
-                    markChatLineSeen(chatLineSeenKey(sampGetChatString(i)))
-                    if i % 20 == 19 then wait(0) end
-                end
-            end
-        end
+        -- Не сбрасываем chatSeen: live-репорты могли прийти после seedSeenChatLines.
         if sampGetChatString and type(profanityMarkLineSeen) == 'function'
                 and type(chatLineSeenKey) == 'function' then
             local pollMax = CHAT_POLL_LINES_OPEN or 100
@@ -242,7 +217,7 @@ function main()
                 if i % 20 == 19 then wait(0) end
             end
         end
-        chatLogReady = true
+        if not chatLogReady then chatLogReady = true end
         pcall(getFilteredThreadKeys)
     end)
 
@@ -258,6 +233,9 @@ function main()
 
     local function resolveIngestPollInterval()
         if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
+            if showWindow[0] then
+                return POLL_INTERVAL_SAFETY_OPEN or 0.12
+            end
             return POLL_INTERVAL_SAFETY
         end
         return showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
@@ -290,6 +268,11 @@ function main()
     while true do
         wait(mainLoopWaitMs())
 
+        if deskCache.uiCacheDirty then
+            invalidateUiCaches()
+            deskCache.uiCacheDirty = nil
+        end
+
         if os.clock() - myNickTick >= 2.0 then
             refreshMyNick()
             myNickTick = os.clock()
@@ -312,17 +295,36 @@ function main()
         end
 
         if type(settings) == 'table' and settings.admin_punish_enabled == true then
-            if type(adminPunishEnsureServerHook) == 'function'
-                    and os.clock() - lastApHookCheck >= 1.0 then
-                pcall(adminPunishEnsureServerHook)
-                lastApHookCheck = os.clock()
+            if type(adminPunishEnsureServerHook) == 'function' then
+                local apHookInterval = 5.0
+                local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+                local profOk = deskCache and deskCache.profHooksInstalled == true
+                if not hookOk or not profOk then apHookInterval = 1.0 end
+                if os.clock() - lastApHookCheck >= apHookInterval then
+                    pcall(adminPunishEnsureServerHook)
+                    lastApHookCheck = os.clock()
+                end
             end
-            if type(pollAdminPunishChat) == 'function' then
+            if type(pollAdminPunishChat) == 'function'
+                    and (type(adminPunishHooksActive) ~= 'function' or not adminPunishHooksActive()) then
                 pcall(pollAdminPunishChat)
             end
             if type(adminPunishTick) == 'function' then
                 pcall(adminPunishTick)
             end
+        end
+
+        if type(adminPunishFlushDeferredLogs) == 'function' then
+            pcall(adminPunishFlushDeferredLogs)
+        end
+
+        if type(tempLeadershipPumpPending) == 'function' then
+            pcall(tempLeadershipPumpPending)
+        end
+        if type(tickAutoReplyQueue) == 'function' then
+            pcall(tickAutoReplyQueue)
+        elseif type(tickAutoReplyWorker) == 'function' then
+            pcall(tickAutoReplyWorker)
         end
 
         deskSampChatGuardFrame()
@@ -338,9 +340,17 @@ function main()
         end
 
         pollInterval = resolveIngestPollInterval()
+        if deskCache and deskCache.ingestReconcileAt
+                and (os.clock() - deskCache.ingestReconcileAt) < 0.5 then
+            pollInterval = math.min(pollInterval or 1, 0.05)
+        end
         if pollInterval and os.clock() - lastPoll >= pollInterval then
             pcall(pollReportIngest)
             lastPoll = os.clock()
+            if deskCache and deskCache.ingestReconcileAt
+                    and (os.clock() - deskCache.ingestReconcileAt) >= 0.45 then
+                deskCache.ingestReconcileAt = nil
+            end
         end
         if type(deskSpectateStats) == 'table' and deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
             pcall(deskSpectateStats.flushOutbound)
@@ -349,12 +359,10 @@ function main()
             pcall(remoteChatFlushSampQueue)
         end
 
-        if deskCache.catalogTexFlushPending then
-            pcall(deskFlushCatalogTexPending)
-        else
+        if not deskCache.catalogTexFlushPending then
             pcall(deskTexPipeline.flushDeferred, deskTex, imgui, 8)
         end
-        if deskCatalogTabActive and showWindow[0] then
+        if showWindow[0] and type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
             pcall(deskCatalogTexTick)
         end
 
@@ -365,6 +373,10 @@ function main()
 
         if os.clock() - lastMapPrune >= PRUNE_MAP_INTERVAL then
             pcall(pruneAllTimedMaps)
+            if deskCache.deferThreadPrune then
+                pcall(pruneOldThreads)
+                deskCache.deferThreadPrune = nil
+            end
             lastMapPrune = os.clock()
         end
 
@@ -386,8 +398,12 @@ function main()
         end)
         pcall(function()
             local specSession = package.loaded['report_desk_spectate_session']
+            if not specSession then
+                local okReq, mod = pcall(require, 'report_desk_spectate_session')
+                if okReq then specSession = mod end
+            end
             if specSession and specSession.tickTdHooksLifecycle then
-                specSession.tickTdHooksLifecycle()
+                specSession.tickTdHooksLifecycle(sampev)
             end
         end)
         pcall(cheatsTickMarker)
@@ -426,6 +442,16 @@ end
 -- Cleanup при выгрузке скрипта.
 function onScriptTerminate(scr)
     if scr == thisScript() then
+        pcall(function()
+            local specSession = package.loaded['report_desk_spectate_session']
+            if specSession and specSession.isActive and specSession.isActive() then
+                rawset(_G, '__desk_sp_recover', {
+                    targetId = specSession.getTargetId(),
+                    targetNick = specSession.getTargetNick(),
+                    ts = os.time(),
+                })
+            end
+        end)
         skinRadiusJob.cancel = true
         pcall(deskTexPipeline.shutdown, deskTex, imgui)
         pcall(deskUninstall)

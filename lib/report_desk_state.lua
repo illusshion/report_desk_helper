@@ -79,8 +79,6 @@ settings = {
     spectate_sp_ui_x = -28,
     spectate_sp_ui_y = 0,
     spectate_sp_ui_custom = false,
-    spectate_hud_layout_v2 = true,
-    spectate_sp_ui_layout_v2 = true,
     spectate_vehicle_hud = true,
     spectate_vehicle_hud_x = -12,
     spectate_vehicle_hud_y = -8,
@@ -89,11 +87,8 @@ settings = {
     spectate_keys_hud_y = 925,
     spectate_keys_hud_custom = true,
     spectate_vehicle_hud_custom = false,
-    spectate_vehicle_hud_layout_v2 = true,
-    spectate_vehicle_hud_layout_v3 = true,
-    spectate_vehicle_hud_layout_v4 = true,
-    spectate_vehicle_hud_layout_v5 = true,
-    spectate_vehicle_hud_layout_v6 = true,
+    spectate_nearby_radius = 35,
+    spectate_nearby_hud = true,
     checker_hud = true,
     checker_hud_persist = true,
     checker_hud_x = 32,
@@ -115,6 +110,8 @@ settings = {
     exact_time_enabled = true,
     exact_time_daily_norm_h = 4,
     exact_time_monthly_norm_h = 112,
+    temp_leadership_auto_restore = true,
+    temp_leadership_org = '0 0',
 }
 
 -- Default Cheats Settings
@@ -238,9 +235,11 @@ local deskInputState = {
     snapKey = nil,
     hasUnseenMessages = false,
     focusReplyNext = false,
-    focusReplyReason = nil, -- 'open' | 'select' | 'send'
+    focusReplyReason = nil, -- 'open' | 'select' | 'send' | 'dialog'
+    chatTabActive = false,
+    sampDialogWasActive = false,
 }
-local outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
+local outbound = { pending = nil, fromDesk = nil, echo = {} }
 local replyUi = { key = nil, at = 0 }
 local catWarmup = {
     inited = false, startedAt = 0, timingLogged = false,
@@ -304,9 +303,9 @@ local SKIN_APPLY_COOLDOWN_SEC = 2.0  -- cooldown выдачи скинов, се
 local MOUSE_BIND_VKS = {
     [0x01] = true, [0x02] = true, [0x04] = true, [0x05] = true, [0x06] = true,
 }
-local rulesEditorDirty = false
 dirtySettings = false
 dirtyThreads = false
+threadsConfigLoaded = false
 
 local RECENT = {
     ingest = {}, ingestOrd = {},
@@ -466,6 +465,7 @@ local uiAutoTimeEnabled = new.bool(true)
 local uiAutoGgEnabled = new.bool(true)
 local uiWatchAutoNotify = new.bool(true)
 local uiSpecHud = new.bool(true)
+local uiSpecNearbyHud = new.bool(true)
 local uiSpecAutoSt = new.bool(true)
 local uiSpecAutoRefresh = new.bool(true)
 local uiSpecHudPersist = new.bool(true)
@@ -478,13 +478,6 @@ local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
 local uiAdminPunishEnabled = new.bool(false)
 local uiAdminPunishSignCmd = new.bool(true)
-editRuleMatch = new.int(1)
-editRulePriority = new.int(0)
-editRuleSkipReportId = new.bool(true)
-local ruleKwBulk = new.char[2048]()
-local ruleTestBuf = new.char[256]()
-local ruleTestResult = new.char[128]()
-rulesTestOpen = new.bool(false)
 adminPunishUiSynced = false
 
 local AUTO_RETRY_MS = 280  -- retry auto-reply, мс
@@ -503,12 +496,5 @@ sessionLive = false
 deskConfigReady = false
 totalUnread = 0
 
-local editRuleName = new.char[64]()
-local editRulePayload = new.char[512]()
-editRuleCooldown = new.int(120)
-editRuleEnabled = new.bool(true)
-local ruleKwNew = new.char[96]()
-ruleKwEdit = {}
-selectedRuleIdx = 1
 settingsUiSynced = false
 deskWantsKeyboard = false

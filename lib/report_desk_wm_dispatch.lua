@@ -28,7 +28,9 @@ function M.register(name, priority, fn)
     if not name or type(fn) ~= 'function' then return false end
     slots[name] = { priority = tonumber(priority) or 0, fn = fn }
     sortedCache = nil
-    M.ensureInstalled()
+    if not installed then
+        M.install()
+    end
     return true
 end
 

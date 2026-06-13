@@ -21,6 +21,9 @@ function intentClauseMatches(bags, clause, allowStem)
     if clause.all or clause.any or clause.token or clause.requires_id then
         return true
     end
+    if type(clause.none) == 'table' and #clause.none > 0 then
+        return true
+    end
     return false
 end
 

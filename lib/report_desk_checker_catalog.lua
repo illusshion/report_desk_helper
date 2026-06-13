@@ -8,10 +8,21 @@ M.BACKUP_PATH = getWorkingDirectory() .. '\\config\\report_desk_checker_catalog.
 
 M.dirty = false
 
+local function catalogStoreText(s)
+    if type(configStoreText) == 'function' then
+        return configStoreText(s)
+    end
+    if type(_G.configStoreText) == 'function' then
+        return _G.configStoreText(s)
+    end
+    s = tostring(s or '')
+    if s == '' or s:find('\239\191\189', 1, true) then return '' end
+    return s
+end
+
 -- Lua Quote Utf8
 local function luaQuoteUtf8(s)
-    s = tostring(s or '')
-    return string.format('%q', s)
+    return string.format('%q', catalogStoreText(s))
 end
 
 -- Ensure Config Dir

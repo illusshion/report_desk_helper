@@ -3,57 +3,31 @@ local M = {}
 
 local MODULE_DIR = 'lib\\'
 
+local function loadBundleManifest()
+    local path = getWorkingDirectory() .. '\\config\\report_desk_bundle_manifest.lua'
+    if not doesFileExist(path) then
+        error('[Report Desk] missing bundle manifest: ' .. path)
+    end
+    local chunk, err = loadfile(path)
+    if not chunk then
+        error('[Report Desk] bundle manifest load failed: ' .. tostring(err))
+    end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= 'table' then
+        error('[Report Desk] bundle manifest invalid: ' .. tostring(data))
+    end
+    return data
+end
+
+local manifest = loadBundleManifest()
+
 -- Lua 5.1 / LuaJIT: один loadstring-chunk не может иметь >200 local-переменных.
--- Делим core на части; после core_a report_desk_env_export публикует shared state в env.
-local CORE_A_FILES_A = {
-    'report_desk_bootstrap.lua',
-    'report_desk_constants.lua',
-    'report_desk_theme.lua',
-    'report_desk_state.lua',
-    'report_desk_util.lua',
-    'report_desk_match_normalize.lua',
-    'report_desk_match_context.lua',
-    'report_desk_intent_match.lua',
-    'report_desk_intent_legacy.lua',
-    'report_desk_intent_extensions.lua',
-    'report_desk_intents.lua',
-    'report_desk_profanity.lua',
-    'report_desk_chat.lua',
-    'report_desk_cheats.lua',
-    'report_desk_mask_id.lua',
-    'report_desk_skins.lua',
-    'report_desk_input.lua',
-    'report_desk_actions.lua',
-    'report_desk_env_export.lua',
-}
-
-local CORE_A_FILES_B = {
-    'report_desk_admin_punish.lua',
-    'report_desk_threads.lua',
-    'report_desk_config.lua',
-    'report_desk_ingest_runtime.lua',
-    'report_desk_rules.lua',
-}
-
--- exact_time отдельно: вместе с admin_punish превышает лимит 200 local в одном chunk.
-local CORE_A_FILES_B2 = {
-    'report_desk_exact_time.lua',
-}
-
-local CORE_A_FILES_C = {
-    'report_desk_ui.lua',
-    'report_desk_hooks.lua',
-    'report_desk_main.lua',
-}
-
-local LATE_CHUNK_FILES = {
-    'report_desk_checker.lua',
-    'report_desk_cmd_binds.lua',
-}
-
-local REMOTE_CHAT_CHUNK_FILES = {
-    'report_desk_remote_chat.lua',
-}
+local CORE_A_FILES_A = manifest.core_a_a
+local CORE_A_FILES_B = manifest.core_a_b
+local CORE_A_FILES_B2 = manifest.core_a_b2
+local CORE_A_FILES_C = manifest.core_a_c
+local LATE_CHUNK_FILES = manifest.late
+local REMOTE_CHAT_CHUNK_FILES = manifest.remote_chat
 
 local loaded = false
 local env = nil
@@ -75,6 +49,10 @@ local function readModuleText(wd, name)
     end
     local text = f:read('*a')
     f:close()
+    -- UTF-8 BOM mid-chunk breaks loadstring (io.open rb preserves it).
+    if text:sub(1, 3) == '\239\187\191' then
+        text = text:sub(4)
+    end
     return text
 end
 
@@ -106,8 +84,6 @@ function M.load()
     local wd = getWorkingDirectory()
     env = {}
     setmetatable(env, { __index = _G })
-    env.outbound = { pending = nil, fromDesk = nil, selfAns = nil, echo = {} }
-    env.chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
 
     runChunkBundle(wd, CORE_A_FILES_A, env, 'core_a')
     runChunkBundle(wd, CORE_A_FILES_B, env, 'core_b')

@@ -340,10 +340,18 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
     if reporter and messageShowsScenarioButtons(m) then
         scenarioBody = messageBodyForScenarios(m)
         if scenarioBody == '' then scenarioBody = line end
-        quickBtns = collectQuickButtonsForMessage(scenarioBody)
+        local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
+        if m._intentQuickSig ~= sig or type(m._intentQuickBtns) ~= 'table' then
+            m._intentQuickBtns = collectQuickButtonsForMessage(scenarioBody)
+            m._intentQuickSig = sig
+        end
+        quickBtns = m._intentQuickBtns
     end
     local showReplyBtns = opts.noQuickButtons ~= true
     local watchBtns, replyBtns = splitQuickButtons(quickBtns)
+    if reporter and scenarioBody ~= '' then
+        prepareQuickButtonWidths(quickBtns, reporter, scenarioBody)
+    end
     if not showReplyBtns then replyBtns = {} end
     if dir == 'in' and reporter and messageShowsScenarioButtons(m)
             and intentMessageCorpusEligible(scenarioBody) then
@@ -979,90 +987,6 @@ function drawThreadRow(t, key, sel)
     imgui.Dummy(imgui.ImVec2(0, 2))
 end
 
--- Fill Rule Editor
-function fillRuleEditor(idx)
-    local r = rules[idx]
-    if not r then return end
-    setInputBuf(editRuleName, r.name or '')
-    syncRuleKwEditFromRule(r)
-    setInputBuf(editRulePayload, r.payload or '')
-    editRuleEnabled[0] = r.enabled ~= false
-    rulesEditorDirty = false
-end
-
--- Apply Rule Editor
-function applyRuleEditor()
-    if selectedRuleIdx < 1 or selectedRuleIdx > #rules then return false end
-    syncRuleKeywordsFromBulkBuf()
-    local name = readInputBuf(editRuleName)
-    local payload = readInputBuf(editRulePayload)
-    if name == '' or payload == '' then return false end
-    local prev = rules[selectedRuleIdx]
-    local kw = {}
-    for _, k in ipairs(ruleKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    if #kw == 0 then return false end
-    rules[selectedRuleIdx] = {
-        name = name,
-        enabled = editRuleEnabled[0],
-        match = 'exact',
-        keywords = kw,
-        action = 'ans_text',
-        payload = payload,
-        cooldown = math.max(5, tonumber(prev and prev.cooldown) or 60),
-        mode = 'instant',
-        priority = 0,
-        skip_if_report_id = false,
-    }
-    markDirtySettings()
-    rulesEditorDirty = false
-    return true
-end
-
--- Try Add Keywords From Bulk
-function tryAddKeywordsFromBulk()
-    local block = trim(readInputBuf(ruleKwBulk))
-    if block == '' then return 0 end
-    block = block:gsub('[\r\n]+', ',')
-    return addKeywordsToRuleEdit(parseKeywordList(block))
-end
-
--- Run Rule Match Test
-function runRuleMatchTest()
-    local sample = trim(readInputBuf(ruleTestBuf))
-    if sample == '' then
-        setInputBuf(ruleTestResult, uiText('\xE2\xE2\xE5\xE4\xE8\xF2\xE5 \xF2\xE5\xEA\xF1\xF2'))
-        return
-    end
-    local rule = findMatchingRule(sample)
-    if rule then
-        setInputBuf(ruleTestResult, (rule.name or '?') .. ' [' .. ruleMatchModeLabel(rule.match) .. ']')
-    else
-        setInputBuf(ruleTestResult, uiText('\xED\xE5\xF2 \xF1\xEE\xE2\xEF\xE0\xE4\xE5\xED\xE8\xFF'))
-    end
-end
-
--- Sync Rule Editor If Dirty
-function syncRuleEditorIfDirty()
-    if not rulesEditorDirty then return end
-    if #rules < 1 then
-        rulesEditorDirty = false
-        return
-    end
-    if selectedRuleIdx < 1 or selectedRuleIdx > #rules then
-        rulesEditorDirty = false
-        return
-    end
-    applyRuleEditor()
-end
-
--- Mark Rule Editor Dirty
-function markRuleEditorDirty()
-    rulesEditorDirty = true
-end
-
 -- Fill Composer Quick Editor
 function fillComposerQuickEditor(idx)
     ensureComposerQuickButtons()
@@ -1385,7 +1309,13 @@ function drawChatPanel()
             imgui.Dummy(imgui.ImVec2(0, 4))
         end
         local lastDay = nil
-        local scenarioBtnIdx = findLastPlayerScenarioMsgIdx(msgs, renderFrom)
+        local scenarioSig = tostring(intentsGen) .. '|' .. tostring(renderFrom) .. '|' .. tostring(#msgs)
+            .. '|' .. tostring(deskCache.threadMsgRev or 0) .. '|' .. tostring(selectedKey or '')
+        if deskCache.scenarioBtnSig ~= scenarioSig then
+            deskCache.scenarioBtnIdx = findLastPlayerScenarioMsgIdx(msgs, renderFrom)
+            deskCache.scenarioBtnSig = scenarioSig
+        end
+        local scenarioBtnIdx = deskCache.scenarioBtnIdx
         local threadPid = tonumber(t.id) or -1
         local threadOnline = t.online ~= false
         local threadNickCol = chatHeaderNickColor(threadPid, threadOnline)
@@ -1418,6 +1348,17 @@ function drawChatPanel()
     popPanelStyle()
 end
 
+-- Прочитать все — на всю ширину, высота как у поля поиска.
+function drawReadAllThreadsButton()
+    if (tonumber(totalUnread) or 0) <= 0 then return end
+    local frameH = (imgui.GetFrameHeight and imgui.GetFrameHeight()) or 26
+    if imgui.Button(uiText('\xCF\xF0\xEE\xF7\xE8\xF2\xE0\xF2\xFC \xE2\xF1\xE5') .. '##read_all_threads', imgui.ImVec2(-1, frameH)) then
+        resetSessionUnread()
+        markDirtyThreads()
+        markUiCacheDirty()
+    end
+end
+
 -- Draw Filter Chips
 function drawFilterChips()
     local labels = {
@@ -1438,7 +1379,7 @@ function drawFilterChips()
         end
         if imgui.Button(lbl .. '##chip' .. i, imgui.ImVec2(chipW, 26)) then
             filterMode[0] = i - 1
-            invalidateUiCaches()
+            markUiCacheDirty()
         end
         if active then imgui.PopStyleColor(2) end
         if i < #labels then imgui.SameLine(0, 6) end
@@ -1454,6 +1395,10 @@ function drawThreadList()
     imgui.PushItemWidth(-1)
     imgui.InputTextWithHint('##search', uiText('\xCF\xEE\xE8\xF1\xEA...'), searchBuf, sizeof(searchBuf))
     imgui.PopItemWidth()
+    if (tonumber(totalUnread) or 0) > 0 then
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        drawReadAllThreadsButton()
+    end
     imgui.Dummy(imgui.ImVec2(0, 8))
     drawFilterChips()
     imgui.Dummy(imgui.ImVec2(0, 6))
@@ -1559,6 +1504,8 @@ function syncSettingsUiFromSettings()
     uiAutoTimeEnabled[0] = settings.auto_time_enabled ~= false
     uiAutoGgEnabled[0] = settings.auto_gg_enabled ~= false
     uiSpecHud[0] = settings.spectate_hud ~= false
+    uiSpecNearbyHud[0] = settings.spectate_nearby_hud ~= false
+    uiWatchAutoNotify[0] = settings.watch_auto_notify ~= false
     uiSpecAutoRefresh[0] = settings.spectate_auto_refresh ~= false
     uiSpecHudPersist[0] = settings.spectate_hud_persist ~= false
     uiSpecSpMenuSound[0] = settings.spectate_sp_menu_sound == true
@@ -1574,6 +1521,7 @@ end
 function drawSettingsTab()
     if not settingsUiSynced then
         syncSettingsUiFromSettings()
+        setInputBuf(deskReplyBuf.watch, settings.watch_notify or 'see')
         setInputBuf(deskReplyBuf.time, getTimeReplyText())
         setInputBuf(deskReplyBuf.gg, getGgReplyText())
         settingsUiSynced = true
@@ -1636,6 +1584,10 @@ function drawSettingsTab()
         settings.spectate_hud = v
         markDirtySettings()
     end, 'spec_hud') then end
+    if deskFormCheckboxRow('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xF2\xFC \xAB\xD0\xFF\xE4\xEE\xEC\xBB \xE2 HUD', uiSpecNearbyHud, function(v)
+        settings.spectate_nearby_hud = v
+        markDirtySettings()
+    end, 'spec_nearby_hud') then end
     if deskFormCheckboxRow('\xCA\xE0\xF1\xF2\xEE\xEC\xED\xFB\xE9 \xF1\xEF\xE8\xE4\xEE\xEC\xE5\xF2\xF0', uiSpecVehicleHud, function(v)
         settings.spectate_vehicle_hud = v
         markDirtySettings()
@@ -1650,6 +1602,23 @@ function drawSettingsTab()
     end, 'spec_wheel_zoom') then end
 
     drawSettingsSubsection('\xCF\xEE\xE2\xE5\xE4\xE5\xED\xE8\xE5')
+    if deskFormCheckboxRow('\xCE\xF2\xEF\xF0\xE0\xE2\xEB\xFF\xF2\xFC \xF0\xE5\xEF\xEE\xF0\xF2\xE5\xF0\xF3 \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8', uiWatchAutoNotify, function(v)
+        settings.watch_auto_notify = v
+        markDirtySettings()
+    end, 'watch_auto_notify') then end
+    if uiWatchAutoNotify[0] then
+        imgui.PushItemWidth(-1)
+        deskPushFlatInputStyle()
+        local watchChanged = imgui.InputText('##watch_notify_reply', deskReplyBuf.watch, sizeof(deskReplyBuf.watch))
+        deskPopFlatInputStyle()
+        deskKeepInputOnActiveItem()
+        if watchChanged or imguiItemEdited() then
+            settings.watch_notify = readInputBuf(deskReplyBuf.watch)
+            markDirtySettings()
+        end
+        imgui.PopItemWidth()
+        drawSettingsHint('\xD1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xF0\xE5\xEF\xEE\xF0\xF2\xE5\xF0\xF3 \xEF\xEE\xF1\xEB\xE5 /sp (\xED\xE0\xEF\xF0. see)')
+    end
     if deskFormCheckboxRow('\xCE\xE1\xED\xEE\xE2\xEB\xFF\xF2\xFC /sp \xEF\xF0\xE8 \xF2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2\xE5 \xE8 \xE8\xED\xF2\xE5\xF0\xFC\xE5\xF0\xE5', uiSpecAutoRefresh, function(v)
         settings.spectate_auto_refresh = v
         markDirtySettings()
@@ -1690,8 +1659,7 @@ function drawSettingsTab()
         chatLogReady = false
         totalUnread = 0
         seedSeenChatLines()
-        invalidateUiCaches()
-        invalidateFilterCache()
+        markUiCacheDirty()
         markDirtyThreads()
         markDirtySettings()
         flushDirtyConfigNow()
@@ -1727,6 +1695,7 @@ function toggleWindow()
     settingsUiSynced = false
     adminPunishUiSynced = false
     exactTimeUiSynced = false
+    tempLeadershipUiSynced = false
     local selThread = getSelectedThread()
     deskInputState.focusReplyNext = selThread ~= nil
     deskInputState.focusReplyReason = selThread ~= nil and 'open' or nil
@@ -1872,6 +1841,15 @@ function drawMainWindow()
             end
             imgui.EndTabItem()
         end
+        if imgui.BeginTabItem(uiText('\xCB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE') .. '##tab_tl') then
+            local okTl, errTl = pcall(drawTempLeadershipTab)
+            if not okTl then
+                imgui.TextColored(col_warn, 'Temp leadership UI error:')
+                imgui.TextWrapped(tostring(errTl))
+                print('[Report Desk] temp leadership UI: ' .. tostring(errTl))
+            end
+            imgui.EndTabItem()
+        end
         if imgui.BeginTabItem(uiText('\xD1\xEF\xF0\xE0\xE2\xEA\xE0') .. '##tab_help') then
             local okEt, errEt = pcall(drawExactTimeTab)
             if not okEt then
@@ -1893,6 +1871,7 @@ function drawMainWindow()
         imgui.EndTabBar()
     end
 
+    deskInputState.chatTabActive = chatTabActive and true or false
     if not chatTabActive then
         deskInputState.replyInputActive = false
     end
@@ -2064,6 +2043,18 @@ do
 
     setupDeskFrame(imgui.OnFrame(
         function()
+            if not showWindow[0] then return false end
+            return type(deskCatalogTabActive) == 'function' and deskCatalogTabActive()
+        end,
+        function(self)
+            pcall(deskCatalogTexTick)
+            self.HideCursor = true
+            self.LockPlayer = false
+        end
+    ), true, false)
+
+    setupDeskFrame(imgui.OnFrame(
+        function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
             pcall(ensureCheatsSettings)
@@ -2082,7 +2073,6 @@ do
         function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            if not sessionLive then return false end
             if type(settings) ~= 'table' or settings.spectate_vehicle_hud == false then return false end
             if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.shouldShowVehicleHud then return false end
             local okShow, show = pcall(deskSpectateStats.shouldShowVehicleHud, settings)
@@ -2101,7 +2091,6 @@ do
         function()
             if type(deskGameMenuOpen) == 'function' and deskGameMenuOpen() then return false end
             if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-            if not sessionLive then return false end
             if type(settings) ~= 'table' or settings.spectate_keys_hud == false then return false end
             if type(deskSpectateStats) ~= 'table' or not deskSpectateStats.shouldShowKeysHud then return false end
             local okShow, show = pcall(deskSpectateStats.shouldShowKeysHud, settings)
@@ -2437,7 +2426,13 @@ function tryInterceptSplitAnsCommand(command)
     if not idNum or not ansReplyNeedsSplit(idNum, body) then return false end
 
     local liveNick = liveNickForPlayerId(idNum)
-    if wasOutboundEchoHandled(idNum, body, liveNick) then return true end
+    if wasOutboundEchoHandled(idNum, body, liveNick) then
+        local echoTk0 = outboundEchoThreadKey(idNum, body, liveNick)
+        local th0 = echoTk0 and threads[echoTk0]
+        if th0 and threadFindOutgoingMessage(th0, body, { self = true }) then
+            return true
+        end
+    end
 
     if outbound.pending then
         local p = outbound.pending
@@ -2487,7 +2482,9 @@ function handleOutgoingAnsCommand(message)
                 if th and wantBody ~= '' and not threadFindOutgoingMessage(th, wantBody, { self = true }) then
                     threadApplyOutgoing(th, tk, wantBody, { self = true })
                 end
-                markOutboundEchoHandled(idNum, body, tk, liveNick)
+                if th and (wantBody == '' or threadFindOutgoingMessage(th, wantBody, { self = true })) then
+                    markOutboundEchoHandled(idNum, body, tk, liveNick)
+                end
                 if p.split and body ~= wantBody then
                     return
                 end
@@ -2509,7 +2506,11 @@ function handleOutgoingAnsCommand(message)
     end
 
     if wasOutboundEchoHandled(idNum, body, liveNick) then
-        return
+        local echoTk2 = outboundEchoThreadKey(idNum, body, liveNick)
+        local th2 = echoTk2 and threads[echoTk2]
+        if th2 and threadFindOutgoingMessage(th2, body, { self = true }) then
+            return
+        end
     end
 
     refreshMyNick()
@@ -2520,68 +2521,3 @@ function handleOutgoingAnsCommand(message)
     end
 end
 
--- Poll sampGetChatString: safety reconcile (hook активен) или полный fallback.
-function pollReportIngest()
-    if not sampGetChatString then return end
-    if not chatLogReady then return end
-    local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
-    local maxLines
-    if hookActive then
-        maxLines = CHAT_POLL_SAFETY_LINES
-    else
-        maxLines = showWindow[0] and CHAT_POLL_LINES_OPEN or CHAT_POLL_LINES_CLOSED
-    end
-    local maxLine = maxLines - 1
-    for i = 0, maxLine do
-        local line = sampGetChatString(i) or ''
-        if line == '' then goto continue end
-        local plain = normalizeChatLine(line)
-        local key = chatLineSeenKey(line)
-        if key == '' then goto continue end
-        if chatSeen.lines[key] then goto continue end
-        if type(adminPunishIngestChatLine) == 'function' then
-            local apHooksOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
-                and deskCache and deskCache.profHooksInstalled == true
-            if not apHooksOk then
-                local apPoll = plain:find('^%[A%]%s', 1)
-                    or plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1)
-                    or (type(lineLooksLikeAdminPunishRequest) == 'function'
-                        and lineLooksLikeAdminPunishRequest(plain, 0))
-                if apPoll then
-                    pcall(adminPunishIngestChatLine, 0, line)
-                end
-            end
-        end
-        if tryIngestAdminReplyLine(plain) then
-            markChatLineSeen(key)
-            chatSeen.deferred[key] = nil
-            goto continue
-        end
-        if looksLikeAdminReplyLine(plain) then
-            local deferAt = chatSeen.deferred[key]
-            if not deferAt then
-                chatSeen.deferred[key] = os.clock()
-                goto continue
-            end
-            if os.clock() - deferAt < CHAT_DEFERRED_ADMIN_SEC then
-                goto continue
-            end
-            chatSeen.deferred[key] = nil
-        end
-        if settings.profanity_filter_enabled then
-            pcall(checkProfanityFromChatLine, plain, key)
-        end
-        local source = hookActive and 'srv' or 'chat'
-        if processChatLineIngest(plain, 0, source, false, line, { delay = 0 }) then
-            markChatLineSeen(key)
-            chatSeen.deferred[key] = nil
-        elseif not tryParseReport(plain)
-                and not (type(lineLooksLikeAdminPunishRequest) == 'function'
-                    and lineLooksLikeAdminPunishRequest(plain, 0)) then
-            -- Не помечаем репорт seen при неудачном ingest — hook/poll смогут повторить.
-            -- Строки /a не помечаем: автовыдача опрашивает их отдельно (pollAdminPunishChat).
-            markChatLineSeen(key)
-        end
-        ::continue::
-    end
-end

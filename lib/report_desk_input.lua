@@ -268,9 +268,14 @@ end
 
 -- Desk hook/helper.
 function deskSpectateHudWantsInput()
-    if deskSpectateStats.isHudDragActive and deskSpectateStats.isHudDragActive() then return true end
-    if deskSpectateStats.isKeysHudDragActive and deskSpectateStats.isKeysHudDragActive() then return true end
-    if deskSpectateStats.wantsKeysHudInput and deskSpectateStats.wantsKeysHudInput() then return true end
+    if type(deskSpectateStats) ~= 'table' then return false end
+    local sp = deskSpectateStats
+    if sp.isHudDragActive and sp.isHudDragActive() then return true end
+    if sp.wantsHudInput and sp.wantsHudInput() then return true end
+    if sp.isKeysHudDragActive and sp.isKeysHudDragActive() then return true end
+    if sp.wantsKeysHudInput and sp.wantsKeysHudInput() then return true end
+    if sp.wantsSpMenuInput and sp.wantsSpMenuInput() then return true end
+    if sp.wantsVehicleHudInput and sp.wantsVehicleHudInput() then return true end
     return false
 end
 
@@ -665,9 +670,23 @@ function deskRestoreSampChatIfNeeded()
 end
 
 function deskSampChatGuardFrame()
+    local dialogActive = deskSampDialogActive() and true or false
+    local wasDialog = deskInputState.sampDialogWasActive == true
+    if wasDialog and not dialogActive and showWindow[0] then
+        if deskInputState.chatTabActive and selectedKey then
+            deskInputState.focusReplyNext = true
+            deskInputState.focusReplyReason = 'dialog'
+            deskInputState.replyFocused = true
+            deskInputState.keyboardStickyUntil = os.clock() + 5.0
+        end
+        pcall(deskEnableUiCursorForSamp)
+        releaseDeskInputCapture(true)
+    end
+    deskInputState.sampDialogWasActive = dialogActive
+
     if not deskDeskOrAnsUiOpen() then return end
     if sampIsChatInputActive and sampIsChatInputActive() then return end
-    if deskSampDialogActive() then return end
+    if dialogActive then return end
     pcall(deskInstallSampInputEnableHook)
     if type(sampSetChatInputEnabled) == 'function' then
         pcall(sampSetChatInputEnabled, false)
@@ -678,7 +697,7 @@ end
 function deskShouldBlockSampChatKey(msg, wparam)
     if not deskDeskOrAnsUiOpen() then return false end
     if sampIsChatInputActive and sampIsChatInputActive() then return false end
-    if deskSampDialogActive() and not showWindow[0] then return false end
+    if deskSampDialogActive() then return false end
     if not deskCache or not deskCache.wm then return false end
     if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return false end
     msg = tonumber(msg) or 0
@@ -858,6 +877,8 @@ function closeDeskWindow()
     deskInputState.focusReplyReason = nil
     deskInputState.keyboardStickyUntil = 0
     deskInputState.windowOpenSince = 0
+    deskInputState.chatTabActive = false
+    deskInputState.sampDialogWasActive = false
     deskWantsKeyboard = false
     if cheatState.marker.active then markerSetMode(false) end
     skinTabEntered = false
@@ -873,24 +894,40 @@ function closeDeskWindow()
     end
 end
 
+-- Outbound desk→game: sendMenuOutbound (skipSpHookLocal) или fallback без двойного markPending.
+local function dispatchGameCmdOutbound(cmd)
+    if type(sendMenuOutbound) == 'function' then
+        sendMenuOutbound(cmd)
+        return
+    end
+    local spId = cmd:match('^sp%s+(%d+)%s*$')
+    if spId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSpCommand then
+        local cache = rawget(_G, 'deskCache')
+        if type(cache) == 'table' then
+            cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+        end
+        pcall(deskSpectateStats.markPendingSpCommand, tonumber(spId), '')
+        pcall(sendChat, cmd)
+        if type(cache) == 'table' then
+            local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
+            cache.skipSpHookLocal = n > 0 and n or nil
+        end
+        return
+    end
+    pcall(sendChat, cmd)
+end
+
 -- Отправка команды/сообщения на сервер.
 function sendGameCmd(cmd)
     cmd = trim(cmd or '')
+    if cmd == '' then return end
     local stId = cmd:match('^st%s+(%d+)$')
-    if stId then
-        deskSpectateStats.markPendingSt(tonumber(stId))
+    if stId and type(deskSpectateStats) == 'table' and deskSpectateStats.markPendingSt then
+        pcall(deskSpectateStats.markPendingSt, tonumber(stId))
     end
     releaseDeskInputCapture(true)
     closeDeskWindow()
-    if sendMenuOutbound then
-        sendMenuOutbound(cmd)
-    else
-        local spId = cmd:match('^sp%s+(%d+)%s*$')
-        if spId and deskSpectateStats.markPendingSpCommand then
-            deskSpectateStats.markPendingSpCommand(tonumber(spId), '')
-        end
-        sendChat(cmd)
-    end
+    dispatchGameCmdOutbound(cmd)
 end
 
 -- Get Local Admin Level

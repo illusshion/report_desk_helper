@@ -6,11 +6,13 @@ deskIntents = {}
 deskIntentsById = {}
 deskIntentIndex = {}
 intentsGen = 0
+local INTENT_RESOLVE_CACHE_MAX = 500
 
 function bumpIntentsGen()
     intentsGen = intentsGen + 1
     if type(deskCache) == 'table' then
         deskCache.intentResolve = {}
+        deskCache.intentResolveOrder = {}
     end
     resetIntentContextConfig()
 end
@@ -75,6 +77,40 @@ function compileIntentIndex(intents)
     return index
 end
 
+function validateIntentRegistry(intents)
+    local ids = {}
+    local issues = {}
+    for i, raw in ipairs(intents or {}) do
+        if type(raw) ~= 'table' then
+            issues[#issues + 1] = 'intent[' .. i .. ']: not a table'
+        else
+            local id = trim(raw.id or '')
+            if id == '' then
+                issues[#issues + 1] = 'intent[' .. i .. ']: empty id'
+            elseif ids[id] then
+                issues[#issues + 1] = 'duplicate id: ' .. id
+            else
+                ids[id] = true
+            end
+            local ctx = raw.context
+            if ctx and ctx ~= INTENT_CONTEXT_FAQ and ctx ~= INTENT_CONTEXT_REPORT
+                    and ctx ~= INTENT_CONTEXT_THANKS and ctx ~= INTENT_CONTEXT_UNKNOWN then
+                issues[#issues + 1] = (id ~= '' and id or ('intent[' .. i .. ']')) .. ': unknown context'
+            end
+            if type(raw.triggers) ~= 'table' or type(raw.triggers.any) ~= 'table' or #raw.triggers.any < 1 then
+                issues[#issues + 1] = (id ~= '' and id or ('intent[' .. i .. ']')) .. ': missing triggers.any'
+            end
+        end
+    end
+    if #issues > 0 then
+        for _, msg in ipairs(issues) do
+            print('[Report Desk] intent schema: ' .. msg)
+        end
+        return false, issues
+    end
+    return true
+end
+
 function setDeskIntents(intents, registryMeta)
     deskIntents = {}
     deskIntentsById = {}
@@ -104,6 +140,9 @@ function loadIntentsFromFile(path)
     local ok, data = pcall(chunk)
     if not ok or type(data) ~= 'table' then return false end
     if type(data.intents) ~= 'table' or #data.intents < 1 then return false end
+    if type(validateIntentRegistry) == 'function' and not validateIntentRegistry(data.intents) then
+        return false
+    end
     migrateGuardRulesToIntentExclusions(data.intents)
     if type(applyIntentExtensionsToList) == 'function' then
         applyIntentExtensionsToList(data.intents)
@@ -183,6 +222,9 @@ function resolveMessageIntents(text)
     if bags.key == '' then return {}, INTENT_CONTEXT_UNKNOWN end
 
     local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
+    if type(settings) == 'table' then
+        sig = sig .. '|' .. tostring(settings.watch_notify or '')
+    end
     if type(deskCache) == 'table' and deskCache.intentResolve then
         local hit = deskCache.intentResolve[bags.key]
         if hit and hit.sig == sig then
@@ -218,7 +260,7 @@ function resolveMessageIntents(text)
 
         if #candidates > 0 then
             results[1] = candidates[1]
-            if #candidates > 1 and maxBtns > 1 then
+            if #candidates > 1 and maxBtns > 1 and candidates[1].score > 0 then
                 local second = candidates[2]
                 if second.score / candidates[1].score >= closeRatio then
                     results[2] = second
@@ -248,7 +290,7 @@ function resolveMessageIntents(text)
                 })
             end
             if watchIntent then
-                table.insert(results, 1, { intent = watchIntent, score = 30, id = watchIntent.id })
+                table.insert(results, { intent = watchIntent, score = 5, id = watchIntent.id })
                 if #results > maxBtns then
                     table.remove(results)
                 end
@@ -256,9 +298,16 @@ function resolveMessageIntents(text)
         end
     end
 
-    if type(deskCache) == 'table' then
+    if type(deskCache) == 'table' and type(touchLruCache) == 'function' then
         deskCache.intentResolve = deskCache.intentResolve or {}
-        deskCache.intentResolve[bags.key] = { sig = sig, results = results, context = context }
+        deskCache.intentResolveOrder = deskCache.intentResolveOrder or {}
+        touchLruCache(
+            deskCache.intentResolve,
+            deskCache.intentResolveOrder,
+            bags.key,
+            { sig = sig, results = results, context = context },
+            INTENT_RESOLVE_CACHE_MAX
+        )
     end
     return results, context
 end

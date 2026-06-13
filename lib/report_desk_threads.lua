@@ -73,7 +73,9 @@ function resolveThread(nick, id)
         registerNickIndex(key, t)
         markDirtyThreads()
         bumpThreadStructRev()
-        pruneOldThreads()
+        if threadCount > DEFAULT_MAX_THREADS then
+            deskCache.deferThreadPrune = true
+        end
     end
     registerNickIndex(key, t)
     return key, t
@@ -146,15 +148,6 @@ function resolveThreadForPlayerId(id, preferNick)
             end
         end
     end
-    if selectedKey and threads[selectedKey] then
-        local st = threads[selectedKey]
-        if tonumber(st.id) == id and not st.stale then
-            return st, selectedKey
-        end
-    end
-    if #matches == 1 and not matches[1].t.stale then
-        return matches[1].t, matches[1].key
-    end
     if #matches > 1 and preferNick ~= '' then
         local want = nickKey(preferNick)
         for _, e in ipairs(matches) do
@@ -162,6 +155,18 @@ function resolveThreadForPlayerId(id, preferNick)
                 return e.t, e.key
             end
         end
+    end
+    if selectedKey and threads[selectedKey] then
+        local st = threads[selectedKey]
+        if tonumber(st.id) == id and not st.stale then
+            local want = preferNick ~= '' and nickKey(preferNick) or liveNk
+            if want == '' or nickKey(st.nick) == want then
+                return st, selectedKey
+            end
+        end
+    end
+    if #matches == 1 and not matches[1].t.stale then
+        return matches[1].t, matches[1].key
     end
     if #matches > 1 then
         table.sort(matches, function(a, b)
@@ -299,6 +304,10 @@ function addMessageToKey(key, msg)
     markDirtyThreads()
     bumpThreadMsgRev()
     bumpThreadInFilterCache(key)
+    if key == selectedKey and type(deskCache) == 'table' then
+        deskCache.scenarioBtnSig = nil
+        deskCache.scenarioBtnIdx = nil
+    end
     if key == selectedKey then
         if deskInputState.chatFollowBottom then
             requestChatScrollForThread(key)

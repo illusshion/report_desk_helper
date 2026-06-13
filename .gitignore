@@ -76,6 +76,11 @@ luac51.exe
 
 # Временные / аналитика
 tools/_*.json
+tools/__pycache__/
+docs/
+
+# Telegram bot secrets
+tools/.env
 
 # Сторонние moonloader-библиотеки (не source Report Desk)
 lib/MoonImGui.dll

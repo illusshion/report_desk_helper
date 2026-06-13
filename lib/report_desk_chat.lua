@@ -84,19 +84,21 @@ function avatarLetter(nick)
     return nick:sub(1, 1)
 end
 
--- Wrap Text Lines Utf8
-local wrapTextSpaceW = nil
-
 function wrapTextLinesUtf8(text, wrapW)
     text = text or ''
     if text == '' then return {}, imgui.GetTextLineHeight() end
     wrapW = math.max(48, tonumber(wrapW) or 200)
     local lineH = (imgui.GetTextLineHeightWithSpacing and imgui.GetTextLineHeightWithSpacing())
         or imgui.GetTextLineHeight()
-    if not wrapTextSpaceW then
-        wrapTextSpaceW = imgui.CalcTextSize(' ').x
+    local ioScale = (imgui.GetIO and imgui.GetIO().FontGlobalScale) or 1.0
+    if deskCache.wrapTextFontScale ~= ioScale then
+        deskCache.wrapTextFontScale = ioScale
+        deskCache.wrapTextSpaceW = nil
     end
-    local spaceW = wrapTextSpaceW
+    if not deskCache.wrapTextSpaceW then
+        deskCache.wrapTextSpaceW = imgui.CalcTextSize(' ').x
+    end
+    local spaceW = deskCache.wrapTextSpaceW
     local lines = {}
     for paragraph in (text .. '\n'):gmatch('(.-)\n') do
         paragraph = trim(paragraph)
@@ -234,7 +236,6 @@ end
 function clearPendingOutbound()
     outbound.pending = nil
     outbound.fromDesk = nil
-    outbound.selfAns = nil
 end
 
 -- Outbound Echo Nick Hint
@@ -300,7 +301,6 @@ function setPendingOutbound(t, body, ansId, split)
         split = split and true or false,
     }
     outbound.fromDesk = outboundFingerprint(t.nick, body)
-    outbound.selfAns = outbound.pending
 end
 
 -- Thread Storage Key
@@ -389,7 +389,10 @@ function threadApplyOutgoing(t, threadKey, body, opts)
     local fp = outboundDedupKey(t, body, opts)
     local now = os.clock()
     if RECENT.out[fp] and (now - RECENT.out[fp]) < OUTBOUND_DEDUP_SEC then
-        return false
+        -- Dedup только если bubble ещё в треде; иначе stale после trim/гонки poll.
+        if threadFindOutgoingMessage(t, body, opts) then
+            return false
+        end
     end
     touchTimedMap(RECENT.out, RECENT.outOrd, fp)
 
@@ -547,7 +550,7 @@ function transmitAnsWire(ansId, body, meta)
             markOutboundEchoHandled(ansId, body, meta.threadKey, nickHint)
         end
         sendChat(string.format('ans %d %s', ansId, body))
-        return false
+        return true
     end
 
     local part1, part2 = splitAnsBodyHalves(body)
@@ -581,16 +584,19 @@ function sendOutgoingAns(t, text, opts)
         return false, err
     end
     local split = ansReplyNeedsSplit(ansId, text)
-    threadApplyOutgoing(t, threadKey, text, { self = true })
-    if not split and threadFindOutgoingMessage(t, text, { self = true }) then
-        markOutboundEchoHandled(ansId, text, threadKey, t.nick)
-    end
     setPendingOutbound(t, text, ansId, split)
-    transmitAnsWire(ansId, text, {
+    local sent = transmitAnsWire(ansId, text, {
         thread = t,
         threadKey = threadKey,
         markEcho = split,
     })
+    if not sent then
+        return false, 'chat fail'
+    end
+    threadApplyOutgoing(t, threadKey, text, { self = true })
+    if not split and threadFindOutgoingMessage(t, text, { self = true }) then
+        markOutboundEchoHandled(ansId, text, threadKey, t.nick)
+    end
     if split then
         return true, '/ans ' .. ansId .. ' (2 \xF7\xE0\xF1\xF2\xE8)'
     end

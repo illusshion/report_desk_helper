@@ -8,7 +8,6 @@ local VEHICLE_HUD_X_MIN_DEFAULT = 400   -- зона server TD спидометр
 local VEHICLE_HUD_X_MAX_DEFAULT = 480
 local VEHICLE_HUD_Y_MIN_DEFAULT = 385   -- нижняя полоса HUD
 local STALE_SEC = 4.0
-local VEH_CTX_CACHE_SEC = 0.15
 local ARC_SEGMENTS = 40
 local PANEL_BASE = 260          -- спидометр: правый нижний угол
 local HUD_MARGIN = 10
@@ -16,7 +15,8 @@ local HEALTH_MAX = 1000
 local FUEL_MAX = 150
 local SPEED_MAX = 160             -- как CEF ProgressBar
 local ANIM_METRIC = 0.38
-local SPEED_VIS_TAU = 0.11
+local SPEED_VIS_TAU = 0.07
+local SPEED_KMH_PER_MS = 3.6
 local PI = math.pi
 local ARC_START = PI * 0.75     -- 135° — нижний край дуги (CEF rotate=135)
 local ARC_SPAN = PI * 1.5       -- 270° видимой дуги (CEF cut=90)
@@ -47,26 +47,38 @@ local hud = {
     fuel = nil,
     health = nil,
     door = nil,
+    doorLocked = nil,
     driveMode = nil,
+    sportActive = nil,
+    engine = nil,
     indicators = {},
     inVehicle = false,
     lastAt = 0,
     active = false,
 }
 
+local ENGINE_STATE_OFF = 17
+
+local TD_META_MAX = 256
 local tdMeta = {}
+local tdMetaOrder = {}
 local posSlots = {}
 local tdRolePin = {}
 
 local uiText, toU32, col_accent, col_accent_dim, col_muted, col_muted2, col_warn, col_label
 local markDirtySettings, flushDirtyConfigNow, getSettingsFn, getSpectateTargetId
-local inputDeps
+local resolveSpectateTargetPedFn
 
 local drag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 }
 local hovered = false
 local hudRect = nil
 local anim = { speedVis = 0, fuelPct = 0, hpPct = 0 }
-local vehCtxCache = { at = 0, ok = false }
+local SPORT_OVERLAY_SEC = 5.0
+local sportOverlayUntil = 0
+local TELEMETRY_PIN_ROLES = {
+    combined = true, speed = true, fuel = true, health = true,
+    door = true, mode = true, engine = true, sport_toggle = true, indicators = true,
+}
 
 local touchActive
 
@@ -104,6 +116,11 @@ local function tdPosY(data)
     return normalizeTdCoord(data.position.y or data.position[2], 'y')
 end
 
+local function vehicleHudYMin()
+    local settings = getSettingsFn and getSettingsFn() or nil
+    return tonumber(settings and settings.spectate_vehicle_td_y_min) or VEHICLE_HUD_Y_MIN_DEFAULT
+end
+
 -- Role From Hud Position — фиксированные слоты ADV спидометра (640x448).
 local function roleFromHudPosition(x, y)
     x = normalizeTdCoord(x, 'x')
@@ -120,12 +137,12 @@ local function roleFromHudPosition(x, y)
     elseif x <= xMin + 54 then col = 2
     else col = 3 end
     if y < rowSplit then
-        if col == 1 then return 'speed' end
         if col == 2 then return 'fuel' end
-        return 'health'
+        return nil
     end
     if col == 1 then return 'door' end
     if col == 2 then return 'mode' end
+    if col == 3 then return 'indicators' end
     return 'indicators'
 end
 
@@ -137,6 +154,26 @@ local function parseDoorPlain(plain)
     if plain:find('clos', 1, true) or plain:find('lock', 1, true)
             or plain:find('\xE7\xE0\xEA\xF0', 1, true) or plain:find('\xE7\xE0\xEC\xEE\xEA', 1, true) then
         return 'Closed'
+    end
+    return nil
+end
+
+-- Parse Engine Plain — «engine on/off», «двиг вкл/выкл» в combined TD.
+local function parseEnginePlain(plain)
+    plain = tostring(plain or ''):lower()
+    if plain:find('engine', 1, true) or plain:find('\xE4\xE2\xE8\xE3', 1, true) then
+        if plain:find('off', 1, true) or plain:find('\xE2\xFB\xEA\xEB', 1, true)
+                or plain:find('stop', 1, true) then
+            return false
+        end
+        if plain:find('on', 1, true) or plain:find('\xE2\xEA\xEB', 1, true)
+                or plain:find('start', 1, true) then
+            return true
+        end
+        if plain:match('^engine%s*$') or plain:match('^engine%s+on')
+                or plain:match('\xE4\xE2\xE8\xE3%s*$') then
+            return true
+        end
     end
     return nil
 end
@@ -157,11 +194,6 @@ local function parseModePlain(plain)
     return bestWord:sub(1, 1):upper() .. bestWord:sub(2)
 end
 
-local function vehicleHudYMin()
-    local settings = getSettingsFn and getSettingsFn() or nil
-    return tonumber(settings and settings.spectate_vehicle_td_y_min) or VEHICLE_HUD_Y_MIN_DEFAULT
-end
-
 -- Строгая зона ingest: колонка server TD спидометра (не вся нижняя полоса экрана).
 local function isStrictVehicleHudArea(x, y)
     x = normalizeTdCoord(x, 'x')
@@ -178,16 +210,15 @@ local function isStrictVehicleHudArea(x, y)
     return false
 end
 
--- Публичный API модуля.
+-- Зона server TD: ingest строгая, block — шире (включая строку km/h / fuel / hp).
 function M.isVehicleHudArea(x, y)
     x = normalizeTdCoord(x, 'x')
     y = normalizeTdCoord(y, 'y')
-    local settings = getSettingsFn and getSettingsFn() or nil
-    local xMin = tonumber(settings and settings.spectate_vehicle_td_x_min) or VEHICLE_HUD_X_MIN_DEFAULT
-    local xMax = tonumber(settings and settings.spectate_vehicle_td_x_max) or VEHICLE_HUD_X_MAX_DEFAULT
     local yMin = vehicleHudYMin()
     if isStrictVehicleHudArea(x, y) then return true end
-    -- Широкая зона только для скрытия server TD, не для ingest чисел.
+    if y and y >= (yMin - 56) then
+        if not x or (x >= 280 and x <= 580) then return true end
+    end
     if y and y >= (yMin - 24) then
         if not x or x <= 560 then return true end
     end
@@ -199,7 +230,7 @@ local function isVehicleHudArea(x, y)
     return M.isVehicleHudArea(x, y)
 end
 
--- Парсинг данных с сервера/чата.
+-- Parse Speed Plain — fallback ingest из server TD если native speed недоступен.
 local function parseSpeedPlain(plain)
     plain = tostring(plain or '')
     local n = plain:match('(%d+)%s*km/h')
@@ -209,7 +240,7 @@ local function parseSpeedPlain(plain)
     return tonumber(n)
 end
 
--- Extract Speed Value — число часто только в ~tag~ (plain после strip теряет его).
+-- Extract Speed Value — fallback TD ingest (~tag~ digits).
 local function extractSpeedValue(raw, plain)
     raw = tostring(raw or '')
     plain = plain or normalizePlain(raw)
@@ -233,18 +264,19 @@ local function extractSpeedValue(raw, plain)
     return nil
 end
 
--- Looks Like Speed Text
+-- Looks Like Speed Text — скрытие server TD + detect combined lines.
 local function looksLikeSpeedText(raw, plain)
     raw = tostring(raw or '')
     plain = tostring(plain or '')
-    if parseSpeedPlain(plain) then return true end
+    if plain:match('(%d+)%s*km/h') or plain:match('(%d+)%s*km') then return true end
+    if plain:match('(%d+)%s*км/ч') or plain:match('(%d+)%s*км') then return true end
     if raw:find('km/h', 1, true) or raw:find('km h', 1, true) then return true end
     if raw:find('\xEA\xEC/\xF7', 1, true) or raw:find('\xEA\xEC', 1, true) then return true end
     if raw:match('~[gwybs]~%d+') then return true end
     return false
 end
 
--- Парсинг данных с сервера/чата.
+-- NO-API: fuel/door/mode/indicators — server TextDraw only.
 local function parseFuelPlain(plain)
     local n = plain:match('fuel%s*(%d+)')
     if not n then n = plain:match('(%d+)%s*l') end
@@ -260,36 +292,261 @@ local function indicatorTagActive(tag)
     return true
 end
 
+-- SAMP {AABBGGRR} / {RRGGBB} перед буквой индикатора.
+local function sampColorActive(hex)
+    hex = tostring(hex or ''):gsub('[^%x]', '')
+    if #hex < 6 then return true end
+    if #hex > 6 then hex = hex:sub(-6) end
+    local b = tonumber(hex:sub(1, 2), 16) or 0
+    local g = tonumber(hex:sub(3, 4), 16) or 0
+    local r = tonumber(hex:sub(5, 6), 16) or 0
+    if r > 170 and g < 110 then return false end
+    if g > 110 and g >= r then return true end
+    if r < 90 and g < 90 and b < 90 then return false end
+    return true
+end
+
+-- Цвет непосредственно перед словом в TD (~p~Sport, {hex}Engine).
+local function parseWordColorActive(raw, word)
+    raw = tostring(raw or '')
+    word = tostring(word or '')
+    if raw == '' or word == '' then return nil end
+    local esc = word:gsub('(%W)', '%%%1')
+    local tag = raw:match('~([a-z])~' .. esc)
+    if tag then
+        if tag == 'p' or tag == 'l' or tag == 'g' then return true end
+        if tag == 'h' or tag == 'w' or tag == 'c' or tag == 'r' then return false end
+    end
+    local hex = raw:match('{(%x+)}' .. esc)
+    if hex then return sampColorActive(hex) end
+    return nil
+end
+
+-- Активный акцент server TD: SAMP-теги в тексте + letterColor (AABBGGRR).
+local function parseTdActive(data, raw, wordHint)
+    local wHi = parseWordColorActive(raw, wordHint)
+    if wHi ~= nil then return wHi end
+    raw = tostring(raw or '')
+    if raw ~= '' then
+        if raw:find('~p~', 1, true) or raw:find('~l~', 1, true) then return true end
+        if raw:find('~h~', 1, true) or raw:find('~w~', 1, true) then return false end
+        if raw:find('~g~', 1, true) then return true end
+        for hex in raw:gmatch('{(%x+)}') do
+            return sampColorActive(hex)
+        end
+        for tag in raw:gmatch('~([a-z])~') do
+            if tag == 'p' or tag == 'l' or tag == 'g' then return true end
+            if tag == 'h' or tag == 'w' or tag == 'c' or tag == 'r' then return false end
+        end
+    end
+    local c = data and tonumber(data.letterColor)
+    if not c then return nil end
+    local a = bit.band(bit.rshift(c, 24), 0xFF)
+    if a < 70 then return false end
+    local b = bit.band(c, 0xFF)
+    local g = bit.band(bit.rshift(c, 8), 0xFF)
+    local r = bit.band(bit.rshift(c, 16), 0xFF)
+    if r < 90 and g < 90 and b < 90 then return false end
+    if math.abs(r - g) < 35 and math.abs(g - b) < 35 and r < 180 then return false end
+    if r >= 140 and b >= 120 then return true end
+    if r >= 100 and b >= 100 and (r + b) > (g * 2) then return true end
+    if b >= 110 and r >= 70 and g <= 140 then return true end
+    if g >= 120 and r <= 160 then return true end
+    return nil
+end
+
+-- Door TD: Open/Lock + doorLocked из текста и цвета.
+local function ingestDoorStatus(raw, plain, data)
+    plain = normalizePlain(raw or plain or ''):gsub('_', ' ')
+    if plain == '' then return false end
+    if plain:find('sport', 1, true) and plain:find('mode', 1, true) then return false end
+    local door = parseDoorPlain(plain)
+    if not door and (plain == 'lock' or plain == 'locked') then door = 'Closed' end
+    if not door then return false end
+    hud.door = door
+    if door == 'Closed' then
+        local hi = parseTdActive(data, raw, door)
+        hud.doorLocked = hi ~= false
+    else
+        hud.doorLocked = false
+    end
+    touchActive()
+    return true
+end
+
+-- Mode TD: Sport/Eco + sportActive из цвета и overlay «SPORT MODE ON».
+local function ingestModeStatus(raw, plain, data, tdId)
+    plain = normalizePlain(raw or plain or ''):gsub('_', ' ')
+    if plain == '' then return false end
+    tdId = tonumber(tdId)
+    if plain:find('sport', 1, true) and plain:find('mode', 1, true) then
+        sportOverlayUntil = os.clock() + SPORT_OVERLAY_SEC
+        if plain:find('off', 1, true) or plain:find('\xE2\xFB\xEA\xEB', 1, true) then
+            hud.sportActive = false
+            sportOverlayUntil = 0
+        elseif plain:find('on', 1, true) or plain:find('\xE2\xEA\xEB', 1, true) then
+            hud.sportActive = true
+            sportOverlayUntil = 0
+        end
+        touchActive()
+        return true
+    end
+    if plain == 'on' or plain == 'off' then
+        local pinned = tdId and tdRolePin[tdId] == 'sport_toggle'
+        if pinned or os.clock() < sportOverlayUntil then
+            hud.sportActive = plain == 'on'
+            sportOverlayUntil = 0
+            if tdId then tdRolePin[tdId] = 'sport_toggle' end
+            touchActive()
+            return true
+        end
+    end
+    local mode = parseModePlain(plain)
+    if not mode then return false end
+    hud.driveMode = mode
+    local low = mode:lower()
+    if low == 'sport' or low == '\xF1\xEF\xEE\xF0\xF2' then
+        local hi = parseTdActive(data, raw, mode)
+        if hi ~= nil then hud.sportActive = hi end
+    elseif low == 'eco' or low == 'normal' or low == 'comfort' or low == 'city' then
+        hud.sportActive = false
+    end
+    touchActive()
+    return true
+end
+
+-- Отдельный TD «Engine» в слоте статуса (как Open / Sport).
+local function ingestEngineStatusWord(raw, plain, data)
+    plain = normalizePlain(raw or plain or ''):gsub('_', ' ')
+    if plain == '' then return false end
+    local low = plain:lower()
+    if low ~= 'engine' and not low:match('^engine%s') and not low:match('^\xE4\xE2\xE8\xE3') then
+        return false
+    end
+    local eng = parseEnginePlain(low)
+    if eng == nil then eng = parseTdActive(data, raw, 'Engine') end
+    if eng == nil then return false end
+    hud.engine = eng and true or false
+    hud.indicators['E'] = hud.engine
+    touchActive()
+    return true
+end
+
+-- Native engine byte (CVehicle + 0x428); isCarEngineOn в ML часто нет.
+local function readCarEngineOn(car)
+    if not car or car == 0 then return nil end
+    if type(isCarEngineOn) == 'function' then
+        local ok, on = pcall(isCarEngineOn, car)
+        if ok and on ~= nil then return on and true or false end
+    end
+    if type(getCarPointer) ~= 'function' or type(readMemory) ~= 'function' then
+        return nil
+    end
+    local ptr = getCarPointer(car)
+    if not ptr or ptr == 0 then return nil end
+    local ok, st = pcall(readMemory, ptr + 0x428, 1, false)
+    if not ok or st == nil then return nil end
+    st = tonumber(st) or 0
+    return st ~= ENGINE_STATE_OFF
+end
+
 -- Парсинг данных с сервера/чата.
 local function parseIndicatorLetter(raw, letter)
     letter = tostring(letter or ''):lower()
     if letter == '' then return nil end
-    local tag = raw:match('~([a-z])~' .. letter)
+    local upper = letter:upper()
+    local tag = raw:match('~([a-z])~' .. letter) or raw:match('~([a-z])~' .. upper)
     if tag then return indicatorTagActive(tag) end
-    tag = raw:match('~([a-z])~' .. letter:upper())
-    if tag then return indicatorTagActive(tag) end
+    local hex = raw:match('{(%x+)}%s*' .. upper) or raw:match('{(%x+)}%s*' .. letter)
+    if hex then return sampColorActive(hex) end
+    if raw:find(upper, 1, true) then return true end
     return true
+end
+
+-- Ingest Indicators Raw — ~g~E~h~S и {hex}E с server TD (ADV /sp).
+local function ingestIndicatorRaw(raw, plainHint)
+    raw = tostring(raw or '')
+    if raw == '' then return false end
+    local plain = tostring(plainHint or ''):gsub('%s+', ''):lower()
+    if plain == '' then
+        plain = raw:gsub('{[0-9A-Fa-f]+}', ''):gsub('~[^~]*~', ''):gsub('%s+', ''):lower()
+    end
+    local any = false
+
+    for tag, letter in raw:gmatch('~([a-z])~([ESMLBesmlb])') do
+        local key = letter:upper()
+        if INDICATOR_HINT[key] then
+            if key == 'E' and M.isLocalInVehicle() then
+                -- E в ESMLB — индикатор, не двигатель в своём ТС.
+            else
+                hud.indicators[key] = indicatorTagActive(tag) and true or false
+                if key == 'E' then hud.engine = hud.indicators[key] end
+            end
+            any = true
+        end
+    end
+
+    for hex, letter in raw:gmatch('{(%x+)}([ESMLBesmlb])') do
+        local key = letter:upper()
+        if INDICATOR_HINT[key] then
+            if key ~= 'E' or not M.isLocalInVehicle() then
+                hud.indicators[key] = sampColorActive(hex) and true or false
+                if key == 'E' then hud.engine = hud.indicators[key] end
+            end
+            any = true
+        end
+    end
+
+    if plain:match('^[esmlb]+$') then
+        for i = 1, #plain do
+            local ch = plain:sub(i, i):upper()
+            if INDICATOR_HINT[ch] and hud.indicators[ch] == nil then
+                local on = parseIndicatorLetter(raw, ch)
+                hud.indicators[ch] = on ~= false
+                if ch == 'E' and not M.isLocalInVehicle() then
+                    hud.engine = hud.indicators[ch]
+                end
+                any = true
+            end
+        end
+    elseif #plain == 1 and plain:match('^[esmlb]$') then
+        local key = plain:upper()
+        if INDICATOR_HINT[key] then
+            hud.indicators[key] = parseIndicatorLetter(raw, key) ~= false
+            if key == 'E' and not M.isLocalInVehicle() then
+                hud.engine = hud.indicators[key]
+            end
+            any = true
+        end
+    end
+
+    if any then touchActive() end
+    return any
 end
 
 -- Store Indicators
 local function storeIndicators(raw, plain)
     plain = plain:gsub('%s+', '')
     if plain == '' then return false end
-    if #plain == 1 and plain:match('^[esmlb]$') then
-        local key = plain:upper()
-        hud.indicators[key] = parseIndicatorLetter(raw, key) and true or false
-        touchActive()
-        return true, 'ind_' .. key
-    end
-    if not plain:match('^[esmlb]+$') then return false end
-    for i = 1, #plain do
-        local ch = plain:sub(i, i):upper()
-        if INDICATOR_HINT[ch] then
-            hud.indicators[ch] = parseIndicatorLetter(raw, ch) and true or false
+    if ingestIndicatorRaw(raw, plain) then
+        if #plain == 1 and plain:match('^[esmlb]$') then
+            return true, 'ind_' .. plain:upper()
         end
+        return true, 'indicators'
     end
-    touchActive()
-    return true, 'indicators'
+    return false
+end
+
+-- Overlay «SPORT MODE» + отдельный TD «ON/OFF» — ingest, не скрывать.
+function M.isSportModeOverlayText(text, id)
+    local plain = normalizePlain(text or '')
+    if plain:find('sport', 1, true) and plain:find('mode', 1, true) then return true end
+    if plain == 'on' or plain == 'off' then
+        id = tonumber(id)
+        if id and tdRolePin[id] == 'sport_toggle' then return true end
+        if os.clock() < sportOverlayUntil then return true end
+    end
+    return false
 end
 
 -- Публичный API модуля.
@@ -301,179 +558,33 @@ function M.matchesServerHudText(text)
     if plain:find('km/h', 1, true) or plain:find('km h', 1, true) then return true end
     if plain:find('\xea\xec/\xf7', 1, true) or plain:find('\xea\xec', 1, true) then return true end
     if plain:find('fuel', 1, true) or plain:find('\xf2\xee\xef\xeb', 1, true) then return true end
-    if parseSpeedPlain(plain) then return true end
+    if looksLikeSpeedText(text, plain) then return true end
     if parseFuelPlain(plain) then return true end
     for word, _ in pairs(DOOR_WORDS) do
         if plain:find(word, 1, true) then return true end
     end
     for word, _ in pairs(DRIVE_MODES) do
-        if plain == word then return true end
+        if plain == word or plain:find('|%s*' .. word, 1, true)
+                or plain:find('^' .. word .. '%s') then return true end
     end
+    if plain == 'engine' or plain:match('^engine%s') then return true end
+    local n = tonumber(plain:match('^(%d+)$'))
+    if n and n >= 100 and n <= HEALTH_MAX then return true end
     if plain:match('^[esmlb ]+$') then return true end
-    if plain:match('^(%d+)$') then
-        local n = tonumber(plain:match('^(%d+)$'))
-        -- Только HP-диапазон; голые 0–350 (ping, fps) не считаем спидометром.
-        if n and n >= 100 and n <= HEALTH_MAX then return true end
-    end
     if text:match('~[a-z]~%d') and not text:find('__', 1, true) then return true end
     return false
-end
-
--- Is Vehicle Hud Label
-local function isVehicleHudLabel(text)
-    return M.matchesServerHudText(text)
-end
-
--- Is Likely Gauge Text
-local function isLikelyGaugeText(text)
-    return M.matchesServerHudText(text)
-end
-
--- Extract Tagged Numbers
-local function extractTaggedNumbers(text)
-    local out = {}
-    for tag, num in tostring(text or ''):gmatch('~([a-z])~(%d+)') do
-        out[#out + 1] = { tag = tag, value = tonumber(num) }
-    end
-    return out
-end
-
--- Classify Numeric
-local function classifyNumeric(text, y, pinnedRole)
-    local plain = normalizePlain(text)
-    local speed = parseSpeedPlain(plain)
-    if not speed then speed = extractSpeedValue(text, plain) end
-    if speed then return 'speed', speed end
-    local fuel = parseFuelPlain(plain)
-    if fuel then return 'fuel', fuel end
-
-    local tagged = extractTaggedNumbers(text)
-    if pinnedRole then
-        for _, item in ipairs(tagged) do
-            if item.value then return pinnedRole, item.value end
-        end
-        local n = tonumber(plain:match('^(%d+)$'))
-        if n then return pinnedRole, n end
-    end
-
-    if #tagged == 0 then
-        local n = tonumber(plain:match('^(%d+)$'))
-        if not n then return nil, nil end
-        if pinnedRole == 'health' or (n >= 250 and n <= HEALTH_MAX) then return 'health', n end
-        if pinnedRole == 'fuel' or (n <= 100 and y and y >= vehicleHudYMin()) then return 'fuel', n end
-        if pinnedRole == 'speed' and n <= 350 then return 'speed', n end
-        if n <= HEALTH_MAX then return 'health', n end
-        return nil, nil
-    end
-
-    for _, item in ipairs(tagged) do
-        local tag, n = item.tag, item.value
-        if n then
-            if tag == 'g' or tag == 'w' or tag == 'y' or tag == 'b' or tag == 's' then return 'speed', n end
-            if tag == 'c' or tag == 'p' or tag == 'u' then
-                if n >= 250 and n <= HEALTH_MAX then return 'health', n end
-                return 'fuel', n
-            end
-            if tag == 'm' or tag == 'h' then return 'health', n end
-        end
-    end
-
-    local first = tagged[1]
-    if first and first.value then
-        if first.value >= 250 and first.value <= HEALTH_MAX then return 'health', first.value end
-        if first.value <= 100 and y and y >= vehicleHudYMin() then return 'fuel', first.value end
-        return 'speed', first.value
-    end
-    return nil, nil
-end
-
--- Classify Role
-local function classifyRole(text, data, pinnedRole)
-    local raw = tostring(text or '')
-    local plain = normalizePlain(text)
-    plain = plain:gsub('_', ' ')
-
-    local speed = parseSpeedPlain(plain)
-    if not speed then speed = extractSpeedValue(raw, plain) end
-    if speed then return 'speed', speed end
-    local fuel = parseFuelPlain(plain)
-    if fuel then return 'fuel', fuel end
-
-    if plain:find('km/h', 1, true) or plain:find('km h', 1, true)
-            or plain:find('\xea\xec/\xf7', 1, true) or looksLikeSpeedText(raw, plain) then
-        local n = extractSpeedValue(raw, plain)
-        if n then return 'speed', n end
-        return 'speed_unit', nil
-    end
-    if plain:find('fuel', 1, true) then return 'fuel_label', nil end
-
-    local doorText = parseDoorPlain(plain)
-    if doorText then return 'door', doorText end
-    local modeText = parseModePlain(plain)
-    if modeText then return 'mode', modeText end
-
-    local indPlain = plain:gsub('%s+', '')
-    local indOk, indRole = storeIndicators(raw, indPlain)
-    if indOk then return indRole or 'indicators', nil end
-
-    local y = tdPosY(data)
-    local role, value = classifyNumeric(text, y, pinnedRole)
-    if role then return role, value end
-    if plain:match('^[%d_%.]+$') or plain == '' then return 'decor', nil end
-    return 'decor', nil
 end
 
 touchActive = function()
     hud.lastAt = os.clock()
     hud.active = true
-    hud.inVehicle = M.isVehicleContextActive()
-end
-
--- Spectate-цель в транспорте (не «любой /sp»).
-function M.isSpectateTargetInVehicle()
-    if not getSpectateTargetId then return false end
-    local ok, id = pcall(getSpectateTargetId)
-    if not ok or not id or id < 0 then return false end
-    if not sampGetCharHandleBySampPlayerId or not doesCharExist or not isCharInAnyCar then
-        return false
-    end
-    local okPed, ped = pcall(sampGetCharHandleBySampPlayerId, id)
-    if not okPed or not ped or not doesCharExist(ped) then return false end
-    return isCharInAnyCar(ped) == true
+    hud.inVehicle = true
 end
 
 -- Локальный ped в транспорте (только свой игрок; для /sp — server TD).
 function M.isLocalInVehicle()
-    if not PLAYER_PED or type(doesCharExist) ~= 'function' or type(isCharInAnyCar) ~= 'function' then
-        return false
-    end
-    if not doesCharExist(PLAYER_PED) then return false end
-    return isCharInAnyCar(PLAYER_PED) == true
-end
-
-function M.isVehicleContextActive()
-    local now = os.clock()
-    if now - (vehCtxCache.at or 0) < VEH_CTX_CACHE_SEC then
-        return vehCtxCache.ok == true
-    end
-    vehCtxCache.at = now
-    if M.isLocalInVehicle() then
-        vehCtxCache.ok = true
-        return true
-    end
-    vehCtxCache.ok = M.isSpectateTargetInVehicle()
-    return vehCtxCache.ok
-end
-
-local function syncVehicleContext()
-    if M.isVehicleContextActive() then
-        hud.inVehicle = true
-        return true
-    end
-    if hud.active then
-        M.reset()
-    end
-    return false
+    if not PLAYER_PED or not isCharInAnyCar then return false end
+    return isCharInAnyCar(PLAYER_PED) and true or false
 end
 
 -- Store Field
@@ -488,20 +599,9 @@ local function storeField(role, value, textValue)
         hud.health = math.max(0, math.min(HEALTH_MAX, math.floor(value + 0.5)))
         touchActive()
     elseif role == 'door' and textValue and textValue ~= '' then
-        local doorText = parseDoorPlain(normalizePlain(textValue))
-        if not doorText and #normalizePlain(textValue) <= 14 then
-            doorText = tostring(textValue)
-        end
-        if doorText then
-            hud.door = tostring(doorText)
-            touchActive()
-        end
+        ingestDoorStatus(textValue, normalizePlain(textValue), nil)
     elseif role == 'mode' and textValue and textValue ~= '' then
-        local modeText = parseModePlain(normalizePlain(textValue))
-        if modeText then
-            hud.driveMode = modeText
-            touchActive()
-        end
+        ingestModeStatus(textValue, normalizePlain(textValue), nil)
     elseif role == 'speed_unit' or role == 'fuel_label' then
         touchActive()
     elseif role and role:match('^ind_') then
@@ -527,11 +627,10 @@ end
 
 -- Без side-effect reset (для baseline auto /sp).
 function M.peekActive()
-    if not syncVehicleContext() then return false end
     if not hud.active or not hud.inVehicle then return false end
     if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then return false end
     if hud.speed ~= nil or hud.fuel ~= nil or hud.health ~= nil then return true end
-    if hud.door or hud.driveMode then return true end
+    if hud.door or hud.driveMode or hud.engine ~= nil then return true end
     for _, key in ipairs(INDICATOR_ORDER) do
         if hud.indicators[key] ~= nil then return true end
     end
@@ -540,14 +639,13 @@ end
 
 -- Публичный API модуля.
 function M.isActive()
-    if not syncVehicleContext() then return false end
     if not hud.active or not hud.inVehicle then return false end
     if (os.clock() - (hud.lastAt or 0)) > STALE_SEC then
         M.reset()
         return false
     end
     if hud.speed ~= nil or hud.fuel ~= nil or hud.health ~= nil then return true end
-    if hud.door or hud.driveMode then return true end
+    if hud.door or hud.driveMode or hud.engine ~= nil then return true end
     for _, key in ipairs(INDICATOR_ORDER) do
         if hud.indicators[key] ~= nil then return true end
     end
@@ -627,11 +725,9 @@ local function parseCombinedHudPlain(raw, plain)
     local hp = parseHealthPlain(raw, plain)
     if hp ~= nil then storeField('health', hp, nil); any = true end
 
-    local door = parseDoorPlain(plain)
-    if door then storeField('door', nil, door); any = true end
-
-    local mode = parseModePlain(plain)
-    if mode then storeField('mode', nil, mode); any = true end
+    if ingestDoorStatus(raw, plain, nil) then any = true end
+    if ingestModeStatus(raw, plain, nil) then any = true end
+    if ingestEngineStatusWord(raw, plain, nil) then any = true end
 
     local indSeg = plain:match('|[^|]*|[^|]*|%s*(.+)$')
         or plain:match('|[^|]*|%s*(.+)$')
@@ -655,25 +751,68 @@ local function inferServerTdRole(text, x, y)
     if parseFuelPlain(plain) or plain:find('fuel', 1, true) then return 'fuel' end
     if parseDoorPlain(plain) then return 'door' end
     if parseModePlain(plain) then return 'mode' end
+    if plain == 'engine' or plain:match('^engine%s') then return 'engine' end
     local indPlain = plain:gsub('%s+', '')
     if indPlain:match('^[esmlb]+$') then return 'indicators' end
     local slotRole = roleFromHudPosition(x, y)
-    if slotRole == 'health' then
+    if slotRole == 'speed' or slotRole == 'health' then
         n = tonumber(plain:match('^(%d+)$'))
         if n and n >= 100 and n <= HEALTH_MAX then return 'health' end
-    elseif slotRole == 'speed' then
-        n = tonumber(plain:match('^(%d+)$'))
         if n and n <= 350 then return 'speed' end
     end
     return slotRole
 end
 
-local function mayIngestNumericRole(role, inStrict, inArea, key, tdId)
+local function getSpectateTargetPed()
+    if resolveSpectateTargetPedFn then
+        local ok, ped = pcall(resolveSpectateTargetPedFn)
+        if ok and ped and ped ~= 0 then return ped end
+    end
+    if not getSpectateTargetId then return nil end
+    local ok, tid = pcall(getSpectateTargetId)
+    if not ok or not tid or tid < 0 then return nil end
+    if type(sampGetCharHandleBySampPlayerId) ~= 'function' then return nil end
+    local ok2, ped = sampGetCharHandleBySampPlayerId(tid)
+    if ok2 and ped and ped ~= 0 and type(doesCharExist) == 'function' and doesCharExist(ped) then
+        return ped
+    end
+    return nil
+end
+
+local function getCarFromPed(ped)
+    if not ped or ped == 0 then return nil end
+    if type(storeCarCharIsInNoSave) == 'function' then
+        local car = storeCarCharIsInNoSave(ped)
+        if car and car ~= 0 then return car end
+    end
+    if type(getCarCharIsUsing) == 'function' then
+        local car = getCarCharIsUsing(ped, false)
+        if car and car ~= 0 then return car end
+    end
+    return nil
+end
+
+local function isSpectateTargetInVehicle()
+    if M.isLocalInVehicle() then return true end
+    local ped = getSpectateTargetPed()
+    if not ped then return false end
+    if type(isCharInAnyCar) ~= 'function' then return false end
+    local ok, inCar = pcall(isCharInAnyCar, ped)
+    return ok and inCar == true
+end
+
+local function vehicleTelemetryActive()
+    if M.isLocalInVehicle() then return true end
+    return isSpectateTargetInVehicle()
+end
+
+local function mayIngestNumericRole(role, inStrict, inArea, key, tdId, text)
     if role ~= 'speed' and role ~= 'fuel' and role ~= 'health' then return true end
-    if not M.isVehicleContextActive() then return false end
     if inStrict then return true end
     if tdId and tdRolePin[tdId] then return true end
     if key and posSlots[key] then return true end
+    if inArea and vehicleTelemetryActive() then return true end
+    if vehicleTelemetryActive() and text and M.matchesServerHudText(text) then return true end
     return false
 end
 
@@ -681,15 +820,12 @@ end
 local function applyServerTdField(text, data, tdId)
     data = data or {}
     tdId = tonumber(tdId)
-    local raw = tostring(text or '')
-    local plain = normalizePlain(raw):gsub('_', ' ')
-    if not M.isVehicleContextActive() and not parseCombinedHudPlain(raw, plain) then
-        return
-    end
     local x, y = tdPosX(data), tdPosY(data)
     local inArea = x and y and isVehicleHudArea(x, y)
     local inStrict = x and y and isStrictVehicleHudArea(x, y)
     local key = inStrict and slotBucketKey(x, y) or nil
+    local raw = tostring(text or '')
+    local plain = normalizePlain(raw):gsub('_', ' ')
     if parseCombinedHudPlain(raw, plain) then
         if key then posSlots[key] = 'combined' end
         if tdId then tdRolePin[tdId] = 'combined' end
@@ -707,6 +843,7 @@ local function applyServerTdField(text, data, tdId)
             elseif parseFuelPlain(plain) or plain:find('fuel', 1, true) then role = 'fuel'
             elseif parseDoorPlain(plain) then role = 'door'
             elseif parseModePlain(plain) then role = 'mode'
+            elseif plain == 'engine' or plain:match('^engine%s') then role = 'engine'
             elseif plain:gsub('%s+', ''):match('^[esmlb]+$') then role = 'indicators'
             end
         end
@@ -716,9 +853,9 @@ local function applyServerTdField(text, data, tdId)
         if inStrict or inArea then touchActive() end
         return
     end
-    if not mayIngestNumericRole(role, inStrict, inArea, key, tdId) then return end
+    if not mayIngestNumericRole(role, inStrict, inArea, key, tdId, text) then return end
     if not inArea and role ~= 'speed' and role ~= 'fuel' and role ~= 'health'
-            and role ~= 'door' and role ~= 'mode' and role ~= 'indicators' then
+            and role ~= 'door' and role ~= 'mode' and role ~= 'engine' and role ~= 'indicators' then
         return
     end
     if key then posSlots[key] = role end
@@ -743,16 +880,30 @@ local function applyServerTdField(text, data, tdId)
         local n = parseHealthPlain(raw, plain)
         if n ~= nil then storeField('health', n, nil) end
     elseif role == 'door' then
-        local doorText = parseDoorPlain(plain)
-        if not doorText and plain:match('^[%a]+$') then
-            doorText = plain:sub(1, 1):upper() .. plain:sub(2)
-        end
-        if doorText then storeField('door', nil, doorText) end
+        ingestDoorStatus(raw, plain, data)
     elseif role == 'mode' then
-        local modeText = parseModePlain(plain)
-        if modeText then storeField('mode', nil, modeText) end
+        ingestModeStatus(raw, plain, data, tdId)
+    elseif role == 'engine' then
+        ingestEngineStatusWord(raw, plain, data)
     elseif role == 'indicators' then
-        storeIndicators(raw, plain:gsub('%s+', ''))
+        ingestIndicatorRaw(raw, plain:gsub('%s+', ''))
+    end
+    if vehicleTelemetryActive() and M.matchesServerHudText(text) then
+        touchActive()
+    end
+end
+
+function M.isSpectateTargetInVehicle()
+    return isSpectateTargetInVehicle()
+end
+
+-- Сброс HUD при выходе цели из ТС (/sp). Вызывать из tick/draw, не из shouldShow.
+function M.syncSpectateVehiclePresence()
+    if M.isLocalInVehicle() then return end
+    local ok, inVeh = pcall(isSpectateTargetInVehicle)
+    if not ok or inVeh then return end
+    if hud.active or hud.inVehicle then
+        M.reset()
     end
 end
 
@@ -764,22 +915,49 @@ function M.shouldShow(settings)
         hovered = false
         return false
     end
-    if not syncVehicleContext() then return false end
+    if M.isLocalInVehicle() then return true end
+    local ok, inVeh = pcall(isSpectateTargetInVehicle)
+    if not ok or not inVeh then return false end
+    if M.peekActive() then return true end
     return M.isActive()
 end
 
 -- Публичный API модуля.
 function M.shouldBlockServerTd(id, data, text)
     if not M.isEnabled() then return false end
-    text = text or (data and data.text) or ''
-    if isLikelyGaugeText(text) or isVehicleHudLabel(text) then return true end
+    if M.isSportModeOverlayText(text, id) then return false end
+    id = tonumber(id)
+    if id and tdRolePin[id] then return true end
     local x, y = tdPosX(data), tdPosY(data)
+    if (not x or not y) and id and tdMeta[id] then
+        x, y = tdMeta[id].x, tdMeta[id].y
+    end
     if isVehicleHudArea(x, y) then return true end
-    if y and y >= (vehicleHudYMin() - 24) then
-        local plain = normalizePlain(text)
-        if plain:match('^%d+$') or text:match('~[a-z]~%d') then return true end
+    text = text or (data and data.text) or ''
+    if text ~= '' and vehicleTelemetryActive() and M.matchesServerHudText(text) then
+        return true
     end
     return false
+end
+
+-- Evict oldest tdMeta entries when cache grows too large.
+local function touchTdMeta(id, entry)
+    if not id then return end
+    for i, k in ipairs(tdMetaOrder) do
+        if k == id then
+            table.remove(tdMetaOrder, i)
+            break
+        end
+    end
+    tdMeta[id] = entry
+    tdMetaOrder[#tdMetaOrder + 1] = id
+    while #tdMetaOrder > TD_META_MAX do
+        local old = table.remove(tdMetaOrder, 1)
+        if old then
+            tdMeta[old] = nil
+            tdRolePin[old] = nil
+        end
+    end
 end
 
 -- Публичный API модуля.
@@ -789,12 +967,13 @@ function M.ingest(id, data, text)
     if text == '' and not data then return end
     applyServerTdField(text, data, id)
     if id then
-        tdMeta[id] = {
+        touchTdMeta(id, {
             role = tdRolePin[id] or posSlots[slotBucketKey(tdPosX(data), tdPosY(data))] or 'decor',
             x = tdPosX(data),
             y = tdPosY(data),
             text = text,
-        }
+            letterColor = data and data.letterColor,
+        })
     end
 end
 
@@ -804,33 +983,46 @@ function M.ingestString(id, text)
     if not id then return false end
     text = text or ''
     local meta = tdMeta[id]
+    local pinned = tdRolePin[id]
     if not meta then
-        if not isLikelyGaugeText(text) and not isVehicleHudLabel(text) then
-            return false
-        end
-        meta = { role = 'decor', x = nil, y = nil, text = text }
-        tdMeta[id] = meta
+        if not pinned and not M.matchesServerHudText(text) then return false end
+        meta = { role = pinned or 'decor', x = nil, y = nil, text = text, letterColor = nil }
+    else
+        meta.text = text
     end
-    local data = { position = { x = meta.x, y = meta.y }, text = text }
+    touchTdMeta(id, {
+        role = pinned or meta.role or 'decor',
+        x = meta.x,
+        y = meta.y,
+        text = text,
+        letterColor = meta.letterColor,
+    })
+    local data = {
+        position = { x = meta.x, y = meta.y },
+        text = text,
+        letterColor = meta.letterColor,
+    }
     M.ingest(id, data, text)
-    if tdMeta[id] then return true end
     return M.shouldBlockServerTd(id, data, text)
 end
 
 -- Публичный API модуля.
 function M.reset()
-    vehCtxCache.at = 0
-    vehCtxCache.ok = false
     hud.speed = nil
     hud.fuel = nil
     hud.health = nil
     hud.door = nil
+    hud.doorLocked = nil
     hud.driveMode = nil
+    hud.sportActive = nil
+    hud.engine = nil
     hud.indicators = {}
     hud.inVehicle = false
     hud.lastAt = 0
     hud.active = false
+    sportOverlayUntil = 0
     tdMeta = {}
+    tdMetaOrder = {}
     posSlots = {}
     tdRolePin = {}
     drag.active = false
@@ -1087,7 +1279,8 @@ end
 
 -- Draw Metric Row — HP / Fuel: подпись + значение + яркая полоска.
 local function drawMetricRow(dl, lay, y, label, value, maxVal, kind)
-    maxVal = maxVal or 100
+    maxVal = tonumber(maxVal) or 100
+    if maxVal <= 0 then maxVal = 100 end
     value = tonumber(value)
     local pct = value and math.max(0, math.min(1, value / maxVal)) or 0
     if kind == 'health' then
@@ -1131,60 +1324,148 @@ local function drawMetricRow(dl, lay, y, label, value, maxVal, kind)
     return barY + lay.barH + lay.rowGap
 end
 
--- Door Tone
-local function doorTone()
-    if not hud.door or hud.door == '' then return nil, nil end
-    local low = hud.door:lower()
-    if low:find('open', 1, true) or low:find('\xEE\xF2\xEA\xF0', 1, true) then
-        return 'Open', col_warn or imgui.ImVec4(0.95, 0.78, 0.28, 1.0)
+-- Цвет статуса: фиолетовый = активно, приглушённый = выкл.
+local function statusItemCol(active)
+    if active then
+        return col_accent or imgui.ImVec4(0.72, 0.52, 0.98, 1.0)
     end
-    if low:find('clos', 1, true) or low:find('lock', 1, true)
-            or low:find('\xE7\xE0\xEA\xF0', 1, true) or low:find('\xE7\xE0\xEC\xEE\xEA', 1, true) then
-        return 'Lock', col_accent or imgui.ImVec4(0.62, 0.44, 0.86, 1.0)
-    end
-    return nil, nil
+    return col_muted2 or imgui.ImVec4(0.50, 0.48, 0.56, 0.55)
 end
 
--- Mode Tone
-local function modeTone()
-    if not hud.driveMode or hud.driveMode == '' then return nil, nil end
-    local parsed = parseModePlain(normalizePlain(hud.driveMode))
-    if parsed then
-        return parsed, col_label or imgui.ImVec4(0.88, 0.86, 0.94, 0.92)
+-- Пересборка pinned TD + native чтение цели /sp.
+local function getLocalCar()
+    if not PLAYER_PED or not isCharInAnyCar or not isCharInAnyCar(PLAYER_PED) then
+        return nil
     end
-    return nil, nil
+    return getCarFromPed(PLAYER_PED)
 end
 
--- Draw Status Row — одна строка текста в нижней прорези дуги.
+local function speedKmhFromVelocityMs(vx, vy, vz)
+    local sp = math.sqrt(vx * vx + vy * vy + vz * vz) * SPEED_KMH_PER_MS
+    return math.max(0, math.floor(sp + 0.5))
+end
+
+local function hasPinnedSpeedTd()
+    for id, role in pairs(tdRolePin) do
+        if role == 'speed' or role == 'combined' then return true end
+    end
+    return false
+end
+
+local function readCarSpeed(car)
+    if not car or car == 0 then return nil end
+    if type(getCarSpeed) == 'function' then
+        local ok, sp = pcall(getCarSpeed, car)
+        if ok and sp ~= nil then
+            return math.max(0, math.floor((tonumber(sp) or 0) + 0.5))
+        end
+    end
+    if type(getCarPointer) == 'function' and type(readMemory) == 'function'
+            and type(representIntAsFloat) == 'function' then
+        local ptr = getCarPointer(car)
+        if ptr and ptr ~= 0 then
+            local okx, vx = pcall(readMemory, ptr + 0x44, 4, false)
+            local oky, vy = pcall(readMemory, ptr + 0x48, 4, false)
+            local okz, vz = pcall(readMemory, ptr + 0x4C, 4, false)
+            if okx and oky and okz then
+                return speedKmhFromVelocityMs(
+                    representIntAsFloat(vx),
+                    representIntAsFloat(vy),
+                    representIntAsFloat(vz))
+            end
+        end
+    end
+    return nil
+end
+
+local function readLocalVehicleSpeed()
+    if not M.isLocalInVehicle() then return nil end
+    return readCarSpeed(getLocalCar())
+end
+
+local function syncSpeedFromMoveSpeed(moveSpeed)
+    if not moveSpeed then return nil end
+    local vx = tonumber(moveSpeed.x or moveSpeed[1]) or 0
+    local vy = tonumber(moveSpeed.y or moveSpeed[2]) or 0
+    local vz = tonumber(moveSpeed.z or moveSpeed[3]) or 0
+    return speedKmhFromVelocityMs(vx, vy, vz)
+end
+
+local function refreshAllPinnedTdFromMeta()
+    for _, id in ipairs(tdMetaOrder) do
+        local role = tdRolePin[id]
+        if not role or not TELEMETRY_PIN_ROLES[role] then goto cont end
+        local meta = tdMeta[id]
+        if not meta or not meta.text or meta.text == '' then goto cont end
+        local data = {
+            letterColor = meta.letterColor,
+            position = { x = meta.x, y = meta.y },
+            text = meta.text,
+        }
+        applyServerTdField(meta.text, data, id)
+        ::cont::
+    end
+end
+
+local function refreshSpectateVehicleState()
+    if M.isLocalInVehicle() then return end
+    if not isSpectateTargetInVehicle() then return end
+    touchActive()
+    local ped = getSpectateTargetPed()
+    if not ped then return end
+    local car = getCarFromPed(ped)
+    if not car or car == 0 then return end
+    local on = readCarEngineOn(car)
+    if on ~= nil then
+        hud.engine = on
+        hud.indicators['E'] = on
+    end
+end
+
+local function refreshLocalVehicleState()
+    if not M.isLocalInVehicle() then return end
+    touchActive()
+    local car = getLocalCar()
+    if car and car ~= 0 then
+        local on = readCarEngineOn(car)
+        if on ~= nil then
+            hud.engine = on
+            hud.indicators['E'] = on
+        end
+    end
+    if not hasPinnedSpeedTd() then
+        local sp = readLocalVehicleSpeed()
+        if sp ~= nil then hud.speed = sp end
+    end
+end
+
+-- Draw Status Row — Lock · Sport · Engine (фиолетовый = вкл).
 local function drawStatusRow(dl, lay)
-    local parts = {}
-    local cols = {}
-    local doorText, doorCol = doorTone()
-    if doorText then parts[#parts + 1] = doorText; cols[#cols + 1] = doorCol end
-    local modeText, modeCol = modeTone()
-    if modeText then parts[#parts + 1] = modeText; cols[#cols + 1] = modeCol end
-    if #parts == 0 then return end
-
-    local sepCol = col_muted or imgui.ImVec4(0.45, 0.43, 0.50, 0.45)
+    local items = {
+        { 'Lock', hud.doorLocked == true },
+        { 'Sport', hud.sportActive == true },
+        { 'Engine', hud.engine == true },
+    }
+    local sepCol = col_muted or imgui.ImVec4(0.45, 0.43, 0.50, 0.40)
     local totalW = 0
-    for i, part in ipairs(parts) do
-        totalW = totalW + textSize(part)
-        if i < #parts then totalW = totalW + 12 end
+    for i, item in ipairs(items) do
+        totalW = totalW + textSize(item[1])
+        if i < #items then totalW = totalW + 12 end
     end
 
     local y = lay.statusY
     local x = lay.cx - totalW * 0.5
-    for i, part in ipairs(parts) do
-        drawDlText(dl, x, y, part, cols[i])
-        x = x + textSize(part)
-        if i < #parts then
+    for i, item in ipairs(items) do
+        drawDlText(dl, x, y, item[1], statusItemCol(item[2]))
+        x = x + textSize(item[1])
+        if i < #items then
             drawDlText(dl, x + 2, y, '\xB7', sepCol)
             x = x + 12
         end
     end
 end
 
--- Draw Cef Style Hud — CEF: дуга + скорость сверху, HP/Fuel ниже, статус в прорези.
+-- Draw Cef Style Hud — дуга + скорость сверху, HP/Fuel ниже, статус в прорези.
 local function drawCefStyleHud(panelW, panelH, speed)
     panelW = math.max(220, tonumber(panelW) or PANEL_BASE)
     panelH = math.max(220, tonumber(panelH) or panelW)
@@ -1326,6 +1607,14 @@ local function drawVehicleHudInner(settings)
             end
         end
 
+        if M.isLocalInVehicle() or isSpectateTargetInVehicle() then
+            refreshAllPinnedTdFromMeta()
+        end
+        if M.isLocalInVehicle() then
+            refreshLocalVehicleState()
+        else
+            refreshSpectateVehicleState()
+        end
         drawCefStyleHud(ww, wh, hud.speed)
 
         imgui.InvisibleButton('##veh_hud_drag', imgui.ImVec2(-1, -1))
@@ -1356,8 +1645,72 @@ local function drawVehicleHudInner(settings)
     end
 end
 
+-- SAMP vehicle sync цели /sp: скорость + HP (как native в своём ТС).
+function M.onVehicleSync(playerId, vehicleId, data)
+    if not M.isEnabled() or M.isLocalInVehicle() then return end
+    if not getSpectateTargetId then return end
+    local ok, tid = pcall(getSpectateTargetId)
+    if not ok or not tid or tid < 0 or tonumber(playerId) ~= tid then return end
+    if not isSpectateTargetInVehicle() then return end
+    touchActive()
+    data = data or {}
+    local hp = tonumber(data.vehicleHealth)
+    if hp then
+        hud.health = math.max(0, math.min(HEALTH_MAX, math.floor(hp + 0.5)))
+    end
+    local sp = syncSpeedFromMoveSpeed(data.moveSpeed)
+    if sp ~= nil and not hasPinnedSpeedTd() then hud.speed = sp end
+end
+
+-- SAMP RPC: engine/doors.
+function M.onSetVehicleParamsEx(vehicleId, params, doors)
+    if not M.isEnabled() then return end
+    if not M.isLocalInVehicle() and not vehicleTelemetryActive() then return end
+    if params then
+        local eng = tonumber(params.engine)
+        if eng ~= nil then
+            hud.engine = eng ~= 0
+            hud.indicators['E'] = hud.engine
+            touchActive()
+        end
+        local dr = tonumber(params.doors)
+        if dr ~= nil then
+            hud.doorLocked = dr ~= 0
+            touchActive()
+        end
+    end
+    if doors then
+        local driver = tonumber(doors.driver)
+        if driver ~= nil then
+            hud.doorLocked = driver ~= 0
+            touchActive()
+        end
+    end
+end
+
+-- SAMP RPC: doorsLocked.
+function M.onSetVehicleParams(vehicleId, objective, doorsLocked)
+    if not M.isEnabled() then return end
+    if not M.isLocalInVehicle() and not vehicleTelemetryActive() then return end
+    if doorsLocked ~= nil then
+        hud.doorLocked = doorsLocked and true or false
+        touchActive()
+    end
+end
+
+-- Посадка/выход из своего ТС — сброс/активация HUD.
+function M.onLocalVehicleChanged(inVehicle)
+    if inVehicle then
+        touchActive()
+        hud.inVehicle = true
+    else
+        M.reset()
+    end
+end
+
 -- Публичный API модуля.
 function M.draw(settings)
+    M.syncSpectateVehiclePresence()
     if not M.shouldShow(settings) then return end
     local ok, err = pcall(drawVehicleHudInner, settings)
     if not ok and print then
@@ -1380,7 +1733,7 @@ function M.configure(deps)
     flushDirtyConfigNow = deps.flushDirtyConfigNow
     getSettingsFn = deps.getSettings
     getSpectateTargetId = deps.getSpectateTargetId
-    inputDeps = deps.inputDeps
+    resolveSpectateTargetPedFn = deps.resolveSpectateTargetPed
 end
 
 return M

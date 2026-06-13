@@ -1,4 +1,9 @@
 --[[ Модуль: выдача скинов, каталог превью. ]]
+-- Global in core_a chunk: initDeskCatalogWarmup registers this before local forward-ref.
+function skinTexRelease(tex)
+    if tex and imgui and imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, tex) end
+end
+
 function skinsLoadCatalog()
     if skinCatalog then return end
     skinCatalog = {}
@@ -610,7 +615,15 @@ function drawSkinsTab()
     imgui.EndChild()
     imgui.EndChild()
 
+    pcall(deskCatalogTexTick)
     imgui.EndChild()
     popPanelStyle()
+end
+
+-- Skins Release Textures
+function skinsReleaseTextures()
+    deskTex.releaseAll(TEX_NS_SKIN, skinTexRelease, true)
+    deskTexLoad.clearNamespace(TEX_NS_SKIN)
+    deskTexPipeline.requestDeferredFlush()
 end
 

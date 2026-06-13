@@ -30,11 +30,6 @@ function shouldIngestServerReport(color, plain)
     return true
 end
 
--- Парсинг данных с сервера/чата.
-function parseReportLine(text, color)
-    return tryParseReport(text)
-end
-
 -- Learn Report Color
 function learnReportColor(color)
     local c = normColor(color)
@@ -53,6 +48,7 @@ function learnReportColor(color)
 end
 
 -- Парсинг данных с сервера/чата.
+-- NO-API: inbound admin reply echo; outbound /ans tracked in handleOutgoingAnsCommand.
 function parseAdminReply(text)
     if not text or text == '' then return nil end
     text = trim(stripChatTimestamp(stripTags(text)))
@@ -155,12 +151,18 @@ function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick
             markOutboundEchoHandled(targetId, body, key, targetNick)
             return true
         end
-        threadApplyOutgoing(t, key, body, { self = true })
+        if not threadApplyOutgoing(t, key, body, { self = true })
+                and not threadFindOutgoingMessage(t, body, { self = true }) then
+            return false
+        end
         markOutboundEchoHandled(targetId, body, key, targetNick)
         return true
     end
 
-    threadApplyOutgoing(t, key, body, { self = false, adminNick = adminNick })
+    if not threadApplyOutgoing(t, key, body, { self = false, adminNick = adminNick })
+            and not threadFindOutgoingMessage(t, body, { self = false, adminNick = adminNick }) then
+        return false
+    end
     return true
 end
 
@@ -224,81 +226,6 @@ function ruleMatchModeToInt(mode)
     if mode == 'contains' then return 1 end
     if mode == 'all_words' then return 2 end
     return 0
-end
-
--- Match Text Padded
-function matchTextPadded(s)
-    s = normalizeMatchText(s)
-    if s == '' then return '' end
-    return ' ' .. s:gsub('%s+', ' ') .. ' '
-end
-
--- Token Min Length
-function tokenMinLength(token)
-    token = normalizeMatchText(token)
-    if token == '' then return MIN_CONTAINS_TRIGGER_LEN end
-    if token:match('^[%a%d]+$') and #token >= 2 then return 2 end
-    return MIN_CONTAINS_TRIGGER_LEN
-end
-
--- Text Contains Token
-function textContainsToken(msg, msgAlt, token, msgTypo)
-    token = normalizeMatchText(token)
-    if token == '' or #token < tokenMinLength(token) then return false end
-    local needle = ' ' .. token .. ' '
-    for _, bag in ipairs({ msg, msgAlt, msgTypo or normalizeMatchTextTypo(msg) }) do
-        local mp = matchTextPadded(bag)
-        if mp:find(needle, 1, true) then return true end
-    end
-    return false
-end
-
--- Words Share Stem
-function wordsShareStem(word, token, minStem)
-    minStem = minStem or 6
-    word = normalizeMatchText(word)
-    token = normalizeMatchText(token)
-    if word == '' or token == '' then return false end
-    if word == token then return true end
-    local maxStem = math.min(#word, #token)
-    if maxStem < minStem then return false end
-    for n = maxStem, minStem, -1 do
-        if word:sub(1, n) == token:sub(1, n) then return true end
-    end
-    return false
-end
-
---[[
-    contains: короткие слова (3–4) — только целое слово; длиннее — целое слово, префикс или общий stem
-    (собеседований → собеседование, дальнобойщиком → дальнобойщик).
-]]
-function textMatchesContainsToken(msg, msgAlt, token, msgTypo)
-    token = normalizeMatchText(token)
-    if token == '' or #token < tokenMinLength(token) then return false end
-    msgTypo = msgTypo or normalizeMatchTextTypo(msg)
-    if textContainsToken(msg, msgAlt, token, msgTypo) then return true end
-    if #token < 5 then return false end
-    local seen = {}
-    local bags = {}
-    for _, bag in ipairs({ msg, msgAlt, msgTypo }) do
-        local n = normalizeMatchText(bag)
-        if n ~= '' and not seen[n] then
-            seen[n] = true
-            bags[#bags + 1] = n
-        end
-    end
-    local minStem = (#token >= 8) and 6 or 5
-    for _, bag in ipairs(bags) do
-        for w in bag:gmatch('%S+') do
-            if #w >= #token and w:sub(1, #token) == token then
-                return true
-            end
-            if #token >= minStem and wordsShareStem(w, token, minStem) then
-                return true
-            end
-        end
-    end
-    return false
 end
 
 -- Split Trigger Words
@@ -392,7 +319,7 @@ end
 
 -- Get Sorted Rule Indices
 function getSortedRuleIndices()
-    local rules = getActiveAutoRules()
+    local rules = getActiveBuiltinAutoRules()
     local idx = {}
     for i = 1, #rules do idx[i] = i end
     table.sort(idx, function(a, b)
@@ -418,331 +345,6 @@ function findMatchingRule(body)
     return nil
 end
 
--- Keyword Dedupe Key
-function keywordDedupeKey(part)
-    local norm = normalizeMatchText(part)
-    if norm ~= '' then return norm end
-    return (part or ''):lower()
-end
-
--- Keywords To Multiline
-function keywordsToMultiline(kw)
-    local parts = {}
-    for _, k in ipairs(kw or {}) do
-        local p = trim(k)
-        if p ~= '' then parts[#parts + 1] = p end
-    end
-    return table.concat(parts, '\n')
-end
-
--- Парсинг данных с сервера/чата.
-function parseKeywordList(line)
-    local kw = {}
-    local seen = {}
-    line = tostring(line or ''):gsub('[\r\n;|]+', ',')
-    for part in (line .. ','):gmatch('([^,]+),') do
-        part = trim(part)
-        if part ~= '' then
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                kw[#kw + 1] = part
-            end
-        end
-    end
-    return kw
-end
-
--- Сброс/отправка очереди.
-function flushRuleKeywordsPreview()
-    if selectedRuleIdx < 1 or selectedRuleIdx > #rules then return end
-    local r = rules[selectedRuleIdx]
-    if not r then return end
-    local kw = {}
-    for _, k in ipairs(ruleKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    r.keywords = kw
-    markDirtySettings()
-end
-
--- Сброс/отправка очереди.
-function flushRuleEditorToRule()
-    if selectedRuleIdx < 1 or selectedRuleIdx > #rules then return end
-    local r = rules[selectedRuleIdx]
-    if not r then return end
-    local name = readInputBuf(editRuleName)
-    if name ~= '' then r.name = name end
-    r.payload = readInputBuf(editRulePayload)
-    r.enabled = editRuleEnabled[0]
-    r.cooldown = math.max(5, tonumber(r.cooldown) or 60)
-    r.match = 'exact'
-    r.mode = 'instant'
-    r.priority = 0
-    r.skip_if_report_id = false
-    local kw = {}
-    for _, k in ipairs(ruleKwEdit) do
-        local part = trim(k)
-        if part ~= '' then kw[#kw + 1] = part end
-    end
-    r.keywords = kw
-    markDirtySettings()
-end
-
--- Remove Rule Keyword At
-function removeRuleKeywordAt(idx)
-    if not ruleKwEdit[idx] then return end
-    table.remove(ruleKwEdit, idx)
-    markRuleEditorDirty()
-    flushRuleEditorToRule()
-end
-
--- Sync Rule Kw Edit From Rule
-function syncRuleKwEditFromRule(r)
-    ruleKwEdit = {}
-    if not r then
-        setInputBuf(ruleKwBulk, '')
-        setInputBuf(ruleKwNew, '')
-        return
-    end
-    local seen = {}
-    local lines = {}
-    for _, k in ipairs(r.keywords or {}) do
-        local part = trim(k)
-        if part ~= '' then
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                ruleKwEdit[#ruleKwEdit + 1] = part
-                lines[#lines + 1] = part
-            end
-        end
-    end
-    setInputBuf(ruleKwBulk, table.concat(lines, '\n'))
-    setInputBuf(ruleKwNew, '')
-end
-
--- Sync Rule Keywords From Bulk Buf
-function syncRuleKeywordsFromBulkBuf()
-    local block = readInputBuf(ruleKwBulk)
-    ruleKwEdit = {}
-    if block == '' then
-        markRuleEditorDirty()
-        return
-    end
-    local seen = {}
-    for line in block:gmatch('[^\r\n]+') do
-        for _, part in ipairs(parseKeywordList(line)) do
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                ruleKwEdit[#ruleKwEdit + 1] = part
-            end
-        end
-    end
-    markRuleEditorDirty()
-end
-
--- Add Keywords To Rule Edit
-function addKeywordsToRuleEdit(words)
-    local seen = {}
-    for _, ex in ipairs(ruleKwEdit) do
-        seen[keywordDedupeKey(ex)] = true
-    end
-    local added = 0
-    for _, w in ipairs(words) do
-        local part = trim(w)
-        if part ~= '' then
-            local key = keywordDedupeKey(part)
-            if key ~= '' and not seen[key] then
-                seen[key] = true
-                ruleKwEdit[#ruleKwEdit + 1] = part
-                added = added + 1
-            end
-        end
-    end
-    if added > 0 then
-        markRuleEditorDirty()
-        flushRuleEditorToRule()
-    end
-    return added
-end
-
--- Try Add Keyword From Input
-function tryAddKeywordFromInput()
-    local line = trim(readInputBuf(ruleKwNew))
-    if line == '' then return 0 end
-    local words
-    if line:find('[,;]') then
-        words = parseKeywordList(line)
-    else
-        words = { line }
-    end
-    local n = addKeywordsToRuleEdit(words)
-    setInputBuf(ruleKwNew, '')
-    return n
-end
-
--- Draw Keyword Chip
-function drawKeywordChip(i, kw, onRemove, prefix)
-    prefix = tostring(prefix or 'kw')
-    local shown = ellipsizeToWidth(catalogWarmupDlUtf(kw), 150)
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.22, 0.16, 0.32, 0.95))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.32, 0.22, 0.46, 1.0))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
-    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 4))
-    if imgui.SmallButton then
-        imgui.SmallButton(shown .. '##' .. prefix .. '_c_' .. i)
-    else
-        imgui.Button(shown .. '##' .. prefix .. '_c_' .. i)
-    end
-    imgui.PopStyleVar()
-    imgui.PopStyleColor(3)
-    imgui.SameLine(0, 4)
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.40, 0.14, 0.18, 0.92))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.55, 0.20, 0.26, 1.0))
-    local removed = false
-    if imgui.SmallButton then
-        removed = imgui.SmallButton('×##' .. prefix .. '_x_' .. i)
-    else
-        removed = imgui.Button('×##' .. prefix .. '_x_' .. i, imgui.ImVec2(22, 22))
-    end
-    imgui.PopStyleColor(2)
-    if removed and onRemove then onRemove(i) end
-    imgui.SameLine(0, 6)
-end
-
--- Draw Keywords Flow List
-function drawKeywordsFlowList(editList, onRemove, prefix)
-    local x0 = imgui.GetCursorPosX()
-    local avail = imgui.GetContentRegionAvail().x
-    if #editList == 0 then
-        imgui.TextColored(col_muted, uiText('\xD1\xE5\xF2 \xF1\xEB\xEE\xE2 \x97 \xE4\xEE\xE1\xE0\xE2\xFC\xF2\xE5 \xED\xE8\xE6\xE5'))
-        return
-    end
-    for i, kw in ipairs(editList) do
-        local cx = imgui.GetCursorPosX()
-        if cx > x0 + 12 and cx + 72 > x0 + avail then
-            imgui.Dummy(imgui.ImVec2(0, 2))
-        end
-        drawKeywordChip(i, kw, onRemove, prefix)
-    end
-    imgui.Dummy(imgui.ImVec2(0, 2))
-end
-
--- Draw Keywords Editor
-function drawKeywordsEditor(prefix, editList, newBuf, newBufSize, bulkBuf, bulkBufSize, onAddInput, onAddBulk)
-    prefix = tostring(prefix or 'kw')
-    editList = editList or {}
-    imgui.TextColored(col_muted2, uiText('\xD2\xF0\xE8\xE3\xE3\xE5\xF0\xFB'))
-    imgui.SameLine(0, 8)
-    imgui.TextColored(col_muted, string.format('(%d)', #editList))
-
-    imgui.BeginChild('##kw_cloud_' .. prefix, imgui.ImVec2(-1, 128), true)
-    drawKeywordsFlowList(editList, function(idx)
-        if prefix == 'rule' then
-            removeRuleKeywordAt(idx)
-        else
-            removeScenarioKeywordAt(idx)
-        end
-    end, prefix)
-    imgui.EndChild()
-
-    local addW = 86
-    imgui.PushItemWidth(math.max(80, imgui.GetContentRegionAvail().x - addW - 8))
-    local hint = uiText('\xF1\xEB\xEE\xE2\xEE \xE8\xEB\xE8 a, b, c')
-    if imgui.InputTextWithHint then
-        imgui.InputTextWithHint('##kw_new_' .. prefix, hint, newBuf, newBufSize)
-    else
-        imgui.InputText('##kw_new_' .. prefix, newBuf, newBufSize)
-    end
-    imgui.PopItemWidth()
-    imgui.SameLine(0, 8)
-    if imgui.Button(uiText('\xC4\xEE\xE1\xE0\xE2\xE8\xF2\xFC') .. '##kw_add_' .. prefix, imgui.ImVec2(addW, DESK_FORM_ROW_H)) then
-        if onAddInput then onAddInput() end
-    end
-
-    local bulkKey = 'bulk_' .. prefix
-    local bulkOpen = deskCache.ui.kwBulkOpen[bulkKey] == true
-    local treeOpen = false
-    if imgui.TreeNodeEx then
-        local flags = 0
-        if bulkOpen and imgui.TreeNodeFlags and imgui.TreeNodeFlags.DefaultOpen then
-            flags = imgui.TreeNodeFlags.DefaultOpen
-        end
-        treeOpen = imgui.TreeNodeEx(uiText('\xC2\xF1\xF2\xE0\xE2\xE8\xF2\xFC \xF1\xEF\xE8\xF1\xEA\xEE\xEC') .. '##kw_tree_' .. prefix, flags)
-    else
-        treeOpen = imgui.TreeNode(uiText('\xC2\xF1\xF2\xE0\xE2\xE8\xF2\xFC \xF1\xEF\xE8\xF1\xEA\xEE\xEC') .. '##kw_tree_' .. prefix)
-    end
-    deskCache.ui.kwBulkOpen[bulkKey] = treeOpen and true or false
-    if treeOpen then
-        imgui.PushItemWidth(-1)
-        imgui.InputTextMultiline('##kw_bulk_' .. prefix, bulkBuf, bulkBufSize, imgui.ImVec2(-1, 68))
-        imgui.PopItemWidth()
-        if imgui.Button(uiText('\xC8\xEC\xEF\xEE\xF0\xF2\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xE2 \xF1\xEF\xE8\xF1\xEE\xEA') .. '##kw_imp_' .. prefix, imgui.ImVec2(-1, DESK_FORM_ROW_H)) then
-            if onAddBulk then
-                local n = onAddBulk() or 0
-                if n > 0 then setInputBuf(bulkBuf, '') end
-            end
-        end
-        imgui.TreePop()
-    end
-    imgui.Dummy(imgui.ImVec2(0, 4))
-end
-
--- Draw Rules Edit Panel
-function drawRulesEditPanel()
-    imgui.TextColored(col_muted2, uiText('\xCD\xE0\xE7\xE2\xE0\xED\xE8\xE5'))
-    imgui.PushItemWidth(-1)
-    imgui.InputText('##rule_name', editRuleName, sizeof(editRuleName))
-    if imguiItemEdited() then flushRuleEditorToRule() end
-    imgui.PopItemWidth()
-
-    imgui.TextColored(col_muted2, uiText('\xD2\xF0\xE8\xE3\xE3\xE5\xF0\xFB (\xEF\xEE \xF1\xF2\xF0\xEE\xEA\xE5, + \xE4\xEB\xFF \xE2\xF1\xE5\xF5 \xF1\xEB\xEE\xE2)'))
-    imgui.TextColored(col_muted, string.format('(%d)', #ruleKwEdit))
-    imgui.PushItemWidth(-1)
-    if imgui.InputTextMultiline('##rule_kw_bulk', ruleKwBulk, sizeof(ruleKwBulk), imgui.ImVec2(-1, 120)) then
-        syncRuleKeywordsFromBulkBuf()
-        flushRuleEditorToRule()
-    end
-    if imguiItemEdited() then
-        syncRuleKeywordsFromBulkBuf()
-        flushRuleEditorToRule()
-    end
-    imgui.PopItemWidth()
-
-    imgui.TextColored(col_muted2, uiText('\xCE\xF2\xE2\xE5\xF2 /ans'))
-    imgui.PushItemWidth(-1)
-    if imgui.InputTextMultiline('##rule_payload', editRulePayload, sizeof(editRulePayload), imgui.ImVec2(-1, 72)) then
-        flushRuleEditorToRule()
-    end
-    if imguiItemEdited() then flushRuleEditorToRule() end
-    imgui.PopItemWidth()
-    drawTemplateTagsHint()
-    if imgui.Button(uiText('\xC2\xF1\xF2\xE0\xE2\xE8\xF2\xFC \xEF\xF0\xE8\xEC\xE5\xF0 \xE2\xF0\xE5\xEC\xE5\xED\xE8') .. '##rule_ex_time', imgui.ImVec2(-1, 22)) then
-        setInputBuf(editRulePayload, '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}')
-        flushRuleEditorToRule()
-    end
-    imgui.Dummy(imgui.ImVec2(0, 4))
-
-    if deskFormToggleRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED\xEE', editRuleEnabled, function()
-        flushRuleEditorToRule()
-    end, 'rule_en') then end
-
-    imgui.Dummy(imgui.ImVec2(0, 8))
-    if imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2'), imgui.ImVec2(-1, 26)) then
-        flushRuleEditorToRule()
-        if #rules > 0 then
-            table.remove(rules, selectedRuleIdx)
-            selectedRuleIdx = math.min(selectedRuleIdx, #rules)
-            if selectedRuleIdx < 1 then selectedRuleIdx = 1 end
-            if #rules > 0 then fillRuleEditor(selectedRuleIdx) end
-            markDirtySettings()
-        end
-    end
-end
-
 -- Keyword Matches
 function keywordMatches(rule, body)
     local msg, msgAlt, msgTypo = matchMessageVariants(body)
@@ -758,14 +360,17 @@ end
 
 -- Execute Rule Action
 function executeRuleAction(t, rule)
-    local id = getResolvedAnsId(t)
-    local payload = expandTemplate(rule.payload, id)
     if rule.action == 'chat_cmd' then
+        local id, err = resolveAnsIdForReply(t)
+        if not id then return false, err or 'no target' end
+        local payload = expandTemplate(rule.payload, id)
         local line = payload
         if line:sub(1, 1) == '/' then line = line:sub(2) end
         local ok = sendChat(line)
         return ok, ok and ('/ ' .. line) or 'chat fail'
     end
+    local id = getResolvedAnsId(t)
+    local payload = expandTemplate(rule.payload, id)
     local tk = threadStorageKey(t)
     local ok, result = sendOutgoingAns(t, payload, { threadKey = tk })
     if settings.debug then

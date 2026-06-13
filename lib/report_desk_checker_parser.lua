@@ -347,27 +347,5 @@ function M.parseAdminsDialog(text, style, opts)
     return list
 end
 
--- Публичный API модуля.
-function M.parseJoinNotification(plain)
-    plain = trim(stripTags(plain or ''))
-    if plain == '' then return nil end
-    local nick, pid = plain:match('^(' .. NICK_CLASS .. ')%[(%d+)%]')
-    if nick and pid then return nick, tonumber(pid) end
-    return nil
-end
-
--- Публичный API модуля.
-function M.parseQuitNotification(plain)
-    return M.parseJoinNotification(plain)
-end
-
--- Публичный API модуля.
-function M.parseLeaderLine(plain)
-    plain = trim(stripTags(plain or ''))
-    if plain == '' then return nil end
-    local nick, org = plain:match('^(' .. NICK_CLASS .. ')%s+(%d+)')
-    if nick and org then return nick, math.floor(tonumber(org) or 0) end
-    return nil
-end
 
 return M

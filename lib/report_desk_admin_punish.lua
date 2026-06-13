@@ -1,11 +1,7 @@
 --[[ Модуль: автовыдача наказаний по запросу в admin chat (/a). ]]
+-- REWRITTEN: line dedup prune, parse-fail rollback, hooksActive guard.
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
-local ADMIN_CHAT_COLOR = -1714683649
-local ADMIN_CHAT_COLORS = {
-    [-1714683649] = true, -- 0x99CC00FF
-    [-1717986817] = true, -- 0x999999FF
-}
 local PUNISH_TIMEOUT_SEC = 15
 local OVERLAY_W = 420
 local OVERLAY_BOTTOM_MARGIN = 62
@@ -28,6 +24,7 @@ local apState = {
     reqSeen = AP_SEEN_GLOBAL.req,
     pendingOfflineSince = nil,
     punishLogDedup = { key = '', at = 0 },
+    punishLogQueue = {},
     bootstrapped = false,
 }
 local AP_LINE_REJECT_SEC = 50
@@ -37,6 +34,7 @@ local AP_POLL_LINES_FALLBACK = 24
 local AP_POLL_INTERVAL_FALLBACK = 0.45
 local AP_OFFLINE_CANCEL_SEC = 0.35
 local AP_HANDLED_MAX = 512
+local AP_LINE_SEEN_MAX = 2048
 local AP_HOOK_REINSTALL_SEC = 30.0
 local apPollLastAt = 0
 local apHookReinstallAt = 0
@@ -47,10 +45,6 @@ local function apMono()
         if ok and ms then return (tonumber(ms) or 0) / 1000.0 end
     end
     return os.clock()
-end
-
-local function apWallSec()
-    return os.time()
 end
 
 local spThemeMod
@@ -104,16 +98,6 @@ local function apPlainText(text)
     return trim(text or '')
 end
 
--- AdminTools: onServerMessage color == -1714683649 (0x99CC00FF). SAMP может отдать uint32.
-local function apIsAdminChatColor(color)
-    color = tonumber(color) or 0
-    if ADMIN_CHAT_COLORS[color] then return true end
-    if color == ADMIN_CHAT_COLOR then return true end
-    if type(normColor) ~= 'function' then return false end
-    local nc = normColor(color)
-    return nc == normColor(ADMIN_CHAT_COLOR) or nc == normColor(-1717986817)
-end
-
 -- AdminTools: string.find(text, "]: /") — только строки с командой, не весь /a чат.
 local function apHasPunishCommand(plain)
     plain = trim(plain or '')
@@ -128,9 +112,9 @@ end
 local function apIsAdminChatLine(color, plain)
     if apHasPunishCommand(plain) then return true end
     plain = trim(plain or '')
-    if plain:find('^%[A%]%s', 1) then return true end
+    if plain:find('^%[A%]%s', 1) and plain:match('/[%a_]') then return true end
     if plain:find('^[%w][%w_]+%[%d+%]%:%s*/', 1) then return true end
-    return apIsAdminChatColor(color)
+    return false
 end
 
 -- Строка похожа на запрос наказания в /a (для poll, не зависит от chatSeen).
@@ -139,6 +123,7 @@ function lineLooksLikeAdminPunishRequest(plain, color)
 end
 
 -- Lua: a,b,c = s:match(p1) or s:match(p2) оставляет только первый capture при or — нельзя.
+-- NO-API: other admins' /a requests appear only in chat.
 local function apParseAdminRequest(plain)
     plain = trim(plain or '')
     if plain == '' then return nil end
@@ -279,16 +264,40 @@ local function apLineHandledEntry(lineKey)
     local e = apState.handled[lineKey]
     if not e then return nil end
     if e.perm or e.kind == 'ok' then return e end
-    if apWallSec() - (e.at or 0) >= AP_LINE_REJECT_SEC then
+    if apMono() - (e.at or 0) >= AP_LINE_REJECT_SEC then
         apState.handled[lineKey] = nil
         return nil
     end
     return e
 end
 
-local function apLineAlreadyHandled(lineKey)
-    if apLineGloballyConsumed(lineKey) then return true end
-    return apLineHandledEntry(lineKey) ~= nil
+local function apPruneLineSeen()
+    local ord = AP_SEEN_GLOBAL.lineOrd
+    if type(ord) ~= 'table' then return end
+    local line = AP_SEEN_GLOBAL.line
+    while #ord > AP_LINE_SEEN_MAX do
+        local old = table.remove(ord, 1)
+        if old then line[old] = nil end
+    end
+end
+
+local function apClaimLineKey(lineKey)
+    if not lineKey or lineKey == '' then return false end
+    if AP_SEEN_GLOBAL.line[lineKey] then return false end
+    AP_SEEN_GLOBAL.line[lineKey] = true
+    local ord = AP_SEEN_GLOBAL.lineOrd
+    if type(ord) ~= 'table' then
+        ord = {}
+        AP_SEEN_GLOBAL.lineOrd = ord
+    end
+    ord[#ord + 1] = lineKey
+    apPruneLineSeen()
+    return true
+end
+
+local function apReleaseLineKey(lineKey)
+    if not lineKey or lineKey == '' then return end
+    AP_SEEN_GLOBAL.line[lineKey] = nil
 end
 
 local function apMarkLineConsumed(lineKey)
@@ -352,13 +361,7 @@ local function apBootstrapChatBuffer()
         end
     end
     apPruneRequestSeen()
-end
-
-local function apMarkLineRejected(lineKey)
-    if not lineKey or lineKey == '' then return end
-    apState.handled[lineKey] = { at = apWallSec(), kind = 'rej' }
-    apState.handledOrd[#apState.handledOrd + 1] = lineKey
-    apPruneHandled()
+    apPruneLineSeen()
 end
 
 local function apSealPending(p)
@@ -579,11 +582,6 @@ local function apCanExecutePending(p)
             st.snapshotNick or '?', st.playerId or 0)
     end
     if st.status == 'nick_changed' then
-        local cmdPid = clampSuspectPlayerId and clampSuspectPlayerId(p.playerId) or tonumber(p.playerId)
-        -- Команда по online-ID (/kick 12 …): слот занят — сервер наказывает по ID, не по нику в снапшоте.
-        if cmdPid and cmdPid >= 0 and st.connected and tonumber(st.playerId) == cmdPid then
-            return true, st, nil
-        end
         return false, st, string.format(
             '\xCD\xE0 ID %d \xE1\xFB\xEB %s, \xF1\xE5\xE9\xF7\xE0\xF1 %s. \xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE5 \xED\xE5 \xE2\xFB\xE4\xE0\xED\xEE.',
             st.playerId or 0, st.snapshotNick or '?', st.liveNick ~= '' and st.liveNick or '?')
@@ -815,6 +813,7 @@ local function apTryParse(admCommand)
     return parsed
 end
 
+-- NO-API: punishment log echo is server chat only.
 local function apAnotherAdminExecuted(text)
     local p = apState.pending
     if not p then return false end
@@ -881,7 +880,7 @@ local function apAnotherAdminExecuted(text)
     return false
 end
 
--- Admin Punish Ingest Chat Line (hook + poll)
+-- REWRITTEN: claim after cheap filters; rollback line key on parse fail; prune bounded line map.
 function adminPunishIngestChatLine(color, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
@@ -898,12 +897,13 @@ function adminPunishIngestChatLine(color, text)
     if not apIsAdminChatLine(color, plain) then return end
     if not apHasPunishCommand(plain) then return end
 
-    local admName, admId, admCommand = apParseAdminRequest(plain)
-    if not admName or not admId or not admCommand then return end
-
     local stableLineKey = apStableLineKey(text)
     if stableLineKey == '' then return end
-    if apLineAlreadyHandled(stableLineKey) then return end
+    if AP_SEEN_GLOBAL.line[stableLineKey] then return end
+
+    local admName, admId, admCommand = apParseAdminRequest(plain)
+    if not admName or not admId or not admCommand then return end
+    if not apClaimLineKey(stableLineKey) then return end
 
     local dedupKey = apRequestKey(admId, admCommand)
     if apRequestSeenRecently(dedupKey) then
@@ -958,6 +958,7 @@ function adminPunishOnServerMessage(color, text)
 end
 
 -- CHAT RPC (/a иногда не дублируется в onServerMessage, только в onChatMessage + sampGetChatString).
+-- NO-API: /a may arrive via onChatMessage without onServerMessage.
 function adminPunishOnChatMessage(playerId, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
@@ -976,13 +977,16 @@ function adminPunishOnChatMessage(playerId, text)
     adminPunishIngestChatLine(0, string.format('[A] %s[%d]: %s', nick, playerId, cmd))
 end
 
+function adminPunishHooksActive()
+    return type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
+end
+
 -- Запасной poll только если хуки не стоят (иначе дубли и лаг от скана буфера).
+-- NO-API: fallback poll via sampGetChatString when hooks inactive.
 function pollAdminPunishChat()
     if not apEnabled() then return end
+    if adminPunishHooksActive() then return end
     apBootstrapChatBuffer()
-    local hookActive = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
-    local profHookActive = deskCache and deskCache.profHooksInstalled == true
-    if hookActive and profHookActive then return end
     if not sampGetChatString then return end
     local now = os.clock()
     if now - apPollLastAt < AP_POLL_INTERVAL_FALLBACK then return end
@@ -1020,6 +1024,16 @@ function adminPunishEnsureServerHook()
     end
 end
 
+local function apInputsBlocked()
+    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
+        return true
+    end
+    if apState.pending then return false end
+    if sampIsChatInputActive and sampIsChatInputActive() then return true end
+    if type(deskSampDialogActive) == 'function' and deskSampDialogActive() then return true end
+    return false
+end
+
 local function apPollPendingBindKeys()
     if not apState.pending then return end
     ensureAdminPunishSettings()
@@ -1036,16 +1050,6 @@ local function apPollPendingBindKeys()
     elseif deskBindJustPressed(xk, prev) then
         adminPunishCancel()
     end
-end
-
-local function apInputsBlocked()
-    if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then
-        return true
-    end
-    if apState.pending then return false end
-    if sampIsChatInputActive and sampIsChatInputActive() then return true end
-    if type(deskSampDialogActive) == 'function' and deskSampDialogActive() then return true end
-    return false
 end
 
 -- Наказание всегда через sendChat: очередь /sp (0.55 с) задерживает kick и проигрывает гонку админов.
@@ -1086,27 +1090,88 @@ local function apBuildPunishLogEntry(p, outbound)
     }
 end
 
--- Журнал после отправки: не блокировать hot-path автовыдачи.
-local function apDeferPunishLog(entry)
-    if not entry then return end
-    if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
-        lua_thread.create(function()
-            pcall(apRecordPunishLog, entry)
-        end)
+-- Журнал наказаний: только главный поток (etState.punish + imgui-таблица).
+local function apExtractPunishOutgoing(message)
+    message = trim(tostring(message or ''))
+    if message == '' then return nil end
+    local inner = message:match('^/?a%s+(/.*)$')
+    if inner then
+        inner = trim(inner)
+        if inner ~= '' and inner:sub(1, 1) == '/' then
+            return inner, 'a_request', message
+        end
+        return nil
+    end
+    local cmd = message
+    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
+    return cmd, 'manual', cmd
+end
+
+local function apRecordPunishLogNow(entry)
+    if type(helpStatsRecordPunish) ~= 'function' then
+        print('[Report Desk] punish log: helpStatsRecordPunish unavailable')
         return
     end
-    pcall(apRecordPunishLog, entry)
+    entry = type(entry) == 'table' and entry or nil
+    if not entry then return end
+    local pCmd = select(1, apExtractPunishOutgoing(entry.cmd or ''))
+    if not pCmd then
+        pCmd = entry.cmd or ''
+        if pCmd:sub(1, 1) ~= '/' then pCmd = '/' .. pCmd end
+    end
+    if not entry.kind or entry.kind == '' then
+        entry.kind = apPunishKindFromCommand(pCmd)
+    end
+    local cmdKey = apNormalizeCommand(pCmd)
+    local dedupKey = tostring(entry.pid or -1) .. '|' .. cmdKey
+    local now = os.time()
+    if apState.punishLogDedup.key == dedupKey and (now - (apState.punishLogDedup.at or 0)) <= 2 then
+        return
+    end
+    apState.punishLogDedup.key = dedupKey
+    apState.punishLogDedup.at = now
+    pcall(helpStatsRecordPunish, entry)
+end
+
+local function apEnqueuePunishLog(entry)
+    if not entry then return end
+    local q = apState.punishLogQueue
+    if type(q) ~= 'table' then
+        q = {}
+        apState.punishLogQueue = q
+    end
+    q[#q + 1] = entry
+end
+
+function adminPunishFlushDeferredLogs()
+    local q = apState.punishLogQueue
+    if type(q) ~= 'table' or #q == 0 then return end
+    apState.punishLogQueue = {}
+    for i = 1, #q do
+        pcall(apRecordPunishLogNow, q[i])
+    end
+end
+
+local function apRecordPunishLog(entry)
+    apEnqueuePunishLog(entry)
+    adminPunishFlushDeferredLogs()
+end
+
+local function apReleasePunishStatsHook()
+    if type(deskCache) ~= 'table' then return end
+    local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
+    deskCache.skipPunishStatsHook = n > 0 and n or nil
 end
 
 local function apSendPunishOutbound(outbound)
     if type(deskCache) == 'table' then
         deskCache.skipPunishStatsHook = (tonumber(deskCache.skipPunishStatsHook) or 0) + 1
     end
-    local sent = apSendPunishChat(outbound) == true
-    if type(deskCache) == 'table' then
-        local n = (tonumber(deskCache.skipPunishStatsHook) or 0) - 1
-        deskCache.skipPunishStatsHook = n > 0 and n or nil
-    end
+    local ok, sent = pcall(function()
+        return apSendPunishChat(outbound) == true
+    end)
+    apReleasePunishStatsHook()
+    if not ok then return false end
     return sent
 end
 
@@ -1128,7 +1193,7 @@ local function apExecutePending()
         return
     end
 
-    apDeferPunishLog(apBuildPunishLogEntry(p, outbound))
+    apRecordPunishLog(apBuildPunishLogEntry(p, outbound))
     apFinishExecuteSuccess(p)
 end
 
@@ -1136,45 +1201,6 @@ end
 function adminPunishConfirm()
     if apState.executing then return end
     apExecutePending()
-end
-
-local function apExtractPunishOutgoing(message)
-    message = trim(tostring(message or ''))
-    if message == '' then return nil end
-    local inner = message:match('^/?a%s+(/.*)$')
-    if inner then
-        inner = trim(inner)
-        if inner ~= '' and inner:sub(1, 1) == '/' then
-            return inner, 'a_request', message
-        end
-        return nil
-    end
-    local cmd = message
-    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
-    return cmd, 'manual', cmd
-end
-
-local function apRecordPunishLog(entry)
-    if type(helpStatsRecordPunish) ~= 'function' then return end
-    entry = type(entry) == 'table' and entry or nil
-    if not entry then return end
-    local pCmd = select(1, apExtractPunishOutgoing(entry.cmd or ''))
-    if not pCmd then
-        pCmd = entry.cmd or ''
-        if pCmd:sub(1, 1) ~= '/' then pCmd = '/' .. pCmd end
-    end
-    if not entry.kind or entry.kind == '' then
-        entry.kind = apPunishKindFromCommand(pCmd)
-    end
-    local cmdKey = apNormalizeCommand(pCmd)
-    local dedupKey = (entry.src or '') .. '|' .. cmdKey
-    local now = os.time()
-    if apState.punishLogDedup.key == dedupKey and (now - (apState.punishLogDedup.at or 0)) <= 2 then
-        return
-    end
-    apState.punishLogDedup.key = dedupKey
-    apState.punishLogDedup.at = now
-    pcall(helpStatsRecordPunish, entry)
 end
 
 -- Журнал «Справка»: прямые команды и запросы /a /ban … (когда нет прав на прямую выдачу).
@@ -1187,9 +1213,6 @@ function adminPunishNoteOutgoingMessage(message)
     if not punishCmd then return end
     local parsed = apParsePunishCommand(punishCmd)
     if not parsed then return end
-    if src == 'manual' and not apTryParse(punishCmd) then
-        return
-    end
     apRecordPunishLog({
         ts = os.time(),
         kind = apPunishKindFromCommand(punishCmd),

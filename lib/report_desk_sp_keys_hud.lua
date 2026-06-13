@@ -22,6 +22,7 @@ local hookPrevVehicleSync
 
 local uiText, toU32, col_accent, col_accent_dim, col_muted, col_muted2
 local markDirtySettings, flushDirtyConfigNow, getSettingsFn, getSpectateTargetId, isSpectatingFn
+local resolveSpectateTargetPedFn
 
 -- Get Target Id
 local function getTargetId()
@@ -75,6 +76,10 @@ end
 
 -- Target Char
 local function targetChar()
+    if resolveSpectateTargetPedFn then
+        local ok, ped = pcall(resolveSpectateTargetPedFn)
+        if ok and ped then return ped end
+    end
     local id = getTargetId()
     if id < 0 or not sampGetCharHandleBySampPlayerId then return nil end
     local ok, ped = sampGetCharHandleBySampPlayerId(id)
@@ -531,6 +536,7 @@ function M.configure(deps)
     if deps.flushDirtyConfigNow ~= nil then flushDirtyConfigNow = deps.flushDirtyConfigNow end
     if deps.getSettings ~= nil then getSettingsFn = deps.getSettings end
     if deps.getSpectateTargetId ~= nil then getSpectateTargetId = deps.getSpectateTargetId end
+    if deps.resolveSpectateTargetPed ~= nil then resolveSpectateTargetPedFn = deps.resolveSpectateTargetPed end
     if deps.isSpectating ~= nil then isSpectatingFn = deps.isSpectating end
 end
 

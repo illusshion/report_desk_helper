@@ -54,38 +54,15 @@ git push origin main
 
 ## Разработка (локально)
 
-| Режим | Где лежит | Что грузит GTA |
-|-------|-----------|----------------|
-| **Dev** (по умолчанию) | `moonloader\` — git-репо | `admin_report_desk.lua` + `lib/report_desk_*.lua` |
-| **Test release** | `moonloader-test\` — соседняя папка | zip-релиз, как у админа |
-
-**Dev-папка при тесте не трогается.** Во время test dev временно переименовывается в `moonloader-dev`, а `moonloader` становится junction на `moonloader-test`.
-
-### Тест релиза (одна GTA, без мусора в dev)
+GTA грузит **`admin_report_desk.lua`** + модули из **`lib/`** (исходники, без bundle).
 
 ```powershell
 cd "C:\Program Files (x86)\Advance Games\moonloader\tools"
 
-# 1. Собрать zip и разложить в ..\..\moonloader-test\
-.\release_test.ps1 -Build -Version 1.0.3
+# Проверки + пересборка core (CI)
+.\rebuild_report_desk_ci.ps1
 
-# 2. GTA закрыта → включить test-режим
-.\ml_test.bat
-
-# 3. Играть, проверить релиз. Вернуть dev:
-.\ml_dev.bat
-```
-
-Статус: `.\ml_mode.ps1` (dev / test / готов ли test).
-
-Опции:
-- `-KeepConfig` — после распаковки подставить твой `config/` из dev
-- `-Activate` — сразу переключить GTA на test после сборки
-- готовый zip: `.\release_test.ps1 -ZipPath ..\dist\report_desk_helper_main.zip`
-
-Сборка bundle без релиза:
-
-```powershell
+# Только bundle (dist + report_desk/AdminDeskCore.lua)
 .\bundle_report_desk.ps1
 ```
 
@@ -103,12 +80,26 @@ cd "C:\Program Files (x86)\Advance Games\moonloader\tools"
 ## Структура
 
 ```
-lib/report_desk_*.lua      — исходники (dev)
-tools/admin_report_desk_stub.lua — launcher (источник)
-lib/report_desk_autoupdate.lua   — логика update
-lib/report_desk_deps.lua         — mimgui и зависимости
-release/version.json       — manifest для клиентов
-release/build_manifest.json — SHA256 артефактов последней сборки
-report_desk/admin_report_desk_core.lua — bundled core (git fallback)
-tools/                     — bundle, build, publish
+lib/report_desk_*.lua           — исходники (dev)
+admin_report_desk.lua           — dev launcher
+tools/admin_report_desk_stub.lua — prod launcher (источник)
+release/version.json            — manifest для клиентов
+report_desk/AdminDeskCore.lua   — bundled core (после bundle_report_desk.ps1)
 ```
+
+### tools/ (только нужное)
+
+| Скрипт | Назначение |
+|--------|------------|
+| `bundle_report_desk.ps1` | Собрать AdminDeskCore из lib/ |
+| `rebuild_report_desk_ci.ps1` | Sanity + audits + bundle |
+| `verify_report_desk_sanity.ps1` | Проверки spectate/checker |
+| `audit_bundle_locals.ps1` | Лимит local/chunk |
+| `audit_env_export.ps1` | Экспорт env из state |
+| `audit_lua_forward_refs.py` | Forward-ref в bundle |
+| `build_release.ps1` | Полный релиз (zip + manifest) |
+| `publish_release.ps1` | Релиз на GitHub |
+| `release_lib.ps1` | Общие функции сборки (dot-source) |
+| `download_adv_skins.ps1` | Превью скинов для релиза |
+| `optimize_skins.ps1` / `fix_skin_assets.py` | Обработка скинов |
+| `admin_desk_bootstrap.lua` | Bootstrap для bundle |

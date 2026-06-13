@@ -61,6 +61,10 @@ function resetIntentContextConfig()
     contextConfig = nil
 end
 
+function getReportIdMarkers()
+    return getIntentContextConfig().report_markers or DEFAULT_REPORT_MARKERS
+end
+
 function messageLooksLikeThanks(bags)
     if not bags then return false end
     local cfg = getIntentContextConfig()
@@ -154,5 +158,5 @@ function classifyContext(body, bags)
     if extractReportSuspectId(body or bags.raw) then
         return INTENT_CONTEXT_REPORT
     end
-    return INTENT_CONTEXT_FAQ
+    return INTENT_CONTEXT_UNKNOWN
 end

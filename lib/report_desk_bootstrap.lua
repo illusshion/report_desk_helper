@@ -35,6 +35,23 @@ encoding.default = 'CP1251'
 local u8 = encoding.UTF8
 deskWmDispatch = require 'report_desk_wm_dispatch'
 
+-- JSON для журнала наказаний, autoupdate manifest и т.д. (dkjson в lib/).
+pcall(function()
+    if encodeJson and decodeJson then return end
+    local ok, json = pcall(require, 'dkjson')
+    if ok and type(json) == 'table' then
+        if not encodeJson and type(json.encode) == 'function' then
+            encodeJson = json.encode
+        end
+        if not decodeJson and type(json.decode) == 'function' then
+            decodeJson = json.decode
+        end
+    end
+    if not encodeJson or not decodeJson then
+        print('[Report Desk] dkjson unavailable — punish log persistence disabled')
+    end
+end)
+
 -- Совместимость старых версий mimgui (RadioButton, PushID).
 if imgui and not imgui.RadioButton then
     if imgui.RadioButtonIntPtr then

@@ -221,7 +221,6 @@ $libModules = @(
     @{ Name = 'report_desk_checker_parser'; File = 'report_desk_checker_parser.lua' },
     @{ Name = 'report_desk_checker_catalog'; File = 'report_desk_checker_catalog.lua' },
     @{ Name = 'report_desk_wm_dispatch'; File = 'report_desk_wm_dispatch.lua' },
-    @{ Name = 'report_desk_spectate_fsm'; File = 'report_desk_spectate_fsm.lua' },
 
     @{ Name = 'report_desk_vehicles'; File = 'report_desk_vehicles.lua' },
 
@@ -244,47 +243,23 @@ $libModules = @(
 
 
 
-# Как report_desk_app.lua: три loadstring-chunk (лимит Lua 5.1 — 200 local на chunk).
-$appChunksCoreA = @(
-    'report_desk_bootstrap.lua',
-    'report_desk_constants.lua',
-    'report_desk_theme.lua',
-    'report_desk_state.lua',
-    'report_desk_util.lua',
-    'report_desk_match_normalize.lua',
-    'report_desk_match_context.lua',
-    'report_desk_intent_match.lua',
-    'report_desk_intent_legacy.lua',
-    'report_desk_intent_extensions.lua',
-    'report_desk_intents.lua',
-    'report_desk_profanity.lua',
-    'report_desk_chat.lua',
-    'report_desk_cheats.lua',
-    'report_desk_mask_id.lua',
-    'report_desk_skins.lua',
-    'report_desk_input.lua',
-    'report_desk_actions.lua',
-    'report_desk_env_export.lua'
-)
+function Read-DeskBundleManifestSection {
+    param([string]$Text, [string]$Key)
+    $pattern = [regex]::Escape($Key) + '\s*=\s*\{([^}]*)\}'
+    $m = [regex]::Match($Text, $pattern)
+    if (-not $m.Success) { throw "Bundle manifest section missing: $Key" }
+    return @([regex]::Matches($m.Groups[1].Value, "'([^']+\.lua)'") | ForEach-Object { $_.Groups[1].Value })
+}
 
-$appChunksCoreB = @(
-    'report_desk_admin_punish.lua',
-    'report_desk_threads.lua',
-    'report_desk_config.lua',
-    'report_desk_ingest_runtime.lua',
-    'report_desk_rules.lua'
-)
+$manifestPath = Join-Path $MoonloaderRoot 'config\report_desk_bundle_manifest.lua'
+if (-not (Test-Path $manifestPath)) { throw "Missing bundle manifest: $manifestPath" }
+$manifestText = [System.IO.File]::ReadAllText($manifestPath, $Utf8NoBom)
 
-# exact_time отдельно: вместе с admin_punish превышает лимит 200 local в одном chunk.
-$appChunksCoreB2 = @(
-    'report_desk_exact_time.lua'
-)
-
-$appChunksCoreC = @(
-    'report_desk_ui.lua',
-    'report_desk_hooks.lua',
-    'report_desk_main.lua'
-)
+# Как report_desk_app.lua: chunk lists из config/report_desk_bundle_manifest.lua
+$appChunksCoreA  = Read-DeskBundleManifestSection $manifestText 'core_a_a'
+$appChunksCoreB  = Read-DeskBundleManifestSection $manifestText 'core_a_b'
+$appChunksCoreB2 = Read-DeskBundleManifestSection $manifestText 'core_a_b2'
+$appChunksCoreC  = Read-DeskBundleManifestSection $manifestText 'core_a_c'
 
 $appChunks = $appChunksCoreA + $appChunksCoreB + $appChunksCoreB2 + $appChunksCoreC
 
@@ -306,10 +281,11 @@ $allBundleInputs = @(
     'report_desk_checker_parser.lua',
     'report_desk_checker_catalog.lua',
     'report_desk_wm_dispatch.lua',
-    'report_desk_spectate_fsm.lua',
     'report_desk_vehicles.lua',
     'report_desk_profanity_words.lua',
     'report_desk_remote_chat.lua',
+    'report_desk_checker_hud.lua',
+    'report_desk_checker_sync.lua',
     'report_desk_checker.lua',
     'report_desk_cmd_binds.lua'
 ) + $appChunks
@@ -428,13 +404,8 @@ $remoteChatPath = Join-Path $libDir 'report_desk_remote_chat.lua'
 $remoteChatText = Read-ModuleText $remoteChatPath
 [void]$sb.Append((Wrap-AppChunkSafe 'report_desk_remote_chat.lua' $remoteChatText 'remote chat disabled'))
 
-$checkerPath = Join-Path $libDir 'report_desk_checker.lua'
-$checkerText = Read-ModuleText $checkerPath
-[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_checker.lua' $checkerText 'checker disabled'))
-
-$cmdBindsPath = Join-Path $libDir 'report_desk_cmd_binds.lua'
-$cmdBindsText = Read-ModuleText $cmdBindsPath
-[void]$sb.Append((Wrap-AppChunkSafe 'report_desk_cmd_binds.lua' $cmdBindsText 'cmd binds disabled'))
+$lateChunkFiles = Read-DeskBundleManifestSection $manifestText 'late'
+Append-AppChunkGroup $sb 'report_desk_checker_late' $lateChunkFiles
 
 $userDefaultPath = Join-Path $MoonloaderRoot 'config\admin_report_desk_user.default.lua'
 $userDefaultText = Read-ModuleText $userDefaultPath
@@ -465,7 +436,6 @@ $mustHave = @(
     "package.preload['lib.samp.events']",
     "package.preload['encoding']",
     'report_desk_wm_dispatch',
-    'report_desk_spectate_fsm',
     'resolveMessageIntents',
     'function compileIntentIndex',
     'drawAdminPunishTab',

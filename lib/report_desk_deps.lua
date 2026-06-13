@@ -18,7 +18,8 @@ end
 
 function M.canRequireMimgui()
     if package.loaded.mimgui then return true end
-    return pcall(require, 'mimgui') == true
+    local ok = pcall(require, 'mimgui')
+    return ok
 end
 
 function M.checkRuntime(opts)

@@ -168,3 +168,24 @@ function intentMessageHasNoneTokens(bags, tokens, allowStem)
     end
     return true
 end
+
+-- Unified auto-rule aliases (ingest_runtime, builtins time/GG).
+function matchTextPadded(s)
+    return intentMatchTextPadded(s)
+end
+
+function tokenMinLength(token)
+    return intentTokenMinLength(token)
+end
+
+function textContainsToken(msg, msgAlt, token, msgTypo)
+    return intentTextContainsToken(msg, msgAlt, token, msgTypo)
+end
+
+function wordsShareStem(word, token, minStem)
+    return intentWordsShareStem(word, token, minStem, true)
+end
+
+function textMatchesContainsToken(msg, msgAlt, token, msgTypo)
+    return intentTextMatchesToken(msg, msgAlt, token, msgTypo, true)
+end

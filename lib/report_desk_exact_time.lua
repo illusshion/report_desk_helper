@@ -66,18 +66,6 @@ local uiExactTimeDailyH = imgui and imgui.new and imgui.new.int(4) or nil
 local uiExactTimeMonthlyH = imgui and imgui.new and imgui.new.int(112) or nil
 local etShowWindowBuf = imgui and imgui.new and imgui.new.bool(false) or nil
 
-local function etToU32(col)
-    return imgui.ColorConvertFloat4ToU32(col)
-end
-
-local function etNeedle(s)
-    if not s or s == '' then return '' end
-    if type(utf8ToCp1251) == 'function' and isUtf8Text and isUtf8Text(s) then
-        return utf8ToCp1251(s) or s
-    end
-    return s
-end
-
 local function etPushWindowStyle()
     imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.10, 0.10, 0.12, 0.98))
     imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
@@ -269,7 +257,7 @@ local function etFindRowValue(rows, ...)
     local needles = { ... }
     for _, row in ipairs(rows) do
         for _, n in ipairs(needles) do
-            local enc = etNeedle(n)
+            local enc = normalizeStoredText(n, isUtf8Text(n))
             if row.label:find(enc, 1, true) or row.label:find(n, 1, true) then
                 return row.value
             end
@@ -280,7 +268,7 @@ end
 
 local function etExtractTextAfterLabel(text, labelUtf8)
     text = stripTags(text or '')
-    local label = etNeedle(labelUtf8)
+    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
     local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
     if not chunk then return nil end
     chunk = trim(chunk)
@@ -294,7 +282,7 @@ end
 
 local function etExtractDurationAfterLabel(text, labelUtf8)
     text = stripTags(text or '')
-    local label = etNeedle(labelUtf8)
+    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
     local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
     if chunk then
         for segment in chunk:gmatch('[^\t]+') do
@@ -410,12 +398,12 @@ end
 local function etIsExactTimeDialog(title, text)
     local tit = stripTags(title or '')
     local txt = stripTags(text or '')
-    if tit:find(etNeedle('Точное время'), 1, true) then return true end
-    if tit:find(etNeedle('точного времени'), 1, true) then return true end
-    if tit:find(etNeedle('Служба точного'), 1, true) then return true end
+    if tit:find(normalizeStoredText('Точное время', isUtf8Text('Точное время')), 1, true) then return true end
+    if tit:find(normalizeStoredText('точного времени', isUtf8Text('точного времени')), 1, true) then return true end
+    if tit:find(normalizeStoredText('Служба точного', isUtf8Text('Служба точного')), 1, true) then return true end
     if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) <= EXACT_TIME_TIMEOUT then
-        if txt:find(etNeedle('Время в игре сегодня'), 1, true)
-            and (txt:find(etNeedle('AFK за сегодня'), 1, true) or txt:find('AFK', 1, true)) then
+        if txt:find(normalizeStoredText('Время в игре сегодня', isUtf8Text('Время в игре сегодня')), 1, true)
+            and (txt:find(normalizeStoredText('AFK за сегодня', isUtf8Text('AFK за сегодня')), 1, true) or txt:find('AFK', 1, true)) then
             return true
         end
     end
@@ -645,8 +633,11 @@ end
 local function etPunishNormalizeEntry(raw)
     if type(raw) ~= 'table' then return nil end
     local ts = tonumber(raw.ts)
-    if not ts or ts <= 0 then return nil end
-    ts = math.floor(ts)
+    if ts and ts > 0 then
+        ts = math.floor(ts)
+    else
+        ts = 0
+    end
     local cmd = trim(tostring(raw.cmd or ''))
     local kind = trim(tostring(raw.kind or ''))
     if kind == '' then kind = etPunishKindFromCmd(cmd) end
@@ -711,6 +702,10 @@ end
 
 local function etAppendPunishStoreLine(e)
     if not encodeJson then
+        if not etState.punish.encodeWarned then
+            etState.punish.encodeWarned = true
+            print('[Report Desk] punish log: encodeJson missing (dkjson?)')
+        end
         pcall(etRewritePunishStore)
         return
     end
@@ -725,6 +720,10 @@ end
 
 local function etLoadPunishStore()
     etState.punish.entries = {}
+    if not decodeJson then
+        print('[Report Desk] punish log: decodeJson missing on load')
+        return
+    end
     local f = io.open(ET_PUNISH_PATH, 'r')
     if not f then return end
     for line in f:lines() do
@@ -743,18 +742,23 @@ local function etLoadPunishStore()
 end
 
 function helpStatsRecordPunish(raw)
-    local e = etPunishNormalizeEntry(raw)
-    if not e or not etPunishIsTrackedEntry(e) then return end
-    if not e.ts or e.ts <= 0 then
-        e.ts = os.time()
-        e.dateKey = os.date('%Y-%m-%d', e.ts)
+    local ok, err = pcall(function()
+        local e = etPunishNormalizeEntry(raw)
+        if not e or not etPunishIsTrackedEntry(e) then return end
+        if not e.ts or e.ts <= 0 then
+            e.ts = os.time()
+            e.dateKey = os.date('%Y-%m-%d', e.ts)
+        end
+        etState.punish.entries[#etState.punish.entries + 1] = e
+        etInvalidatePunishWeekCache()
+        if etPunishPruneStore(true) then
+            return
+        end
+        etAppendPunishStoreLine(e)
+    end)
+    if not ok then
+        print('[Report Desk] punish log: ' .. tostring(err))
     end
-    etState.punish.entries[#etState.punish.entries + 1] = e
-    etInvalidatePunishWeekCache()
-    if etPunishPruneStore(true) then
-        return
-    end
-    pcall(etAppendPunishStoreLine, e)
 end
 
 local ET_PUNISH_KIND_LABEL = {
@@ -1033,7 +1037,7 @@ local function etPunishDrawSep(x, y, w)
     if not dl then return y + ET_PUNISH_ROW_GAP end
     imgui.SetCursorPos(imgui.ImVec2(x, y))
     local sp = imgui.GetCursorScreenPos()
-    dl:AddLine(sp, imgui.ImVec2(sp.x + w, sp.y), etToU32(imgui.ImVec4(1.0, 1.0, 1.0, 0.12)), 1.0)
+    dl:AddLine(sp, imgui.ImVec2(sp.x + w, sp.y), toU32(imgui.ImVec4(1.0, 1.0, 1.0, 0.12)), 1.0)
     return y + ET_PUNISH_ROW_GAP
 end
 
@@ -1231,9 +1235,9 @@ local function etDrawActivityBar(valueMin, normMin, fillColor)
     local barH = 3
     local p = imgui.GetCursorScreenPos()
     local dl = imgui.GetWindowDrawList()
-    dl:AddRectFilled(p, imgui.ImVec2(p.x + barW, p.y + barH), etToU32(imgui.ImVec4(0.18, 0.18, 0.22, 1.0)), 2.0)
+    dl:AddRectFilled(p, imgui.ImVec2(p.x + barW, p.y + barH), toU32(imgui.ImVec4(0.18, 0.18, 0.22, 1.0)), 2.0)
     if frac > 0.001 then
-        dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), etToU32(fillColor or ET_COL.accent), 2.0)
+        dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), toU32(fillColor or ET_COL.accent), 2.0)
     end
     imgui.Dummy(imgui.ImVec2(0, barH + 8))
 end
@@ -1552,7 +1556,7 @@ end
 local function etDrawAccentStrip()
     local dl = imgui.GetWindowDrawList()
     local pos = imgui.GetWindowPos()
-    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + imgui.GetWindowWidth(), pos.y + 2), etToU32(ET_COL.accent))
+    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + imgui.GetWindowWidth(), pos.y + 2), toU32(ET_COL.accent))
     imgui.Dummy(imgui.ImVec2(0, 6))
 end
 

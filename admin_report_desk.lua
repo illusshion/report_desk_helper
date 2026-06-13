@@ -1,15 +1,13 @@
 --[[ Admin Report Desk — точка входа MoonLoader (/adesk, bundle loader). ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('3.98.41')
+script_version('DEV BETA')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB v3, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS', 'mimgui')
 script_moonloader(26)
 
 require 'lib.moonloader'
 require 'lib.sampfuncs'
-
-rawset(_G, '__REPORT_DESK_DEV', true)
 
 local deskEnv = nil
 local bundleLoadError = nil
@@ -21,6 +19,7 @@ local function prepareDeskReload()
         'report_desk_sp_ui',
         'report_desk_spectate_menu',
         'report_desk_spectate_session',
+        'report_desk_sp_refresh',
         'report_desk_spectate_camera',
         'report_desk_sp_theme',
         'report_desk_sp_vehicle_hud',
@@ -64,7 +63,6 @@ end
 
 local function ensureDeskBundle()
     if deskEnv then return deskEnv end
-    if bundleLoadError then return nil end
     prepareDeskReload()
     local okLoad, loadResult = pcall(function()
         return require('report_desk_app').load()
@@ -81,6 +79,7 @@ end
 
 -- Главный цикл MoonLoader: init, hooks, poll ingest, autosave.
 function main()
+    prepareDeskReload()
     local env = ensureDeskBundle()
     if not env or type(env.main) ~= 'function' then
         print('[Report Desk] не запущен: ошибка загрузки core')

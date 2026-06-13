@@ -83,6 +83,66 @@ function migrateLegacyAutoRules(src)
     end
 end
 
+-- Import Threads From Data
+local function importThreadsFromData(rawThreads)
+    if type(rawThreads) ~= 'table' then return false end
+    local merged = {}
+    for key, raw in pairs(rawThreads) do
+        if type(raw) == 'table' then
+            local id = tonumber(raw.id) or tonumber(key)
+            local nick = trim(raw.nick or '')
+            if nick == '' and id then nick = 'ID:' .. id end
+            local nk = nickKey(nick)
+            if nk == '' and id then nk = 'id' .. tostring(id) end
+            local msgs = {}
+            if type(raw.messages) == 'table' then
+                for _, m in ipairs(raw.messages) do
+                    if type(m) == 'table' and (m.text or m.note) then
+                        local entry = {
+                            dir = m.dir or 'in',
+                            kind = m.kind,
+                            text = normalizeStoredText(m.text or '', isUtf8Text(m.text or '')),
+                            ts = tonumber(m.ts) or os.time(),
+                            self = m.self,
+                            note = normalizeStoredText(m.note or '', isUtf8Text(m.note or '')),
+                        }
+                        local adm = normalizeStoredText(m.adminNick or '', isUtf8Text(m.adminNick or ''))
+                        if trim(adm) ~= '' then entry.adminNick = adm end
+                        normalizeStoredMessage(entry)
+                        msgs[#msgs + 1] = entry
+                    end
+                end
+            end
+            trimMessages(msgs)
+            if merged[nk] then
+                local ex = merged[nk]
+                for _, m in ipairs(msgs) do
+                    ex.messages[#ex.messages + 1] = m
+                end
+                trimMessages(ex.messages)
+                if id and (not ex.id or ex.id == 0) then ex.id = id end
+            else
+                merged[nk] = {
+                    id = id or 0,
+                    nick = nick,
+                    lastId = tonumber(raw.lastId) or id,
+                    status = 'open',
+                    pinned = raw.pinned == true,
+                    unread = 0,
+                    lastAt = tonumber(raw.lastAt) or os.time(),
+                    messages = msgs,
+                }
+            end
+        end
+    end
+    threads = merged
+    rebuildThreadOrder()
+    resetSessionUnread()
+    pruneOldThreads()
+    threadsConfigLoaded = true
+    return true
+end
+
 -- Load Config
 function loadConfig()
     local scenarioDefaults = DEFAULT_QUICK_SCENARIOS
@@ -126,6 +186,15 @@ function loadConfig()
 
     local data = configData
     if not data then
+        local hadConfigFile = doesFileExist(CONFIG_PATH) or doesFileExist(CONFIG_BACKUP)
+        local recoveredThreads = false
+        if doesFileExist(CONFIG_BACKUP) then
+            local bd = tryLoadConfigFile(CONFIG_BACKUP)
+            if bd and importThreadsFromData(bd.threads) then
+                recoveredThreads = true
+                print('[Report Desk] threads: recovered from backup')
+            end
+        end
         ensureCheatsSettings()
         bumpScenariosGen()
         deskConfigReady = true
@@ -133,6 +202,12 @@ function loadConfig()
             pcall(loadUserConfig)
         else
             pcall(saveUserConfig)
+        end
+        if recoveredThreads or not hadConfigFile then
+            threadsConfigLoaded = true
+        else
+            threadsConfigLoaded = false
+            dirtyThreads = false
         end
         markDirtySettings()
         return
@@ -168,6 +243,7 @@ function loadConfig()
     ensureCheatsSettings()
     if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
     if type(ensureExactTimeSettings) == 'function' then pcall(ensureExactTimeSettings) end
+    if type(ensureTempLeadershipSettings) == 'function' then pcall(ensureTempLeadershipSettings) end
     settings.poll_chat_log = nil
     settings.poll_events_only = nil
     settings.ingest_pc = nil
@@ -235,59 +311,9 @@ function loadConfig()
     end
     rebuildProfanityNorm()
     if type(data.threads) == 'table' then
-        local merged = {}
-        for key, raw in pairs(data.threads) do
-            if type(raw) == 'table' then
-                local id = tonumber(raw.id) or tonumber(key)
-                local nick = trim(raw.nick or '')
-                if nick == '' and id then nick = 'ID:' .. id end
-                local nk = nickKey(nick)
-                if nk == '' and id then nk = 'id' .. tostring(id) end
-                local msgs = {}
-                if type(raw.messages) == 'table' then
-                    for _, m in ipairs(raw.messages) do
-                        if type(m) == 'table' and (m.text or m.note) then
-                            local entry = {
-                                dir = m.dir or 'in',
-                                kind = m.kind,
-                                text = normalizeStoredText(m.text or '', isUtf8Text(m.text or '')),
-                                ts = tonumber(m.ts) or os.time(),
-                                self = m.self,
-                                note = normalizeStoredText(m.note or '', isUtf8Text(m.note or '')),
-                            }
-                            local adm = normalizeStoredText(m.adminNick or '', isUtf8Text(m.adminNick or ''))
-                            if trim(adm) ~= '' then entry.adminNick = adm end
-                            normalizeStoredMessage(entry)
-                            msgs[#msgs + 1] = entry
-                        end
-                    end
-                end
-                trimMessages(msgs)
-                if merged[nk] then
-                    local ex = merged[nk]
-                    for _, m in ipairs(msgs) do
-                        ex.messages[#ex.messages + 1] = m
-                    end
-                    trimMessages(ex.messages)
-                    if id and (not ex.id or ex.id == 0) then ex.id = id end
-                else
-                    merged[nk] = {
-                        id = id or 0,
-                        nick = nick,
-                        lastId = tonumber(raw.lastId) or id,
-                        status = 'open',
-                        pinned = raw.pinned == true,
-                        unread = 0,
-                        lastAt = tonumber(raw.lastAt) or os.time(),
-                        messages = msgs,
-                    }
-                end
-            end
-        end
-        threads = merged
-        rebuildThreadOrder()
-        resetSessionUnread()
-        pruneOldThreads()
+        importThreadsFromData(data.threads)
+    else
+        threadsConfigLoaded = true
     end
     bumpScenariosGen()
 
@@ -481,6 +507,10 @@ function saveConfig()
         print('[Report Desk] save skipped: config was not loaded')
         return false
     end
+    if not threadsConfigLoaded then
+        print('[Report Desk] save blocked: threads were not loaded (avoid wipe)')
+        return false
+    end
     if dirtySettings then
         if not saveUserConfig() then
             print('[Report Desk] user config save failed — continuing main config save')
@@ -516,34 +546,28 @@ function saveConfig()
     f:write(string.format('    remote_chat_samp_mirror = %s,\n', settings.remote_chat_samp_mirror ~= false and 'true' or 'false'))
     f:write(string.format('    admin_level = %d,\n', getLocalAdminLevel()))
     f:write(string.format('    skin_radius = %d,\n', tonumber(settings.skin_radius) or 20))
-    f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 1200))
+    f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 2500))
     f:write(string.format('    veh_spawn_count = %d,\n', tonumber(settings.veh_spawn_count) or 1))
     f:write(string.format('    veh_grid_rows = %d,\n', tonumber(settings.veh_grid_rows) or 1))
     f:write(string.format('    veh_grid_cols = %d,\n', tonumber(settings.veh_grid_cols) or 5))
     f:write(string.format('    veh_color1 = %d,\n', tonumber(settings.veh_color1) or 0))
     f:write(string.format('    veh_color2 = %d,\n', tonumber(settings.veh_color2) or 0))
     f:write(string.format('    spectate_hud = %s,\n', settings.spectate_hud ~= false and 'true' or 'false'))
+    f:write(string.format('    spectate_nearby_hud = %s,\n', settings.spectate_nearby_hud ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_auto_st = %s,\n', settings.spectate_auto_st ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_auto_refresh = %s,\n', settings.spectate_auto_refresh ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_hud_persist = %s,\n', settings.spectate_hud_persist ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_sp_menu_sound = %s,\n', settings.spectate_sp_menu_sound == true and 'true' or 'false'))
     f:write(string.format('    spectate_hud_x = %d,\n', math.floor(tonumber(settings.spectate_hud_x) or 14)))
     f:write(string.format('    spectate_hud_y = %d,\n', math.floor(tonumber(settings.spectate_hud_y) or 120)))
-    f:write(string.format('    spectate_hud_layout_v2 = %s,\n', settings.spectate_hud_layout_v2 and 'true' or 'false'))
     f:write(string.format('    spectate_sp_ui = %s,\n', settings.spectate_sp_ui ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_sp_ui_custom = %s,\n', settings.spectate_sp_ui_custom == true and 'true' or 'false'))
     f:write(string.format('    spectate_sp_ui_x = %d,\n', math.floor(tonumber(settings.spectate_sp_ui_x) or -28)))
     f:write(string.format('    spectate_sp_ui_y = %d,\n', math.floor(tonumber(settings.spectate_sp_ui_y) or 0)))
-    f:write(string.format('    spectate_sp_ui_layout_v2 = %s,\n', settings.spectate_sp_ui_layout_v2 and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud = %s,\n', settings.spectate_vehicle_hud ~= false and 'true' or 'false'))
     f:write(string.format('    spectate_vehicle_hud_x = %d,\n', math.floor(tonumber(settings.spectate_vehicle_hud_x) or -24)))
     f:write(string.format('    spectate_vehicle_hud_y = %d,\n', math.floor(tonumber(settings.spectate_vehicle_hud_y) or -132)))
     f:write(string.format('    spectate_vehicle_hud_custom = %s,\n', settings.spectate_vehicle_hud_custom == true and 'true' or 'false'))
-    f:write(string.format('    spectate_vehicle_hud_layout_v2 = %s,\n', settings.spectate_vehicle_hud_layout_v2 and 'true' or 'false'))
-    f:write(string.format('    spectate_vehicle_hud_layout_v3 = %s,\n', settings.spectate_vehicle_hud_layout_v3 and 'true' or 'false'))
-    f:write(string.format('    spectate_vehicle_hud_layout_v4 = %s,\n', settings.spectate_vehicle_hud_layout_v4 and 'true' or 'false'))
-    f:write(string.format('    spectate_vehicle_hud_layout_v5 = %s,\n', settings.spectate_vehicle_hud_layout_v5 and 'true' or 'false'))
-    f:write(string.format('    spectate_vehicle_hud_layout_v6 = %s,\n', settings.spectate_vehicle_hud_layout_v6 and 'true' or 'false'))
     f:write(string.format('    spectate_keys_hud = %s,\n', settings.spectate_keys_hud ~= false and 'true' or 'false'))
     if settings.spectate_keys_hud_x ~= nil then
         f:write(string.format('    spectate_keys_hud_x = %d,\n', math.floor(tonumber(settings.spectate_keys_hud_x) or 0)))
@@ -578,6 +602,10 @@ function saveConfig()
     f:write(string.format('    exact_time_enabled = %s,\n', settings.exact_time_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    exact_time_daily_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)))
     f:write(string.format('    exact_time_monthly_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112)))
+    f:write(string.format('    temp_leadership_auto_restore = %s,\n', settings.temp_leadership_auto_restore ~= false and 'true' or 'false'))
+    local tlOrg = tostring(settings.temp_leadership_org or '0 0')
+    if tlOrg == '' then tlOrg = '0 0' end
+    f:write(string.format('    temp_leadership_org = %q,\n', tlOrg))
     if type(settings.cmd_binds) == 'table' and #settings.cmd_binds > 0 then
         f:write('    cmd_binds = {\n')
         for _, row in ipairs(settings.cmd_binds) do

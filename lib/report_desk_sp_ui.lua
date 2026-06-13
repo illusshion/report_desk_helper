@@ -1,14 +1,28 @@
 --[[ Модуль: glue session + menu для /sp UI. ]]
+-- REWRITTEN: idempotent WM/input hook install (no reinstall every health-check).
 local M = {}
 
 local session = require 'report_desk_spectate_session'
 local menu = require 'report_desk_spectate_menu'
 
-local deps = {}
+local deps = {} -- install cfg from spectate_stats
 local menuDepsWired = false
 local clickHandler, toggleHandler
 local hookPrevClick, hookPrevToggle
-local deskWmDispatch = require 'report_desk_wm_dispatch'
+local wmHandlerInstalled = false
+local wmDispatchCached
+
+local function resolveDeskWmDispatch()
+    if type(deskWmDispatch) == 'table' and type(deskWmDispatch.register) == 'function' then
+        return deskWmDispatch
+    end
+    if wmDispatchCached == nil then
+        local ok, wm = pcall(require, 'report_desk_wm_dispatch')
+        wmDispatchCached = ok and wm or false
+    end
+    if wmDispatchCached ~= false then return wmDispatchCached end
+    return nil
+end
 
 local WM = {
     KEYDOWN = 0x0100,
@@ -39,12 +53,6 @@ function M.uiEnabled()
 end
 
 -- Публичный API модуля.
-function M.shouldBlockGtaMenu()
-    if not M.uiEnabled() then return false end
-    return spectatingNow() or M.shouldSuppressServerMenu()
-end
-
--- Публичный API модуля.
 function M.shouldSuppressServerMenu()
     return session.shouldSuppressServerSpMenu and session.shouldSuppressServerSpMenu()
 end
@@ -56,15 +64,25 @@ end
 
 -- Публичный API модуля.
 function M.getTargetId()
-    if deps.getTargetId then return tonumber(deps.getTargetId()) or -1 end
+    if deps.getTargetId then
+        local ok, v = pcall(deps.getTargetId)
+        if ok then
+            local id = tonumber(v)
+            if id and id >= 0 then return id end
+        end
+    end
     return session.getTargetId and session.getTargetId() or -1
 end
 
 -- Публичный API модуля.
 function M.drawMenu(settings)
     if not M.shouldShowMenu() then return end
-    local ok = pcall(menu.drawMenu, settings or getSettings())
-    if ok then pcall(menu.flushPendingAction) end
+    local ok, err = pcall(menu.drawMenu, settings or getSettings())
+    if not ok then
+        print('[Report Desk] sp menu draw: ' .. tostring(err))
+    elseif menu.flushPendingAction then
+        pcall(menu.flushPendingAction)
+    end
 end
 
 -- Sync Td Hooks — install only when /sp or vehicle HUD needs them.
@@ -104,8 +122,11 @@ local function reinstallSampevInputHooks()
     if prev == clickHandler then prev = hookPrevClick end
     hookPrevClick = prev
     clickHandler = function(textdrawId)
-        if M.shouldSuppressServerMenu() then return false end
         if deps.isMenuShieldActive and deps.isMenuShieldActive() then return false end
+        if M.shouldSuppressServerMenu() and session.shouldBlockSpMenuClick then
+            local ok, block = pcall(session.shouldBlockSpMenuClick, textdrawId)
+            if ok and block then return false end
+        end
         if type(hookPrevClick) == 'function' then return hookPrevClick(textdrawId) end
     end
     sampev.onSendClickTextDraw = clickHandler
@@ -128,6 +149,12 @@ local function wireMenuDeps()
         uiText = deps.uiText,
         getSettings = getSettings,
         getTargetId = deps.getTargetId or M.getTargetId,
+        getConfirmedTargetId = deps.getConfirmedTargetId,
+        isUiActive = deps.isUiActive,
+        getOutboundId = deps.getOutboundId,
+        isHandshaking = deps.isHandshaking,
+        hasPendingSp = deps.hasPendingSp,
+        isRefreshInFlight = deps.isRefreshInFlight,
         getTargetNick = deps.getTargetNick,
         getPlayerSpectating = deps.getPlayerSpectating,
         isSpectating = spectatingNow,
@@ -198,6 +225,9 @@ function M.install(cfg)
         onBegin = deps.onSessionBegin,
         onEnd = deps.onSessionEnd,
     })
+    if session.scheduleRecoveryScan then
+        pcall(session.scheduleRecoveryScan)
+    end
 end
 
 -- Публичный API модуля.
@@ -208,6 +238,17 @@ function M.setPendingTarget(id, nick)
     end
 end
 
+-- Finish Spectate Locally
+local function finishSpectateLocally(reason, opts)
+    reason = reason or 'sp_ui'
+    opts = opts or { sendServer = false }
+    session.markAwaitingSpectate(false)
+    if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
+    session.setSpectating(false)
+    session.endSession()
+    if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
+end
+
 -- Публичный API модуля.
 function M.onToggleSpectating(toggle)
     if toggle then
@@ -216,24 +257,16 @@ function M.onToggleSpectating(toggle)
         end
         if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
         session.setSpectating(true)
-        -- Цель и session.beginSession — только после onSpectatePlayer / [SP] (server confirm).
+        -- Цель и session.beginSession — только после RPC onSpectatePlayer.
         if deps.onSpectatingOn then pcall(deps.onSpectatingOn) end
         return
     end
-    session.markAwaitingSpectate(false)
-    session.setSpectating(false)
-    session.endSession()
-    if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
-    if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
+    finishSpectateLocally('rpc_exit', { sendServer = false })
 end
 
 -- Публичный API модуля.
 function M.onSpCommandOff()
-    session.markAwaitingSpectate(false)
-    if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
-    session.setSpectating(false)
-    session.endSession()
-    if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
+    finishSpectateLocally('exit', { sendServer = false })
 end
 
 -- Публичный API модуля.
@@ -259,13 +292,21 @@ end
 
 -- Uninstall Wm Handler
 local function uninstallWmHandler()
-    deskWmDispatch.unregister('sp_ui')
+    if not wmHandlerInstalled then return end
+    local wm = resolveDeskWmDispatch()
+    if wm and wm.unregister then
+        wm.unregister('sp_ui')
+    end
+    wmHandlerInstalled = false
 end
 
--- Install Wm Handler
+-- Install Wm Handler (menu keys; spectate_stats WM at priority 95 handles step/HUD keys)
 local function installWmHandler()
-    uninstallWmHandler()
-    deskWmDispatch.register('sp_ui', 85, function(msg, wparam, lparam)
+    if wmHandlerInstalled then return end
+    local wm = resolveDeskWmDispatch()
+    if not wm or not wm.register then return end
+    wmHandlerInstalled = true
+    wm.register('sp_ui', 85, function(msg, wparam, lparam)
         if deps.captureActive and deps.captureActive() then return end
         if msg == WM.KEYDOWN or msg == WM.SYSKEYDOWN then
             if M.handleMenuKey(wparam) then
@@ -307,6 +348,7 @@ end
 -- Публичный API модуля.
 function M.ensureInputHooks()
     if not deps.sampev then return end
+    if not M.uiEnabled() and not spectatingNow() then return end
     syncTdHooks()
     ensureSpectateSampevHook()
     reinstallSampevInputHooks()
