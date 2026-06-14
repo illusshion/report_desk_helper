@@ -2473,6 +2473,9 @@ end
 -- Периодика checker: rebuild online, AFK, spawn catalog sync.
 function checkerTick()
     if not checkerSampReady() then
+        if checkerState.spawnedAt then
+            checkerState.spawnedAt = nil
+        end
         if checkerState.hudDrag then checkerState.hudDrag.active = false end
         checkerState.syncInFlight = false
         checkerClearAdmsFlow()
@@ -2612,8 +2615,8 @@ function checkerInit()
         rawset(_G, CHECKER_SYNC_SESSION_KEY, nil)
         local catalogAdmins = #(checkerCatalog.admins or {})
         local autoSync = settings.checker_auto_sync ~= false
-        -- Admins из storage хватает для HUD; /leaders всегда догружаем при auto_sync (даже если в каталоге есть старые записи).
-        checkerState.spawnAdmsHandled = catalogAdmins > 0
+        -- При auto_sync всегда догружаем /adms + /leaders на сессию (не полагаемся только на storage).
+        checkerState.spawnAdmsHandled = not autoSync and catalogAdmins > 0
         checkerState.spawnLeadersHandled = not autoSync
         checkerState.spawnCatalogSyncDone = not autoSync and catalogAdmins > 0
         checkerState.spawnCatalogSyncAt = nil

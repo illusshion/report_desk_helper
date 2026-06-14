@@ -226,18 +226,23 @@ function main()
     end
 
     local function mainLoopWaitMs()
-        if showWindow[0] then return 16 end
-        if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
-        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 1 end
-        if deskTexPipeline.anyPending() then return 1 end
+        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 2 end
         if cheatState.hudDrag.active then return 1 end
         if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 1 end
         if type(deskSpectateStats) == 'table'
                 and deskSpectateStats.isHudDragActive
                 and deskSpectateStats.isHudDragActive() then return 1 end
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
+        if showWindow[0] then
+            if type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
+                return 8
+            end
+            if deskIsSpectating() then return 16 end
+            return 33
+        end
+        if deskIsSpectating() then return 16 end
         if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 8 end
         if type(settings) == 'table' and settings.admin_punish_enabled == true then
             local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
@@ -246,6 +251,7 @@ function main()
                 return 25
             end
         end
+        if deskTexPipeline.anyPending() then return 4 end
         return 50
     end
 
@@ -269,6 +275,12 @@ function main()
                 cheatState.hudPlaced = false
                 if type(checkerState) == 'table' then
                     checkerState.hudPlaced = false
+                end
+                if type(checkerResetSpawnCatalogSession) == 'function' then
+                    pcall(checkerResetSpawnCatalogSession)
+                end
+                if type(checkerScheduleSpawnCatalogSync) == 'function' then
+                    pcall(checkerScheduleSpawnCatalogSync)
                 end
                 if type(deskAdminLevelState) == 'table' then
                     deskAdminLevelState.fromLogin = false
@@ -326,10 +338,15 @@ function main()
         end
 
         if not deskCache.catalogTexFlushPending then
-            pcall(deskTexPipeline.flushDeferred, deskTex, imgui, 8)
-        end
-        if showWindow[0] and type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
-            pcall(deskCatalogTexTick)
+            local flushBudget = 0
+            if showWindow[0] and type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
+                flushBudget = 8
+            elseif deskTexPipeline.anyPending() then
+                flushBudget = 4
+            end
+            if flushBudget > 0 then
+                pcall(deskTexPipeline.flushDeferred, deskTex, imgui, flushBudget)
+            end
         end
 
         if os.clock() - lastHookCheck >= HOOK_HEALTH_CHECK_INTERVAL then

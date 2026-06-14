@@ -183,23 +183,37 @@ function checkerClearPendingSyncDialogs()
     checkerClearSyncLeaders()
 end
 
+-- Сброс spawn-sync при новом заходе на сервер (реконнект / поздний старт релиза).
+function checkerResetSpawnCatalogSession()
+    if not checkerState or not checkerState.initComplete then return end
+    if settings.checker_auto_sync == false then return end
+    checkerState.spawnedAt = nil
+    checkerState.spawnCatalogSyncDone = false
+    checkerState.spawnAdmsHandled = false
+    checkerState.spawnLeadersHandled = false
+    checkerState.spawnCatalogSyncRunning = false
+    checkerState.spawnCatalogSyncAt = nil
+    checkerState.spawnLeadersDueAt = nil
+    checkerClearPendingSyncDialogs()
+    local s = ensureSyncSession()
+    s.spawnAdmsRetries = 0
+    checkerPersistSyncSession()
+end
+
 -- Checker (admin HUD/catalog).
 function checkerScheduleSpawnAdmsRetry()
     local s = ensureSyncSession()
-    if #checkerCatalog.admins > 0 then
-        if checkerState.spawnLeadersHandled then
-            checkerState.spawnCatalogSyncDone = true
-        else
-            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
-            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
-        end
-        return
-    end
     if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
         if #checkerCatalog.admins == 0 then
             print('[Report Desk] checker: /adms sync failed — catalog empty, retrying automatically')
         else
-            print('[Report Desk] checker: /adms sync failed after retries — using persisted catalog')
+            print('[Report Desk] checker: /adms sync incomplete after retries — using persisted catalog')
+        end
+        if checkerState.spawnLeadersHandled then
+            checkerState.spawnCatalogSyncDone = true
+        elseif checkerState.spawnAdmsHandled then
+            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
         end
         return
     end
@@ -599,14 +613,8 @@ function checkerTrySpawnCatalogSync()
         return
     end
     checkerState.spawnCatalogSyncAt = nil
-    if #(checkerCatalog.admins or {}) > 0 then
-        checkerState.spawnAdmsHandled = true
-        if checkerState.spawnLeadersHandled then
-            checkerState.spawnCatalogSyncDone = true
-            return
-        end
-        checkerState.spawnLeadersDueAt = os.clock()
-        checkerTrySpawnCatalogSync()
+    if checkerState.spawnAdmsHandled and checkerState.spawnLeadersHandled then
+        checkerState.spawnCatalogSyncDone = true
         return
     end
     checkerStartSpawnCatalogSyncThread()
