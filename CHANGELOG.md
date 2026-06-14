@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.4
+
+**Hotfix: checker `/adms` при входе на сервер (релизный путь).**
+
+- При `checker_auto_sync` всегда гоняем `/adms` + `/leaders` на сессию, даже если каталог уже в storage.
+- Сброс spawn-sync при реконнекте и позднем старте bootstrap (не пропускаем синк из-за старого `spawnedAt`).
+- Убран обход «каталог не пустой → не шлём `/adms`».
+
 ## 1 Beta.1.3
 
 **Hotfix: сценарии «собесы» / анонсы /news.**

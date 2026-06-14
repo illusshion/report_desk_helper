@@ -36481,6 +36481,12 @@ function main()
                 if type(checkerState) == 'table' then
                     checkerState.hudPlaced = false
                 end
+                if type(checkerResetSpawnCatalogSession) == 'function' then
+                    pcall(checkerResetSpawnCatalogSession)
+                end
+                if type(checkerScheduleSpawnCatalogSync) == 'function' then
+                    pcall(checkerScheduleSpawnCatalogSync)
+                end
                 if type(deskAdminLevelState) == 'table' then
                     deskAdminLevelState.fromLogin = false
                     deskAdminLevelState.loginLevel = nil
@@ -39766,6 +39772,9 @@ end
 -- Периодика checker: rebuild online, AFK, spawn catalog sync.
 function checkerTick()
     if not checkerSampReady() then
+        if checkerState.spawnedAt then
+            checkerState.spawnedAt = nil
+        end
         if checkerState.hudDrag then checkerState.hudDrag.active = false end
         checkerState.syncInFlight = false
         checkerClearAdmsFlow()
@@ -39905,8 +39914,8 @@ function checkerInit()
         rawset(_G, CHECKER_SYNC_SESSION_KEY, nil)
         local catalogAdmins = #(checkerCatalog.admins or {})
         local autoSync = settings.checker_auto_sync ~= false
-        -- Admins из storage хватает для HUD; /leaders всегда догружаем при auto_sync (даже если в каталоге есть старые записи).
-        checkerState.spawnAdmsHandled = catalogAdmins > 0
+        -- При auto_sync всегда догружаем /adms + /leaders на сессию (не полагаемся только на storage).
+        checkerState.spawnAdmsHandled = not autoSync and catalogAdmins > 0
         checkerState.spawnLeadersHandled = not autoSync
         checkerState.spawnCatalogSyncDone = not autoSync and catalogAdmins > 0
         checkerState.spawnCatalogSyncAt = nil
@@ -40126,23 +40135,37 @@ function checkerClearPendingSyncDialogs()
     checkerClearSyncLeaders()
 end
 
+-- Сброс spawn-sync при новом заходе на сервер (реконнект / поздний старт релиза).
+function checkerResetSpawnCatalogSession()
+    if not checkerState or not checkerState.initComplete then return end
+    if settings.checker_auto_sync == false then return end
+    checkerState.spawnedAt = nil
+    checkerState.spawnCatalogSyncDone = false
+    checkerState.spawnAdmsHandled = false
+    checkerState.spawnLeadersHandled = false
+    checkerState.spawnCatalogSyncRunning = false
+    checkerState.spawnCatalogSyncAt = nil
+    checkerState.spawnLeadersDueAt = nil
+    checkerClearPendingSyncDialogs()
+    local s = ensureSyncSession()
+    s.spawnAdmsRetries = 0
+    checkerPersistSyncSession()
+end
+
 -- Checker (admin HUD/catalog).
 function checkerScheduleSpawnAdmsRetry()
     local s = ensureSyncSession()
-    if #checkerCatalog.admins > 0 then
-        if checkerState.spawnLeadersHandled then
-            checkerState.spawnCatalogSyncDone = true
-        else
-            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
-            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
-        end
-        return
-    end
     if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
         if #checkerCatalog.admins == 0 then
             print('[Report Desk] checker: /adms sync failed — catalog empty, retrying automatically')
         else
-            print('[Report Desk] checker: /adms sync failed after retries — using persisted catalog')
+            print('[Report Desk] checker: /adms sync incomplete after retries — using persisted catalog')
+        end
+        if checkerState.spawnLeadersHandled then
+            checkerState.spawnCatalogSyncDone = true
+        elseif checkerState.spawnAdmsHandled then
+            checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
+            checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
         end
         return
     end
@@ -40542,14 +40565,8 @@ function checkerTrySpawnCatalogSync()
         return
     end
     checkerState.spawnCatalogSyncAt = nil
-    if #(checkerCatalog.admins or {}) > 0 then
-        checkerState.spawnAdmsHandled = true
-        if checkerState.spawnLeadersHandled then
-            checkerState.spawnCatalogSyncDone = true
-            return
-        end
-        checkerState.spawnLeadersDueAt = os.clock()
-        checkerTrySpawnCatalogSync()
+    if checkerState.spawnAdmsHandled and checkerState.spawnLeadersHandled then
+        checkerState.spawnCatalogSyncDone = true
         return
     end
     checkerStartSpawnCatalogSyncThread()
