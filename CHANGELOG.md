@@ -2,10 +2,13 @@
 
 ## 1 Beta.1
 
-**Hotfix после 1 Beta.**
+**Публичный Beta-релиз Admin Report Desk.**
 
-- mimgui: в релизный zip попадает patched `lib/mimgui` с `deskPassesGameKey` (F8/F12/PrtSc в игре).
-- Автовыдача: убран лишний `/ans`, одна команда наказания, прямой `sendChat` без очереди `/sp`.
+- Установка: положить `AdminDesk.luac` в moonloader — ядро, библиотеки и превью скачиваются автоматически.
+- Команды `/adesk`, `/deskupdate`, `/deskrepair`; autoupdate по SHA256 (manifest v3).
+- mimgui: patched `lib/mimgui` с `deskPassesGameKey` (F8/F12/PrtSc в игре).
+- Spectate: stats split (ctx + pending), SP menu td_block CP1251, HUD input fix.
+- Intent: номер телефона через `/id` (не `/number`); online players SSOT.
 - Bootstrap: `pcall` вокруг загрузки ядра — ошибка core не роняет весь скрипт.
 
 ## 1 Beta
