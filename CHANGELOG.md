@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.2
+
+**Hotfix: FPS при открытом окне /adesk (релизный путь).**
+
+- Main loop: убран `wait(16)` на каждом кадре при открытом окне (теперь ~33 ms на вкладке «Репорты», 8 ms только на «Скины»/«ТС»).
+- Текстуры каталога: один `deskCatalogTexTick` через `imgui.OnFrame` (убраны дубли из main loop и drawSkinsTab).
+- Prewarm скинов: только при первом входе во вкладку «Скины» (24 превью, budget 6/кадр), не сразу после скачивания assets.
+- Fallback poll чата при открытом окне: 40 строк вместо 100.
+
 ## 1 Beta.1.1
 
 **Hotfix: принудительная переустановка runtime/mimgui/iconv при чужих или устаревших lib.**

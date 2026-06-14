@@ -2093,9 +2093,6 @@ function M.ensureAssets(manifest, opts)
     end
     overlayHide()
     setOverlayContext(nil)
-    if type(skinsStartPrewarm) == 'function' then
-        pcall(skinsStartPrewarm, SKIN_PREWARM_COUNT or 48)
-    end
     return true, true
 end
 

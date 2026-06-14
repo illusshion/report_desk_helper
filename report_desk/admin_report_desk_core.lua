@@ -15792,8 +15792,8 @@ CATALOG_GPU_BUDGET = 8       -- текстур за tick каталога
 CATALOG_GPU_BUDGET_BURST = 12 -- burst при большой очереди pending
 CATALOG_IO_IDLE_MS = 8       -- пауза IO-потока каталога, мс
 CATALOG_IO_BURST = 3         -- PNG-чтений за итерацию IO-потока
-SKIN_PREWARM_COUNT = 48      -- превью для фоновой загрузки после assets
-SKIN_PREWARM_GPU_BUDGET = 16 -- GPU upload/кадр во время prewarm
+SKIN_PREWARM_COUNT = 24      -- превью для ленивой загрузки при входе во вкладку «Скины»
+SKIN_PREWARM_GPU_BUDGET = 6  -- GPU upload/кадр во время prewarm
 SKIN_MAX_FILE_BYTES = 512000 -- лимит размера PNG скина, байт
 TEX_NS_SKIN = 'skin'         -- namespace tex pipeline для скинов
 SKIN_NEARBY_CACHE_SEC = 0.6  -- кэш списка игроков в радиусе, сек
@@ -15813,7 +15813,7 @@ POLL_INTERVAL_SAFETY = 2.0
 CHAT_POLL_SAFETY_LINES = 8
 POLL_INTERVAL = 0.12
 POLL_INTERVAL_CLOSED = 0.25
-CHAT_POLL_LINES_OPEN = 100
+CHAT_POLL_LINES_OPEN = 40
 CHAT_POLL_LINES_CLOSED = 40
 HOOK_HEALTH_CHECK_INTERVAL = 30.0 -- переустановка SAMP hooks, сек
 
@@ -22539,6 +22539,10 @@ function skinsOnTabEnter()
     if deskCache.skinPrewarmActive then
         deskCache.skinPrewarmActive = false
     end
+    if not deskCache.skinTabPrewarmDone and doesFileExist(SKINS_DIR .. 'skin-1.png') then
+        deskCache.skinTabPrewarmDone = true
+        pcall(skinsStartPrewarm, math.min(24, SKIN_PREWARM_COUNT or 24))
+    end
 end
 
 -- Skins On Tab Leave
@@ -22979,7 +22983,6 @@ function drawSkinsTab()
     imgui.EndChild()
     imgui.EndChild()
 
-    pcall(deskCatalogTexTick)
     imgui.EndChild()
     popPanelStyle()
 end
@@ -36410,18 +36413,23 @@ function main()
     end
 
     local function mainLoopWaitMs()
-        if showWindow[0] then return 16 end
-        if deskIsSpectating() then return 16 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
-        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 1 end
-        if deskTexPipeline.anyPending() then return 1 end
+        if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 2 end
         if cheatState.hudDrag.active then return 1 end
         if checkerState and checkerState.hudDrag and checkerState.hudDrag.active then return 1 end
         if type(deskSpectateStats) == 'table'
                 and deskSpectateStats.isHudDragActive
                 and deskSpectateStats.isHudDragActive() then return 1 end
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then return 1 end
+        if showWindow[0] then
+            if type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
+                return 8
+            end
+            if deskIsSpectating() then return 16 end
+            return 33
+        end
+        if deskIsSpectating() then return 16 end
         if type(adminPunishHasPending) == 'function' and adminPunishHasPending() then return 8 end
         if type(settings) == 'table' and settings.admin_punish_enabled == true then
             local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
@@ -36430,6 +36438,7 @@ function main()
                 return 25
             end
         end
+        if deskTexPipeline.anyPending() then return 4 end
         return 50
     end
 
@@ -36510,10 +36519,15 @@ function main()
         end
 
         if not deskCache.catalogTexFlushPending then
-            pcall(deskTexPipeline.flushDeferred, deskTex, imgui, 8)
-        end
-        if showWindow[0] and type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
-            pcall(deskCatalogTexTick)
+            local flushBudget = 0
+            if showWindow[0] and type(deskCatalogTabActive) == 'function' and deskCatalogTabActive() then
+                flushBudget = 8
+            elseif deskTexPipeline.anyPending() then
+                flushBudget = 4
+            end
+            if flushBudget > 0 then
+                pcall(deskTexPipeline.flushDeferred, deskTex, imgui, flushBudget)
+            end
         end
 
         if os.clock() - lastHookCheck >= HOOK_HEALTH_CHECK_INTERVAL then
