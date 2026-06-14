@@ -275,7 +275,7 @@ local function parseAdvanceReportLine(text)
 end
 
 -- Парсинг данных с сервера/чата.
--- NO-API: player reports arrive only as server chat messages.
+-- Запасной путь без API: player reports arrive only as server chat messages.
 local function parsePlayerReportStrict(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) or text:find('%[A%]%s', 1) then return nil end
@@ -346,7 +346,7 @@ function M.formatPunishmentDisplay(adminNick, targetNick, rawText)
 end
 
 -- Парсинг данных с сервера/чата.
--- NO-API: punishment notifications are server chat messages only.
+-- Запасной путь без API: punishment notifications are server chat messages only.
 local function parsePunishmentLine(text)
     if not text or text == '' then return nil end
     if text:find('^%[A%]', 1) then return nil end
@@ -406,7 +406,7 @@ function M.tryParsePlayerReport(text)
 end
 
 -- Публичный API модуля.
--- NO-API: all chat event types parsed from server message text.
+-- Запасной путь без API: all chat event types parsed from server message text.
 function M.tryParseChatEvent(text, opts)
     opts = opts or {}
     if not text or text == '' then return nil end

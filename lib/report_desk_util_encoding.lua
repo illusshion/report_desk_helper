@@ -23,11 +23,11 @@ function utf8ToCp1251(text)
     return text
 end
 
--- РўРµРєСЃС‚ РґР»СЏ SAMP wire (/ans, С‡Р°С‚): РІСЃРµРіРґР° CP1251.
+-- Текст для SAMP wire (/ans, чат): всегда CP1251.
 function ensureWireCp1251(text)
     text = trim(tostring(text or ''))
     if text == '' then return '' end
     return normalizeStoredText(text, isUtf8Text(text))
 end
 
--- Р‘РµР·РѕРїР°СЃРЅС‹Р№ РІС‹Р·РѕРІ РїСЂРµРґС‹РґСѓС‰РµРіРѕ С…СѓРєР° РІ С†РµРїРѕС‡РєРµ SAMP (РёР·РѕР»СЏС†РёСЏ РѕС€РёР±РѕРє С‡СѓР¶РёС… СЃРєСЂРёРїС‚РѕРІ).
+-- Безопасный вызов предыдущего хука в цепочке SAMP (изоляция ошибок чужих скриптов).

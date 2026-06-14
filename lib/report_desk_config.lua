@@ -264,6 +264,9 @@ function loadConfig()
     else
         settings.admin_level = math.floor(al)
     end
+    if settings.admin_level_detected == true and type(deskAdminLevelState) == 'table' then
+        deskAdminLevelState.detected = true
+    end
     local sr = tonumber(settings.skin_radius)
     if sr == nil or sr < SKIN_RADIUS_MIN or sr > SKIN_RADIUS_MAX then
         settings.skin_radius = 20
@@ -545,6 +548,9 @@ function saveConfig()
     f:write(string.format('    profanity_filter_chat = %s,\n', settings.profanity_filter_chat and 'true' or 'false'))
     f:write(string.format('    remote_chat_samp_mirror = %s,\n', settings.remote_chat_samp_mirror ~= false and 'true' or 'false'))
     f:write(string.format('    admin_level = %d,\n', getLocalAdminLevel()))
+    if settings.admin_level_detected == true then
+        f:write('    admin_level_detected = true,\n')
+    end
     f:write(string.format('    skin_radius = %d,\n', tonumber(settings.skin_radius) or 20))
     f:write(string.format('    skin_apply_delay_ms = %d,\n', tonumber(settings.skin_apply_delay_ms) or 2500))
     f:write(string.format('    veh_spawn_count = %d,\n', tonumber(settings.veh_spawn_count) or 1))

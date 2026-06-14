@@ -91,7 +91,7 @@ function deskReinstallSpMenuHooks()
     installDeskSpMenuHooks()
 end
 
-local function deskSpectatePathNeedsInputHooks()
+function deskSpectatePathNeedsInputHooks()
     if type(deskIsSpectating) == 'function' and deskIsSpectating() then return true end
     if type(deskSpectateStats) ~= 'table' then return false end
     if type(deskSpectateStats.hasPendingSp) == 'function' and deskSpectateStats.hasPendingSp() then
@@ -104,90 +104,92 @@ local function deskSpectatePathNeedsInputHooks()
     return false
 end
 
+function deskRegisterHookEntries()
+    if not HookRegistry or HookRegistry._registered then return end
+    local entries = {
+        { id = 'serverMsg', event = 'onServerMessage',
+          checker = function() return deskCache.serverMsgHandler and sampev.onServerMessage == deskCache.serverMsgHandler end,
+          installer = installDeskServerMessageHook },
+        { id = 'specDialog', event = 'onShowDialog',
+          checker = function() return deskCache.specDialogHandler and sampev.onShowDialog == deskCache.specDialogHandler end,
+          installer = installDeskSpectateDialogHook },
+        { id = 'specToggle', event = 'onTogglePlayerSpectating',
+          checker = function() return deskCache.specToggleHandler and sampev.onTogglePlayerSpectating == deskCache.specToggleHandler end,
+          installer = installDeskSpectateToggleHook },
+        { id = 'sendChat', event = 'onSendChat',
+          checker = function() return deskCache.sendChatHandler and sampev.onSendChat == deskCache.sendChatHandler end,
+          installer = installDeskSendChatHook },
+        { id = 'sendCommand', event = 'onSendCommand',
+          checker = function() return deskCache.sendCommandHandler and sampev.onSendCommand == deskCache.sendCommandHandler end,
+          installer = installDeskSendCommandHook },
+        { id = 'playerQuit', event = 'onPlayerQuit',
+          checker = function() return deskCache.playerQuitHandler and sampev.onPlayerQuit == deskCache.playerQuitHandler end,
+          installer = installDeskPlayerQuitHook },
+        { id = 'playerJoin', event = 'onPlayerJoin',
+          checker = function() return deskCache.playerJoinHandler and sampev.onPlayerJoin == deskCache.playerJoinHandler end,
+          installer = installDeskPlayerJoinHook },
+        { id = 'playerStreamIn', event = 'onPlayerStreamIn',
+          checker = function() return deskCache.playerStreamInHandler and sampev.onPlayerStreamIn == deskCache.playerStreamInHandler end,
+          installer = installDeskPlayerStreamInHook },
+        { id = 'playerColor', event = 'onSetPlayerColor',
+          checker = function() return deskCache.playerColorHandler and sampev.onSetPlayerColor == deskCache.playerColorHandler end,
+          installer = installDeskPlayerColorHook },
+        { id = 'godmode', event = 'onSetPlayerHealth',
+          checker = deskGodmodeHooksActive,
+          installer = installDeskGodmodeHealthHook },
+        { id = 'spRefresh', event = 'onPlayerSync',
+          checker = function()
+              return deskCache.spPlayerSyncHandler and sampev.onPlayerSync == deskCache.spPlayerSyncHandler
+          end,
+          installer = installDeskSpRefreshHooks },
+        { id = 'profanity', event = 'onChatMessage',
+          checker = function()
+              return deskCache.profHooksInstalled
+                  and (not deskCache.profChatHandler or sampev.onChatMessage == deskCache.profChatHandler)
+                  and (not deskCache.profBubbleHandler or sampev.onPlayerChatBubble == deskCache.profBubbleHandler)
+          end,
+          installer = function()
+              deskCache.profHooksInstalled = false
+              installProfanityHooks()
+          end },
+        { id = 'spMenu', event = 'onShowMenu',
+          checker = deskAreSpMenuHooksActive,
+          installer = installDeskSpMenuHooks },
+    }
+    for _, e in ipairs(entries) do
+        HookRegistry.register(e.id, e.event, e.checker, e.installer)
+    end
+    HookRegistry._registered = true
+end
+
 function deskEnsureAllHooks()
     if not sampev then return end
-    local hookMisses = 0
-    local function noteHookMiss()
-        hookMisses = hookMisses + 1
+    deskRegisterHookEntries()
+    if HookRegistry and HookRegistry.ensureAll then
+        HookRegistry.ensureAll()
+    else
+        installDeskSpMenuRpcBlock()
+        installDeskCheckerRpcProbe()
     end
-    if not deskCache.serverMsgHandler or sampev.onServerMessage ~= deskCache.serverMsgHandler then
-        noteHookMiss()
-        installDeskServerMessageHook()
-    end
-    if not deskCache.specDialogHandler or sampev.onShowDialog ~= deskCache.specDialogHandler then
-        noteHookMiss()
-        installDeskSpectateDialogHook()
-    end
-    if not deskCache.specToggleHandler or sampev.onTogglePlayerSpectating ~= deskCache.specToggleHandler then
-        noteHookMiss()
-        installDeskSpectateToggleHook()
-    end
-    if not deskCache.sendChatHandler or sampev.onSendChat ~= deskCache.sendChatHandler then
-        noteHookMiss()
-        installDeskSendChatHook()
-    end
-    if not deskCache.sendCommandHandler or sampev.onSendCommand ~= deskCache.sendCommandHandler then
-        noteHookMiss()
-        installDeskSendCommandHook()
-    end
-    if not deskCache.playerQuitHandler or sampev.onPlayerQuit ~= deskCache.playerQuitHandler then
-        noteHookMiss()
-        installDeskPlayerQuitHook()
-    end
-    if not deskCache.playerJoinHandler or sampev.onPlayerJoin ~= deskCache.playerJoinHandler then
-        noteHookMiss()
-        installDeskPlayerJoinHook()
-    end
-    if not deskCache.playerStreamInHandler or sampev.onPlayerStreamIn ~= deskCache.playerStreamInHandler then
-        noteHookMiss()
-        installDeskPlayerStreamInHook()
-    end
-    if not deskCache.playerColorHandler or sampev.onSetPlayerColor ~= deskCache.playerColorHandler then
-        noteHookMiss()
-        installDeskPlayerColorHook()
-    end
-    if not deskGodmodeHooksActive() then
-        noteHookMiss()
-        installDeskGodmodeHealthHook()
-    end
-    if not deskCache.spEnterHandler or sampev.onPlayerEnterVehicle ~= deskCache.spEnterHandler
-            or not deskCache.spExitHandler or sampev.onPlayerExitVehicle ~= deskCache.spExitHandler
-            or not deskCache.spInteriorHandler or sampev.onSetInterior ~= deskCache.spInteriorHandler
-            or not deskCache.spVehicleSyncHandler or sampev.onVehicleSync ~= deskCache.spVehicleSyncHandler
-            or not deskCache.spPassengerSyncHandler or sampev.onPassengerSync ~= deskCache.spPassengerSyncHandler
-            or not deskCache.spPlayerSyncHandler or sampev.onPlayerSync ~= deskCache.spPlayerSyncHandler then
-        noteHookMiss()
-        installDeskSpRefreshHooks()
-    end
-    if not deskCache.profHooksInstalled
-            or (deskCache.profChatHandler and sampev.onChatMessage ~= deskCache.profChatHandler)
-            or (deskCache.profBubbleHandler and sampev.onPlayerChatBubble ~= deskCache.profBubbleHandler) then
-        noteHookMiss()
-        deskCache.profHooksInstalled = false
-        installProfanityHooks()
-    end
-    if not deskAreSpMenuHooksActive() then
-        noteHookMiss()
-        installDeskSpMenuHooks()
-    end
-    installDeskSpMenuRpcBlock()
-    installDeskCheckerRpcProbe()
-    if deskSpectateStats and deskSpectateStats.ensureInputHooks and deskSpectatePathNeedsInputHooks() then
+    if deskSpectateStats and deskSpectateStats.ensureInputHooks
+            and type(deskSpectatePathNeedsInputHooks) == 'function'
+            and deskSpectatePathNeedsInputHooks() then
         deskSpectateStats.ensureInputHooks()
     end
     if deskWmDispatch and deskWmDispatch.ensureInstalled then
         deskWmDispatch.ensureInstalled()
     end
-    if hookMisses > 0 then
-        deskCache.hookMissCount = (deskCache.hookMissCount or 0) + hookMisses
-        local now = os.clock()
-        local lastWarn = deskCache.hookMissWarnAt or 0
-        if deskCache.hookMissCount >= 3 and now - lastWarn >= 60.0 then
-            print(string.format('[Report Desk] hook health: %d reinstall(s) (%d total misses)',
-                hookMisses, deskCache.hookMissCount))
-            deskCache.hookMissWarnAt = now
-        end
+end
+
+function deskFinalizeReportDeskExport()
+    if type(getfenv) ~= 'function' then return end
+    local env = getfenv(1)
+    if HookRegistry then
+        env.HookRegistry = HookRegistry
+        _G.ReportDesk = _G.ReportDesk or {}
+        _G.ReportDesk.HookRegistry = HookRegistry
     end
+    if deskRegisterHookEntries then env.deskRegisterHookEntries = deskRegisterHookEntries end
 end
 
 local function resetRpcBitstream(bs)

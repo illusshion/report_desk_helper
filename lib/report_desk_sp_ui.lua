@@ -1,5 +1,5 @@
 --[[ Модуль: glue session + menu для /sp UI. ]]
--- REWRITTEN: idempotent WM/input hook install (no reinstall every health-check).
+--  idempotent WM/input hook install (no reinstall every health-check).
 local M = {}
 
 local session = require 'report_desk_spectate_session'
@@ -31,7 +31,7 @@ local WM = {
     SYSKEYUP = 0x0105,
 }
 
--- Get Settings
+-- Settings
 local function getSettings()
     if deps.getSettings then return deps.getSettings() end
     return nil

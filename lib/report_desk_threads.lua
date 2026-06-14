@@ -81,7 +81,7 @@ function resolveThread(nick, id)
     return key, t
 end
 
--- Get Thread By Key
+-- Thread By Key
 function getThreadByKey(key)
     if not key then return nil end
     return threads[key]
@@ -98,7 +98,8 @@ function resolveThreadReportChannel(t)
         if m and m.dir == 'in' then
             local kind = m.kind
             if kind == 'player' or kind == nil then
-                ch = deskIngest.extractReportChannel(m.channel) or deskIngest.extractReportChannel(m.raw)
+                ch = deskIngest.extractReportChannel(m.channel)
+                    or deskIngest.extractReportChannel(m.raw)
                 if ch then
                     t.reportChannel = ch
                     return ch
@@ -109,7 +110,7 @@ function resolveThreadReportChannel(t)
     return nil
 end
 
--- Get Selected Thread
+-- Selected Thread
 function getSelectedThread()
     if selectedKey and threads[selectedKey] then
         return threads[selectedKey], selectedKey
@@ -118,7 +119,7 @@ function getSelectedThread()
     return nil, nil
 end
 
--- Get Selected Id
+-- Selected Id
 function getSelectedId()
     local t = getSelectedThread()
     return t and tonumber(t.id) or -1
@@ -184,7 +185,7 @@ function resolveThreadForPlayerId(id, preferNick)
     return nil, nil
 end
 
--- Get Resolved Ans Id
+-- Resolved Ans Id
 function getResolvedAnsId(t)
     if not t then return -1 end
     local live = findPlayerIdByNick(t.nick)
@@ -236,7 +237,7 @@ function validateReplyTarget(t)
     return liveId, nil
 end
 
--- Get Thread
+-- Thread
 function getThread(id)
     id = tonumber(id)
     if not id then return nil end

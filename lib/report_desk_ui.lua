@@ -48,6 +48,91 @@ function drawSettingsHotkeyBind()
     })
 end
 
+function deskLocalAdminRoleLineWidth(parts)
+    if not parts then return 0 end
+    local w = 0
+    if parts.name and parts.name ~= '' then
+        w = w + imgui.CalcTextSize(uiText(parts.name)).x
+        w = w + imgui.CalcTextSize(uiText(' | ')).x
+    end
+    if parts.role and parts.role ~= '' then
+        w = w + imgui.CalcTextSize(uiText(parts.role)).x
+    end
+    return w
+end
+
+function drawDeskAdminRoleBadgeLine(parts, alignRight)
+    if not parts then return end
+    local textCol = col_muted2 or col_label
+    local sepCol = col_muted or imgui.ImVec4(0.45, 0.42, 0.52, 0.75)
+    local tint = parts.tint or col_accent
+    if alignRight then
+        local tw = deskLocalAdminRoleLineWidth(parts)
+        local availW = imgui.GetContentRegionAvail().x
+        if availW > tw + 2 then
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + availW - tw)
+        end
+    end
+    imgui.BeginGroup()
+    if parts.name and parts.name ~= '' then
+        imgui.TextColored(tint, uiText(parts.name))
+        imgui.SameLine(0, 0)
+        imgui.TextColored(sepCol, uiText(' | '))
+        imgui.SameLine(0, 0)
+    end
+    if parts.role and parts.role ~= '' then
+        imgui.TextColored(textCol, uiText(parts.role))
+    end
+    imgui.EndGroup()
+end
+
+function drawDeskAdminRoleBadgeFooter(h)
+    h = tonumber(h) or 28
+    if type(deskRefreshLocalAdminLevel) == 'function' then
+        pcall(deskRefreshLocalAdminLevel)
+    end
+    if type(deskLocalAdminRoleParts) ~= 'function' then return end
+    local parts = deskLocalAdminRoleParts()
+    if not parts then return end
+
+    local crMin = imgui.GetWindowContentRegionMin()
+    local crMax = imgui.GetWindowContentRegionMax()
+    local y = crMax.y - h
+    if y < crMin.y then y = crMin.y end
+
+    local wp = imgui.GetWindowPos()
+    local x0 = wp.x + crMin.x
+    local x1 = wp.x + crMax.x
+    local y0 = wp.y + y
+    local y1 = wp.y + crMax.y
+
+    local dl = imgui.GetWindowDrawList()
+    if dl and dl.AddRectFilled and type(toU32) == 'function' then
+        dl:AddRectFilled(
+            imgui.ImVec2(x0, y0),
+            imgui.ImVec2(x1, y1),
+            toU32(imgui.ImVec4(0.08, 0.07, 0.11, 0.55)))
+        if dl.AddLine then
+            dl:AddLine(
+                imgui.ImVec2(x0, y0),
+                imgui.ImVec2(x1, y0),
+                toU32(imgui.ImVec4(1, 1, 1, 0.05)),
+                1.0)
+        end
+    end
+
+    local lh = imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 14
+    imgui.SetCursorPos(imgui.ImVec2(crMin.x + 14, y + math.max(0, (h - lh) * 0.5)))
+    drawDeskAdminRoleBadgeLine(parts, false)
+end
+
+function deskAdminFooterHeight()
+    if type(deskLocalAdminLevelKnown) == 'function' and deskLocalAdminLevelKnown() then
+        return 28
+    end
+    return 0
+end
+
 -- Desk hook/helper.
 function deskPushFlatInputStyle()
     imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.12, 0.12, 0.15, 1))
@@ -458,30 +543,35 @@ function drawBubbleMessage(m, fullW, msgIdx, reporter, opts)
 
     if #replyBtnRows > 0 then
         local btnRowY = topPad + authorH + bubbleH + CHAT_TIME_GAP + timeBlockH + QUICK_BTN_BLOCK_TOP
-        if replyBtnBlockH > 0 then
-            dl:AddRectFilled(
-                imgui.ImVec2(pos.x + padSide - 4, pos.y + btnRowY - 3),
-                imgui.ImVec2(pos.x + rowW - padSide + 4, pos.y + btnRowY + replyBtnBlockH + 2),
-                toU32(imgui.ImVec4(0.14, 0.14, 0.18, 0.42)),
-                6)
-        end
         drawQuickScenarioButtons(replyBtns, localX, localY, btnRowY, rowW, padSide, scenarioBody, reporter, msgIdx)
     end
 
     sealChatMessageRow(localX, localY, blockH)
 end
 
+-- Chat Header Player State
+local function chatHeaderResolvePlayer(t)
+    local nick = trim(t and t.nick or '')
+    local liveId = nick ~= '' and findPlayerIdByNick(nick) or nil
+    if liveId ~= nil then
+        if t.id ~= liveId then
+            t.lastId = t.id
+            t.id = liveId
+            markDirtyThreads()
+        end
+        if t.stale then
+            t.stale = nil
+            markDirtyThreads()
+        end
+        return liveId, true
+    end
+    return tonumber(t.id) or -1, false
+end
+
 -- Chat Header Nick Color
 function chatHeaderNickColor(pid, online)
     pid = tonumber(pid) or -1
     if online and pid >= 0 then
-        if type(sampPlayerColorChatHex) == 'function' then
-            local hex = sampPlayerColorChatHex(pid)
-            if hex and hex ~= '' and type(chatHexToImVec4) == 'function' then
-                local c = chatHexToImVec4(hex)
-                if c then return c end
-            end
-        end
         if type(sampGetPlayerColor) == 'function' and sampIsPlayerConnected
                 and sampIsPlayerConnected(pid) then
             local ok, raw = pcall(sampGetPlayerColor, pid)
@@ -490,44 +580,38 @@ function chatHeaderNickColor(pid, online)
                 if c then return c end
             end
         end
-        if deskSpectateStats.getEntry and deskSpectateStats.nickColorFor then
-            local e = deskSpectateStats.getEntry(pid)
-            if e then
-                return deskSpectateStats.nickColorFor(pid, e)
+        if type(sampPlayerColorChatHex) == 'function' then
+            local hex = sampPlayerColorChatHex(pid)
+            if hex and hex ~= '' and type(chatHexToImVec4) == 'function' then
+                local c = chatHexToImVec4(hex)
+                if c then return c end
             end
         end
-        return col_label
     end
-    return imgui.ImVec4(0.82, 0.42, 0.42, 1.0)
+    return col_player_nick_offline or imgui.ImVec4(0.82, 0.42, 0.42, 1.0)
 end
 
 -- Report Channel Chip Style
 local function reportChannelChipStyle(tag)
     if tag == 'PC' then
         return {
-            label = 'SA-MP',
-            tip = '\xCA\xEB\xE8\xE5\xED\xF2 SA-MP (\xCF\xCA)',
-            bg = imgui.ImVec4(0.14, 0.22, 0.34, 0.95),
-            bgHover = imgui.ImVec4(0.18, 0.28, 0.42, 1.0),
-            fg = imgui.ImVec4(0.72, 0.86, 1.0, 1.0),
+            label = '\xCB\xE0\xF3\xED\xF7\xE5\xF0',
+            tip = '\xCB\xE0\xF3\xED\xF7\xE5\xF0 ARP',
+            accent = imgui.ImVec4(0.74, 0.56, 0.98, 0.90),
         }
     end
     if tag == 'S' then
         return {
-            label = '\xCB\xE0\xF3\xED\xF7\xE5\xF0',
-            tip = '\xCB\xE0\xF3\xED\xF7\xE5\xF0 ARP',
-            bg = imgui.ImVec4(0.30, 0.18, 0.42, 0.95),
-            bgHover = imgui.ImVec4(0.36, 0.22, 0.50, 1.0),
-            fg = imgui.ImVec4(0.92, 0.78, 1.0, 1.0),
+            label = 'SA-MP',
+            tip = '\xCA\xEB\xE8\xE5\xED\xF2 SA-MP',
+            accent = imgui.ImVec4(0.56, 0.74, 0.96, 0.90),
         }
     end
     if tag == 'M' then
         return {
             label = '\xCC\xEE\xE1\xE0\xE9\xEB',
             tip = '\xCC\xEE\xE1\xE8\xEB\xFC\xED\xEE\xE5 \xEF\xF0\xE8\xEB\xEE\xE6\xE5\xED\xE8\xE5',
-            bg = imgui.ImVec4(0.12, 0.30, 0.24, 0.95),
-            bgHover = imgui.ImVec4(0.16, 0.38, 0.30, 1.0),
-            fg = imgui.ImVec4(0.72, 0.96, 0.82, 1.0),
+            accent = imgui.ImVec4(0.50, 0.84, 0.66, 0.90),
         }
     end
     return nil
@@ -539,27 +623,15 @@ function drawReportChannelChip(channelTag, online)
     if not channelTag then return end
     local style = reportChannelChipStyle(channelTag)
     if not style then return end
-    local label = uiText(style.label)
-    local ts = imgui.CalcTextSize(label)
-    local padX, padY = 8, 2
-    local chipH = math.max(18, ts.y + padY * 2)
-    local chipW = ts.x + padX * 2
-    local alpha = online == false and 0.72 or 1.0
+    local sepCol = imgui.ImVec4(col_muted2.x, col_muted2.y, col_muted2.z, 0.50)
+    imgui.TextColored(sepCol, uiText(' \xB7 '))
+    imgui.SameLine(0, 2)
+    local alpha = online == false and 0.52 or 1.0
     imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, alpha)
-    imgui.PushStyleColor(imgui.Col.Button, style.bg)
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, style.bgHover)
-    imgui.PushStyleColor(imgui.Col.ButtonActive, style.bg)
-    imgui.PushStyleColor(imgui.Col.Text, style.fg)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, chipH * 0.5)
-    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(padX, padY))
-    if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
-    imgui.Button(label .. '##rpt_ch_' .. channelTag, imgui.ImVec2(chipW, chipH))
-    if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
+    imgui.TextColored(style.accent, uiText(style.label))
     if imgui.IsItemHovered() and imgui.SetTooltip and style.tip then
         imgui.SetTooltip(uiText(style.tip))
     end
-    imgui.PopStyleVar(2)
-    imgui.PopStyleColor(4)
     imgui.PopStyleVar()
 end
 
@@ -568,18 +640,13 @@ function drawChatHeaderSpectateBtn(pid, online)
     pid = tonumber(pid) or -1
     if pid < 0 then return end
     local specLbl = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
-    local btnH = 30
-    local btnW = math.max(88, headerActionBtnWidth(specLbl) + 4)
+    local btnH = 28
+    local btnW = math.max(80, headerActionBtnWidth(specLbl))
     local canSpec = online == true
     if not canSpec then
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, 0.42)
     end
-    imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
-    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.45, 0.22, 0.72, 1.0))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
-    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(12, 5))
+    if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
     if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
     local clicked = false
     if canSpec then
@@ -598,8 +665,7 @@ function drawChatHeaderSpectateBtn(pid, online)
     if canSpec and clicked then
         sendGameCmd('sp ' .. pid)
     end
-    imgui.PopStyleVar(2)
-    imgui.PopStyleColor(4)
+    if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
     if not canSpec then
         imgui.PopStyleVar()
     end
@@ -607,47 +673,67 @@ end
 
 -- Draw Chat Header
 function drawChatHeader(t)
-    local liveId = findPlayerIdByNick(t.nick)
-    if liveId ~= nil and t.id ~= liveId then
-        t.lastId = t.id
-        t.id = liveId
-    end
+    local pid, online = chatHeaderResolvePlayer(t)
+    local nickCol = chatHeaderNickColor(pid, online, t.nick)
 
-    local online = liveId ~= nil
-    local pid = tonumber(liveId or t.id) or -1
-    local nickCol = chatHeaderNickColor(pid, online)
-
-    local padL = 12
     local padR = 12
+    local textX = 22
     local lineH = imgui.GetTextLineHeight()
-    local specBtnH = 30
+    local specBtnH = 28
     local specLbl = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC'
-    local specBtnW = pid >= 0 and math.max(88, headerActionBtnWidth(specLbl) + 4) or 0
+    local specBtnW = pid >= 0 and math.max(80, headerActionBtnWidth(specLbl)) or 0
 
     imgui.PushStyleColor(imgui.Col.ChildBg, col_header)
     imgui.BeginChild('##chat_hdr', imgui.ImVec2(-1, CHAT_HEADER_H), false)
 
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local crMin = imgui.GetWindowContentRegionMin()
+        local crMax = imgui.GetWindowContentRegionMax()
+        local wp = imgui.GetWindowPos()
+        local x0 = wp.x + crMin.x
+        local y0 = wp.y + crMin.y
+        local y1 = wp.y + crMax.y
+        local stripeCol = online and nickCol or imgui.ImVec4(0.62, 0.34, 0.34, 0.85)
+        dl:AddRectFilled(
+            imgui.ImVec2(x0 + 8, y0 + 10),
+            imgui.ImVec2(x0 + 8 + 3, y1 - 10),
+            toU32(stripeCol),
+            2)
+    end
+
     local rowY = math.floor((CHAT_HEADER_H - lineH) * 0.5 + 0.5)
     local btnY = math.floor((CHAT_HEADER_H - specBtnH) * 0.5 + 0.5)
-    imgui.SetCursorPos(imgui.ImVec2(padL, rowY))
+    imgui.SetCursorPos(imgui.ImVec2(textX, rowY))
     imgui.TextColored(nickCol, uiText(t.nick or '?'))
-    imgui.SameLine(0, 8)
+    imgui.SameLine(0, 6)
     imgui.TextColored(col_muted2, uiText('[' .. tostring(pid >= 0 and pid or '?') .. ']'))
 
     local reportChannel = resolveThreadReportChannel(t)
     if reportChannel then
-        imgui.SameLine(0, 10)
+        imgui.SameLine(0, 0)
         drawReportChannelChip(reportChannel, online)
     end
     if not online then
         imgui.SameLine(0, 8)
-        imgui.TextColored(col_muted2, uiText('\xED\xE5 \xE2 \xF1\xE5\xF2\xE8'))
+        imgui.TextColored(imgui.ImVec4(0.72, 0.42, 0.42, 0.82), uiText('\xED\xE5 \xE2 \xF1\xE5\xF2\xE8'))
     end
 
     if specBtnW > 0 then
         local rmax = imgui.GetWindowContentRegionMax()
         imgui.SetCursorPos(imgui.ImVec2(rmax.x - padR - specBtnW, btnY))
         drawChatHeaderSpectateBtn(pid, online)
+    end
+
+    if dl and dl.AddLine and type(toU32) == 'function' then
+        local crMin = imgui.GetWindowContentRegionMin()
+        local crMax = imgui.GetWindowContentRegionMax()
+        local wp = imgui.GetWindowPos()
+        local x0 = wp.x + crMin.x + 12
+        local x1 = wp.x + crMax.x - 12
+        local y = wp.y + crMax.y - 0.5
+        local sepCol = col_header_sep or imgui.ImVec4(0.36, 0.36, 0.42, 0.50)
+        dl:AddLine(imgui.ImVec2(x0, y), imgui.ImVec2(x1, y), toU32(sepCol), 1.0)
     end
 
     imgui.EndChild()
@@ -712,14 +798,20 @@ function deskComposerQuickRowCount(availW, items)
 end
 
 -- Desk hook/helper.
+function deskComposerInputHeight()
+    local lh = (imgui.GetTextLineHeight and imgui.GetTextLineHeight()) or 16
+    return math.ceil(lh + 14 + 2)
+end
+
+-- Desk hook/helper.
 function deskComposerHeight(availW, items)
     local pad = 20
-    local h = pad + COMPOSER_INPUT_H + COMPOSER_ROW_GAP
+    local h = pad + deskComposerInputHeight()
     local rows = deskComposerQuickRowCount(availW, items)
     if rows > 0 then
-        h = h + rows * COMPOSER_QUICK_H + math.max(0, rows - 1) * COMPOSER_QUICK_GAP
+        h = h + COMPOSER_ROW_GAP + rows * COMPOSER_QUICK_H + math.max(0, rows - 1) * COMPOSER_QUICK_GAP
     end
-    return math.max(86, h)
+    return h + 4
 end
 
 -- Composer Quick Btn Width
@@ -728,28 +820,6 @@ function composerQuickBtnWidth(label)
     if w < 52 then w = 52 end
     if w > 120 then w = 120 end
     return w
-end
-
--- Push Composer Quick Btn Style
-function pushComposerQuickBtnStyle(enabled)
-    if enabled then
-        imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.45, 0.22, 0.72, 1.0))
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    else
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.16, 0.16, 0.18, 1.0))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-        imgui.PushStyleColor(imgui.Col.Text, col_muted2)
-    end
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
-end
-
--- Pop Composer Quick Btn Style
-function popComposerQuickBtnStyle()
-    imgui.PopStyleVar()
-    imgui.PopStyleColor(4)
 end
 
 -- Draw Composer Quick Row
@@ -773,11 +843,15 @@ function drawComposerQuickRow(items, canSend, availW)
             end
         end
         local label = uiText(item.label or '?')
-        pushComposerQuickBtnStyle(canSend)
+        if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
+        if not canSend and imgui.PushStyleVarFloat then
+            imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, 0.42)
+        end
         if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
         local clicked = imgui.Button(label .. '##' .. (item.id or i), imgui.ImVec2(bw, COMPOSER_QUICK_H))
         if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
-        popComposerQuickBtnStyle()
+        if not canSend and imgui.PopStyleVar then imgui.PopStyleVar() end
+        if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
         if item.tip and imgui.IsItemHovered() then
             local tip = type(item.tip) == 'function' and item.tip() or item.tip
             if tip and tip ~= '' then imgui.SetTooltip(uiText(tip)) end
@@ -817,15 +891,15 @@ function drawComposer(composerH, quickItems)
     end
 
     local gap = 8
-    local sendSz = COMPOSER_SEND_SZ
     local availW = imgui.GetContentRegionAvail().x
-    local inputW = math.max(80, availW - sendSz - gap)
+    local sendLbl = uiText('\xCE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC')
+    local sendW = math.max(COMPOSER_SEND_MIN_W or 78, math.floor(imgui.CalcTextSize(sendLbl).x + 24))
+    local inputW = math.max(80, availW - sendW - gap)
     local hint = uiText('\xCE\xF2\xE2\xE5\xF2 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2...')
 
     imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 7))
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
-    imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.20, 0.28, 0.45))
+    deskPushFlatInputStyle()
 
     imgui.PushItemWidth(inputW)
     local sent
@@ -843,13 +917,12 @@ function drawComposer(composerH, quickItems)
     if imgui.IsItemActive then replyActive = imgui.IsItemActive() end
     if not replyActive and imgui.IsItemFocused then replyActive = imgui.IsItemFocused() end
     deskInputState.replyInputActive = replyActive
+    local inputH = (imgui.GetFrameHeight and imgui.GetFrameHeight()) or deskComposerInputHeight()
     imgui.PopItemWidth()
-    imgui.PopStyleColor(2)
+    deskPopFlatInputStyle()
+    imgui.PopStyleVar(2)
 
     imgui.SameLine(0, gap)
-    local rowY = imgui.GetCursorPosY()
-    imgui.SetCursorPosY(rowY + math.max(0, (COMPOSER_INPUT_H - sendSz) * 0.5))
-
     if canSend then
         imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
         imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
@@ -862,17 +935,12 @@ function drawComposer(composerH, quickItems)
         imgui.PushStyleColor(imgui.Col.Text, col_muted2)
     end
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
-
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 5))
     if imgui.PushAllowKeyboardFocus then imgui.PushAllowKeyboardFocus(false) end
-    local sendClicked = imgui.Button('>##desk_send', imgui.ImVec2(sendSz, sendSz))
+    local sendClicked = imgui.Button(sendLbl .. '##desk_send', imgui.ImVec2(sendW, inputH))
     if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
-
-    imgui.PopStyleVar()
+    imgui.PopStyleVar(2)
     imgui.PopStyleColor(4)
-
-    if imgui.IsItemHovered() and canSend then
-        imgui.SetTooltip(uiText('\xCE\xF2\xEF\xF0\xE0\xE2\xE8\xF2\xFC (Enter)'))
-    end
 
     if canSend and (sendClicked or sent) then
         if sendReplyToSelected() then
@@ -888,7 +956,6 @@ function drawComposer(composerH, quickItems)
 
     drawComposerQuickRow(quickItems, canSend, availW)
 
-    imgui.PopStyleVar(2)
     imgui.PopStyleVar(2)
     imgui.EndChild()
     imgui.PopStyleColor()
@@ -950,7 +1017,7 @@ function drawThreadRow(t, key, sel)
     local previewMaxW = rightEdge - textX - badgeReserve - 6
     if previewMaxW < 50 then previewMaxW = 50 end
 
-    local liveId = playerNickToId[nickKey(t.nick)]
+    local liveId = findPlayerIdByNick(t.nick)
 
     local nameCol = sel and col_accent or (unread > 0 and imgui.ImVec4(0.95, 0.90, 1.0, 1.0) or col_label)
     local nameRaw = t.nick or ''
@@ -1316,9 +1383,8 @@ function drawChatPanel()
             deskCache.scenarioBtnSig = scenarioSig
         end
         local scenarioBtnIdx = deskCache.scenarioBtnIdx
-        local threadPid = tonumber(t.id) or -1
-        local threadOnline = t.online ~= false
-        local threadNickCol = chatHeaderNickColor(threadPid, threadOnline)
+        local threadPid, threadOnline = chatHeaderResolvePlayer(t)
+        local threadNickCol = chatHeaderNickColor(threadPid, threadOnline, t.nick)
         imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
         for i = renderFrom, #msgs do
             local m = msgs[i]
@@ -1538,12 +1604,6 @@ function drawSettingsTab()
     deskFormPanelBegin('##set_main')
     drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5', '')
     drawSettingsHotkeyBind()
-
-    uiAdminLevel[0] = getLocalAdminLevel()
-    drawSettingsSliderInt('\xD3\xF0\xEE\xE2\xE5\xED\xFC \xE0\xE4\xEC\xE8\xED\xE0', uiAdminLevel, 'adm_lvl', 1, 4, function(v)
-        settings.admin_level = v
-        markDirtySettings()
-    end)
     deskFormPanelEnd()
 
     deskFormPanelBegin('##set_chat')
@@ -1711,9 +1771,66 @@ function toggleWindow()
     end
     deskInputState.chatFollowBottom = true
     refreshMyNick()
+    if type(deskRefreshLocalAdminLevel) == 'function' then
+        pcall(deskRefreshLocalAdminLevel)
+    end
     deskInputState.wasOpen = true
     deskApplyInputPolicy()
     updateDeskInputCapture()
+end
+
+-- Apply Main Window Layout (fullscreen only on explicit toggle via F11)
+local function deskMainTabBarFlags()
+    if imgui.TabBarFlags and imgui.TabBarFlags.NoTooltip then
+        return imgui.TabBarFlags.NoTooltip
+    end
+    return 32
+end
+
+local function deskApplyMainWindowLayout(sw, sh)
+    sw = tonumber(sw) or 1920
+    sh = tonumber(sh) or 1080
+    if type(deskCache) ~= 'table' then
+        imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
+        imgui.SetNextWindowSize(imgui.ImVec2(WIN_W, WIN_H), imgui.Cond.Appearing)
+        return
+    end
+    if deskCache.deskWinNeedLayout then
+        if deskCache.deskWinFullscreen then
+            imgui.SetNextWindowPos(imgui.ImVec2(0, 0), imgui.Cond.Always)
+            imgui.SetNextWindowSize(imgui.ImVec2(sw, sh), imgui.Cond.Always)
+        elseif type(deskCache.deskWinRestore) == 'table' then
+            local r = deskCache.deskWinRestore
+            if r.w and r.h and r.w > 80 and r.h > 80 then
+                imgui.SetNextWindowPos(imgui.ImVec2(r.x or 0, r.y or 0), imgui.Cond.Always)
+                imgui.SetNextWindowSize(imgui.ImVec2(r.w, r.h), imgui.Cond.Always)
+            else
+                imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
+                imgui.SetNextWindowSize(imgui.ImVec2(WIN_W, WIN_H), imgui.Cond.Appearing)
+            end
+        end
+        deskCache.deskWinNeedLayout = false
+        return
+    end
+    if not deskCache.deskWinFullscreen then
+        imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
+        imgui.SetNextWindowSize(imgui.ImVec2(WIN_W, WIN_H), imgui.Cond.Appearing)
+    end
+end
+
+function deskToggleWindowFullscreen()
+    if type(deskCache) ~= 'table' or not showWindow[0] then return end
+    if deskCache.deskWinFullscreen then
+        deskCache.deskWinFullscreen = false
+        deskCache.deskWinNeedLayout = true
+        return
+    end
+    local r = deskCache.deskWinLastNormal
+    if type(r) == 'table' and r.w and r.h and r.w > 80 and r.h > 80 then
+        deskCache.deskWinRestore = { x = r.x, y = r.y, w = r.w, h = r.h }
+    end
+    deskCache.deskWinFullscreen = true
+    deskCache.deskWinNeedLayout = true
 end
 
 -- Draw Main Window
@@ -1728,12 +1845,15 @@ function drawMainWindow()
     local sw, sh = io.DisplaySize.x, io.DisplaySize.y
     if sw < 100 then sw = 1920 end
     if sh < 100 then sh = 1080 end
-    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
-    imgui.SetNextWindowSize(imgui.ImVec2(WIN_W, WIN_H), imgui.Cond.Appearing)
+    deskApplyMainWindowLayout(sw, sh)
     imgui.SetNextWindowBgAlpha(0.97)
 
-    if not imgui.Begin(uiText('Report Desk') .. '###ReportDesk', showWindow, imgui.WindowFlags.NoCollapse
-            + (imgui.WindowFlags.NoNav or 0)) then
+    local winFlags = imgui.WindowFlags.NoCollapse + (imgui.WindowFlags.NoNav or 0)
+    if type(deskCache) == 'table' and deskCache.deskWinFullscreen and imgui.WindowFlags.NoResize then
+        winFlags = winFlags + imgui.WindowFlags.NoResize
+    end
+
+    if not imgui.Begin(uiText('Report Desk') .. '###ReportDesk', showWindow, winFlags) then
         if not showWindow[0] then
             closeDeskWindow()
         end
@@ -1744,10 +1864,29 @@ function drawMainWindow()
         return
     end
 
+    if type(deskCache) == 'table' and not deskCache.deskWinFullscreen then
+        local okPos, wp = pcall(imgui.GetWindowPos)
+        local okSz, ws = pcall(imgui.GetWindowSize)
+        if okPos and okSz and wp and ws and ws.x and ws.y and ws.x > 80 and ws.y > 80 then
+            deskCache.deskWinLastNormal = { x = wp.x, y = wp.y, w = ws.x, h = ws.y }
+        end
+    end
+
     if filterMode[0] > 1 then filterMode[0] = 0 end
 
+    local footH = type(deskAdminFooterHeight) == 'function' and deskAdminFooterHeight() or 0
+    local bodyFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.NoScrollbar then
+        bodyFlags = imgui.WindowFlags.NoScrollbar
+    end
+    if footH > 0 then
+        local bodyH = imgui.GetContentRegionAvail().y - footH
+        if bodyH < 80 then bodyH = imgui.GetContentRegionAvail().y end
+        imgui.BeginChild('##desk_body', imgui.ImVec2(-1, bodyH), false, bodyFlags)
+    end
+
     local chatTabActive = false
-    if imgui.BeginTabBar('##tabs') then
+    if imgui.BeginTabBar('##tabs', deskMainTabBarFlags()) then
         if imgui.BeginTabItem(uiText('\xD0\xE5\xEF\xEE\xF0\xF2\xFB') .. '##tab_chat') then
             chatTabActive = true
             drawThreadList()
@@ -1871,6 +2010,11 @@ function drawMainWindow()
         imgui.EndTabBar()
     end
 
+    if footH > 0 then
+        imgui.EndChild()
+        drawDeskAdminRoleBadgeFooter(footH)
+    end
+
     deskInputState.chatTabActive = chatTabActive and true or false
     if not chatTabActive then
         deskInputState.replyInputActive = false
@@ -1884,18 +2028,25 @@ function drawMainWindow()
     updateDeskInputCapture()
 end
 
-imgui.OnInitialize(function()
-    local io = imgui.GetIO()
-    io.IniFilename = nil
-    if imgui.ConfigFlags and imgui.ConfigFlags.NoMouseCursorChange then
-        io.ConfigFlags = bit.bor(io.ConfigFlags, imgui.ConfigFlags.NoMouseCursorChange)
+function installDeskD3DHandlers()
+    if type(deskCache) ~= 'table' or deskCache.d3dHandlersInstalled then return end
+    uninstallDeskD3DHandlers()
+    deskCache.d3dLostHandler = function()
+        if not catWarmup.inited then return end
+        pcall(deskTexPipeline.halt, deskTex)
+        catWarmup.inited = false
     end
-    if not styleApplied then
-        pcall(applyModernDarkStyle)
-        styleApplied = true
+    deskCache.d3dResetHandler = function()
+        pcall(ensureDeskCatalogWarmup)
+        if skinUiTabActive then pcall(skinsOnTabEnter) end
+        if deskVeh and deskVeh.tabActive then pcall(deskVeh.onTabEnter) end
     end
-    pcall(ensureDeskCatalogWarmup)
-end)
+    if addEventHandler then
+        addEventHandler('onD3DDeviceLost', deskCache.d3dLostHandler)
+        addEventHandler('onD3DDeviceReset', deskCache.d3dResetHandler)
+    end
+    deskCache.d3dHandlersInstalled = true
+end
 
 function uninstallDeskD3DHandlers()
     if type(deskCache) ~= 'table' then return end
@@ -1907,100 +2058,33 @@ function uninstallDeskD3DHandlers()
     end
     deskCache.d3dLostHandler = nil
     deskCache.d3dResetHandler = nil
+    deskCache.d3dHandlersInstalled = false
 end
 
-deskCache.d3dLostHandler = function()
-    if not catWarmup.inited then return end
-    pcall(deskTexPipeline.halt, deskTex)
-    catWarmup.inited = false
-end
-addEventHandler('onD3DDeviceLost', deskCache.d3dLostHandler)
+function installDeskUiFrames()
+    if type(deskCache) ~= 'table' or deskCache.deskUiFramesInstalled then return end
+    if type(imgui) ~= 'table' or type(imgui.OnFrame) ~= 'function' then return end
 
-deskCache.d3dResetHandler = function()
-    pcall(ensureDeskCatalogWarmup)
-    if skinUiTabActive then pcall(skinsOnTabEnter) end
-    if deskVeh and deskVeh.tabActive then pcall(deskVeh.onTabEnter) end
-end
-addEventHandler('onD3DDeviceReset', deskCache.d3dResetHandler)
-
--- Desk hook/helper.
-function deskPassesGameKey(wparam)
-    if deskCache.gamePassVks[wparam] then return true end
-    local hk = (type(settings) == 'table' and settings.hotkey) or (vkeys and vkeys.VK_F7) or 0x76
-    if wparam == hk then return true end
-    if vkeys then
-        if wparam == vkeys.VK_CONTROL or wparam == vkeys.VK_SHIFT
-            or wparam == vkeys.VK_MENU or wparam == vkeys.VK_LWIN
-            or wparam == vkeys.VK_RWIN then
-            return true
-        end
-    end
-    return false
-end
-
-_G.deskPassesGameKey = deskPassesGameKey
-
-
--- Draw Desk Sp Spectate Overlay
-function drawDeskSpSpectateOverlay()
-    if type(settings) ~= 'table' then return end
-    if type(deskSpectateStats) ~= 'table' then return end
-    if deskSpectateStats.shouldShowHud then
-        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
-        if okShow and show then
-            pcall(deskSpectateStats.drawOverlay, settings)
-        end
-    end
-    if deskSpectateStats.drawSpMenu then
-        pcall(deskSpectateStats.drawSpMenu, settings)
-    end
-end
-
--- Desk hook/helper.
-function deskCheckerHudVisible()
-    return type(checkerHudVisible) == 'function' and checkerHudVisible() == true
-end
-
--- Desk hook/helper.
-function deskSpSpectateOverlayVisible()
-    if not sessionLive then return false end
-    if type(settings) ~= 'table' then return false end
-    if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
-    local tid = -1
-    if deskSpectateStats.getTargetId then
-        local ok, v = pcall(deskSpectateStats.getTargetId)
-        if ok then tid = tonumber(v) or -1 end
-    end
-    if tid >= 0 then return true end
-    if type(deskSpectateStats) == 'table' and deskSpectateStats.shouldShowHud then
-        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
-        if okShow and show then return true end
-    end
-    return false
-end
-
-function uninstallDeskUiFrames()
-    if type(deskCache) ~= 'table' then return end
-    local frames = deskCache.deskUiFrames
-    if type(frames) == 'table' then
-        for i = 1, #frames do
-            local f = frames[i]
-            if f and type(f.Unsubscribe) == 'function' then
-                pcall(function() f:Unsubscribe() end)
+    if rawget(_G, '__desk_imgui_init_hooked') ~= true and imgui.OnInitialize then
+        rawset(_G, '__desk_imgui_init_hooked', true)
+        imgui.OnInitialize(function()
+            local io = imgui.GetIO()
+            io.IniFilename = nil
+            if imgui.ConfigFlags and imgui.ConfigFlags.NoMouseCursorChange then
+                io.ConfigFlags = bit.bor(io.ConfigFlags, imgui.ConfigFlags.NoMouseCursorChange)
             end
-        end
+            if not styleApplied then
+                pcall(applyModernDarkStyle)
+                styleApplied = true
+            end
+            pcall(ensureDeskCatalogWarmup)
+        end)
     end
-    deskCache.deskUiFrames = nil
-    deskCache.deskWindowFrame = nil
-    deskCache.catalogFlushFrame = nil
-end
+    pcall(installDeskD3DHandlers)
 
-do
     local function trackDeskUiFrame(frame)
-        if type(deskCache) == 'table' then
-            if type(deskCache.deskUiFrames) ~= 'table' then deskCache.deskUiFrames = {} end
-            deskCache.deskUiFrames[#deskCache.deskUiFrames + 1] = frame
-        end
+        if type(deskCache.deskUiFrames) ~= 'table' then deskCache.deskUiFrames = {} end
+        deskCache.deskUiFrames[#deskCache.deskUiFrames + 1] = frame
         return frame
     end
 
@@ -2185,7 +2269,84 @@ do
             pcall(updateMimguiGameInputPassthrough)
         end
     ), true, false)
+
+    deskCache.deskUiFramesInstalled = true
 end
+
+pcall(installDeskUiFrames)
+
+-- Draw Desk Sp Spectate Overlay
+function drawDeskSpSpectateOverlay()
+    if type(settings) ~= 'table' then return end
+    if type(deskSpectateStats) ~= 'table' then return end
+    if deskSpectateStats.shouldShowHud then
+        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
+        if okShow and show then
+            pcall(deskSpectateStats.drawOverlay, settings)
+        end
+    end
+    if deskSpectateStats.drawSpMenu then
+        pcall(deskSpectateStats.drawSpMenu, settings)
+    end
+end
+
+-- Desk hook/helper.
+function deskCheckerHudVisible()
+    return type(checkerHudVisible) == 'function' and checkerHudVisible() == true
+end
+
+-- Desk hook/helper.
+function deskSpSpectateOverlayVisible()
+    if not sessionLive then return false end
+    if type(settings) ~= 'table' then return false end
+    if type(deskSampInGame) == 'function' and not deskSampInGame() then return false end
+    local tid = -1
+    if deskSpectateStats.getTargetId then
+        local ok, v = pcall(deskSpectateStats.getTargetId)
+        if ok then tid = tonumber(v) or -1 end
+    end
+    if tid >= 0 then return true end
+    if type(deskSpectateStats) == 'table' and deskSpectateStats.shouldShowHud then
+        local okShow, show = pcall(deskSpectateStats.shouldShowHud, settings)
+        if okShow and show then return true end
+    end
+    return false
+end
+
+function uninstallDeskUiFrames()
+    if type(deskCache) ~= 'table' then return end
+    local frames = deskCache.deskUiFrames
+    if type(frames) == 'table' then
+        for i = 1, #frames do
+            local f = frames[i]
+            if f and type(f.Unsubscribe) == 'function' then
+                pcall(function() f:Unsubscribe() end)
+            end
+        end
+    end
+    deskCache.deskUiFrames = nil
+    deskCache.deskWindowFrame = nil
+    deskCache.catalogFlushFrame = nil
+    deskCache.deskUiFramesInstalled = false
+end
+
+-- Desk hook/helper.
+function deskPassesGameKey(wparam)
+    if deskCache.gamePassVks[wparam] then return true end
+    local hk = (type(settings) == 'table' and settings.hotkey) or (vkeys and vkeys.VK_F7) or 0x76
+    if wparam == hk then return true end
+    if showWindow[0] and vkeys and wparam == vkeys.VK_F11 then return true end
+    if vkeys then
+        if wparam == vkeys.VK_CONTROL or wparam == vkeys.VK_SHIFT
+            or wparam == vkeys.VK_MENU or wparam == vkeys.VK_LWIN
+            or wparam == vkeys.VK_RWIN then
+            return true
+        end
+    end
+    return false
+end
+
+_G.deskPassesGameKey = deskPassesGameKey
 
 -- Apply Cheat Key Capture
 function applyCheatKeyCapture(msg, wparam, lparam)
@@ -2385,6 +2546,21 @@ local function installDeskWmHandlers()
         end
 
         if not showWindow[0] then return end
+
+        if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN then
+            if wparam == vkeys.VK_F11 then
+                if not deskCache.deskFsKeyPrev then
+                    deskCache.deskFsKeyPrev = true
+                    pcall(deskToggleWindowFullscreen)
+                end
+                consumeWindowMessage(true, false, true)
+                return true
+            end
+        elseif msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
+            if wparam == vkeys.VK_F11 then
+                deskCache.deskFsKeyPrev = false
+            end
+        end
 
         if msg == deskCache.wm.KEYDOWN or msg == deskCache.wm.SYSKEYDOWN or msg == deskCache.wm.KEYUP or msg == deskCache.wm.SYSKEYUP then
             if wparam == vkeys.VK_ESCAPE then

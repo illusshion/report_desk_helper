@@ -116,7 +116,7 @@ function releaseDeskInputCapture(force)
     if imgui.CaptureMouseFromApp then imgui.CaptureMouseFromApp(false) end
 end
 
--- Clear Desk Imgui Input State
+-- Очистка Desk Imgui Input State
 function clearDeskImguiInputState(force)
     if showWindow[0] and not force then return end
     pcall(function()
@@ -461,7 +461,6 @@ function ensureDeskNotBlockingGame()
     deskApplyInputPolicy()
 end
 
--- Desk hook/helper.
 function deskApplyInputPolicy()
     local panelOpen = showWindow[0] and true or false
     local wasOpen = deskInputState.panelOpenPrev and true or false
@@ -693,6 +692,11 @@ function deskSampChatGuardFrame()
     end
 end
 
+function deskInputPolicyApply()
+    deskApplyInputPolicy()
+    deskSampChatGuardFrame()
+end
+
 -- Запасной слой: consumeWindowMessage для лаунчеров, которые обходят sampSetChatInputEnabled.
 function deskShouldBlockSampChatKey(msg, wparam)
     if not deskDeskOrAnsUiOpen() then return false end
@@ -865,6 +869,11 @@ end
 function closeDeskWindow()
     local wasOpen = showWindow[0] or deskInputState.panelOpenPrev
     showWindow[0] = false
+    if type(deskCache) == 'table' then
+        deskCache.deskWinFullscreen = false
+        deskCache.deskWinNeedLayout = false
+        deskCache.deskFsKeyPrev = false
+    end
     if not wasOpen then return end
     if type(syncCmdBindEditorIfDirty) == 'function' then
         pcall(syncCmdBindEditorIfDirty)
@@ -930,10 +939,258 @@ function sendGameCmd(cmd)
     dispatchGameCmdOutbound(cmd)
 end
 
--- Get Local Admin Level
+-- Цвет серверного сообщения «Вы вошли как администратор …» (как AdminTools / checker SAMP_COLOR_AUTO_PROMOTE).
+local DESK_SAMP_COLOR_ADMIN_LOGIN = -65281
+
+local function deskNormalizeAdminLevelForDesk(level)
+    level = math.floor(tonumber(level) or 0)
+    if level <= 0 then return nil end
+    if type(checkerIsChiefLevel) == 'function' and checkerIsChiefLevel(level) then
+        return 4
+    end
+    if type(checkerIsSpecialLevel) == 'function' and checkerIsSpecialLevel(level) then
+        local sn = type(checkerSpecialLevelNum) == 'function' and checkerSpecialLevelNum(level) or 0
+        if sn >= 2 then return 4 end
+        if sn == 1 then return 3 end
+        return 4
+    end
+    if level >= 5 then return 4 end
+    if level >= 1 and level <= 4 then return level end
+    return nil
+end
+
+-- Парсер login-сообщения (CP1251), как AdminTools sampOnServerMessage.
+local function deskParseLoginAdminLevel(text)
+    text = tostring(text or '')
+    if text == '' then return nil end
+    if not text:find('\xC2\xFB \xE2\xEE\xF8\xEB\xE8 \xEA\xE0\xEA', 1, true) then return nil end
+    if text:find('\xEF\xE5\xF0\xE2\xEE\xE3\xEE', 1, true) then return 1 end
+    if text:find('\xE2\xF2\xEE\xF0\xEE\xE3\xEE', 1, true) then return 2 end
+    if text:find('\xF2\xF0\xE5\xF2\xFC\xE5\xE3\xEE', 1, true) then return 3 end
+    if text:find('\xF7\xE5\xF2\xE2\xB8\xF0\xF2\xEE\xE3\xEE', 1, true) then return 4 end
+    if text:find('\xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 \xF3\xF0\xEE\xE2\xED\xFF S2', 1, true) then return 4 end
+    if text:find('\xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 \xF3\xF0\xEE\xE2\xED\xFF S3', 1, true) then return 4 end
+    if text:find('\xE3\xEB\xE0\xE2\xED\xFB\xE9', 1, true) then return 4 end
+    return nil
+end
+
+local function deskGetLocalPlayerNick()
+    local nick = type(myPlayerNick) == 'string' and trim(myPlayerNick) or ''
+    if nick ~= '' then return nick end
+    if not isSampAvailable or not isSampAvailable() then return '' end
+    if type(sampGetPlayerIdByCharHandle) ~= 'function' or type(sampGetPlayerNickname) ~= 'function' then return '' end
+    local ok, myId = sampGetPlayerIdByCharHandle(PLAYER_PED)
+    if not ok or not myId then return '' end
+    return trim(sampGetPlayerNickname(myId) or '')
+end
+
+function deskApplyLocalAdminLevel(level, source)
+    level = deskNormalizeAdminLevelForDesk(level)
+    if not level or type(settings) ~= 'table' then return false end
+    local old = math.max(1, math.min(4, math.floor(tonumber(settings.admin_level) or 3)))
+    source = tostring(source or '')
+    local markDetected = false
+    if source == 'login' then
+        markDetected = true
+        if type(deskAdminLevelState) == 'table' then
+            deskAdminLevelState.fromLogin = true
+            deskAdminLevelState.loginLevel = level
+        end
+    elseif source == 'catalog' or source == 'online' or source == 'chat' then
+        markDetected = true
+    elseif type(deskAdminLevelState) == 'table' and deskAdminLevelState.fromLogin and level <= old then
+        return false
+    end
+    local changed = old ~= level
+    if changed then
+        settings.admin_level = level
+        if type(markDirtySettings) == 'function' then markDirtySettings() end
+    end
+    if markDetected then
+        if type(deskAdminLevelState) == 'table' then
+            deskAdminLevelState.detected = true
+        end
+        if settings.admin_level_detected ~= true then
+            settings.admin_level_detected = true
+            if type(markDirtySettings) == 'function' then markDirtySettings() end
+        end
+    end
+    return changed or markDetected
+end
+
+local function deskNormalizeServerMsgColor(color)
+    color = tonumber(color) or 0
+    if color < 0 and bit and bit.band then
+        color = bit.band(color, 0xFFFFFFFF)
+    end
+    return color
+end
+
+local function deskIsAdminLoginColor(color)
+    local c = deskNormalizeServerMsgColor(color)
+    local want = deskNormalizeServerMsgColor(DESK_SAMP_COLOR_ADMIN_LOGIN)
+    return c == want or c == 0xFFFF00FF
+end
+
+function deskOnLoginAdminLevelMessage(color, text)
+    local level = deskParseLoginAdminLevel(text)
+    if not level then return false end
+    if not deskIsAdminLoginColor(color)
+            and not tostring(text or ''):find('\xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0', 1, true) then
+        return false
+    end
+    return deskApplyLocalAdminLevel(level, 'login')
+end
+
+function deskTryUpdateLocalAdminLevelFromNick(nick, catalogLevel, source)
+    nick = trim(nick or '')
+    if nick == '' then return false end
+    local myNick = deskGetLocalPlayerNick()
+    if myNick == '' or nickKey(myNick) ~= nickKey(nick) then return false end
+    return deskApplyLocalAdminLevel(catalogLevel, source or 'catalog')
+end
+
+function deskSyncLocalAdminLevelFromCatalog()
+    if type(Catalog) ~= 'table' or type(Catalog.getAdmin) ~= 'function' then return false end
+    local myNick = deskGetLocalPlayerNick()
+    if myNick == '' then return false end
+    local admin = Catalog.getAdmin(myNick)
+    if not admin then return false end
+    local level = admin.level
+    if type(checkerEffectiveAdminLevel) == 'function' then
+        level = checkerEffectiveAdminLevel(myNick, level)
+    end
+    return deskTryUpdateLocalAdminLevelFromNick(myNick, level, 'catalog')
+end
+
+-- Local Admin Level
 function getLocalAdminLevel()
     local lv = tonumber(settings.admin_level) or 3
     return math.max(1, math.min(4, math.floor(lv)))
+end
+
+local DESK_ADMIN_ORDINAL = {
+    [1] = '\xEF\xE5\xF0\xE2\xEE\xE3\xEE',
+    [2] = '\xE2\xF2\xEE\xF0\xEE\xE3\xEE',
+    [3] = '\xF2\xF0\xE5\xF2\xFC\xE5\xE3\xEE',
+    [4] = '\xF7\xE5\xF2\xE2\xB8\xF0\xF2\xEE\xE3\xEE',
+    [5] = '\xEF\xFF\xF2\xEE\xE3\xEE',
+    [6] = '\xF8\xE5\xF1\xF2\xEE\xE3\xEE',
+    [7] = '\xF1\xE5\xE4\xFC\xEC\xEE\xE3\xEE',
+}
+
+local DESK_ADMIN_COLOR_FALLBACK = {
+    [1] = imgui.ImVec4(0.0, 0.75, 1.0, 1.0),
+    [2] = imgui.ImVec4(0.0, 0.75, 1.0, 1.0),
+    [3] = imgui.ImVec4(0.65, 0.23, 0.85, 1.0),
+    [4] = imgui.ImVec4(0.26, 0.43, 0.93, 1.0),
+    [5] = imgui.ImVec4(0.19, 0.97, 0.48, 1.0),
+    [6] = imgui.ImVec4(0.21, 0.73, 0.06, 1.0),
+    [7] = imgui.ImVec4(1.0, 0.08, 0.08, 1.0),
+}
+
+function deskLocalAdminLevelFromOnline()
+    local myNick = deskGetLocalPlayerNick()
+    if myNick == '' or type(checkerOnline) ~= 'table' then return nil end
+    local key = nickKey(myNick)
+    for _, e in ipairs(checkerOnline.admins or {}) do
+        if e and nickKey(e.nick or '') == key then
+            local level = math.floor(tonumber(e.level) or 0)
+            if level > 0 then return level end
+        end
+    end
+    return nil
+end
+
+function deskLocalAdminCatalogLevel()
+    local myNick = deskGetLocalPlayerNick()
+    if myNick ~= '' and type(Catalog) == 'table' and type(Catalog.getAdmin) == 'function' then
+        local admin = Catalog.getAdmin(myNick)
+        if admin then
+            local level = admin.level
+            if type(checkerEffectiveAdminLevel) == 'function' then
+                level = checkerEffectiveAdminLevel(myNick, level)
+            end
+            level = math.floor(tonumber(level) or 0)
+            if level > 0 then return level end
+        end
+    end
+    local onlineLv = deskLocalAdminLevelFromOnline()
+    if onlineLv and onlineLv > 0 then return onlineLv end
+    return getLocalAdminLevel()
+end
+
+function deskLocalAdminLevelKnown()
+    if type(settings) == 'table' and settings.admin_level_detected == true then return true end
+    if type(deskAdminLevelState) == 'table' then
+        if deskAdminLevelState.fromLogin or deskAdminLevelState.detected then return true end
+    end
+    local myNick = deskGetLocalPlayerNick()
+    if myNick == '' then return false end
+    if type(Catalog) == 'table' and type(Catalog.getAdmin) == 'function' and Catalog.getAdmin(myNick) then
+        return true
+    end
+    if deskLocalAdminLevelFromOnline() then return true end
+    return false
+end
+
+function deskRefreshLocalAdminLevel()
+    if type(deskAdminLevelState) == 'table' and deskAdminLevelState.loginLevel then
+        deskApplyLocalAdminLevel(deskAdminLevelState.loginLevel, 'login')
+        return true
+    end
+    if type(deskSyncLocalAdminLevelFromCatalog) == 'function' then
+        pcall(deskSyncLocalAdminLevelFromCatalog)
+    end
+    local onlineLv = deskLocalAdminLevelFromOnline()
+    if onlineLv then
+        deskApplyLocalAdminLevel(onlineLv, 'online')
+        return true
+    end
+    return type(settings) == 'table' and settings.admin_level_detected == true
+end
+
+function deskLocalAdminLevelColor()
+    local level = deskLocalAdminCatalogLevel()
+    if type(checkerAdminColor) == 'function' then
+        local col = checkerAdminColor(level)
+        if col then return col end
+    end
+    return DESK_ADMIN_COLOR_FALLBACK[level] or DESK_ADMIN_COLOR_FALLBACK[getLocalAdminLevel()] or col_muted
+end
+
+function deskLocalAdminDisplayName()
+    local nick = deskGetLocalPlayerNick()
+    if nick == '' then return '' end
+    return nick:gsub('_', ' ')
+end
+
+function deskLocalAdminRoleParts()
+    local level = deskLocalAdminCatalogLevel()
+    if level <= 0 then return nil end
+    local parts = {
+        name = deskLocalAdminDisplayName(),
+        tint = deskLocalAdminLevelColor(),
+        role = '\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0',
+    }
+    if type(checkerIsChiefLevel) == 'function' and checkerIsChiefLevel(level) then
+        if level == 202 then
+            parts.role = '\xC7\xE0\xEC. \xE3\xEB\xE0\xE2\xED\xEE\xE3\xEE \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xE0'
+        else
+            parts.role = '\xC3\xEB\xE0\xE2\xED\xFB\xE9 \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0'
+        end
+    end
+    return parts
+end
+
+function deskLocalAdminLevelTitle()
+    local parts = deskLocalAdminRoleParts()
+    if not parts then return nil end
+    local title = trim(parts.role or '')
+    if parts.name and parts.name ~= '' then
+        title = parts.name .. ' | ' .. title
+    end
+    return title ~= '' and title or nil
 end
 
 -- Thread Action Target Id

@@ -197,7 +197,7 @@ function checkerScheduleSpawnAdmsRetry()
     end
     if s.spawnAdmsRetries >= CHECKER_SPAWN_ADMS_MAX_RETRIES then
         if #checkerCatalog.admins == 0 then
-            print('[Report Desk] checker: /adms sync failed — catalog empty, use «Синхронизировать» in checker tab')
+            print('[Report Desk] checker: /adms sync failed — catalog empty, retrying automatically')
         else
             print('[Report Desk] checker: /adms sync failed after retries — using persisted catalog')
         end
@@ -263,7 +263,7 @@ function checkerIsAdmsChatMuted(now)
 end
 
 -- /admins в чат: только актуализировать уровень админа, который уже есть в каталоге.
--- NO-API: secondary chat echo; /adms dialog is primary catalog source.
+-- Запасной путь без API: secondary chat echo; /adms dialog is primary catalog source.
 function checkerRefreshAdminLevelFromChat(plain)
     if checkerState.admsDialogSyncedAt
         and checkerState.admsDialogSyncedAt > 0
@@ -289,11 +289,14 @@ function checkerRefreshAdminLevelFromChat(plain)
     checkerSortCatalogAdmins(checkerCatalog.admins)
     checkerMarkCatalogDirty()
     checkerScheduleRebuild()
+    if type(deskTryUpdateLocalAdminLevelFromNick) == 'function' then
+        SafeCall('deskTryUpdateLocalAdminLevelFromNick', deskTryUpdateLocalAdminLevelFromNick, nick, level, 'chat')
+    end
     return true
 end
 
 -- Checker (admin HUD/catalog).
--- NO-API: /adms and /leaders data only in dialog text.
+-- Запасной путь без API: /adms and /leaders data only in dialog text.
 function checkerOnShowDialog(dialogId, style, title, button1, button2, text)
     local titleMatch = checkerIsAdminsDialog(title)
     local isAdminsDlg = titleMatch
@@ -405,10 +408,12 @@ function checkerTrySendSyncChat(cmd, forSpawn)
 end
 
 -- Checker (admin HUD/catalog).
-function checkerRequestAdmsSync(forSpawn)
+function checkerRequestAdmsSync(forSpawn, forManual)
     if not checkerSampReady() then return false end
     if forSpawn then
         if checkerIsSpawnCatalogSyncBlocked() then return false end
+    elseif forManual then
+        if checkerIsManualSyncBlocked() then return false end
     elseif checkerIsSyncBlocked() then
         return false
     end
@@ -422,10 +427,26 @@ function checkerRequestAdmsSync(forSpawn)
 end
 
 -- Checker (admin HUD/catalog).
-function checkerRequestLeadersSync(forSpawn)
+function checkerIsManualSyncBlocked()
+    if checkerIsSuspended() then return true end
+    if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then return true end
+    return false
+end
+
+-- Leaders-only sync: не блокируем из-за открытого /adesk (нужен каталог на вкладке Чекер).
+function checkerIsLeadersOnlySyncBlocked()
+    if checkerIsSuspended() then return true end
+    if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then return true end
+    return false
+end
+
+-- Checker (admin HUD/catalog).
+function checkerRequestLeadersSync(forSpawn, forManual)
     if not checkerSampReady() then return false end
     if forSpawn then
         if checkerIsSpawnCatalogSyncBlocked() then return false end
+    elseif forManual or #(checkerCatalog.admins or {}) > 0 then
+        if checkerIsLeadersOnlySyncBlocked() then return false end
     elseif checkerIsSyncBlocked() then
         return false
     end
@@ -447,6 +468,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerDeferSyncAfterResume()
+    pcall(onlinePlayersRescan, true)
     checkerScheduleRebuild()
 end
 
@@ -501,21 +523,23 @@ function checkerStartSpawnCatalogSyncThread()
         checkerState.spawnCatalogSyncRunning = false
         checkerClearAdmsFlow()
         checkerClearSyncFlowFlags()
-        checkerState.spawnAdmsHandled = false
-        checkerState.spawnLeadersHandled = false
         local admsOk = admsHandled or #checkerCatalog.admins > 0
         local leadersOk = leadersHandled
         if admsOk and leadersOk then
+            checkerState.spawnAdmsHandled = true
+            checkerState.spawnLeadersHandled = true
             checkerState.spawnCatalogSyncDone = true
             ensureSyncSession().spawnAdmsRetries = 0
             checkerPersistSyncSession()
             checkerLog('spawn catalog sync: /adms + /leaders ok')
         elseif not admsOk then
+            checkerState.spawnAdmsHandled = false
+            checkerState.spawnLeadersHandled = false
             checkerScheduleSpawnAdmsRetry()
             checkerLog('spawn catalog sync: /adms pending retry')
         else
             checkerState.spawnAdmsHandled = true
-            checkerState.spawnCatalogSyncDone = true
+            checkerState.spawnLeadersHandled = false
             checkerState.spawnLeadersDueAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
             checkerLog('spawn catalog sync: /leaders pending retry')
         end
@@ -557,7 +581,7 @@ function checkerTrySpawnCatalogSync()
             checkerState.spawnCatalogSyncDone = true
             return
         end
-        if not checkerSampReady() or checkerIsSpawnCatalogSyncBlocked() then
+        if not checkerSampReady() or checkerIsLeadersOnlySyncBlocked() then
             checkerState.spawnCatalogSyncAt = os.clock() + CHECKER_SPAWN_SYNC_RETRY_SEC
             return
         end
@@ -577,7 +601,7 @@ function checkerTrySpawnCatalogSync()
     checkerState.spawnCatalogSyncAt = nil
     if #(checkerCatalog.admins or {}) > 0 then
         checkerState.spawnAdmsHandled = true
-        if checkerState.spawnLeadersHandled or #(checkerCatalog.leaders or {}) > 0 then
+        if checkerState.spawnLeadersHandled then
             checkerState.spawnCatalogSyncDone = true
             return
         end
@@ -596,9 +620,9 @@ function checkerManualSync()
         end
         return
     end
-    if checkerIsSyncBlocked() then
+    if checkerIsManualSyncBlocked() then
         if type(say) == 'function' then
-            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF6\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3 \xE8\xEB\xE8 /adesk')
+            say('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE0\xF8\xE8\xFF \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xED\xE0: \xE7\xE0\xEA\xF0\xEE\xE9\xF2\xE5 \xE4\xE8\xE0\xEB\xEE\xE3')
         end
         return
     end
@@ -608,16 +632,16 @@ function checkerManualSync()
         end
         return
     end
-    checkerRequestAdmsSync()
+    checkerRequestAdmsSync(false, true)
     if type(lua_thread) == 'table' and type(lua_thread.create) == 'function' then
         lua_thread.create(function()
             wait(2500)
-            if not checkerIsSyncBlocked() then
-                checkerRequestLeadersSync()
+            if not checkerIsManualSyncBlocked() then
+                checkerRequestLeadersSync(false, true)
             end
         end)
     else
-        checkerRequestLeadersSync()
+        checkerRequestLeadersSync(false, true)
     end
     if type(say) == 'function' then
         say('\xC7\xE0\xEF\xF0\xEE\xF8\xE5\xED /adms \xE8 /leaders.')
@@ -678,6 +702,7 @@ function checkerMarkCatalogDirty()
     Catalog.rebuildIndex()
     bumpCatalogRev()
     CheckerCatalogStore.markDirty()
+    checkerScheduleRebuild()
 end
 
 -- Checker (admin HUD/catalog).

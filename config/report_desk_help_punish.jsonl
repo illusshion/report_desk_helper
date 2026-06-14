@@ -98,3 +98,20 @@
 {"term":"50","src":"manual","pid":658,"dateKey":"2026-06-13","reason":"osk","cmd":"\/mute 658 50 osk","kind":"mute","reqAdmin":"","action":"Замутить","player":"jerry_mcshow","ts":1781380925}
 {"term":"-","src":"manual","pid":158,"dateKey":"2026-06-13","reason":"dm kpz next warn","cmd":"\/kick 158 dm kpz next warn","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Danil_Buldozer","ts":1781381737}
 {"term":"30","src":"manual","pid":402,"dateKey":"2026-06-13","reason":"offtop","cmd":"\/mute 402 30 offtop","kind":"mute","reqAdmin":"","action":"Замутить","player":"Florian_Schneider","ts":1781382167}
+{"term":"80","src":"manual","pid":53,"dateKey":"2026-06-14","reason":"dm","cmd":"\/jail 53 80 dm","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Bobby_Murzay","ts":1781390883}
+{"term":"30","src":"manual","pid":519,"dateKey":"2026-06-14","reason":"mat","cmd":"\/mute 519 30 mat","kind":"mute","reqAdmin":"","action":"Замутить","player":"Gustapo_Hosse","ts":1781390897}
+{"term":"-","src":"auto","reqAdminId":205,"pid":313,"dateKey":"2026-06-14","reason":"помеха","cmd":"\/kick 313 помеха \/ by Katana","kind":"kick","reqAdmin":"Veronika_Katana","action":"Кикнуть","player":"Julian_Rivera","ts":1781391017}
+{"term":"10","src":"a_request","pid":133,"dateKey":"2026-06-14","reason":"bot шахта","cmd":"\/a \/ban 133 10 bot шахта","kind":"ban","reqAdmin":"","action":"Забанить","player":"Saul_Decker","ts":1781393458}
+{"term":"-","src":"manual","pid":126,"dateKey":"2026-06-14","reason":"-","cmd":"\/unjail 126","kind":"jail","reqAdmin":"","action":"Выпустить из тюрьмы","player":"Santino_Rich","ts":1781393970}
+{"term":"30","src":"a_request","pid":210,"dateKey":"2026-06-14","reason":"osk rod voice","cmd":"\/a \/ban 210 30 osk rod voice","kind":"ban","reqAdmin":"","action":"Забанить","player":"Ilya_Boss","ts":1781394163}
+{"term":"30","src":"manual","pid":11,"dateKey":"2026-06-14","reason":"mat","cmd":"\/mute 11 30 mat","kind":"mute","reqAdmin":"","action":"Замутить","player":"Antonio_Castro","ts":1781394938}
+{"term":"30","src":"manual","pid":74,"dateKey":"2026-06-14","reason":"mat","cmd":"\/mute 74 30 mat","kind":"mute","reqAdmin":"","action":"Замутить","player":"Johny_However","ts":1781396687}
+{"term":"30","src":"a_request","pid":227,"dateKey":"2026-06-14","reason":"osk rod","cmd":"\/a \/ban 227 30 osk rod","kind":"ban","reqAdmin":"","action":"Забанить","player":"Fame_Provocateur","ts":1781396866}
+{"term":"300","src":"manual","pid":227,"dateKey":"2026-06-14","reason":"Плохой наставник","cmd":"\/jail 227 300 Плохой наставник","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Celestino_Adderio","ts":1781397298}
+{"term":"-","src":"manual","pid":126,"dateKey":"2026-06-14","reason":"-","cmd":"\/unjail 126","kind":"jail","reqAdmin":"","action":"Выпустить из тюрьмы","player":"Santino_Rich","ts":1781397306}
+{"term":"-","src":"manual","pid":126,"dateKey":"2026-06-14","reason":"-","cmd":"\/unjail 126","kind":"jail","reqAdmin":"","action":"Выпустить из тюрьмы","player":"Santino_Rich","ts":1781397325}
+{"term":"30","src":"manual","pid":248,"dateKey":"2026-06-14","reason":"mat \/re","cmd":"\/mute 248 30 mat \/re","kind":"mute","reqAdmin":"","action":"Замутить","player":"Walter_Samopal","ts":1781398687}
+{"term":"-","src":"manual","pid":177,"dateKey":"2026-06-14","reason":"db","cmd":"\/kick 177 db","kind":"kick","reqAdmin":"","action":"Кикнуть","player":"Cullen_Brown","ts":1781400607}
+{"term":"60","src":"manual","pid":248,"dateKey":"2026-06-14","reason":"dm","cmd":"\/jail 248 60 dm","kind":"jail","reqAdmin":"","action":"Посадить в тюрьму","player":"Walter_Samopal","ts":1781400680}
+{"term":"10","src":"a_request","pid":102,"dateKey":"2026-06-14","reason":"cheat","cmd":"\/a \/ban 102 10 cheat","kind":"ban","reqAdmin":"","action":"Забанить","player":"Mikasa_Ackerman_Outlaw","ts":1781400739}
+{"term":"20","src":"manual","pid":248,"dateKey":"2026-06-14","reason":"offtop","cmd":"\/mute 248 20 offtop","kind":"mute","reqAdmin":"","action":"Замутить","player":"Walter_Samopal","ts":1781400806}

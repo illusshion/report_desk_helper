@@ -14,7 +14,7 @@ function initDeskIngest()
     })
 end
 
--- Try Parse Report
+-- Parse Report
 function tryParseReport(text)
     return deskIngest.tryParseReport(text)
 end
@@ -48,7 +48,7 @@ function learnReportColor(color)
 end
 
 -- Парсинг данных с сервера/чата.
--- NO-API: inbound admin reply echo; outbound /ans tracked in handleOutgoingAnsCommand.
+-- Запасной путь без API: inbound admin reply echo; outbound /ans tracked in handleOutgoingAnsCommand.
 function parseAdminReply(text)
     if not text or text == '' then return nil end
     text = trim(stripChatTimestamp(stripTags(text)))
@@ -85,14 +85,14 @@ function looksLikeAdminReplyLine(text)
     return text:find('\xE4\xEB\xFF', 1, true) ~= nil
 end
 
--- Try Ingest Admin Reply Line
+-- Ingest Admin Reply Line
 function tryIngestAdminReplyLine(text)
     local adminNick, adminId, targetId, targetNick, body = parseAdminReply(text)
     if not adminNick or not targetId or not body then return false end
     return handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick)
 end
 
--- Handle Admin Reply From Chat
+-- Admin Reply From Chat
 function handleAdminReplyFromChat(adminNick, adminId, targetId, body, targetNick)
     body = normalizeOutboundBody(body)
     if body == '' then return false end
@@ -317,7 +317,7 @@ function triggerMatchesKeyword(kw, msg, msgAlt, mode, msgTypo)
     return false
 end
 
--- Get Sorted Rule Indices
+-- Sorted Rule Indices
 function getSortedRuleIndices()
     local rules = getActiveBuiltinAutoRules()
     local idx = {}

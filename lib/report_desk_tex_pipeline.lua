@@ -280,7 +280,7 @@ local function runIoJob(ns, st, job)
     return true
 end
 
--- Process Sync Io
+-- Sync Io
 local function processSyncIo(budget)
     budget = math.max(1, tonumber(budget) or 2)
     local n = 0

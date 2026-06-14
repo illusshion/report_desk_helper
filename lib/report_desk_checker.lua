@@ -1,5 +1,5 @@
 --[[ Модуль: checker HUD.
-     Каталог (кто админ + уровень): /adms при входе и кнопка «Синхронизировать».
+     Каталог (кто админ + уровень): /adms и /leaders при входе (авто-синх).
      HUD «кто в сети»: каталог × скан игроков в табе (checkerRebuildOnline).
      /admins в чат — только обновление уровня уже известных админов (повышение). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
@@ -244,7 +244,6 @@ do
     s.spawnCatalogSyncRunning = s.spawnCatalogSyncRunning == true
     s.spawnAdmsHandled = s.spawnAdmsHandled == true
     s.spawnLeadersHandled = s.spawnLeadersHandled == true
-    s.nickIndexNeedsFullScan = s.nickIndexNeedsFullScan == true
     s.healResetAt = tonumber(s.healResetAt) or 0
     s.wasSuspended = s.wasSuspended == true
     s.pendingAdminMode = s.pendingAdminMode or 'replace'
@@ -258,12 +257,6 @@ do
     s.lastOnlineCatalogRev = tonumber(s.lastOnlineCatalogRev) or -1
     s.lastOnlineRev = tonumber(s.lastOnlineRev) or -1
     s.catalogIndex = type(s.catalogIndex) == 'table' and s.catalogIndex or {}
-    if type(s.catalogIndex.admins) ~= 'table' then s.catalogIndex.admins = {} end
-    if type(s.catalogIndex.leaders) ~= 'table' then s.catalogIndex.leaders = {} end
-    if type(s.catalogIndex.friends) ~= 'table' then s.catalogIndex.friends = {} end
-    s.onlineNickIndex = type(s.onlineNickIndex) == 'table' and s.onlineNickIndex or { byNick = {}, byExact = {} }
-    if type(s.onlineNickIndex.byNick) ~= 'table' then s.onlineNickIndex.byNick = {} end
-    if type(s.onlineNickIndex.byExact) ~= 'table' then s.onlineNickIndex.byExact = {} end
     s.onlineIndex = type(s.onlineIndex) == 'table' and s.onlineIndex or {}
     if type(s.onlineIndex.adminsById) ~= 'table' then s.onlineIndex.adminsById = {} end
     if type(s.onlineIndex.leadersById) ~= 'table' then s.onlineIndex.leadersById = {} end
@@ -469,20 +462,10 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerSampColorToImVec4(color)
-    color = tonumber(color) or 0
-    if color < 0 then color = bit.band(color, 0xFFFFFFFF) end
-    if color == 0 then return nil end
-    local bb = bit.band(color, 0xFF)
-    local gg = bit.band(bit.rshift(color, 8), 0xFF)
-    local rr = bit.band(bit.rshift(color, 16), 0xFF)
-    local aa = bit.band(bit.rshift(color, 24), 0xFF)
-    if aa == 0 then aa = 255 end
-    if rr == 34 and gg == 34 and bb == 34 then
-        rr, gg, bb = 110, 110, 110
-    elseif rr == 0 and gg == 0 and bb == 255 then
-        rr, gg, bb = 30, 144, 255
+    if type(sampColorToImVec4) == 'function' then
+        return sampColorToImVec4(color)
     end
-    return imgui.ImVec4(rr / 255, gg / 255, bb / 255, aa / 255)
+    return nil
 end
 
 local checkerIsSpawned
@@ -685,115 +668,12 @@ function checkerMaxPlayerId()
     return maxId
 end
 
--- Checker (admin HUD/catalog).
-function checkerBuildNickIndex(forceRefresh)
-    if type(refreshPlayerNickCache) == 'function' then
-        SafeCall('refreshPlayerNickCache', refreshPlayerNickCache, forceRefresh == true)
-    end
-    local byNick, byExact = {}, {}
-    if type(playerNickToId) == 'table' then
-        for key, id in pairs(playerNickToId) do
-            if checkerPlayerConnectedSafe(id) then
-                byNick[key] = id
-            end
-        end
-    end
-    if checkerSampReady() then
-        local maxId = checkerMaxPlayerId()
-        for id = 0, maxId do
-            if checkerPlayerConnectedSafe(id) then
-                local nick = checkerSafeNick(id, '')
-                if nick ~= '' then
-                    byExact[nick] = id
-                    local key = nickKey(nick)
-                    if key ~= '' then byNick[key] = id end
-                end
-            end
-        end
-    end
-    checkerState.onlineNickIndex = { byNick = byNick, byExact = byExact }
-    return byNick, byExact
-end
-
--- Checker (admin HUD/catalog): убрать offline id из nick-index без full scan.
-function checkerPruneNickIndex()
-    local idx = checkerState.onlineNickIndex
-    if type(idx) ~= 'table' then return end
-    if type(idx.byNick) == 'table' then
-        for key, id in pairs(idx.byNick) do
-            if not checkerPlayerConnectedSafe(id) then idx.byNick[key] = nil end
-        end
-    end
-    if type(idx.byExact) == 'table' then
-        for nick, id in pairs(idx.byExact) do
-            if not checkerPlayerConnectedSafe(id) then idx.byExact[nick] = nil end
-        end
-    end
-end
-
--- Checker (admin HUD/catalog): full scan 0..maxId только при force / после spawn.
-function checkerEnsureNickIndex(forceFull)
-    if forceFull == true or checkerState.nickIndexNeedsFullScan == true then
-        checkerBuildNickIndex(true)
-        checkerState.nickIndexNeedsFullScan = false
-        return
-    end
-    local idx = checkerState.onlineNickIndex
-    if type(idx) ~= 'table' or type(idx.byNick) ~= 'table' then
-        checkerBuildNickIndex(true)
-        checkerState.nickIndexNeedsFullScan = false
-        return
-    end
-    checkerPruneNickIndex()
-end
-
--- Checker (admin HUD/catalog): точечное обновление nick-index при join.
-function checkerIndexOnePlayer(playerId, nickHint)
-    playerId = tonumber(playerId)
-    if not playerId or not checkerSampReady() or not checkerPlayerConnectedSafe(playerId) then
-        return false
-    end
-    local idx = checkerState.onlineNickIndex
-    if type(idx) ~= 'table' then
-        idx = { byNick = {}, byExact = {} }
-        checkerState.onlineNickIndex = idx
-    end
-    if type(idx.byNick) ~= 'table' then idx.byNick = {} end
-    if type(idx.byExact) ~= 'table' then idx.byExact = {} end
-    local nick = checkerNormalizeNick(nickHint) or checkerSafeNick(playerId, '')
-    if nick == '' then return false end
-    idx.byExact[nick] = playerId
-    local key = nickKey(nick)
-    if key ~= '' then idx.byNick[key] = playerId end
-    if type(playerNickToId) == 'table' and key ~= '' then
-        playerNickToId[key] = playerId
-    end
-    return true
-end
-
--- Checker (admin HUD/catalog).
-function checkerCountNickIndex(byNick)
-    local n = 0
-    if type(byNick) == 'table' then
-        for _ in pairs(byNick) do n = n + 1 end
-    end
-    return n
-end
-
+-- Checker (admin HUD/catalog): nick lookup via OnlinePlayers SSOT.
 checkerLookupOnlineId = function(nick)
     if not nick or nick == '' then return nil end
     if type(findPlayerIdByNick) == 'function' then
         local id = findPlayerIdByNick(nick)
         if id and checkerPlayerConnectedSafe(id) then return id end
-    end
-    local idx = checkerState.onlineNickIndex
-    if type(idx) == 'table' and type(idx.byNick) == 'table' then
-        local id = idx.byNick[nickKey(nick)]
-        if id and checkerPlayerConnectedSafe(id) then return id end
-        if type(idx.byExact) == 'table' then
-            id = idx.byExact[nick]
-            if id and checkerPlayerConnectedSafe(id) then return id end
-        end
     end
     local snap = checkerState.admsOnlineSnapshot
     if type(snap) == 'table' and type(snap.byNick) == 'table' then
@@ -1815,7 +1695,7 @@ function checkerApplyAdmsOnlineSnapshot(parsedList)
                 nick = nick,
                 level = checkerEffectiveAdminLevel(nick, e.level),
             }
-            checkerIndexOnePlayer(id, nick)
+            onlinePlayersOnJoin(id, nick)
             local lv = byId[id].level
             if not Catalog.getAdmin(nick)
                     and checkerIsValidAdminLevel(lv)
@@ -1854,6 +1734,9 @@ function checkerApplyAdminsDialogSync(list)
     checkerSanitizeAdminCatalog()
     checkerApplyAdmsOnlineSnapshot(list)
     SafeCall('rebuildOnlineAfterAdms', checkerRebuildOnline, true)
+    if type(deskSyncLocalAdminLevelFromCatalog) == 'function' then
+        SafeCall('deskSyncLocalAdminLevelFromCatalog', deskSyncLocalAdminLevelFromCatalog)
+    end
     print(string.format('[Report Desk] checker: dialog sync %d admins (merge, catalog %d -> %d)',
         #list, before, #checkerCatalog.admins))
     return true
@@ -1862,7 +1745,6 @@ end
 -- Checker (admin HUD/catalog).
 function checkerApplyLeadersOnlineSnapshot(rows)
     ensureCheckerCatalog()
-    checkerEnsureNickIndex(true)
     local list = {}
     for _, r in ipairs(rows or {}) do
         local nick = trim(stripTags(r.name or ''))
@@ -1974,6 +1856,10 @@ function checkerApplyLeadersSync(rows)
         and #checkerState.leadersOnlineSnapshot.list or 0
     print(string.format('[Report Desk] checker: dialog sync %d leaders (%d online)',
         #list, onlineN))
+    checkerState.spawnLeadersHandled = true
+    if checkerState.spawnAdmsHandled or #(checkerCatalog.admins or {}) > 0 then
+        checkerState.spawnCatalogSyncDone = true
+    end
     return true
 end
 
@@ -2149,8 +2035,6 @@ function checkerRebuildOnline(force)
     ensureCheckerCatalog()
     checkerState.lastRebuild = os.clock()
     if not checkerSampReady() then return false end
-    checkerEnsureNickIndex(force == true)
-    local byNick = checkerState.onlineNickIndex and checkerState.onlineNickIndex.byNick
     local admins, leaders, friends = {}, {}, {}
     for _, e in ipairs(checkerCatalog.admins) do
         local topAdmin = e and e.nick and checkerIsTopAdmin(e.nick)
@@ -2237,7 +2121,10 @@ function checkerRebuildOnline(force)
     checkerTryEnableJoinNotify()
     checkerState.lastOnlineCatalogRev = tonumber(checkerState.catalogRev) or 0
     checkerState.lastOnlineRev = checkerOnlineRev
-    local scanned = checkerCountNickIndex(byNick)
+    if type(deskRefreshLocalAdminLevel) == 'function' then
+        SafeCall('deskRefreshLocalAdminLevel', deskRefreshLocalAdminLevel)
+    end
+    local scanned = type(onlinePlayersCount) == 'function' and onlinePlayersCount() or 0
     checkerLog(string.format('online %d/%d/%d (scanned %d)', #admins, #leaders, #friends, scanned))
     if #admins == 0 and #checkerCatalog.admins > 0 and (checkerState.lastZeroWarn or 0) + 30 < os.clock() then
         checkerState.lastZeroWarn = os.clock()
@@ -2256,11 +2143,6 @@ function checkerRebuildOnline(force)
     return changed
 end
 
--- Rescan Checker Online
-function rescanCheckerOnline(force)
-    return checkerRebuildOnline(force)
-end
-
 -- Checker (admin HUD/catalog).
 function checkerRemoveOnlineById(playerId)
     return OnlineIndex.removeById(playerId)
@@ -2271,7 +2153,6 @@ function checkerAddOnlineFromJoin(playerId, nick)
     playerId = tonumber(playerId)
     nick = nick or ''
     if not playerId or nick == '' or not checkerSampReady() then return false end
-    checkerIndexOnePlayer(playerId, nick)
     local displayNick = checkerNormalizeNick(nick) or nick
     local changed = false
     local admin = Catalog.getAdmin(nick)
@@ -2521,6 +2402,7 @@ function checkerOnPlayerStreamIn(playerId)
     playerId = tonumber(playerId)
     if not playerId or not checkerIsSpawned() then return end
     local nick = checkerSafeNick(playerId, '')
+    if nick ~= '' then pcall(onlinePlayersOnJoin, playerId, nick) end
     if nick ~= '' and checkerAddOnlineFromJoin(playerId, nick) then return end
     checkerScheduleRebuild()
 end
@@ -2533,7 +2415,6 @@ function checkerNoteSpawned()
     checkerState.spawnedAt = os.clock()
     checkerState.firstRebuildAt = checkerState.spawnedAt + CHECKER_SPAWN_REBUILD_DELAY
     checkerState.lastRebuild = 0
-    checkerState.nickIndexNeedsFullScan = true
     checkerResetJoinNotifyWarmup()
     checkerScheduleSpawnCatalogSync()
 end
@@ -2543,11 +2424,7 @@ local Sync = {}
 -- === Sync: periodic rebuild ===
 function Sync.update()
     SafeCall('pendingRebuild', checkerRunPendingRebuild)
-    if os.clock() - (checkerState.lastRebuild or 0) >= CHECKER_REBUILD_INTERVAL then
-        checkerState.lastRebuild = os.clock()
-        SafeCall('periodicRebuild', checkerRebuildOnline, false)
-    end
-    if settings.checker_auto_sync == true and checkerIsSpawned() and not checkerIsSuspended()
+    if settings.checker_auto_sync ~= false and checkerIsSpawned() and not checkerIsSuspended()
             and not checkerState.spawnCatalogSyncRunning then
         local s = ensureSyncSession()
         local now = os.clock()
@@ -2558,9 +2435,10 @@ function Sync.update()
                 end
             end
         end
-        if #checkerCatalog.leaders == 0 and not checkerSyncLeadersActive(now)
-                and not checkerIsSyncBlocked() and not checkerState.spawnCatalogSyncRunning then
-            checkerRequestLeadersSync(false)
+        if not checkerState.spawnLeadersHandled and not checkerSyncLeadersActive(now)
+                and not checkerIsLeadersOnlySyncBlocked()
+                and not checkerState.spawnCatalogSyncRunning then
+            checkerRequestLeadersSync(false, true)
         end
     end
 end
@@ -2571,6 +2449,7 @@ local Tracker = {}
 function Tracker.update()
     if checkerState.firstRebuildAt and os.clock() >= checkerState.firstRebuildAt then
         checkerState.firstRebuildAt = nil
+        pcall(onlinePlayersRescan, true)
         checkerScheduleRebuild()
     end
 end
@@ -2732,15 +2611,14 @@ function checkerInit()
         checkerState.lastSyncChatAt = 0
         rawset(_G, CHECKER_SYNC_SESSION_KEY, nil)
         local catalogAdmins = #(checkerCatalog.admins or {})
-        local catalogLeaders = #(checkerCatalog.leaders or {})
-        -- Admins enough for HUD; leaders sync continues in background without re-/adms spam.
-        checkerState.spawnCatalogSyncDone = catalogAdmins > 0
+        local autoSync = settings.checker_auto_sync ~= false
+        -- Admins из storage хватает для HUD; /leaders всегда догружаем при auto_sync (даже если в каталоге есть старые записи).
         checkerState.spawnAdmsHandled = catalogAdmins > 0
-        checkerState.spawnLeadersHandled = catalogLeaders > 0
+        checkerState.spawnLeadersHandled = not autoSync
+        checkerState.spawnCatalogSyncDone = not autoSync and catalogAdmins > 0
         checkerState.spawnCatalogSyncAt = nil
-        checkerState.spawnLeadersDueAt = catalogAdmins > 0 and catalogLeaders == 0 and os.clock() or nil
+        checkerState.spawnLeadersDueAt = autoSync and os.clock() + CHECKER_SPAWN_SYNC_DELAY or nil
         checkerState.reportedOnline = false
-        checkerState.onlineNickIndex = { byNick = {}, byExact = {} }
         checkerOnline.admins = {}
         checkerOnline.leaders = {}
         checkerOnline.friends = {}

@@ -7,23 +7,48 @@ $fail = 0
 function Fail($msg) { Write-Host "FAIL: $msg" -ForegroundColor Red; $script:fail++ }
 function Ok($msg) { Write-Host "OK: $msg" -ForegroundColor Green }
 
-# 2) spectate_stats required API
-$stats = Get-Content (Join-Path $lib 'report_desk_spectate_stats.lua') -Raw -Encoding Default
+# 2) spectate_stats required API (facade + ctx + pending split)
+$statsFacade = Get-Content (Join-Path $lib 'report_desk_spectate_stats.lua') -Raw -Encoding Default
+$statsCtx = Get-Content (Join-Path $lib 'report_desk_sp_stats_ctx.lua') -Raw -Encoding Default
+$statsPending = Get-Content (Join-Path $lib 'report_desk_sp_spectate_pending.lua') -Raw -Encoding Default
+$stats = $statsFacade + "`n" + $statsCtx + "`n" + $statsPending
 foreach ($fn in @('requestStats', 'onServerMessage', 'parseSpServerLine', 'onShowDialog', 'parseDialogText')) {
-    if ($stats -notmatch "function M\.$fn") { Fail "spectate_stats.lua missing M.$fn" }
-    else { Ok "spectate_stats M.$fn" }
+    if ($statsCtx -notmatch "function M\.$fn") { Fail "sp_stats_ctx.lua missing M.$fn" }
+    else { Ok "sp_stats_ctx M.$fn" }
 }
-if ($stats -match 'local function getStatsDialogApi' -or $stats -match 'function M\.parseDialogText') {
+foreach ($fn in @('markPendingSpCommand', 'cancelPendingSp', 'hasPendingSp', 'tickPendingSp')) {
+    if ($statsPending -notmatch "function M\.$fn") { Fail "sp_spectate_pending.lua missing M.$fn" }
+    else { Ok "sp_spectate_pending M.$fn" }
+}
+if ($statsCtx -match 'local function getStatsDialogApi' -or $statsCtx -match 'function M\.parseDialogText') {
     Ok 'spectate_stats dialog API wiring'
-} else { Fail 'spectate_stats.lua missing dialog parse API' }
-if ($stats -match "text == ' then") { Fail 'spectate_stats.lua corrupted empty-string check (line ~1117)' }
+} else { Fail 'sp_stats_ctx.lua missing dialog parse API' }
+if ($statsCtx -match "text == ' then") { Fail 'sp_stats_ctx.lua corrupted empty-string check (line ~1117)' }
 else { Ok 'spectate_stats empty-string guard' }
+if ($statsCtx -notmatch 'function M\.isHudDragActive') { Fail 'sp_stats_ctx missing M.isHudDragActive' }
+else { Ok 'sp_stats_ctx M.isHudDragActive' }
+if ($statsCtx -notmatch 'function M\.wantsHudInput') { Fail 'sp_stats_ctx missing M.wantsHudInput' }
+else { Ok 'sp_stats_ctx M.wantsHudInput' }
+if ($statsFacade -notmatch "require 'report_desk_sp_stats_ctx'") { Fail 'spectate_stats facade missing ctx require' }
+else { Ok 'spectate_stats facade ctx require' }
+$tdBlock = Get-Content (Join-Path $lib 'report_desk_sp_menu_td_block.lua') -Raw -Encoding Default
+if ($tdBlock -notmatch 'function cp1251') { Fail 'sp_menu_td_block must use cp1251()/string.char for markers' }
+else { Ok 'sp_menu_td_block cp1251 markers' }
+if ($tdBlock -match "SP_MENU_MARKERS[\s\S]{0,800}\\x") { Fail 'sp_menu_td_block SP_MENU_MARKERS must not use \\x escapes' }
+else { Ok 'sp_menu_td_block no hex escapes in markers' }
 $luaExe = 'C:\Program Files (x86)\Lua\5.1\lua.exe'
 if (Test-Path $luaExe) {
-    $statsPath = (Join-Path $lib 'report_desk_spectate_stats.lua') -replace '\\', '/'
-    $luaOut = & $luaExe -e "local f=io.open('$statsPath','rb'); local s=f:read('*a'); f:close(); local fn,err=loadstring(s,'@spectate_stats'); if not fn then print(err) os.exit(1) end; print('OK')" 2>&1
-    if ($LASTEXITCODE -ne 0 -or "$luaOut" -notmatch 'OK') { Fail "spectate_stats.lua Lua syntax: $luaOut" }
-    else { Ok 'spectate_stats.lua Lua syntax' }
+    foreach ($pair in @(
+        @{ Name = 'spectate_stats'; Path = 'report_desk_spectate_stats.lua' },
+        @{ Name = 'sp_stats_ctx'; Path = 'report_desk_sp_stats_ctx.lua' },
+        @{ Name = 'sp_spectate_pending'; Path = 'report_desk_sp_spectate_pending.lua' },
+        @{ Name = 'sp_menu_td_block'; Path = 'report_desk_sp_menu_td_block.lua' }
+    )) {
+        $statsPath = (Join-Path $lib $pair.Path) -replace '\\', '/'
+        $luaOut = & $luaExe -e "local f=io.open('$statsPath','rb'); local s=f:read('*a'); f:close(); local fn,err=loadstring(s,'@$($pair.Name)'); if not fn then print(err) os.exit(1) end; print('OK')" 2>&1
+        if ($LASTEXITCODE -ne 0 -or "$luaOut" -notmatch 'OK') { Fail "$($pair.Path) Lua syntax: $luaOut" }
+        else { Ok "$($pair.Path) Lua syntax" }
+    }
 }
 
 # 3) checker sync: no duplicate globals vs checker.lua
@@ -104,9 +129,17 @@ $enc = Get-Content (Join-Path $lib 'report_desk_util_encoding.lua') -Raw -Encodi
 if ($enc -notmatch 'function ensureWireCp1251') { Fail 'util_encoding.lua missing ensureWireCp1251' }
 else { Ok 'util_encoding ensureWireCp1251' }
 
-# 11) util prune covers deferred + remoteChatDedup
-if ($util -notmatch 'function pruneChatSeenDeferred') { Fail 'util.lua missing pruneChatSeenDeferred' }
-else { Ok 'util pruneChatSeenDeferred' }
+# 11) chat dedup prune covers deferred + remoteChatDedup
+$dedup = Get-Content (Join-Path $lib 'report_desk_chat_dedup.lua') -Raw -Encoding Default
+if ($dedup -notmatch 'function pruneChatSeenDeferred') { Fail 'chat_dedup.lua missing pruneChatSeenDeferred' }
+else { Ok 'chat_dedup pruneChatSeenDeferred' }
+$gameState = Get-Content (Join-Path $lib 'report_desk_game_state.lua') -Raw -Encoding Default
+if ($gameState -notmatch 'function deskAutoReplyAllowed' -or $gameState -notmatch 'local function deskPauseBlocksAutoReply') {
+    Fail 'game_state.lua must own pause gate (deskPauseBlocksAutoReply)'
+} else { Ok 'game_state pause gate self-contained' }
+if ($util -match 'deskPauseBlocksAutoReply|deskAdminPauseTracked') {
+    Fail 'util.lua must not define pause state (moved to game_state)'
+} else { Ok 'util no pause leak' }
 if ($util -notmatch 'remoteChatDedup') { Fail 'pruneAllTimedMaps missing remoteChatDedup prune' }
 else { Ok 'util remoteChatDedup prune' }
 if ($util -notmatch 'intentResolveOrder = \{\}') { Fail 'intentResolve prune must clear intentResolveOrder' }
@@ -119,7 +152,7 @@ if ($hooks -notmatch 'function deskAreSpMenuHooksActive') { Fail 'hooks_sp_menu 
 else { Ok 'hooks deskAreSpMenuHooksActive' }
 
 # 13) /st dialog: parse in onShowDialog, close once (no blind watchdog)
-$stats = Get-Content (Join-Path $lib 'report_desk_spectate_stats.lua') -Raw -Encoding Default
+$stats = Get-Content (Join-Path $lib 'report_desk_sp_stats_ctx.lua') -Raw -Encoding Default
 if ($stats -match 'tickStatsDialogWatchdog') { Fail 'spectate_stats: no tickStatsDialogWatchdog' }
 else { Ok 'spectate_stats no dialog watchdog' }
 if ($stats -match 'closeStatsDialogOnce\(nil') { Fail 'spectate_stats: no blind dialog close' }
@@ -167,6 +200,11 @@ else { Ok 'checker_sync no syncCloseDialogId' }
 # 15) report ingest hot-path: seed before hooks, live srv ingest, no startup chatSeen reset
 $main = Get-Content (Join-Path $lib 'report_desk_main.lua') -Raw -Encoding Default
 $hooksMain = Get-Content (Join-Path $lib 'report_desk_hooks.lua') -Raw -Encoding Default
+if ($hooksMain -match 'function spRefreshTargetMatches|function installDeskSpRefreshHooks') {
+    Fail 'hooks.lua must not duplicate sp refresh (use hooks_sp_refresh.lua)'
+} else { Ok 'hooks no sp refresh duplicate' }
+$hooksIngest = Get-Content (Join-Path $lib 'report_desk_hooks_ingest.lua') -Raw -Encoding Default
+$hooksCombined = $hooksMain + "`n" + $hooksIngest
 if ($main -notmatch 'seedSeenChatLines' -or $main -notmatch 'installDeskServerMessageHook') {
     Fail 'main.lua missing seedSeenChatLines before server hook'
 } elseif ($main -match 'seedSeenChatLines[\s\S]{0,400}installDeskServerMessageHook') {
@@ -174,11 +212,11 @@ if ($main -notmatch 'seedSeenChatLines' -or $main -notmatch 'installDeskServerMe
 } else { Fail 'main.lua: call seedSeenChatLines before installDeskServerMessageHook' }
 if ($main -match 'chatSeen\.lines\s*=\s*\{\}') { Fail 'main.lua: do not reset chatSeen.lines on startup thread' }
 else { Ok 'main no startup chatSeen reset' }
-if ($hooksMain -notmatch 'adminPunishOnServerMessage') { Fail 'hooks missing adminPunishOnServerMessage' }
-elseif ($hooksMain -match 'adminPunishOnServerMessage[\s\S]{0,2500}processChatLineIngest') {
+if ($hooksCombined -notmatch 'adminPunishOnServerMessage') { Fail 'hooks missing adminPunishOnServerMessage' }
+elseif ($hooksCombined -match 'adminPunishOnServerMessage[\s\S]{0,2500}processChatLineIngest') {
     Ok 'hooks adminPunish before report ingest'
 } else { Fail 'hooks: adminPunish must run before processChatLineIngest' }
-if ($hooksMain -notmatch "processChatLineIngest\(plain, color, 'srv', true") { Fail 'hooks missing live srv ingest' }
+if ($hooksCombined -notmatch "processChatLineIngest\(plain, color, 'srv', true") { Fail 'hooks missing live srv ingest' }
 else { Ok 'hooks live srv ingest isLive=true' }
 $actions = Get-Content (Join-Path $lib 'report_desk_actions.lua') -Raw -Encoding Default
 if ($actions -notmatch 'function quickScenarioButtonCaption') { Fail 'actions missing quickScenarioButtonCaption (reply on scenario btn)' }
@@ -217,6 +255,95 @@ foreach ($mod in $modNames) {
     }
 }
 if ($fail -eq 0) { Ok 'no UTF-8 BOM in manifest modules' }
+
+# 18) refactor: OnlinePlayers SSOT, no HUD heal, hook registry, wireSeenKey
+$online = Get-Content (Join-Path $lib 'report_desk_online_players.lua') -Raw -Encoding Default
+if ($online -notmatch 'function onlinePlayersRescan' -or $online -notmatch 'function onlinePlayersOnJoin') {
+    Fail 'online_players.lua missing SSOT API'
+} else { Ok 'online_players SSOT API' }
+if ($manifest -notmatch 'report_desk_online_players\.lua') { Fail 'manifest missing online_players' }
+else { Ok 'manifest online_players' }
+if ($chk -match 'function checkerBuildNickIndex' -or $chk -match 'onlineNickIndex') {
+    Fail 'checker.lua must not use onlineNickIndex / checkerBuildNickIndex'
+} else { Ok 'checker no duplicate nick index' }
+$chkHud = Get-Content (Join-Path $lib 'report_desk_checker_hud.lua') -Raw -Encoding Default
+if ($chkHud -match 'hudHealRebuild|checkerRebuildOnline, true\)') {
+    Fail 'checker_hud must not heal-rebuild from draw path'
+} else { Ok 'checker_hud no heal rebuild' }
+$hookReg = Get-Content (Join-Path $lib 'report_desk_hook_registry.lua') -Raw -Encoding Default
+if ($hookReg -notmatch 'function HookRegistry\.ensureAll') { Fail 'hook_registry missing ensureAll' }
+else { Ok 'hook_registry ensureAll' }
+if ($manifest -notmatch 'report_desk_hook_registry\.lua') { Fail 'manifest missing hook_registry' }
+else { Ok 'manifest hook_registry' }
+if ($dedup -notmatch 'function wireSeenKey') { Fail 'chat_dedup missing wireSeenKey' }
+else { Ok 'chat_dedup wireSeenKey' }
+if ($hooksIngest -match 'ingestReconcileAt') { Fail 'hooks_ingest must not use ingestReconcileAt' }
+else { Ok 'hooks_ingest no reconcile accelerator' }
+if ($main -match 'refreshPlayerNickCache\(false\)') { Fail 'main must not poll refreshPlayerNickCache' }
+else { Ok 'main no nick cache polling' }
+
+# 19) post-refactor audit fixes
+if ($actions -match 'playerNickToId\[nickKey') { Fail 'findPlayerIdByNick must not use stale playerNickToId fallback' }
+else { Ok 'findPlayerIdByNick SSOT only' }
+if ($ui -notmatch 'findPlayerIdByNick\(t\.nick\)') { Fail 'ui thread list must use findPlayerIdByNick for live id' }
+else { Ok 'ui thread liveId via SSOT' }
+$chkSync = Get-Content (Join-Path $lib 'report_desk_checker_sync.lua') -Raw -Encoding Default
+if ($chkSync -notmatch 'function checkerMarkCatalogDirty[\s\S]{0,200}checkerScheduleRebuild') {
+    Fail 'checkerMarkCatalogDirty must schedule online rebuild'
+} else { Ok 'checkerMarkCatalogDirty schedules rebuild' }
+if ($chk -notmatch 'onlinePlayersOnJoin') { Fail 'checkerOnPlayerStreamIn must update OnlinePlayers' }
+else { Ok 'checker stream-in updates OnlinePlayers' }
+if ($hooksIngest -notmatch 'wirePlain\(text\)') { Fail 'hooks_ingest hot path must use wirePlain' }
+else { Ok 'hooks_ingest wirePlain boundary' }
+$hooksSpMenu = Get-Content (Join-Path $lib 'report_desk_hooks_sp_menu.lua') -Raw -Encoding Default
+if ($hooksSpMenu -notmatch 'onPlayerChatBubble == deskCache\.profBubbleHandler') {
+    Fail 'profanity registry must check bubble handler'
+} else { Ok 'profanity registry bubble check' }
+if ($hooks -match 'hookPrev\w+ == nil then deskCache\.hookPrev') {
+    Fail 'hooks.lua must refresh hookPrev on reinstall (no nil guard)'
+} else { Ok 'hooks hookPrev refresh' }
+if ($main -notmatch 'onSpectatingOff[\s\S]{0,120}deskInputPolicyApply') {
+    Fail 'spectate off must call deskInputPolicyApply'
+} else { Ok 'spectate off input policy' }
+
+# 20) final audit fixes
+$chat = Get-Content (Join-Path $lib 'report_desk_chat.lua') -Raw -Encoding Default
+$keysHud = Get-Content (Join-Path $lib 'report_desk_sp_keys_hud.lua') -Raw -Encoding Default
+$spStats = Get-Content (Join-Path $lib 'report_desk_sp_stats_ctx.lua') -Raw -Encoding Default
+if ($hooksMain -notmatch 'onSetVehicleParams == deskCache\.spVehParamsPlayerHandler') {
+    Fail 'deskUninstall must restore onSetVehicleParams'
+} else { Ok 'deskUninstall onSetVehicleParams restore' }
+if ($chat -notmatch 'prevBubble == deskCache\.profBubbleHandler then prevBubble = deskCache\.hookPrevProfBubble') {
+    Fail 'profanity install must use hookPrevProfBubble fallback'
+} else { Ok 'profanity hookPrev bubble fallback' }
+if ($chat -notmatch 'prevChat == deskCache\.profChatHandler then prevChat = deskCache\.hookPrevProfChat') {
+    Fail 'profanity install must use hookPrevProfChat fallback'
+} else { Ok 'profanity hookPrev chat fallback' }
+if ($keysHud -notmatch 'function M\.uninstallSampev') { Fail 'keysHud must expose uninstallSampev' }
+else { Ok 'keysHud uninstallSampev' }
+if ($spStats -notmatch 'keysHud\.uninstallSampev') { Fail 'spectate uninstall must call keysHud.uninstallSampev' }
+else { Ok 'spectate keysHud uninstall wired' }
+if ($chkHud -notmatch 'checkerHudWantsInput[\s\S]{0,120}checkerHudVisible') {
+    Fail 'checkerHudWantsInput must guard checkerHudVisible'
+} else { Ok 'checkerHudWantsInput visibility guard' }
+if ($ui -notmatch 'drawChatHeader[\s\S]{0,200}markDirtyThreads') {
+    Fail 'drawChatHeader must markDirtyThreads on id change'
+} else { Ok 'drawChatHeader markDirtyThreads' }
+if ($chk -notmatch 's\.onlineIndex = type\(s\.onlineIndex\)') {
+    Fail 'checkerState must init onlineIndex table'
+} else { Ok 'checkerState onlineIndex init' }
+$specSession = Get-Content (Join-Path $lib 'report_desk_spectate_session.lua') -Raw -Encoding Default
+if ($specSession -match 'suppressSpMenuActive|vehicleHudPipelineActive|isServerSpMenuTextDrawOnly') {
+    Fail 'spectate_session must not use stale TD block helpers'
+} else { Ok 'spectate_session TD router delegation' }
+if ($specSession -notmatch 'return tdRouter\.onShowTextDraw') {
+    Fail 'spectate_session onShowTextDraw must delegate to tdRouter'
+} else { Ok 'spectate_session onShowTextDraw delegate' }
+if ($spStats -notmatch 'ctx\.specSession = specSession') {
+    Fail 'sp_stats_ctx must export ctx.specSession for pending handshake'
+} else { Ok 'sp_stats_ctx ctx.specSession export' }
+if ($spStats -notmatch 'ctx\.spUi = spUi') { Fail 'sp_stats_ctx must export ctx.spUi' }
+else { Ok 'sp_stats_ctx ctx.spUi export' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'Sanity verify: OK' -ForegroundColor Green; exit 0 }

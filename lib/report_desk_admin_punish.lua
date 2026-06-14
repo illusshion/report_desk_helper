@@ -1,5 +1,5 @@
 --[[ Модуль: автовыдача наказаний по запросу в admin chat (/a). ]]
--- REWRITTEN: line dedup prune, parse-fail rollback, hooksActive guard.
+--  line dedup prune, parse-fail rollback, hooksActive guard.
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local PUNISH_TIMEOUT_SEC = 15
@@ -123,7 +123,7 @@ function lineLooksLikeAdminPunishRequest(plain, color)
 end
 
 -- Lua: a,b,c = s:match(p1) or s:match(p2) оставляет только первый capture при or — нельзя.
--- NO-API: other admins' /a requests appear only in chat.
+-- Запасной путь без API: other admins' /a requests appear only in chat.
 local function apParseAdminRequest(plain)
     plain = trim(plain or '')
     if plain == '' then return nil end
@@ -211,8 +211,11 @@ local function apOutboundCmd(cmd, admName)
     return cmd
 end
 
--- Ключ без метки времени: hook и poll дают разный chatLineSeenKey, plain одинаковый.
+-- Ключ dedup: wireSeenKey (без timestamp — hook и poll дают один plain).
 local function apStableLineKey(text)
+    if type(wireSeenKey) == 'function' then
+        return wireSeenKey(text)
+    end
     return apPlainText(text)
 end
 
@@ -813,7 +816,7 @@ local function apTryParse(admCommand)
     return parsed
 end
 
--- NO-API: punishment log echo is server chat only.
+-- Запасной путь без API: punishment log echo is server chat only.
 local function apAnotherAdminExecuted(text)
     local p = apState.pending
     if not p then return false end
@@ -880,7 +883,7 @@ local function apAnotherAdminExecuted(text)
     return false
 end
 
--- REWRITTEN: claim after cheap filters; rollback line key on parse fail; prune bounded line map.
+--  claim after cheap filters; rollback line key on parse fail; prune bounded line map.
 function adminPunishIngestChatLine(color, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
@@ -958,7 +961,7 @@ function adminPunishOnServerMessage(color, text)
 end
 
 -- CHAT RPC (/a иногда не дублируется в onServerMessage, только в onChatMessage + sampGetChatString).
--- NO-API: /a may arrive via onChatMessage without onServerMessage.
+-- Запасной путь без API: /a may arrive via onChatMessage without onServerMessage.
 function adminPunishOnChatMessage(playerId, text)
     if not apEnabled() then return end
     if not text or text == '' then return end
@@ -982,7 +985,7 @@ function adminPunishHooksActive()
 end
 
 -- Запасной poll только если хуки не стоят (иначе дубли и лаг от скана буфера).
--- NO-API: fallback poll via sampGetChatString when hooks inactive.
+-- Запасной путь без API: fallback poll via sampGetChatString when hooks inactive.
 function pollAdminPunishChat()
     if not apEnabled() then return end
     if adminPunishHooksActive() then return end
@@ -1008,18 +1011,15 @@ end
 function adminPunishEnsureServerHook()
     if not apEnabled() then return end
     apBootstrapChatBuffer()
-    if type(installDeskServerMessageHook) == 'function' then
+    if type(deskRegisterHookEntries) == 'function' then
+        pcall(deskRegisterHookEntries)
+    end
+    if HookRegistry and HookRegistry.ensure then
+        pcall(HookRegistry.ensure, 'serverMsg')
+        pcall(HookRegistry.ensure, 'profanity')
+    elseif type(installDeskServerMessageHook) == 'function' then
         if type(deskIsServerMsgHookActive) ~= 'function' or not deskIsServerMsgHookActive() then
             pcall(installDeskServerMessageHook)
-        end
-    end
-    if type(installProfanityHooks) == 'function' then
-        local needReinstall = not deskCache.profHooksInstalled
-            or (deskCache.profChatHandler and sampev and sampev.onChatMessage ~= deskCache.profChatHandler)
-        if needReinstall and os.clock() - apHookReinstallAt >= AP_HOOK_REINSTALL_SEC then
-            apHookReinstallAt = os.clock()
-            deskCache.profHooksInstalled = false
-            pcall(installProfanityHooks)
         end
     end
 end

@@ -36,7 +36,7 @@ function normalizeProfanityText(s)
     return normalizeMatchText(s)
 end
 
--- Strip Roleplay Body Prefix
+-- Roleplay Body Prefix
 function stripRoleplayBodyPrefix(body)
     body = trim(body or '')
     body = body:gsub('^%*+%s*', '')
@@ -70,7 +70,7 @@ function bodyLooksLikeSystemChat(body)
     return false
 end
 
--- Strip Ooc Chat Wrapper
+-- Ooc Chat Wrapper
 function stripOocChatWrapper(text)
     text = trim(text or '')
     local inner = text:match('^%(%(%s*(.-)%s*%)%)$')

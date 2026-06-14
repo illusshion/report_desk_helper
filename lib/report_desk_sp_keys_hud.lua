@@ -24,7 +24,7 @@ local uiText, toU32, col_accent, col_accent_dim, col_muted, col_muted2
 local markDirtySettings, flushDirtyConfigNow, getSettingsFn, getSpectateTargetId, isSpectatingFn
 local resolveSpectateTargetPedFn
 
--- Get Target Id
+-- Target Id
 local function getTargetId()
     if getSpectateTargetId then
         local ok, id = pcall(getSpectateTargetId)
@@ -45,7 +45,7 @@ local function isSpectating()
     return false
 end
 
--- Get Settings
+-- Settings
 local function getSettings()
     return getSettingsFn and getSettingsFn() or nil
 end
@@ -521,6 +521,22 @@ function M.installSampev(sampev)
         end
     end
     sampev.onVehicleSync = M._vehicleSyncHandler
+end
+
+function M.uninstallSampev(sampev)
+    local ev = sampev or sampevRef
+    if not ev then return end
+    if M._playerSyncHandler and ev.onPlayerSync == M._playerSyncHandler then
+        ev.onPlayerSync = hookPrevPlayerSync
+    end
+    if M._vehicleSyncHandler and ev.onVehicleSync == M._vehicleSyncHandler then
+        ev.onVehicleSync = hookPrevVehicleSync
+    end
+    M._playerSyncHandler = nil
+    M._vehicleSyncHandler = nil
+    hookPrevPlayerSync = nil
+    hookPrevVehicleSync = nil
+    sampevRef = nil
 end
 
 -- Публичный API модуля.

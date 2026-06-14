@@ -276,7 +276,7 @@ local function looksLikeSpeedText(raw, plain)
     return false
 end
 
--- NO-API: fuel/door/mode/indicators — server TextDraw only.
+-- Запасной путь без API: fuel/door/mode/indicators — server TextDraw only.
 local function parseFuelPlain(plain)
     local n = plain:match('fuel%s*(%d+)')
     if not n then n = plain:match('(%d+)%s*l') end

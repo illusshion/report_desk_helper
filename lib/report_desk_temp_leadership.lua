@@ -2,6 +2,107 @@
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
 local TL_ROW_H = 40
+local TL_ACCENT_W = 3
+
+-- Clist-цвета фракций (те же, что CHECKER_ORG_CLIST_COLOR в report_desk_checker.lua).
+local TL_ORG_GOV = 1
+local TL_ORG_MVD = 2
+local TL_ORG_MO = 3
+local TL_ORG_MZ = 4
+local TL_ORG_SMI = 5
+local TL_ORG_GROVE = 6
+local TL_ORG_BALLAS = 7
+local TL_ORG_VAGOS = 8
+local TL_ORG_AZTECAS = 9
+local TL_ORG_RIFA = 10
+local TL_ORG_LCN = 11
+local TL_ORG_YAKUZA = 12
+local TL_ORG_RMAF = 13
+
+local TL_ORG_CLIST = {
+    [TL_ORG_GOV] = 0xFFCCFF00,
+    [TL_ORG_MVD] = 0xFF0000FF,
+    [TL_ORG_MO] = 0xFF996633,
+    [TL_ORG_MZ] = 0xFFFF6666,
+    [TL_ORG_SMI] = 0xFFFF6600,
+    [TL_ORG_GROVE] = 0xFF009900,
+    [TL_ORG_BALLAS] = 0xFF800080,
+    [TL_ORG_VAGOS] = 0xFFFFCD00,
+    [TL_ORG_AZTECAS] = 0xFF00CCFF,
+    [TL_ORG_RIFA] = 0xFF6666FF,
+    [TL_ORG_LCN] = 0xFF993366,
+    [TL_ORG_YAKUZA] = 0xFFBB0000,
+    [TL_ORG_RMAF] = 0xFF007575,
+    [0] = 0xFFAAAAAA,
+}
+
+local function tlSampColorToImVec4(color)
+    if type(sampColorToImVec4) == 'function' then
+        return sampColorToImVec4(color)
+    end
+    return nil
+end
+
+local function tlOrgClistColor(orgId)
+    orgId = tonumber(orgId) or 0
+    if type(checkerLeaderOrgClistColor) == 'function' then
+        return checkerLeaderOrgClistColor(orgId)
+    end
+    return TL_ORG_CLIST[orgId] or TL_ORG_CLIST[0]
+end
+
+local function tlOrgTint(orgId)
+    return tlSampColorToImVec4(tlOrgClistColor(orgId)) or col_accent
+end
+
+local function tlColorU32(tint, alpha)
+    if not tint then return nil end
+    alpha = tonumber(alpha) or 0.9
+    local col = imgui.ImVec4(tint.x, tint.y, tint.z, alpha)
+    if type(toU32) == 'function' then return toU32(col) end
+    local r = math.floor(col.x * 255 + 0.5)
+    local g = math.floor(col.y * 255 + 0.5)
+    local b = math.floor(col.z * 255 + 0.5)
+    local a = math.floor(col.w * 255 + 0.5)
+    if bit and bit.bor and bit.lshift then
+        return bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
+    end
+    return a * 16777216 + b * 65536 + g * 256 + r
+end
+
+local function tlDrawButtonAccent(tint, hovered, active)
+    if not tint or not imgui.GetWindowDrawList then return end
+    local dl = imgui.GetWindowDrawList()
+    local min = imgui.GetItemRectMin()
+    local max = imgui.GetItemRectMax()
+    local pad = 7
+    local alpha = active and 0.95 or (hovered and 0.82 or 0.58)
+    dl:AddRectFilled(
+        imgui.ImVec2(min.x + 3, min.y + pad),
+        imgui.ImVec2(min.x + 3 + TL_ACCENT_W, max.y - pad),
+        tlColorU32(tint, alpha),
+        2
+    )
+end
+
+local function tlDrawOrgDot(tint)
+    if not tint then return end
+    local size = 7
+    local p = imgui.GetCursorScreenPos()
+    local lh = imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 14
+    local dl = imgui.GetWindowDrawList()
+    if dl and dl.AddCircleFilled then
+        dl:AddCircleFilled(
+            imgui.ImVec2(p.x + size * 0.5, p.y + lh * 0.5),
+            size * 0.45,
+            tlColorU32(tint, 0.88))
+    end
+    imgui.Dummy(imgui.ImVec2(size + 2, lh))
+end
+
+local function tlOrgIdFromArgs(args)
+    return tonumber(tostring(args or ''):match('^(%d+)'))
+end
 
 local TL_RESTORE_MSG_BANK = '    \xC1\xC0\xCD\xCA\xCE\xC2\xD1\xCA\xC8\xC9 \xD7\xC5\xCA'
 local TL_RESTORE_MSG_LOGIN = '\xC2\xFB \xE2\xEE\xF8\xEB\xE8 \xEA\xE0\xEA \xE0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0 \xF7\xE5\xF2\xE2\xB8\xF0\xF2\xEE\xE3\xEE \xF3\xF0\xEE\xE2\xED\xFF'
@@ -11,7 +112,7 @@ local TL_ORGS = {
         key = 'gov',
         short = '\xCF\xF0\xE0\xE2-\xE2\xEE',
         label = '\xCF\xF0\xE0\xE2\xE8\xF2\xE5\xEB\xFC\xF1\xF2\xE2\xEE',
-        tint = imgui.ImVec4(0.80, 0.82, 0.20, 1.0),
+        orgId = TL_ORG_GOV,
         kind = 'leader',
         items = {
             { label = '\xCF\xF0\xE5\xE7\xE8\xE4\xE5\xED\xF2', args = '1 1' },
@@ -24,7 +125,7 @@ local TL_ORGS = {
         key = 'mvd',
         short = '\xCC\xC2\xC4',
         label = '\xCC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xC2\xED\xF3\xF2\xF0\xE5\xED\xED\xE8\xF5 \xC4\xE5\xEB',
-        tint = imgui.ImVec4(0.28, 0.55, 0.95, 1.0),
+        orgId = TL_ORG_MVD,
         kind = 'leader',
         items = {
             { label = '\xCC\xE8\xED\xE8\xF1\xF2\xF0 \xC2\xED\xF3\xF2\xF0\xE5\xED\xED\xE8\xF5 \xC4\xE5\xEB', args = '2 0' },
@@ -38,7 +139,7 @@ local TL_ORGS = {
         key = 'mo',
         short = '\xCC\xCE',
         label = '\xCC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xCE\xE1\xEE\xF0\xEE\xED\xFB',
-        tint = imgui.ImVec4(0.58, 0.42, 0.28, 1.0),
+        orgId = TL_ORG_MO,
         kind = 'leader',
         items = {
             { label = '\xCC\xE8\xED\xE8\xF1\xF2\xF0 \xCE\xE1\xEE\xF0\xEE\xED\xFB', args = '3 0' },
@@ -51,7 +152,7 @@ local TL_ORGS = {
         key = 'mz',
         short = '\xCC\xC7',
         label = '\xCC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xC7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED\xE5\xED\xE8\xFF',
-        tint = imgui.ImVec4(0.95, 0.42, 0.42, 1.0),
+        orgId = TL_ORG_MZ,
         kind = 'leader',
         items = {
             { label = '\xCC\xE8\xED\xE8\xF1\xF2\xF0 \xC7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED\xE5\xED\xE8\xFF', args = '4 0' },
@@ -64,7 +165,7 @@ local TL_ORGS = {
         key = 'smi',
         short = '\xD1\xCC\xC8',
         label = '\xD1\xF0\xE5\xE4\xF1\xF2\xE2\xE0 \xCC\xE0\xF1\xF1\xEE\xE2\xEE\xE9 \xC8\xED\xF4\xEE\xF0\xEC\xE0\xF6\xE8\xE8',
-        tint = imgui.ImVec4(0.95, 0.55, 0.20, 1.0),
+        orgId = TL_ORG_SMI,
         kind = 'leader',
         items = {
             { label = '\xD3\xEF\xF0\xE0\xE2\xEB\xFF\xFE\xF9\xE8\xE9 \xD1\xCC\xC8', args = '5 0' },
@@ -78,26 +179,24 @@ local TL_ORGS = {
         key = 'gangs',
         short = '\xC1\xE0\xED\xE4\xFB',
         label = '\xC1\xE0\xED\xE4\xFB',
-        tint = imgui.ImVec4(0.20, 0.78, 0.35, 1.0),
         kind = 'leader',
         items = {
-            { label = 'Grove Street', args = '6 0' },
-            { label = 'The Ballas', args = '7 0' },
-            { label = 'Los Santos Vagos', args = '8 0' },
-            { label = 'The Rifa', args = '9 0' },
-            { label = 'Varios Los Aztecas', args = '10 0' },
+            { label = 'Grove Street', args = '6 0', orgId = TL_ORG_GROVE },
+            { label = 'The Ballas', args = '7 0', orgId = TL_ORG_BALLAS },
+            { label = 'Los Santos Vagos', args = '8 0', orgId = TL_ORG_VAGOS },
+            { label = 'The Rifa', args = '9 0', orgId = TL_ORG_RIFA },
+            { label = 'Varios Los Aztecas', args = '10 0', orgId = TL_ORG_AZTECAS },
         },
     },
     {
         key = 'mafia',
         short = '\xCC\xE0\xF4\xE8\xE8',
         label = '\xCC\xE0\xF4\xE8\xE8',
-        tint = imgui.ImVec4(0.72, 0.28, 0.55, 1.0),
         kind = 'leader',
         items = {
-            { label = 'La Cosa Nostra', args = '11 0' },
-            { label = 'Yakuza', args = '12 0' },
-            { label = '\xD0\xF3\xF1\xF1\xEA\xE0\xFF \xEC\xE0\xF4\xE8\xFF', args = '13 0' },
+            { label = 'La Cosa Nostra', args = '11 0', orgId = TL_ORG_LCN },
+            { label = 'Yakuza', args = '12 0', orgId = TL_ORG_YAKUZA },
+            { label = '\xD0\xF3\xF1\xF1\xEA\xE0\xFF \xEC\xE0\xF4\xE8\xFF', args = '13 0', orgId = TL_ORG_RMAF },
         },
     },
     {
@@ -119,6 +218,22 @@ local TL_ORGS = {
         },
     },
 }
+
+local function tlOrgTintForArgs(args)
+    args = tostring(args or ''):match('^%s*(.-)%s*$') or ''
+    if args == '' or args == '0 0' then return col_muted end
+    for _, org in ipairs(TL_ORGS) do
+        if org.kind == 'leader' and type(org.items) == 'table' then
+            for _, item in ipairs(org.items) do
+                if item.args == args then
+                    local oid = item.orgId or org.orgId or tlOrgIdFromArgs(args)
+                    return tlOrgTint(oid)
+                end
+            end
+        end
+    end
+    return tlOrgTint(tlOrgIdFromArgs(args))
+end
 
 tempLeadershipUiSynced = false
 tlSelectedOrg = 1
@@ -210,10 +325,16 @@ function tempLeadershipPumpPending()
 end
 
 local function tlTabBarFlags()
-    if imgui.TabBarFlags and imgui.TabBarFlags.FittingPolicyScroll then
-        return imgui.TabBarFlags.FittingPolicyScroll
+    local flags = 0
+    if imgui.TabBarFlags then
+        if imgui.TabBarFlags.FittingPolicyScroll then
+            flags = flags + imgui.TabBarFlags.FittingPolicyScroll
+        end
+        if imgui.TabBarFlags.NoTooltip then
+            flags = flags + imgui.TabBarFlags.NoTooltip
+        end
     end
-    return 0
+    return flags
 end
 
 local function tlDrawTopBar()
@@ -225,7 +346,10 @@ local function tlDrawTopBar()
     if saved == '0 0' then
         imgui.TextColored(col_muted, uiText(savedLabel))
     else
-        imgui.TextColored(col_accent, uiText(savedLabel))
+        local savedTint = tlOrgTintForArgs(saved)
+        tlDrawOrgDot(savedTint)
+        imgui.SameLine(0, 6)
+        imgui.TextColored(col_label, uiText(savedLabel))
     end
     if uiTempLeadershipAutoRestore and deskFormCheckboxRow(
             '\xC0\xE2\xF2\xEE\xE2\xEE\xF1\xF1\xF2\xE0\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xEF\xEE\xF1\xEB\xE5 \xE2\xF5\xEE\xE4\xE0',
@@ -251,12 +375,8 @@ local function tlDrawPositionList(org)
     local rowW = math.max(120, imgui.GetContentRegionAvail().x)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 6))
     for idx, item in ipairs(org.items or {}) do
-        local hint
-        if org.kind == 'work' then
-            hint = '/tempwork ' .. tostring(item.workId or 0)
-        else
-            hint = '/templeader ' .. tostring(item.args or '')
-        end
+        local orgId = item.orgId or org.orgId or tlOrgIdFromArgs(item.args)
+        local tint = org.kind == 'leader' and tlOrgTint(orgId) or nil
         if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
         local label = uiText(item.label or '?')
         if imgui.Button(label .. '##tl_row_' .. org.key .. '_' .. tostring(idx), imgui.ImVec2(rowW, TL_ROW_H)) then
@@ -266,10 +386,10 @@ local function tlDrawPositionList(org)
                 setTempLeadership(item.args, true)
             end
         end
-        if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
-        if imgui.IsItemHovered() and imgui.SetTooltip then
-            imgui.SetTooltip(uiText(hint))
+        if tint then
+            tlDrawButtonAccent(tint, imgui.IsItemHovered(), imgui.IsItemActive())
         end
+        if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
     end
     imgui.PopStyleVar()
 end

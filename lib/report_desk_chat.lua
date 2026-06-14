@@ -4,7 +4,7 @@ function installProfanityHooks()
     if deskCache.profHooksInstalled then return end
     deskCache.profHooksInstalled = true
     local prevBubble = sampev.onPlayerChatBubble
-    if prevBubble == deskCache.profBubbleHandler then prevBubble = nil end
+    if prevBubble == deskCache.profBubbleHandler then prevBubble = deskCache.hookPrevProfBubble end
     deskCache.hookPrevProfBubble = prevBubble
     deskCache.profBubbleHandler = function(playerId, color, distance, duration, message)
         pcall(checkProfanityFromBubble, playerId, message, color)
@@ -12,7 +12,7 @@ function installProfanityHooks()
     end
     sampev.onPlayerChatBubble = deskCache.profBubbleHandler
     local prevChat = sampev.onChatMessage
-    if prevChat == deskCache.profChatHandler then prevChat = nil end
+    if prevChat == deskCache.profChatHandler then prevChat = deskCache.hookPrevProfChat end
     deskCache.hookPrevProfChat = prevChat
     deskCache.profChatHandler = function(playerId, text)
         if type(adminPunishOnChatMessage) == 'function' then
@@ -175,7 +175,7 @@ function refreshMyNick()
     end
 end
 
--- Get My Player Id
+-- My Player Id
 function getMyPlayerId()
     if not isSampAvailable() then return nil end
     local ok, myId = sampGetPlayerIdByCharHandle(PLAYER_PED)
@@ -232,7 +232,7 @@ function resolveOutboundThread(t, threadKey)
     return nil, nil
 end
 
--- Clear Pending Outbound
+-- Очистка Pending Outbound
 function clearPendingOutbound()
     outbound.pending = nil
     outbound.fromDesk = nil
@@ -532,77 +532,13 @@ function splitAnsBodyHalves(body)
     return body:sub(1, half) .. '...', body:sub(half + 1)
 end
 
--- Ans Reply Needs Split
+-- Разбиение длинного ans
 function ansReplyNeedsSplit(ansId, body)
     return estimateAnsChatLineLen(ansId, body) > ANS_CHAT_LINE_MAX
 end
 
--- Transmit Ans Wire
-function transmitAnsWire(ansId, body, meta)
-    ansId = tonumber(ansId)
-    body = normalizeOutboundBody(body)
-    if not ansId or body == '' then return false end
-    meta = meta or {}
-
-    local nickHint = meta.thread and meta.thread.nick or nil
-    if not ansReplyNeedsSplit(ansId, body) then
-        if meta.markEcho then
-            markOutboundEchoHandled(ansId, body, meta.threadKey, nickHint)
-        end
-        sendChat(string.format('ans %d %s', ansId, body))
-        return true
-    end
-
-    local part1, part2 = splitAnsBodyHalves(body)
-    if meta.markEcho then
-        markOutboundEchoHandled(ansId, part1, meta.threadKey, nickHint)
-        markOutboundEchoHandled(ansId, part2, meta.threadKey, nickHint)
-    end
-    sendChat(string.format('ans %d %s', ansId, part1))
-    lua_thread.create(function()
-        wait(ANS_SPLIT_DELAY_MS)
-        sendChat(string.format('ans %d %s', ansId, part2))
-    end)
-    return true
-end
-
+-- Отправка ans на сервер
 -- Отправка команды/сообщения на сервер.
-function sendOutgoingAns(t, text, opts)
-    opts = opts or {}
-    text = trim(text)
-    if not t or text == '' then return false, 'empty' end
-    t, threadKey = resolveOutboundThread(t, opts.threadKey)
-    if not t or not threadKey then
-        return false, 'no thread'
-    end
-    local ansId, err = resolveAnsIdForReply(t)
-    if not ansId then
-        if err then say(err) end
-        if opts.showSystemOnFail then
-            addAutoSystemNote(t, opts.ruleName or '', err or 'fail', 'fail')
-        end
-        return false, err
-    end
-    local split = ansReplyNeedsSplit(ansId, text)
-    setPendingOutbound(t, text, ansId, split)
-    local sent = transmitAnsWire(ansId, text, {
-        thread = t,
-        threadKey = threadKey,
-        markEcho = split,
-    })
-    if not sent then
-        return false, 'chat fail'
-    end
-    threadApplyOutgoing(t, threadKey, text, { self = true })
-    if not split and threadFindOutgoingMessage(t, text, { self = true }) then
-        markOutboundEchoHandled(ansId, text, threadKey, t.nick)
-    end
-    if split then
-        return true, '/ans ' .. ansId .. ' (2 \xF7\xE0\xF1\xF2\xE8)'
-    end
-    return true, '/ans ' .. ansId .. ' ' .. text
-end
-
 -- Measure Bubble Text
 function measureBubbleText(line, wrapInnerW, msg)
     local _, _, w, h = bubbleWrapLayout(msg, line, wrapInnerW)

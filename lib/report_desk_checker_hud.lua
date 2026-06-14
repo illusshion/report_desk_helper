@@ -69,8 +69,8 @@ function checkerSafePlayerColor(id)
     id = tonumber(id)
     if not id then return nil end
     if type(sampIsPlayerConnected) ~= 'function' or type(sampGetPlayerColor) ~= 'function' then return nil end
+    if not sampIsPlayerConnected(id) then return nil end
     local ok, color = SafeCall('sampGetPlayerColor', function()
-        if not sampIsPlayerConnected(id) then return nil end
         return sampGetPlayerColor(id)
     end)
     if not ok or not color then return nil end
@@ -149,6 +149,7 @@ end
 
 -- Checker (admin HUD/catalog).
 function checkerHudWantsInput()
+    if not checkerHudVisible() or checkerIsSuspended() then return false end
     if checkerState.hudDrag and checkerState.hudDrag.active then return true end
     if checkerState.hudHovered then return true end
     local r = checkerState.hudRect
@@ -421,7 +422,7 @@ function drawCheckerLeadersSettings()
     ensureCheckerCatalog()
     local leaders = checkerCatalog.leaders
     if #leaders == 0 then
-        imgui.TextColored(col_muted2, uiText('\xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xEB\xE8\xE4\xE5\xF0\xEE\xE2 \xEF\xF3\xF1\xF2 \x2014 \xED\xE0\xE6\xEC\xE8\xF2\xE5 \xAB\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE8\xF0\xEE\xE2\xE0\xF2\xFC\xBB \xE2 \xF7\xE5\xEA\xE5\xF0\xE5'))
+        imgui.TextColored(col_muted2, uiText('\xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xEB\xE8\xE4\xE5\xF0\xEE\xE2 \xEF\xF3\xF1\xF2 \x2014 \xE7\xE0\xE3\xF0\xF3\xE6\xE0\xE5\xF2\xF1\xFF \xE0\xE2\xF2\xEE\xEC\xE0\xF2\xE8\xF7\xE5\xF1\xEA\xE8 \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5'))
         return
     end
 
@@ -470,24 +471,6 @@ function drawCheckerHudOverlay()
     if #hudAdmins > 0 then
         checkerState.hudHealAttempts = 0
         checkerState.healResetAt = 0
-    elseif #checkerCatalog.admins > 0 and checkerSampReady() then
-        local now = os.clock()
-        local healResetAt = tonumber(checkerState.healResetAt) or 0
-        if healResetAt > 0 and now >= healResetAt then
-            checkerState.hudHealAttempts = 0
-            checkerState.healResetAt = 0
-        end
-        local tries = tonumber(checkerState.hudHealAttempts) or 0
-        local lastHeal = tonumber(checkerState.lastHudHealAt) or 0
-        if tries < CHECKER_HUD_HEAL_MAX_TRIES
-                and (lastHeal <= 0 or now - lastHeal >= CHECKER_HUD_HEAL_INTERVAL) then
-            checkerState.lastHudHealAt = now
-            checkerState.hudHealAttempts = tries + 1
-            SafeCall('hudHealRebuild', checkerRebuildOnline, true)
-            if checkerState.hudHealAttempts >= CHECKER_HUD_HEAL_MAX_TRIES then
-                checkerState.healResetAt = now + CHECKER_HUD_HEAL_RESET_SEC
-            end
-        end
     end
 
     local hudH = checkerHudSavedHeight(120)
@@ -592,6 +575,21 @@ end
 -- РћС‚СЂРёСЃРѕРІРєР° checker UI.
 function drawCheckerTab()
     if not checkerState.uiSynced then syncCheckerUiFromSettings() end
+    if settings.checker_auto_sync ~= false and checkerIsSpawned()
+            and not checkerState.spawnLeadersHandled
+            and not checkerState.spawnCatalogSyncRunning
+            and type(checkerRequestLeadersSync) == 'function'
+            and type(checkerIsLeadersOnlySyncBlocked) == 'function'
+            and type(checkerSyncLeadersActive) == 'function'
+            and not checkerIsLeadersOnlySyncBlocked()
+            and not checkerSyncLeadersActive(os.clock()) then
+        local now = os.clock()
+        local last = tonumber(checkerState.leadersTabSyncAt) or 0
+        if now - last >= 12.0 then
+            checkerState.leadersTabSyncAt = now
+            SafeCall('checkerTabLeadersSync', checkerRequestLeadersSync, false, true)
+        end
+    end
     pushPanelStyle(col_chat_bg)
     local childFlags = 0
     if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
@@ -633,15 +631,6 @@ function drawCheckerTab()
     deskFormPanelBegin('##chk_leaders_vis')
     drawSettingsCardHeader('\xCB\xE8\xE4\xE5\xF0\xFB \xE2 HUD')
     drawCheckerLeadersSettings()
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##chk_sync')
-    drawSettingsCardHeader('\xCA\xE0\xF2\xE0\xEB\xEE\xE3')
-    imgui.TextColored(col_muted2, uiText('\xCE\xED\xEB\xE0\xE9\xED \xE2 HUD \xE1\xE5\xF0\xB8\xF2\xF1\xFF \xE8\xE7 \xF2\xE0\xE1\xE0 (\xF1\xEA\xE0\xED \xE8\xE3\xF0\xEE\xEA\xEE\xE2). \xCA\xE0\xF2\xE0\xEB\xEE\xE3 \xE7\xE0\xE3\xF0\xF3\xE6\xE0\xE5\xF2\xF1\xFF \xF7\xE5\xF0\xE5\xE7 /adms \xE8 /leaders \xEF\xF0\xE8 \xE2\xF5\xEE\xE4\xE5. /admins \xE2 \xF0\xF3\xF7\xED\xF3\xFE \x201 \xF0\xE0\xE7 \x201 \xF3\xF0\xEE\xE2\xED\xFF \xE0\xE4\xEC\xE8\xED\xE0 \xE5\xF1\xEB\xE8 \xEF\xEE\xE2\xFB\xF1\xE8\xEB\xE8.'))
-    imgui.TextColored(col_muted2, uiText('\xC8\xE7\xEC\xE5\xED\xE5\xED\xE8\xE5 \xF3\xF0\xEE\xE2\xED\xFF \xF7\xE5\xF0\xE5\xE7 promote-\xF1\xEE\xEE\xE1\xF9\xE5\xED\xE8\xE5 \xF1\xE5\xF0\xE2\xE5\xF0\xE0.'))
-    if imgui.Button(uiText('\xD1\xE8\xED\xF5\xF0\xEE\xED\xE8\xE7\xE8\xF0\xEE\xE2\xE0\xF2\xFC \xEA\xE0\xF2\xE0\xEB\xEE\xE3 (/adms + /leaders)') .. '##chk_sync_now') then
-        SafeCall('checkerManualSync', checkerManualSync)
-    end
     deskFormPanelEnd()
 
     deskFormPanelBegin('##chk_notify')

@@ -93,10 +93,7 @@ function M.load()
     if not okRemote then
         print('[Report Desk] remote chat disabled: ' .. tostring(errRemote))
     end
-    local okLate, errLate = pcall(runChunkBundle, wd, LATE_CHUNK_FILES, env, 'late')
-    if not okLate then
-        print('[Report Desk] late modules disabled: ' .. tostring(errLate))
-    end
+    runChunkBundle(wd, LATE_CHUNK_FILES, env, 'late')
 
     loaded = true
     return env

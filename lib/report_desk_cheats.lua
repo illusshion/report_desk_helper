@@ -1142,7 +1142,7 @@ function deskResetHotkeyDebounce(vk)
     if vk > 0 then deskCache.hotkeyPrev[vk] = false end
 end
 
--- Try Handle Desk Hotkey Message
+-- Handle Desk Hotkey Message
 function tryHandleDeskHotkeyMessage(msg, wparam, lparam)
     if not sessionLive then return false end
     if deskCache.hotkeyCapture or deskCache.cheatCapture or deskCache.adminPunishBindCapture then return false end

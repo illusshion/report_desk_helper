@@ -378,13 +378,13 @@ function pushQuickScenarioBtnStyle(isWatch)
         imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.48, 0.52, 1.0))
         imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.75, 0.95, 0.98, 1.0))
     else
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.20, 0.16, 0.28, 0.95))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.30, 0.22, 0.42, 1.0))
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.16, 0.24, 0.96))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28, 0.22, 0.38, 1.0))
         imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
         imgui.PushStyleColor(imgui.Col.Text, col_label)
     end
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 10)
-    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 4))
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 5))
 end
 
 -- Pop Quick Scenario Btn Style
@@ -471,7 +471,7 @@ function playerMessageScenarioBody(m)
     return body
 end
 
--- Get Last Player Scenario Body
+-- Last Player Scenario Body
 function getLastPlayerScenarioBody(t)
     if not t or type(t.messages) ~= 'table' then return '' end
     for i = #t.messages, 1, -1 do
@@ -1179,50 +1179,30 @@ end
 function syncThreadIdsFromPlayerCache()
     local dirty = false
     for _, t in pairs(threads) do
-        local liveId = playerNickToId[nickKey(t.nick)]
-        if liveId ~= nil and t.id ~= liveId then
-            t.lastId = t.id
-            t.id = liveId
-            dirty = true
+        local liveId = onlinePlayersGetIdByNick(t.nick)
+        if liveId ~= nil then
+            if t.id ~= liveId then
+                t.lastId = t.id
+                t.id = liveId
+                dirty = true
+            end
+            if t.stale then
+                t.stale = nil
+                dirty = true
+            end
         end
     end
     if dirty then markDirtyThreads() end
 end
 
--- Refresh Player Nick Cache
+-- Refresh Player Nick Cache (delegates to OnlinePlayers SSOT)
 function refreshPlayerNickCache(force)
-    local now = os.clock()
-    if not force and playerNickCacheAt > 0 and (now - playerNickCacheAt) < PLAYER_NICK_CACHE_INTERVAL then
-        return false
-    end
-    playerNickCacheAt = now
-    playerNickToId = {}
-    if not isSampAvailable() then return true end
-    local maxId = MAX_PLAYER_ID
-    if sampGetMaxPlayerId then
-        maxId = sampGetMaxPlayerId(false) or maxId
-    end
-    for i = 0, maxId do
-        if sampIsPlayerConnected(i) then
-            local pn = sampGetPlayerNickname(i)
-            if pn then
-                local nk = nickKey(pn)
-                if nk ~= '' then
-                    playerNickToId[nk] = i
-                end
-            end
-        end
-    end
-    syncThreadIdsFromPlayerCache()
-    return true
+    return onlinePlayersRescan(force == true)
 end
 
 -- Find Player Id By Nick
 function findPlayerIdByNick(nick)
-    refreshPlayerNickCache(false)
-    local nk = nickKey(nick)
-    if nk == '' then return nil end
-    return playerNickToId[nk]
+    return onlinePlayersGetIdByNick(nick)
 end
 
 -- Find Thread Key By Nick

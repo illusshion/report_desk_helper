@@ -83,7 +83,7 @@ function main()
         end,
         onSpectatingOff = function()
             deskLeaveSpectateMode()
-            deskApplyInputPolicy()
+            deskInputPolicyApply()
             if showWindow[0] then updateDeskInputCapture() end
         end,
         restoreSpectateCamera = deskRestoreSpectateCamera,
@@ -181,6 +181,9 @@ function main()
     pcall(installDeskGodmodeHealthHook)
     pcall(installDeskSpRefreshHooks)
     pcall(sampSyncAllPlayerColorsAsync)
+    pcall(onlinePlayersRescan, true)
+    pcall(deskRegisterHookEntries)
+    pcall(deskFinalizeReportDeskExport)
     sessionLive = true
     lastSettingsSave = os.clock()
     lastThreadsSave = os.clock()
@@ -205,26 +208,10 @@ function main()
     lua_thread.create(function()
         pcall(checkerInit)
         wait(0)
-        -- Не сбрасываем chatSeen: live-репорты могли прийти после seedSeenChatLines.
-        if sampGetChatString and type(profanityMarkLineSeen) == 'function'
-                and type(chatLineSeenKey) == 'function' then
-            local pollMax = CHAT_POLL_LINES_OPEN or 100
-            for i = 0, pollMax - 1 do
-                local line = sampGetChatString(i) or ''
-                if line ~= '' then
-                    profanityMarkLineSeen(chatLineSeenKey(line))
-                end
-                if i % 20 == 19 then wait(0) end
-            end
-        end
-        if not chatLogReady then chatLogReady = true end
         pcall(getFilteredThreadKeys)
     end)
 
     local lastPoll = 0
-    local lastApHookCheck = 0
-    local pollInterval = 0.25
-    local lastNickCacheTick = 0
     local lastHookCheck = 0
     local lastCheckerTickAt = 0
     local CHECKER_TICK_SP_INTERVAL = 0.5
@@ -233,9 +220,6 @@ function main()
 
     local function resolveIngestPollInterval()
         if type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive() then
-            if showWindow[0] then
-                return POLL_INTERVAL_SAFETY_OPEN or 0.12
-            end
             return POLL_INTERVAL_SAFETY
         end
         return showWindow[0] and POLL_INTERVAL or POLL_INTERVAL_CLOSED
@@ -268,6 +252,7 @@ function main()
     while true do
         wait(mainLoopWaitMs())
 
+
         if deskCache.uiCacheDirty then
             invalidateUiCaches()
             deskCache.uiCacheDirty = nil
@@ -278,11 +263,6 @@ function main()
             myNickTick = os.clock()
         end
 
-        if os.clock() - lastNickCacheTick >= PLAYER_NICK_CACHE_INTERVAL then
-            refreshPlayerNickCache(false)
-            lastNickCacheTick = os.clock()
-        end
-
         if type(deskSampInGame) == 'function' then
             local inGame = deskSampInGame()
             if inGame and not deskWasSampInGame then
@@ -290,21 +270,16 @@ function main()
                 if type(checkerState) == 'table' then
                     checkerState.hudPlaced = false
                 end
+                if type(deskAdminLevelState) == 'table' then
+                    deskAdminLevelState.fromLogin = false
+                    deskAdminLevelState.loginLevel = nil
+                end
+                pcall(onlinePlayersRescan, true)
             end
             deskWasSampInGame = inGame
         end
 
         if type(settings) == 'table' and settings.admin_punish_enabled == true then
-            if type(adminPunishEnsureServerHook) == 'function' then
-                local apHookInterval = 5.0
-                local hookOk = type(deskIsServerMsgHookActive) == 'function' and deskIsServerMsgHookActive()
-                local profOk = deskCache and deskCache.profHooksInstalled == true
-                if not hookOk or not profOk then apHookInterval = 1.0 end
-                if os.clock() - lastApHookCheck >= apHookInterval then
-                    pcall(adminPunishEnsureServerHook)
-                    lastApHookCheck = os.clock()
-                end
-            end
             if type(pollAdminPunishChat) == 'function'
                     and (type(adminPunishHooksActive) ~= 'function' or not adminPunishHooksActive()) then
                 pcall(pollAdminPunishChat)
@@ -327,8 +302,7 @@ function main()
             pcall(tickAutoReplyWorker)
         end
 
-        deskSampChatGuardFrame()
-        deskApplyInputPolicy()
+        pcall(deskInputPolicyApply)
         if type(deskAnyBindCapture) == 'function' and deskAnyBindCapture() then
             pcall(deskBindCapturePollFrame)
         end
@@ -340,17 +314,9 @@ function main()
         end
 
         pollInterval = resolveIngestPollInterval()
-        if deskCache and deskCache.ingestReconcileAt
-                and (os.clock() - deskCache.ingestReconcileAt) < 0.5 then
-            pollInterval = math.min(pollInterval or 1, 0.05)
-        end
         if pollInterval and os.clock() - lastPoll >= pollInterval then
             pcall(pollReportIngest)
             lastPoll = os.clock()
-            if deskCache and deskCache.ingestReconcileAt
-                    and (os.clock() - deskCache.ingestReconcileAt) >= 0.45 then
-                deskCache.ingestReconcileAt = nil
-            end
         end
         if type(deskSpectateStats) == 'table' and deskSpectateStats.hasOutboundPending and deskSpectateStats.hasOutboundPending() then
             pcall(deskSpectateStats.flushOutbound)

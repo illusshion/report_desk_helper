@@ -375,6 +375,7 @@ local deskCache = {
     skinGridLayoutSig = '',
     skinGridPage = 1,
     skinPageSig = '',
+    hooks = {},
     serverMsgHandler = nil,
     gamePassVks = { [0x2C] = true, [0x7B] = true },
     specDialogHandler = nil,
@@ -400,6 +401,13 @@ local deskCache = {
     hookPrevProfChat = nil,
     mainPanelFrame = nil,
     deskWindowFrame = nil,
+    deskWinFullscreen = false,
+    deskWinNeedLayout = false,
+    deskWinRestore = nil,
+    deskWinLastNormal = nil,
+    deskFsKeyPrev = false,
+    deskUiFramesInstalled = false,
+    d3dHandlersInstalled = false,
     catalogFlushFrame = nil,
     deskUiFrames = nil,
     spMenuRpcHandler = nil,
@@ -485,10 +493,12 @@ local AUTO_RETRY_MAX = 4
 local AUTO_REPLY_DELAY_MS = 250
 myPlayerNick = ''
 myNickTick = 0
+deskAdminLevelState = { fromLogin = false, detected = false }
 local PLAYER_NICK_CACHE_INTERVAL = 2.0  -- интервал кэша nick→id, сек
 local CHAT_UI_RENDER_MAX = 100
 playerNickToId = {}
 playerNickCacheAt = 0
+onlinePlayersById = {}
 local chatSeen = { lines = {}, order = {}, deferred = {}, consumed = {}, consumedOrder = {} }
 chatLogReady = false
 styleApplied = false
