@@ -1,12 +1,12 @@
 {
     "tag":  "v1-beta.1.5",
     "version":  "1 Beta.1.5",
-    "built_at":  "2026-06-15T01:24:04.0587967+03:00",
+    "built_at":  "2026-06-15T01:36:12.6038853+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
                                      "path":  "dist\\report_desk_assets.zip",
-                                     "sha256":  "9fcabd044e047767b4009fc330094f0f4d244248fe5eb38c45b2a36664fcbe45",
+                                     "sha256":  "a660f4b89fc38d4cea1e0b0561d8d695cad53edd652e50cc6befff6a45efe8e6",
                                      "bytes":  24055546
                                  },
                       "bootstrap_file":  {
@@ -17,7 +17,7 @@
                       "version":  "1 Beta.1.5",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "acb53856d6762e56bf4a0281c1182db42dca1859a869e7e87605b30318bdc51a",
+                                  "sha256":  "d911fc266a57f101d3ddab1298e3217977100df2cac217c97885faa4840d95c4",
                                   "bytes":  32247938
                               },
                       "bootstrap":  "AdminDesk.luac",

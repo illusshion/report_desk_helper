@@ -119,7 +119,7 @@
                                      "res/report_desk_skins",
                                      "res/report_desk_vehicles"
                                  ],
-                   "sha256":  "9fcabd044e047767b4009fc330094f0f4d244248fe5eb38c45b2a36664fcbe45",
+                   "sha256":  "a660f4b89fc38d4cea1e0b0561d8d695cad53edd652e50cc6befff6a45efe8e6",
                    "asset":  "report_desk_assets.zip",
                    "url":  "https://github.com/illusshion/report_desk_helper/releases/download/v1-beta.1.5/report_desk_assets.zip"
                },
