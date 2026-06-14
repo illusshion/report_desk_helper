@@ -836,31 +836,124 @@ local function localFileMatches(spec)
     return true
 end
 
-local function needsRuntimeLibs()
-    local req = {
-        'lib\\samp\\events.lua',
-        'lib\\encoding.lua',
-        'lib\\iconv.dll',
-        'lib\\vkeys.lua',
-        'lib\\vector3d.lua',
-    }
-    for _, rel in ipairs(req) do
+local RUNTIME_LIB_PATHS = {
+    'lib\\samp\\events.lua',
+    'lib\\samp\\raknet.lua',
+    'lib\\samp\\synchronization.lua',
+    'lib\\samp\\events\\bitstream_io.lua',
+    'lib\\samp\\events\\core.lua',
+    'lib\\samp\\events\\extra_types.lua',
+    'lib\\samp\\events\\handlers.lua',
+    'lib\\samp\\events\\utils.lua',
+    'lib\\encoding.lua',
+    'lib\\iconv.dll',
+    'lib\\vkeys.lua',
+    'lib\\vector3d.lua',
+}
+
+local function runtimeFilesPresent()
+    for _, rel in ipairs(RUNTIME_LIB_PATHS) do
         if not doesFileExist(M.path(rel)) then
-            return true
+            return false
         end
     end
-    return false
+    return true
+end
+
+local function runtimeLibsSha256(manifest)
+    if type(manifest) == 'table' and type(manifest.runtime_libs) == 'table' then
+        local sha = tostring(manifest.runtime_libs.sha256 or ''):lower()
+        if sha ~= '' then
+            return sha
+        end
+    end
+    return ''
+end
+
+local function runtimeLibsInstalled(manifest)
+    if not runtimeFilesPresent() then
+        return false
+    end
+    local want = runtimeLibsSha256(manifest)
+    if want == '' then
+        return true
+    end
+    local state = M.readState() or {}
+    return tostring(state.runtime_libs_sha256 or ''):lower() == want
+end
+
+local function needsRuntimeLibs(manifest)
+    return not runtimeLibsInstalled(manifest)
+end
+
+local function readTextHead(path, maxBytes)
+    if not doesFileExist(path) then return nil end
+    local f = io.open(path, 'r')
+    if not f then return nil end
+    local head = f:read(maxBytes or 16384) or ''
+    f:close()
+    return head
+end
+
+local function mimguiHasDeskPatch()
+    local head = readTextHead(M.path('lib\\mimgui\\init.lua'), 16384)
+    return head and head:find('deskPassesGameKey', 1, true) ~= nil
+end
+
+local function mimguiSha256(manifest)
+    if type(manifest) == 'table' and type(manifest.mimgui) == 'table' then
+        local sha = tostring(manifest.mimgui.sha256 or ''):lower()
+        if sha ~= '' then
+            return sha
+        end
+    end
+    return ''
+end
+
+local function deskMimguiInstalled(manifest)
+    if not doesFileExist(M.path('lib\\mimgui\\init.lua'))
+        or not doesFileExist(M.path('lib\\mimgui\\cimguidx9.dll')) then
+        return false
+    end
+    if not mimguiHasDeskPatch() then
+        return false
+    end
+    local want = mimguiSha256(manifest)
+    if want == '' then
+        return true
+    end
+    local state = M.readState() or {}
+    return tostring(state.mimgui_sha256 or ''):lower() == want
+end
+
+local function needsDeskMimgui(manifest)
+    return not deskMimguiInstalled(manifest)
+end
+
+local function markRuntimeLibsInstalled(manifest)
+    local want = runtimeLibsSha256(manifest)
+    if want == '' then return end
+    local state = M.readState() or {}
+    state.runtime_libs_sha256 = want
+    writeState(state)
+end
+
+local function markDeskMimguiInstalled(manifest)
+    local want = mimguiSha256(manifest)
+    if want == '' then return end
+    local state = M.readState() or {}
+    state.mimgui_sha256 = want
+    writeState(state)
 end
 
 -- Публичный API модуля.
-function M.needsRuntimeLibs()
-    return needsRuntimeLibs()
+function M.needsRuntimeLibs(manifest)
+    return needsRuntimeLibs(manifest)
 end
 
 -- Публичный API модуля.
 function M.hasMimgui()
-    return doesFileExist(M.path('lib\\mimgui\\init.lua'))
-        and doesFileExist(M.path('lib\\mimgui\\cimguidx9.dll'))
+    return deskMimguiInstalled({})
 end
 
 function M.canRequireMimgui()
@@ -889,7 +982,7 @@ function M.installRuntimeLibsZip(zipPath)
         log('runtime extract: ' .. tostring(err))
         return false
     end
-    if needsRuntimeLibs() then
+    if not runtimeFilesPresent() then
         log('runtime install incomplete after extract')
         return false
     end
@@ -1106,11 +1199,11 @@ local function buildUpdatePlan(manifest, opts)
     end
 
     local rt = runtimeSpec(manifest)
-    if force or needsRuntimeLibs() then
+    if force or needsRuntimeLibs(manifest) then
         plan.runtime = rt
     end
 
-    if force or not M.hasMimgui() then
+    if force or needsDeskMimgui(manifest) then
         plan.mimgui = mimguiSpec(manifest)
     end
 
@@ -1312,6 +1405,7 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
         if not M.installRuntimeLibsZip(downloaded.runtime) then
             return false, 'runtime unpack failed'
         end
+        markRuntimeLibsInstalled(manifest)
         pcall(os.remove, downloaded.runtime)
     end
 
@@ -1321,6 +1415,7 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
             return false, 'mimgui unpack failed'
         end
         package.loaded.mimgui = nil
+        markDeskMimguiInstalled(manifest)
         pcall(os.remove, downloaded.mimgui)
     end
 
@@ -1352,6 +1447,14 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
         files = stateFiles,
         manifest_version = manifestUsesV2(manifest) and M.MANIFEST_VERSION or 1,
     }
+    local rtSha = runtimeLibsSha256(manifest)
+    if rtSha ~= '' and runtimeFilesPresent() then
+        state.runtime_libs_sha256 = rtSha
+    end
+    local mmSha = mimguiSha256(manifest)
+    if mmSha ~= '' and deskMimguiInstalled(manifest) then
+        state.mimgui_sha256 = mmSha
+    end
     writeState(state)
     writeTextFile(M.path(M.LEGACY_CORE_VERSION), state.version .. '\n')
 
@@ -1575,7 +1678,8 @@ function M.diagnose()
         manifest_error = nil,
         state_path = M.path(M.STATE_FILE),
         files = {},
-        runtime_libs_ok = not needsRuntimeLibs(),
+        runtime_libs_ok = false,
+        mimgui_ok = false,
         core_present = M.corePresent(),
         assets_version = (M.readState() or {}).assets_version or '',
     }
@@ -1587,6 +1691,8 @@ function M.diagnose()
     result.manifest_ok = true
     result.remote_version = tostring(manifest.version or '')
     result.manifest_v2 = manifestUsesV2(manifest)
+    result.runtime_libs_ok = runtimeLibsInstalled(manifest)
+    result.mimgui_ok = deskMimguiInstalled(manifest)
     if type(manifest.assets) == 'table' then
         result.remote_assets_version = tostring(manifest.assets.version or '')
         result.assets_ok = tostring(result.assets_version) == result.remote_assets_version
@@ -1620,7 +1726,7 @@ function M.diagnose()
             break
         end
     end
-    if not result.runtime_libs_ok then
+    if not result.runtime_libs_ok or not result.mimgui_ok then
         result.up_to_date = false
     end
     return result
@@ -1638,7 +1744,10 @@ function M.printDiagnostics()
     M.chatSay('local v' .. d.local_version .. ' / remote v' .. d.remote_version
         .. (d.up_to_date and ' (\xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xEE)' or ' (\xED\xF3\xE6\xED\xEE \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5)'))
     if not d.runtime_libs_ok then
-        M.chatSay('runtime libs: \xED\xE5\xEF\xEE\xEB\xED\xFB\xE5')
+        M.chatSay('runtime libs: \xED\xE5\xEF\xEE\xEB\xED\xFB\xE5 \xE8\xEB\xE8 \xF3\xF1\xF2\xE0\xF0\xE5\xEB\xE8')
+    end
+    if not d.mimgui_ok then
+        M.chatSay('mimgui: \xED\xF3\xE6\xE5\xED patched lib/mimgui (\xED\xE5 vanilla)')
     end
     local bad = 0
     for _, entry in ipairs(d.files) do
@@ -2112,7 +2221,8 @@ end
 
 function M.ensureRuntimeLibs(manifest, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
-    if not needsRuntimeLibs() then
+    manifest = manifest or {}
+    if not needsRuntimeLibs(manifest) then
         return true, false
     end
     local spec = runtimeSpec(manifest or {})
@@ -2151,6 +2261,7 @@ function M.ensureRuntimeLibs(manifest, opts)
         end
         return false, false
     end
+    markRuntimeLibsInstalled(manifest)
     log('runtime libs OK')
     return true, true
 end
@@ -2160,19 +2271,25 @@ function M.ensureDependencies(manifest, opts)
     manifest = manifest or {}
     local changed = false
 
-    if not doesFileExist(M.path(M.ICONV_DLL)) then
+    local iv = iconvSpec(manifest)
+    if not localFileMatches({
+        dest = iv.dest,
+        sha256 = iv.sha256,
+        bytes = iv.bytes,
+        pending = false,
+    }) then
         local ok = select(1, M.ensureIconvDll(manifest, opts))
         if not ok then return false, false end
         changed = true
     end
 
-    if needsRuntimeLibs() then
+    if needsRuntimeLibs(manifest) then
         local ok = select(1, M.ensureRuntimeLibs(manifest, opts))
         if not ok then return false, false end
         changed = true
     end
 
-    if not M.hasMimgui() then
+    if needsDeskMimgui(manifest) then
         local spec = mimguiSpec(manifest)
         if opts.userFacing then
             log('installing mimgui')
@@ -2243,10 +2360,12 @@ function M.ensureDependencies(manifest, opts)
             overlayHide()
             setOverlayContext(nil)
         end
+        markDeskMimguiInstalled(manifest)
         log('mimgui OK')
         changed = true
     elseif not M.canRequireMimgui() then
-        log('mimgui present but require failed (not re-downloading)')
+        log('mimgui present but require failed')
+        return false, false
     end
 
     overlayHide()

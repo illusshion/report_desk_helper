@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.1
+
+**Hotfix: принудительная переустановка runtime/mimgui/iconv при чужих или устаревших lib.**
+
+- Autoupdate: проверка полного набора `lib/samp/*`, SHA256 `report_desk_runtime_libs.zip` и patched `mimgui` (`deskPassesGameKey`), не только «файл существует».
+- Исправлено: админы с vanilla mimgui / чужим SAMP.Lua / старым iconv больше не остаются на несовместимых библиотеках — краши в рандомное время.
+- `/deskupdate` и `/deskrepair` показывают отдельно статус runtime libs и patched mimgui.
+
 ## 1 Beta.1
 
 **Публичный Beta-релиз Admin Report Desk.**

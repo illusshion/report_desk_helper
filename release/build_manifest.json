@@ -1,24 +1,24 @@
 {
-    "tag":  "v1-beta.1",
-    "version":  "1 Beta.1",
-    "built_at":  "2026-06-14T16:39:34.3497100+03:00",
+    "tag":  "v1-beta.1.1",
+    "version":  "1 Beta.1.1",
+    "built_at":  "2026-06-14T20:54:42.5236350+03:00",
     "notes":  "Upload dist artifacts to GitHub Release AFTER git push main. SHA256 must match.",
     "artifacts":  {
                       "assets":  {
                                      "path":  "dist\\report_desk_assets.zip",
-                                     "sha256":  "f125d0e407ef0b77f9d9fadc5c8ac2f4ac60e0a5ea158070cd34b75889b1fca3",
+                                     "sha256":  "046d274df3919bb5fb311324db80f5574a0de295bafcf2e27479ff956e2b5855",
                                      "bytes":  24055546
                                  },
                       "bootstrap_file":  {
                                              "path":  "dist\\AdminDesk.luac",
-                                             "sha256":  "23d5dcaf9f52ad3eecc31d7df8330aaad54632d5218e192022b025999af75bec",
-                                             "bytes":  13991
+                                             "sha256":  "cb4f3ac44ffeeb7e72be0271c0d827f90c72b5908e864be92efb66ec44f43f64",
+                                             "bytes":  13993
                                          },
-                      "version":  "1 Beta.1",
+                      "version":  "1 Beta.1.1",
                       "zip":  {
                                   "path":  "dist\\report_desk_helper_main.zip",
-                                  "sha256":  "ecc8901151989e38c64cb7bb217823c2d382cb57a8fd587ae5abef4fa450e4cb",
-                                  "bytes":  32222546
+                                  "sha256":  "47786c0513c92aa1ee07868f395ef0c91952a0356ee9e69a2b44cca34b76f441",
+                                  "bytes":  32226359
                               },
                       "bootstrap":  "AdminDesk.luac",
                       "core_asset":  "AdminDeskCore.luac",
@@ -31,13 +31,13 @@
                       "verified":  true,
                       "deps":  {
                                    "path":  "dist\\report_desk_deps.lua",
-                                   "sha256":  "314973b7cf55021857fd86d2cc1bc5781c045867f8640c309b827dbe16eec1b5",
-                                   "bytes":  2896
+                                   "sha256":  "7b79b6aa873ff5a9ce63bba04f4594d7dcccb7dcb983dff0c63f192172e64156",
+                                   "bytes":  3127
                                },
                       "autoupdate":  {
                                          "path":  "dist\\report_desk_autoupdate.lua",
-                                         "sha256":  "f51b1cd6bb076a2c2d4ae94e9621f512d5fb550f7a71a9e5208c1d3ed24d1cf5",
-                                         "bytes":  74962
+                                         "sha256":  "b30a8d7079d02567113ca9a30dcda339028234945fcb4b7fd9a2e6295aff6a93",
+                                         "bytes":  78540
                                      }
                   },
     "verified":  true,

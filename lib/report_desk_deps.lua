@@ -13,7 +13,14 @@ function M.path(rel)
 end
 
 function M.hasMimgui()
-    return doesFileExist(M.path(M.MIMGUI_INIT)) and doesFileExist(M.path(M.MIMGUI_DLL))
+    if not doesFileExist(M.path(M.MIMGUI_INIT)) or not doesFileExist(M.path(M.MIMGUI_DLL)) then
+        return false
+    end
+    local f = io.open(M.path(M.MIMGUI_INIT), 'r')
+    if not f then return false end
+    local head = f:read(16384) or ''
+    f:close()
+    return head:find('deskPassesGameKey', 1, true) ~= nil
 end
 
 function M.canRequireMimgui()
