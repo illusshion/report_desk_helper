@@ -16214,6 +16214,7 @@ local catWarmup = {
 local cheatState = {
     godmode = false,
     gmHealthPrimed = false,
+    gmVehHealthPrimed = false,
     gmHpCmdAt = 0,
     wallhack = false,
     hudDrag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 },
@@ -20270,21 +20271,50 @@ end
 function cheatsApplyGodmode(on)
     cheatState.godmode = on and true or false
     if uiCheatGm then uiCheatGm[0] = cheatState.godmode end
+    if not cheatState.godmode then
+        cheatState.gmHealthPrimed = false
+        cheatState.gmVehHealthPrimed = false
+    end
     if not doesCharExist or not doesCharExist(PLAYER_PED) then return end
     local proofs = cheatState.godmode
     setCharProofs(PLAYER_PED, proofs, proofs, proofs, proofs, proofs)
     if isCharInAnyCar(PLAYER_PED) then
         local car = storeCarCharIsInNoSave(PLAYER_PED)
-        if car then setCarProofs(car, proofs, proofs, proofs, proofs, proofs) end
+        if car then
+            setCarProofs(car, proofs, proofs, proofs, proofs, proofs)
+            if proofs then
+                local vhp = tonumber(getCarHealth(car)) or 1000
+                if vhp < 950 then
+                    setCarHealth(car, 1000)
+                    fixCar(car)
+                end
+            end
+        end
     end
 end
 
--- РљР°Рє AdminTools: РїРµСЂРІС‹Р№ SETPLAYERHEALTH РїСЂРѕРїСѓСЃРєР°РµРј, РґР°Р»СЊС€Рµ Р±Р»РѕРєРёСЂСѓРµРј HP < 5.
+-- Как AdminTools: первый SETPLAYERHEALTH пропускаем, дальше блокируем HP < 5.
 function cheatsOnSetPlayerHealth(health)
     if not cheatState.godmode then return end
     if not cheatState.gmHealthPrimed then
         cheatState.gmHealthPrimed = true
     elseif (tonumber(health) or 0) < 5 then
+        return false
+    end
+end
+
+-- Серверный SETVEHICLEHEALTH: для своей машины блокируем сильный урон (как HP игрока).
+function cheatsOnSetVehicleHealth(vehicleId, health)
+    if not cheatState.godmode then return end
+    if not isCharInAnyCar(PLAYER_PED) then return end
+    local car = storeCarCharIsInNoSave(PLAYER_PED)
+    if not car then return end
+    if type(sampGetVehicleIdByCarHandle) ~= 'function' then return end
+    local ok, myVehId = sampGetVehicleIdByCarHandle(car)
+    if not ok or tonumber(vehicleId) ~= tonumber(myVehId) then return end
+    if not cheatState.gmVehHealthPrimed then
+        cheatState.gmVehHealthPrimed = true
+    elseif (tonumber(health) or 0) < 250 then
         return false
     end
 end
@@ -34633,6 +34663,7 @@ end
 
 function uninstallDeskUiFrames()
     if type(deskCache) ~= 'table' then return end
+    rawset(_G, '__desk_imgui_init_hooked', nil)
     local frames = deskCache.deskUiFrames
     if type(frames) == 'table' then
         for i = 1, #frames do
@@ -35614,7 +35645,7 @@ function deskOnPlayerQuit(playerId, reason)
     end
 end
 
--- Godmode: РєР°Рє AdminTools вЂ” С‚РѕР»СЊРєРѕ onSetPlayerHealth.
+-- Godmode: как AdminTools — onSetPlayerHealth + onSetVehicleHealth, setCarProofs каждый тик.
 function installDeskGodmodeHealthHook()
     if not sampev then return end
     if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
@@ -35637,9 +35668,37 @@ function installDeskGodmodeHealthHook()
     sampev.onSetPlayerHealth = deskCache.gmHealthHandler
 end
 
+function installDeskGodmodeVehicleHealthHook()
+    if not sampev then return end
+    if deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler then
+        return
+    end
+    local prev = sampev.onSetVehicleHealth
+    if prev == deskCache.gmVehHealthHandler then prev = nil end
+    deskCache.hookPrevSetVehicleHealth = prev
+    deskCache.gmVehHealthHandler = function(vehicleId, health)
+        local block
+        local okGm, errGm = pcall(function()
+            block = cheatsOnSetVehicleHealth(vehicleId, health)
+        end)
+        if not okGm then
+            print('[Report Desk] godmode veh hook: ' .. tostring(errGm))
+        end
+        if block == false then return false end
+        return deskCallHookPrev(deskCache.hookPrevSetVehicleHealth, vehicleId, health)
+    end
+    sampev.onSetVehicleHealth = deskCache.gmVehHealthHandler
+end
+
+function installDeskGodmodeHooks()
+    installDeskGodmodeHealthHook()
+    installDeskGodmodeVehicleHealthHook()
+end
+
 function deskGodmodeHooksActive()
     if not sampev then return false end
     return deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler
+        and deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler
 end
 
 -- Quit РёРіСЂРѕРєР° в†’ checker, spectate exit, thread offline.
@@ -35867,7 +35926,11 @@ function deskUninstall()
     if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
         sampev.onSetPlayerHealth = deskCache.hookPrevSetPlayerHealth
     end
+    if deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler then
+        sampev.onSetVehicleHealth = deskCache.hookPrevSetVehicleHealth
+    end
     deskCache.gmHealthHandler = nil
+    deskCache.gmVehHealthHandler = nil
     deskCache.serverMsgHandler = nil
     deskCache.specDialogHandler = nil
     deskCache.specToggleHandler = nil
@@ -36048,7 +36111,7 @@ function deskRegisterHookEntries()
           installer = installDeskPlayerColorHook },
         { id = 'godmode', event = 'onSetPlayerHealth',
           checker = deskGodmodeHooksActive,
-          installer = installDeskGodmodeHealthHook },
+          installer = installDeskGodmodeHooks },
         { id = 'spRefresh', event = 'onPlayerSync',
           checker = function()
               return deskCache.spPlayerSyncHandler and sampev.onPlayerSync == deskCache.spPlayerSyncHandler
@@ -36383,7 +36446,7 @@ function main()
     pcall(installDeskPlayerJoinHook)
     pcall(installDeskPlayerStreamInHook)
     pcall(installDeskPlayerColorHook)
-    pcall(installDeskGodmodeHealthHook)
+    pcall(installDeskGodmodeHooks)
     pcall(installDeskSpRefreshHooks)
     pcall(sampSyncAllPlayerColorsAsync)
     pcall(onlinePlayersRescan, true)
@@ -36431,6 +36494,7 @@ function main()
     end
 
     local function mainLoopWaitMs()
+        if cheatState.godmode then return 0 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
         if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 2 end
