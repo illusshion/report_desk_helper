@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.3
+
+**Hotfix: сценарии «собесы» / анонсы /news.**
+
+- Убран устаревший fallback-сценарий «Собеседование» с ответом «Набор фракций: /help или F1» из ядра.
+- Миграция pack v3: удаляет старый «Собеседование» из user config, подтягивает «Анонсы /news».
+- Intent `faq.gameplay.join_news`: stem + триггер «собесы»; сужены патчи `faq.gameplay.join` (убран широкий `join`, «посмотреть+набор»).
+- Autoupdate: `report_desk_intents.lua`, extensions и default user pack теперь обновляются по SHA256 вместе с core.
+
 ## 1 Beta.1.2
 
 **Hotfix: FPS при открытом окне /adesk (релизный путь).**

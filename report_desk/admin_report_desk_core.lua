@@ -15776,8 +15776,8 @@ INTENTS_CONFIG_PATH = getWorkingDirectory() .. '\\config\\report_desk_intents.lu
 INTENT_STEM_BLOCKLIST_PATH = getWorkingDirectory() .. '\\config\\intent_stem_blocklist.lua'
 INTENT_EXTENSIONS_PATH = getWorkingDirectory() .. '\\config\\intent_trigger_extensions.lua'
 INTENT_CORPUS_QUEUE_PATH = getWorkingDirectory() .. '\\config\\intent_corpus_queue.jsonl'
-SCENARIOS_PACK_VERSION = 2
-INTENTS_VERSION = 1
+SCENARIOS_PACK_VERSION = 3
+INTENTS_VERSION = 2
 INTENT_MIN_CONFIDENCE = 12
 INTENT_CLOSE_RATIO = 0.92
 INTENT_MAX_BUTTONS = 2
@@ -16152,20 +16152,8 @@ function ensureCheatsSettings()
     ch.mask_player_id = not (ch.mask_player_id == false or tonumber(ch.mask_player_id) == 0)
 end
 profanity_words = {}
+-- Минимальный fallback до загрузки user/default pack.
 local DEFAULT_QUICK_SCENARIOS = {
-    {
-        label = '\xD1\xEE\xE1\xE5\xF1\xE5\xE4\xEE\xE2\xE0\xED\xE8\xE5',
-        enabled = true,
-        match = 'contains',
-        keywords = {
-            '\xF1\xEE\xE1\xE5\xF1', '\xF1\xEE\xE1\xE5\xF1\xEE\xE2\xE0\xED', '\xED\xE0\xE1\xEE\xF0',
-            '\xEA\xE0\xEA+\xF3\xE7\xED\xE0\xF2\xFC+\xF1\xEE\xE1\xE5\xF1',
-        },
-        reply = '\xCD\xE0\xE1\xEE\xF0 \xF4\xF0\xE0\xEA\xF6\xE8\xE9: \xF1\xEC. /help \xE8\xEB\xE8 F1. \xCF\xEE\xEC\xEE\xF9\xFC: /gps.',
-        action = 'reply',
-        priority = 50,
-        skip_if_report_id = true,
-    },
     {
         label = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC',
         enabled = true,
@@ -18605,6 +18593,9 @@ function reloadDeskIntentsFromSources(preferLegacyScenarios)
             and type(loadIntentsFromFile) == 'function'
             and loadIntentsFromFile(INTENTS_CONFIG_PATH) then
         return true
+    end
+    if not doesFileExist(INTENTS_CONFIG_PATH) then
+        print('[Report Desk] intents: missing ' .. tostring(INTENTS_CONFIG_PATH) .. ' — using legacy scenarios')
     end
     if type(quickScenarios) == 'table' and #quickScenarios > 0 then
         local adapted = adaptLegacyScenariosToIntents(quickScenarios)
@@ -28044,8 +28035,33 @@ function mergeScenarioPack(userList, defaultList)
     return merged, added
 end
 
+function migrateObsoleteInterviewScenario()
+    local removed = 0
+    for i = #quickScenarios, 1, -1 do
+        local sc = quickScenarios[i]
+        if type(sc) ~= 'table' then goto continue end
+        local key = scenarioLabelKey(sc.label)
+        local reply = normalizeMatchText(sc.reply or '')
+        local stale = key == 'собеседование'
+            or (reply:find('/help', 1, true) and reply:find('f1', 1, true))
+        if stale then
+            table.remove(quickScenarios, i)
+            removed = removed + 1
+        end
+        ::continue::
+    end
+    if removed > 0 then
+        bumpScenariosGen()
+        print(string.format('[Report Desk] scenarios: removed %d obsolete interview pack', removed))
+    end
+    return removed > 0
+end
+
 function migrateScenariosPackIfNeeded()
     local userVer = tonumber(settings.scenarios_pack_version) or 0
+    if userVer < 3 then
+        migrateObsoleteInterviewScenario()
+    end
     if userVer >= SCENARIOS_PACK_VERSION then return end
     local pack = loadDefaultScenarioPack()
     if not pack then return end
@@ -28145,10 +28161,12 @@ end
 
 -- Load Config
 function loadConfig()
-    local scenarioDefaults = DEFAULT_QUICK_SCENARIOS
-    if type(scenarioDefaults) ~= 'table' then
-        local pack = loadDefaultScenarioPack()
-        scenarioDefaults = pack and pack.quick_scenarios or {}
+    local scenarioDefaults = {}
+    local pack = loadDefaultScenarioPack()
+    if pack and scenariosHasContent(pack.quick_scenarios) then
+        scenarioDefaults = pack.quick_scenarios
+    elseif type(DEFAULT_QUICK_SCENARIOS) == 'table' then
+        scenarioDefaults = DEFAULT_QUICK_SCENARIOS
     end
     quickScenarios = cloneQuickScenarios(scenarioDefaults)
     reloadProfanityWordsFromDict()
@@ -41986,7 +42004,7 @@ return {
       skip_if_report_id = true,
       action = "reply",
       reply = "/join /news",
-      keywords = {"собеседование", "собеседован", "собес", "список+собес", "список+собеседован", "как+собес", "когда+собес", "анонс+набор", "анонс+собес", "когда+набор", "/news", "куда+собес", "посмотреть+собес"},
+      keywords = {"собеседование", "собеседован", "собес", "собесы", "список+собес", "список+собеседован", "как+собес", "когда+собес", "анонс+набор", "анонс+собес", "когда+набор", "/news", "куда+собес", "посмотреть+собес"},
     },
     {
       label = "Набор /join",
