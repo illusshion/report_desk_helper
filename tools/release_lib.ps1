@@ -400,7 +400,11 @@ function Build-DeskVersionJson {
         @{ key = 'report_desk_zip.lua'; dest = 'lib/report_desk_zip.lua'; pending = $false; path = 'dist\report_desk_zip.lua' },
         @{ key = 'report_desk_fs.lua'; dest = 'lib/report_desk_fs.lua'; pending = $false; path = 'dist\report_desk_fs.lua' },
         @{ key = $CoreAssetName; dest = "report_desk/$CoreAssetName"; pending = $false; path = "dist\report_desk\$CoreAssetName" },
-        @{ key = 'iconv.dll'; dest = 'lib/iconv.dll'; pending = $false; path = 'dist\iconv.dll' }
+        @{ key = 'iconv.dll'; dest = 'lib/iconv.dll'; pending = $false; path = 'dist\iconv.dll' },
+        @{ key = 'report_desk_intents.lua'; dest = 'config/report_desk_intents.lua'; pending = $false; path = 'config\report_desk_intents.lua' },
+        @{ key = 'intent_trigger_extensions.lua'; dest = 'config/intent_trigger_extensions.lua'; pending = $false; path = 'config\intent_trigger_extensions.lua' },
+        @{ key = 'intent_stem_blocklist.lua'; dest = 'config/intent_stem_blocklist.lua'; pending = $false; path = 'config\intent_stem_blocklist.lua' },
+        @{ key = 'admin_report_desk_user.default.lua'; dest = 'config/admin_report_desk_user.default.lua'; pending = $false; path = 'config\admin_report_desk_user.default.lua' }
     )
     $files = @{}
     foreach ($spec in $fileSpecs) {
@@ -613,7 +617,16 @@ function Test-DeskReleaseArtifacts {
         throw "Release verify failed: core_url does not reference $CoreAssetName"
     }
 
-    $requiredKeys = @($BootstrapAssetName, 'report_desk_autoupdate.lua', 'report_desk_deps.lua', $CoreAssetName, 'iconv.dll')
+    $requiredKeys = @(
+        $BootstrapAssetName,
+        'report_desk_autoupdate.lua',
+        'report_desk_deps.lua',
+        $CoreAssetName,
+        'iconv.dll',
+        'report_desk_intents.lua',
+        'intent_trigger_extensions.lua',
+        'intent_stem_blocklist.lua'
+    )
     foreach ($key in $requiredKeys) {
         if (-not $manifest.files.$key) {
             throw "Release verify failed: version.json files missing $key"
@@ -622,6 +635,9 @@ function Test-DeskReleaseArtifacts {
             'report_desk_autoupdate.lua' = (Join-Path $MoonloaderRoot 'dist\report_desk_autoupdate.lua')
             'report_desk_deps.lua' = (Join-Path $MoonloaderRoot 'dist\report_desk_deps.lua')
             'iconv.dll' = (Join-Path $MoonloaderRoot 'dist\iconv.dll')
+            'report_desk_intents.lua' = (Join-Path $MoonloaderRoot 'config\report_desk_intents.lua')
+            'intent_trigger_extensions.lua' = (Join-Path $MoonloaderRoot 'config\intent_trigger_extensions.lua')
+            'intent_stem_blocklist.lua' = (Join-Path $MoonloaderRoot 'config\intent_stem_blocklist.lua')
         }
         if ($key -eq $CoreAssetName) {
             $distMap[$key] = Join-Path $MoonloaderRoot "dist\report_desk\$CoreAssetName"
@@ -648,6 +664,9 @@ function Test-DeskReleaseArtifacts {
     $autoupdateText = [System.IO.File]::ReadAllText($autoupdatePath, (Get-DeskUtf8NoBom))
     if ($autoupdateText -notlike '*raw.githubusercontent.com*') {
         throw 'Release verify failed: dist autoupdate has no VERSION_JSON_URL'
+    }
+    if ($autoupdateText -notlike '*RUNTIME_LIB_PATHS*' -or $autoupdateText -notlike '*needsDeskMimgui*') {
+        throw 'Release verify failed: autoupdate missing strict runtime/mimgui dependency checks'
     }
 
     $bootstrapSrc = Join-Path $MoonloaderRoot 'tools\admin_desk_bootstrap.lua'

@@ -1,6 +1,6 @@
 -- Intent catalog (UTF-8). Shipped with release; UI edits write config/report_desk_intents.lua.
 return {
-  version = 1,
+  version = 2,
   contexts = {
     thanks_exact = {
       "спасибо большое", "благодарю помогли", "ок понял", "спс админ вы лучший",
@@ -129,9 +129,9 @@ return {
       id = "faq.gameplay.n6",
       context = "faq",
       category = "gameplay",
-      label = "Слить авто в гос",
+      label = "Сдать авто в гос (отель)",
       enabled = true,
-      action = { type = "reply", text = "на рецепшене отеля сдайте авто в гос" },
+      action = { type = "reply", text = "В меню на реcепшене отеля" },
       triggers = {
         any = {
           { all = {"слить", "авто", "гос"} },
@@ -193,7 +193,7 @@ return {
       category = "gameplay",
       label = "Выселиться из отеля",
       enabled = true,
-      action = { type = "reply", text = "на рецепшене отеля" },
+      action = { type = "reply", text = "На первом этаже отеля на ресепшене." },
       triggers = {
         any = {
           { token = "выселиться" },
@@ -203,6 +203,16 @@ return {
           { all = {"выселится", "отеля"} },
           { all = {"выселится", "жилья"} },
         },
+      },
+      exclusions = {
+        { all = {"продать"} },
+        { all = {"слить"} },
+        { all = {"сдать"} },
+        { all = {"гос"} },
+        { all = {"госс"} },
+        { all = {"машин"} },
+        { all = {"авто"} },
+        { all = {"тачку"} },
       },
     },
     {
@@ -310,12 +320,14 @@ return {
       category = "gameplay",
       label = "Анонсы /news",
       enabled = true,
+      stem = true,
       action = { type = "reply", text = "/join /news" },
       triggers = {
         any = {
           { token = "собеседование" },
           { token = "собеседован" },
           { token = "собес" },
+          { token = "собесы" },
           { all = {"список", "собес"} },
           { all = {"список", "собеседован"} },
           { all = {"как", "собес"} },

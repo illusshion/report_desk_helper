@@ -326,9 +326,9 @@ else { Ok 'spectate keysHud uninstall wired' }
 if ($chkHud -notmatch 'checkerHudWantsInput[\s\S]{0,120}checkerHudVisible') {
     Fail 'checkerHudWantsInput must guard checkerHudVisible'
 } else { Ok 'checkerHudWantsInput visibility guard' }
-if ($ui -notmatch 'drawChatHeader[\s\S]{0,200}markDirtyThreads') {
-    Fail 'drawChatHeader must markDirtyThreads on id change'
-} else { Ok 'drawChatHeader markDirtyThreads' }
+if ($ui -notmatch 'chatHeaderResolvePlayer[\s\S]{0,400}markDirtyThreads') {
+    Fail 'chatHeaderResolvePlayer must markDirtyThreads on id change'
+} else { Ok 'chatHeaderResolvePlayer markDirtyThreads' }
 if ($chk -notmatch 's\.onlineIndex = type\(s\.onlineIndex\)') {
     Fail 'checkerState must init onlineIndex table'
 } else { Ok 'checkerState onlineIndex init' }
@@ -344,6 +344,16 @@ if ($spStats -notmatch 'ctx\.specSession = specSession') {
 } else { Ok 'sp_stats_ctx ctx.specSession export' }
 if ($spStats -notmatch 'ctx\.spUi = spUi') { Fail 'sp_stats_ctx must export ctx.spUi' }
 else { Ok 'sp_stats_ctx ctx.spUi export' }
+
+# intent: no stale interview fallback in core state
+$state = Get-Content (Join-Path $lib 'report_desk_state.lua') -Raw -Encoding Default
+if ($state -match 'reply\s*=\s*''[^'']*/help[^'']*F1') {
+    Fail 'report_desk_state.lua must not embed obsolete /help+F1 interview reply'
+} else { Ok 'state no obsolete interview fallback' }
+$intentsCfg = Get-Content (Join-Path $root 'config\report_desk_intents.lua') -Raw -Encoding UTF8
+if ($intentsCfg -notmatch 'id = "faq\.gameplay\.join_news"' -or $intentsCfg -notmatch 'stem\s*=\s*true') {
+    Fail 'report_desk_intents.lua join_news must have stem=true'
+} else { Ok 'join_news stem enabled' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'Sanity verify: OK' -ForegroundColor Green; exit 0 }

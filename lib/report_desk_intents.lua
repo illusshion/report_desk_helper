@@ -160,6 +160,9 @@ function reloadDeskIntentsFromSources(preferLegacyScenarios)
             and loadIntentsFromFile(INTENTS_CONFIG_PATH) then
         return true
     end
+    if not doesFileExist(INTENTS_CONFIG_PATH) then
+        print('[Report Desk] intents: missing ' .. tostring(INTENTS_CONFIG_PATH) .. ' — using legacy scenarios')
+    end
     if type(quickScenarios) == 'table' and #quickScenarios > 0 then
         local adapted = adaptLegacyScenariosToIntents(quickScenarios)
         setDeskIntents(adapted, { version = 0, source = 'legacy_adapter' })

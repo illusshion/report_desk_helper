@@ -195,7 +195,10 @@ return {
       add_any = {
         { all = {"куда", "набор"} },
         { all = {"набор", "идет"} },
-        { all = {"посмотреть", "набор"} },
+      },
+      add_exclusions = {
+        { all = {"собес"} },
+        { all = {"собеседован"} },
       },
     },
     {
@@ -527,6 +530,146 @@ return {
       },
     },
     {
+      id = "faq.gameplay.sellmycar",
+      add_any = {
+        { all = {"продать", "машин"} },
+        { all = {"как", "продать", "машин"} },
+        { all = {"продать", "авто"} },
+        { all = {"как", "продать", "авто"} },
+        { all = {"продать", "тачку"} },
+        { all = {"как", "продать", "тачку"} },
+        { all = {"продать", "свое", "авто"} },
+        { all = {"продать", "свою", "машин"} },
+        { all = {"продать", "свою", "тачку"} },
+        { all = {"продать", "транспорт"} },
+        { all = {"как", "продать", "тс"} },
+        { token = "sellmycar" },
+      },
+      add_exclusions = {
+        { all = {"госс"} },
+        { all = {"гос"} },
+        { all = {"государств"} },
+        { all = {"слить"} },
+        { all = {"сдать"} },
+      },
+    },
+    {
+      id = "faq.navigation.gps_1_7",
+      add_any = {
+        { all = {"вступл", "арми"} },
+        { all = {"вступить", "арми"} },
+        { all = {"вступать", "арми"} },
+        { all = {"что", "надо", "арми"} },
+        { all = {"как", "в", "арми"} },
+        { all = {"попасть", "арми"} },
+      },
+    },
+    {
+      id = "faq.gameplay.f2_f9",
+      add_any = {
+        { all = {"войс", "говорить"} },
+        { all = {"войс", "разговар"} },
+        { all = {"включить", "войс"} },
+        { all = {"голосов", "чат"} },
+        { all = {"как", "голосов"} },
+        { all = {"вкл", "голосов"} },
+        { all = {"голосовой", "чат"} },
+      },
+    },
+    {
+      id = "faq.gameplay.i",
+      add_any = {
+        { all = {"открыть", "инвентарь"} },
+      },
+    },
+    {
+      id = "faq.gameplay.rn",
+      add_any = {
+        { all = {"чат", "фам"} },
+        { all = {"писать", "чат", "фам"} },
+        { all = {"чат", "банд"} },
+        { all = {"попасть", "банд"} },
+        { all = {"вступить", "банд"} },
+        { all = {"в", "банду"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fm",
+      add_any = {
+        { all = {"писать", "чат", "семь"} },
+        { all = {"чат", "семьи"} },
+      },
+    },
+    {
+      id = "faq.gameplay.makegun",
+      add_any = {
+        { all = {"крафт", "ган"} },
+        { all = {"скрафтить", "дигл"} },
+        { all = {"скрафтить", "ган"} },
+      },
+    },
+    {
+      id = "faq.gameplay.fix",
+      add_any = {
+        { all = {"где", "ремк"} },
+        { all = {"купить", "ремк"} },
+        { all = {"ремки", "купить"} },
+      },
+    },
+    {
+      id = "faq.gameplay.home_hotel",
+      add_any = {
+        { all = {"найти", "свою", "машин"} },
+        { all = {"где", "моя", "тачка"} },
+        { all = {"взять", "мою", "машин"} },
+      },
+    },
+    {
+      id = "faq.gameplay.n6",
+      add_any = {
+        { all = {"продать", "государств"} },
+        { all = {"продать", "машин", "госс"} },
+        { all = {"слить", "машин", "госс"} },
+        { all = {"нажать", "продать"} },
+        { all = {"меню", "отел", "продать"} },
+        { all = {"меню", "отел", "гос"} },
+      },
+    },
+    {
+      id = "faq.gameplay.n8",
+      add_exclusions = {
+        { all = {"продать"} },
+        { all = {"слить"} },
+        { all = {"сдать"} },
+        { all = {"гос"} },
+        { all = {"госс"} },
+        { all = {"машин"} },
+        { all = {"авто"} },
+        { all = {"тачку"} },
+      },
+    },
+    {
+      id = "faq.gameplay.restart_time",
+      add_any = {
+        { all = {"во", "сколько", "рестарт"} },
+        { all = {"когда", "рестарт"} },
+      },
+    },
+    {
+      id = "faq.gameplay.tasks",
+      add_any = {
+        { all = {"ежедневн", "задан"} },
+        { all = {"открыть", "ежедневн"} },
+      },
+    },
+    {
+      id = "faq.gameplay.skill",
+      add_any = {
+        { all = {"навык", "ган"} },
+        { all = {"навык", "оруж"} },
+      },
+    },
+    {
       id = "faq.navigation.gps_9",
       add_any = {
         { all = {"найти", "транспортную", "компанию"} },
@@ -654,7 +797,10 @@ return {
       id = "faq.gameplay.join",
       add_any = {
         { all = {"вступить", "фракцию"} },
-        { token = "join" },
+      },
+      add_exclusions = {
+        { all = {"собес"} },
+        { all = {"собеседован"} },
       },
     },
     {
@@ -1432,7 +1578,7 @@ return {
       context = "faq",
       category = "gameplay",
       label = "Продать газету",
-      enabled = true,
+      enabled = false,
       action = { type = "reply", text = "продайте через инвентарь или NPC газетчик" },
       triggers = {
         any = {
@@ -1445,7 +1591,7 @@ return {
       context = "faq",
       category = "gameplay",
       label = "Квест «поесть»",
-      enabled = true,
+      enabled = false,
       action = { type = "reply", text = "съешьте еду полностью из инвентаря (/i), иногда нужно выйти из интерьера" },
       triggers = {
         any = {
@@ -1463,7 +1609,7 @@ return {
       category = "communication",
       label = "Номер телефона",
       enabled = true,
-      action = { type = "reply", text = "свой номер: /number; чужой — через объявление /ad или спросите в RP" },
+      action = { type = "reply", text = "свой номер: /mn1; чужой — /id [id] (если не скрыл), /ad или спросите в RP" },
       triggers = {
         any = {
           { all = {"узнать", "номер", "телефон"} },
@@ -1606,21 +1752,31 @@ return {
       id = "faq.gameplay.sellmycar",
       context = "faq",
       category = "gameplay",
-      label = "Где продать машину игроку?",
+      label = "Продать машину /sellmycar",
       enabled = true,
       action = { type = "reply", text = "/sellmycar" },
       triggers = {
         any = {
+          { all = {"продать", "машин"} },
+          { all = {"как", "продать", "машин"} },
+          { all = {"продать", "авто"} },
+          { all = {"как", "продать", "авто"} },
+          { all = {"продать", "тачку"} },
           { all = {"продать", "машину", "игроку"} },
           { all = {"человеку", "транспорт", "продатиь"} },
           { all = {"продать", "тс"} },
           { all = {"продать", "транспорт", "игрок"} },
           { all = {"команда", "продать", "тс"} },
           { all = {"какой", "командой", "продать", "тс"} },
+          { token = "sellmycar" },
         },
       },
       exclusions = {
         { all = {"гос"} },
+        { all = {"госс"} },
+        { all = {"государств"} },
+        { all = {"слить"} },
+        { all = {"сдать"} },
       },
     },
     {
@@ -2032,7 +2188,7 @@ return {
       context = "faq",
       category = "gameplay",
       label = "Тайминг в спортзале",
-      enabled = true,
+      enabled = false,
       action = { type = "reply", text = "Подойдите к тренажёру в спортзале (/price), нажмите Enter в нужный момент" },
       triggers = {
         any = {
@@ -2041,6 +2197,86 @@ return {
           { all = {"единиц", "спортзал"} },
           { all = {"сколько", "качалк"} },
           { all = {"тайминг", "спортзал"} },
+        },
+      },
+    },
+    {
+      id = "faq.gameplay.sellmyacs",
+      context = "faq",
+      category = "gameplay",
+      label = "Продать аксы /sellmyacs",
+      enabled = true,
+      action = { type = "reply", text = "/sellmyacs" },
+      triggers = {
+        any = {
+          { all = {"продать", "акс"} },
+          { all = {"продать", "акссесуар"} },
+          { all = {"продать", "аксс"} },
+          { token = "sellmyacs" },
+        },
+      },
+    },
+    {
+      id = "faq.gameplay.ability",
+      context = "faq",
+      category = "gameplay",
+      label = "Навыки работы /ability",
+      enabled = true,
+      action = { type = "reply", text = "/ability" },
+      triggers = {
+        any = {
+          { all = {"навык", "работ"} },
+          { all = {"навыки", "работ"} },
+          { all = {"посмотреть", "навык", "работ"} },
+          { token = "ability" },
+          { token = "/ability" },
+        },
+      },
+      exclusions = {
+        { all = {"оруж"} },
+        { all = {"ган"} },
+        { all = {"тир"} },
+        { all = {"стрельб"} },
+        { all = {"скилл"} },
+      },
+    },
+    {
+      id = "faq.gameplay.sport_mode",
+      context = "faq",
+      category = "gameplay",
+      label = "Спорт-режим авто /sport",
+      enabled = true,
+      action = { type = "reply", text = "/sport" },
+      triggers = {
+        any = {
+          { all = {"спорт", "режим"} },
+          { all = {"режим", "спорт"} },
+          { token = "/sport" },
+          { all = {"включить", "спорт", "машин"} },
+          { all = {"спорт", "машин"} },
+        },
+      },
+      exclusions = {
+        { all = {"спортзал"} },
+        { token = "спортзал" },
+        { all = {"зал"} },
+        { all = {"гантел"} },
+        { token = "/end" },
+      },
+    },
+    {
+      id = "faq.navigation.autobazar",
+      context = "faq",
+      category = "navigation",
+      label = "Автобазар",
+      enabled = true,
+      action = { type = "reply", text = "Автобазар на Санта-Марии — игроки продают авто между собой" },
+      triggers = {
+        any = {
+          { token = "автобазар" },
+          { all = {"где", "автобазар"} },
+          { all = {"есть", "автобазар"} },
+          { all = {"люди", "авто", "продают"} },
         },
       },
     },

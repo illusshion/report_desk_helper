@@ -94,6 +94,12 @@ if ($Publish) {
     $mimguiZipPath = Join-Path $distDir 'mimgui-v1.7.1.zip'
 
     $bootstrapLuaPath = Join-Path $distDir 'AdminDesk.lua'
+    $intentConfigs = @(
+        'report_desk_intents.lua',
+        'intent_trigger_extensions.lua',
+        'intent_stem_blocklist.lua',
+        'admin_report_desk_user.default.lua'
+    )
     $releaseAssets = @(
         $bootstrapPath,
         $corePath,
@@ -114,6 +120,13 @@ if ($Publish) {
     }
     if ((Test-Path $bootstrapLuaPath) -and $bootstrapAsset -ne 'AdminDesk.lua') {
         $releaseAssets += $bootstrapLuaPath
+    }
+    foreach ($cfg in $intentConfigs) {
+        $cfgPath = Join-Path $MoonloaderRoot "config\$cfg"
+        if (-not (Test-Path $cfgPath)) {
+            Write-Error "Missing config\$cfg for release upload"
+        }
+        $releaseAssets += $cfgPath
     }
     foreach ($asset in $releaseAssets) {
         if (-not (Test-Path $asset)) {

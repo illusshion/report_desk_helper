@@ -174,20 +174,8 @@ function ensureCheatsSettings()
     ch.mask_player_id = not (ch.mask_player_id == false or tonumber(ch.mask_player_id) == 0)
 end
 profanity_words = {}
+-- Минимальный fallback до загрузки user/default pack.
 local DEFAULT_QUICK_SCENARIOS = {
-    {
-        label = '\xD1\xEE\xE1\xE5\xF1\xE5\xE4\xEE\xE2\xE0\xED\xE8\xE5',
-        enabled = true,
-        match = 'contains',
-        keywords = {
-            '\xF1\xEE\xE1\xE5\xF1', '\xF1\xEE\xE1\xE5\xF1\xEE\xE2\xE0\xED', '\xED\xE0\xE1\xEE\xF0',
-            '\xEA\xE0\xEA+\xF3\xE7\xED\xE0\xF2\xFC+\xF1\xEE\xE1\xE5\xF1',
-        },
-        reply = '\xCD\xE0\xE1\xEE\xF0 \xF4\xF0\xE0\xEA\xF6\xE8\xE9: \xF1\xEC. /help \xE8\xEB\xE8 F1. \xCF\xEE\xEC\xEE\xF9\xFC: /gps.',
-        action = 'reply',
-        priority = 50,
-        skip_if_report_id = true,
-    },
     {
         label = '\xD1\xEB\xE5\xE4\xE8\xF2\xFC',
         enabled = true,

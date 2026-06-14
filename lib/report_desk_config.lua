@@ -44,8 +44,33 @@ function mergeScenarioPack(userList, defaultList)
     return merged, added
 end
 
+function migrateObsoleteInterviewScenario()
+    local removed = 0
+    for i = #quickScenarios, 1, -1 do
+        local sc = quickScenarios[i]
+        if type(sc) ~= 'table' then goto continue end
+        local key = scenarioLabelKey(sc.label)
+        local reply = normalizeMatchText(sc.reply or '')
+        local stale = key == 'собеседование'
+            or (reply:find('/help', 1, true) and reply:find('f1', 1, true))
+        if stale then
+            table.remove(quickScenarios, i)
+            removed = removed + 1
+        end
+        ::continue::
+    end
+    if removed > 0 then
+        bumpScenariosGen()
+        print(string.format('[Report Desk] scenarios: removed %d obsolete interview pack', removed))
+    end
+    return removed > 0
+end
+
 function migrateScenariosPackIfNeeded()
     local userVer = tonumber(settings.scenarios_pack_version) or 0
+    if userVer < 3 then
+        migrateObsoleteInterviewScenario()
+    end
     if userVer >= SCENARIOS_PACK_VERSION then return end
     local pack = loadDefaultScenarioPack()
     if not pack then return end
@@ -145,10 +170,12 @@ end
 
 -- Load Config
 function loadConfig()
-    local scenarioDefaults = DEFAULT_QUICK_SCENARIOS
-    if type(scenarioDefaults) ~= 'table' then
-        local pack = loadDefaultScenarioPack()
-        scenarioDefaults = pack and pack.quick_scenarios or {}
+    local scenarioDefaults = {}
+    local pack = loadDefaultScenarioPack()
+    if pack and scenariosHasContent(pack.quick_scenarios) then
+        scenarioDefaults = pack.quick_scenarios
+    elseif type(DEFAULT_QUICK_SCENARIOS) == 'table' then
+        scenarioDefaults = DEFAULT_QUICK_SCENARIOS
     end
     quickScenarios = cloneQuickScenarios(scenarioDefaults)
     reloadProfanityWordsFromDict()
