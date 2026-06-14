@@ -1415,6 +1415,10 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
             return false, 'mimgui unpack failed'
         end
         package.loaded.mimgui = nil
+        local mmShared = rawget(_G, '__report_desk_mimgui_shared')
+        if type(mmShared) == 'table' then
+            mmShared.renderer = nil
+        end
         markDeskMimguiInstalled(manifest)
         pcall(os.remove, downloaded.mimgui)
     end
@@ -1569,6 +1573,9 @@ function M.sync(manifest, opts)
             needsPendingReload = true
             break
         end
+    end
+    if downloaded.runtime or downloaded.mimgui then
+        needsPendingReload = true
     end
     if needsPendingReload then
         if opts.reload == false then
@@ -2112,6 +2119,7 @@ function M.deferAssets(manifest, opts)
         return M.ensureAssets(manifest, opts)
     end
     lua_thread.create(function()
+        wait(4000)
         pcall(function()
             setOverlayContext(opts)
             M.ensureAssets(manifest, opts)

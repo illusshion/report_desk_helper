@@ -178,7 +178,7 @@ function main()
     pcall(installDeskPlayerJoinHook)
     pcall(installDeskPlayerStreamInHook)
     pcall(installDeskPlayerColorHook)
-    pcall(installDeskGodmodeHealthHook)
+    pcall(installDeskGodmodeHooks)
     pcall(installDeskSpRefreshHooks)
     pcall(sampSyncAllPlayerColorsAsync)
     pcall(onlinePlayersRescan, true)
@@ -226,6 +226,7 @@ function main()
     end
 
     local function mainLoopWaitMs()
+        if cheatState.godmode then return 0 end
         if cheatState.airbreak then return 0 end
         if cheatState.marker.active then return 0 end
         if type(skinsPrewarmActive) == 'function' and skinsPrewarmActive() then return 2 end

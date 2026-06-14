@@ -2315,6 +2315,7 @@ end
 
 function uninstallDeskUiFrames()
     if type(deskCache) ~= 'table' then return end
+    rawset(_G, '__desk_imgui_init_hooked', nil)
     local frames = deskCache.deskUiFrames
     if type(frames) == 'table' then
         for i = 1, #frames do

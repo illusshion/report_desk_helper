@@ -291,21 +291,50 @@ end
 function cheatsApplyGodmode(on)
     cheatState.godmode = on and true or false
     if uiCheatGm then uiCheatGm[0] = cheatState.godmode end
+    if not cheatState.godmode then
+        cheatState.gmHealthPrimed = false
+        cheatState.gmVehHealthPrimed = false
+    end
     if not doesCharExist or not doesCharExist(PLAYER_PED) then return end
     local proofs = cheatState.godmode
     setCharProofs(PLAYER_PED, proofs, proofs, proofs, proofs, proofs)
     if isCharInAnyCar(PLAYER_PED) then
         local car = storeCarCharIsInNoSave(PLAYER_PED)
-        if car then setCarProofs(car, proofs, proofs, proofs, proofs, proofs) end
+        if car then
+            setCarProofs(car, proofs, proofs, proofs, proofs, proofs)
+            if proofs then
+                local vhp = tonumber(getCarHealth(car)) or 1000
+                if vhp < 950 then
+                    setCarHealth(car, 1000)
+                    fixCar(car)
+                end
+            end
+        end
     end
 end
 
--- РљР°Рє AdminTools: РїРµСЂРІС‹Р№ SETPLAYERHEALTH РїСЂРѕРїСѓСЃРєР°РµРј, РґР°Р»СЊС€Рµ Р±Р»РѕРєРёСЂСѓРµРј HP < 5.
+-- Как AdminTools: первый SETPLAYERHEALTH пропускаем, дальше блокируем HP < 5.
 function cheatsOnSetPlayerHealth(health)
     if not cheatState.godmode then return end
     if not cheatState.gmHealthPrimed then
         cheatState.gmHealthPrimed = true
     elseif (tonumber(health) or 0) < 5 then
+        return false
+    end
+end
+
+-- Серверный SETVEHICLEHEALTH: для своей машины блокируем сильный урон (как HP игрока).
+function cheatsOnSetVehicleHealth(vehicleId, health)
+    if not cheatState.godmode then return end
+    if not isCharInAnyCar(PLAYER_PED) then return end
+    local car = storeCarCharIsInNoSave(PLAYER_PED)
+    if not car then return end
+    if type(sampGetVehicleIdByCarHandle) ~= 'function' then return end
+    local ok, myVehId = sampGetVehicleIdByCarHandle(car)
+    if not ok or tonumber(vehicleId) ~= tonumber(myVehId) then return end
+    if not cheatState.gmVehHealthPrimed then
+        cheatState.gmVehHealthPrimed = true
+    elseif (tonumber(health) or 0) < 250 then
         return false
     end
 end

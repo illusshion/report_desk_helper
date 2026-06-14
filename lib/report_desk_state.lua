@@ -236,6 +236,7 @@ local catWarmup = {
 local cheatState = {
     godmode = false,
     gmHealthPrimed = false,
+    gmVehHealthPrimed = false,
     gmHpCmdAt = 0,
     wallhack = false,
     hudDrag = { active = false, startX = 0, startY = 0, offX = 0, offY = 0 },

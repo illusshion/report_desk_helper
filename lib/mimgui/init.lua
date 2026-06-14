@@ -11,11 +11,25 @@ local winmsg = require 'windows.message'
 local memory = require 'memory'
 local mimgui = {}
 
-local renderer = nil
-local subscriptionsInitialize = {}
-local subscriptionsNewFrame = {}
-local eventsRegistered = false
-local active = false
+-- Shared across package.loaded clears so MoonLoader handlers keep one subscription list.
+local MIMGUI_SHARED_KEY = '__report_desk_mimgui_shared'
+local function mimguiShared()
+    local s = rawget(_G, MIMGUI_SHARED_KEY)
+    if type(s) ~= 'table' then
+        s = {
+            subscriptionsInitialize = {},
+            subscriptionsNewFrame = {},
+            eventsRegistered = false,
+            active = false,
+            renderer = nil,
+        }
+        rawset(_G, MIMGUI_SHARED_KEY, s)
+    end
+    return s
+end
+local shared = mimguiShared()
+local subscriptionsInitialize = shared.subscriptionsInitialize
+local subscriptionsNewFrame = shared.subscriptionsNewFrame
 local cursorActive = false
 local playerLocked = false
 local iniFilePath = nil
@@ -84,7 +98,8 @@ local function InitializeRenderer()
     -- init renderer
     local hwnd = ffi.cast('HWND', readMemory(0x00C8CF88, 4, false))
     local d3ddevice = ffi.cast('LPDIRECT3DDEVICE9', getD3DDevicePtr())
-    renderer = assert(DX9.new(d3ddevice, hwnd))
+    shared.renderer = assert(DX9.new(d3ddevice, hwnd))
+    renderer = shared.renderer
     renderer:SwitchContext()
 
     -- configure imgui
@@ -132,11 +147,16 @@ local function InitializeRenderer()
 end
 
 local function RegisterEvents()
+    if shared.eventsRegistered then
+        return
+    end
+    shared.eventsRegistered = true
     addEventHandler('onD3DPresent', function()
-        if active then
-            if not renderer then
+        if shared.active then
+            if not shared.renderer then
                 InitializeRenderer()
             end
+            renderer = shared.renderer
             if renderer and not renderer.lost then
                 renderer:SwitchContext()
                 for _, sub in ipairs(subscriptionsNewFrame) do
@@ -184,6 +204,7 @@ local function RegisterEvents()
         [winmsg.WM_CHAR] = true
     }
     addEventHandler('onWindowMessage', function(msg, wparam, lparam)
+        renderer = shared.renderer
         if not renderer then
             return
         end
@@ -191,7 +212,7 @@ local function RegisterEvents()
         if not mimgui.DisableInput then
             local keyboard = keyboardMsgs[msg]
             local mouse = mouseMsgs[msg]
-            if active and (keyboard or mouse) then
+            if shared.active and (keyboard or mouse) then
                 renderer:SwitchContext()
                 local io = imgui.GetIO()
                 renderer:WindowMessage(msg, wparam, lparam)
@@ -232,6 +253,7 @@ local function RegisterEvents()
     end)
 
     addEventHandler('onD3DDeviceLost', function()
+        renderer = shared.renderer
         if renderer and not renderer.lost then
             renderer:InvalidateDeviceObjects()
             renderer.lost = true
@@ -239,6 +261,7 @@ local function RegisterEvents()
     end)
 
     addEventHandler('onD3DDeviceReset', function()
+        renderer = shared.renderer
         if renderer then
             renderer.lost = false
         end
@@ -246,6 +269,8 @@ local function RegisterEvents()
 
     addEventHandler('onScriptTerminate', function(scr)
         if scr == script.this then
+            shared.active = false
+            shared.renderer = nil
             ShowCursor(false)
             LockPlayer(false)
         end
@@ -269,7 +294,8 @@ local function RegisterEvents()
                     activate = activate or sub._render
                 end
             end
-            active = activate
+            shared.active = activate
+            active = shared.active
             ShowCursor(active and not hideCursor)
             LockPlayer(active and lockPlayer)
         end
@@ -331,9 +357,8 @@ function mimgui.OnFrame(cond, cbBeforeFrame, cbDraw)
     assert(type(cond) == 'function')
     assert(type(cbBeforeFrame) == 'function')
     if cbDraw then assert(type(cbDraw) == 'function') end
-    if not eventsRegistered then
+    if not shared.eventsRegistered then
         RegisterEvents()
-        eventsRegistered = true
     end
     local sub = {
         Condition = cond,
@@ -356,35 +381,41 @@ function mimgui.OnFrame(cond, cbBeforeFrame, cbDraw)
 end
 
 function mimgui.SwitchContext()
+    renderer = shared.renderer
     return renderer:SwitchContext()
 end
 
 function mimgui.CreateTextureFromFile(path)
+    renderer = shared.renderer
     return renderer:CreateTextureFromFile(path)
 end
 
 function mimgui.CreateTextureFromFileInMemory(src, size)
+    renderer = shared.renderer
     return renderer:CreateTextureFromFileInMemory(src, size)
 end
 
 function mimgui.ReleaseTexture(tex)
+    renderer = shared.renderer
     return renderer:ReleaseTexture(tex)
 end
 
 function mimgui.CreateFontsTexture()
+    renderer = shared.renderer
     return renderer:CreateFontsTexture()
 end
 
 function mimgui.InvalidateFontsTexture()
+    renderer = shared.renderer
     return renderer:InvalidateFontsTexture()
 end
 
 function mimgui.GetRenderer()
-    return renderer
+    return shared.renderer
 end
 
 function mimgui.IsInitialized()
-    return renderer ~= nil
+    return shared.renderer ~= nil
 end
 
 function mimgui.StrCopy(dst, src, len)
@@ -423,7 +454,11 @@ function mimgui.GetDpiScalingMode()
 end
 
 function mimgui.GetDpiScale()
-    return renderer.dpiscale
+    renderer = shared.renderer
+    if renderer then
+        return renderer.dpiscale
+    end
+    return 1
 end
 
 local new = {}

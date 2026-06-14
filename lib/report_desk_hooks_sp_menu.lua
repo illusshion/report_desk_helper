@@ -136,7 +136,7 @@ function deskRegisterHookEntries()
           installer = installDeskPlayerColorHook },
         { id = 'godmode', event = 'onSetPlayerHealth',
           checker = deskGodmodeHooksActive,
-          installer = installDeskGodmodeHealthHook },
+          installer = installDeskGodmodeHooks },
         { id = 'spRefresh', event = 'onPlayerSync',
           checker = function()
               return deskCache.spPlayerSyncHandler and sampev.onPlayerSync == deskCache.spPlayerSyncHandler

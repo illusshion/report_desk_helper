@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.4')
+script_version('1 Beta.1.5')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -108,7 +108,6 @@ local function clearDeskModuleCache()
     package.loaded['report_desk_sha256'] = nil
     package.loaded['report_desk_zip'] = nil
     package.loaded['report_desk_fs'] = nil
-    package.loaded.mimgui = nil
 end
 
 local function ensureDirFor(path)
@@ -404,6 +403,60 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     return true
 end
 
+local DEFERRED_UPDATE_MSG = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xE2 \xF4\xEE\xED\xE5. \xCF\xEE\xF1\xEB\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 \xF1\xEA\xF0\xE8\xEF\xF2 \xEF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xE8\xF2\xF1\xFF \xF1\xE0\xEC.'
+
+local deferredSyncScheduled = false
+
+local function canDeferInGameUpdate(firstInstall)
+    if firstInstall or not corePresent() then
+        return false
+    end
+    if not isSampfuncsLoaded or not isSampfuncsLoaded() then
+        return false
+    end
+    if not isSampLoaded or not isSampLoaded() then
+        return false
+    end
+    return true
+end
+
+local function scheduleDeferredSync(autoupdate, manifest, userOpts)
+    if deferredSyncScheduled or type(autoupdate) ~= 'table' or type(manifest) ~= 'table' then
+        return
+    end
+    deferredSyncScheduled = true
+    if not lua_thread or not lua_thread.create then
+        pcall(function()
+            autoupdate.sync(manifest, {
+                mode = 'full',
+                includeCore = true,
+                reload = true,
+                quietChat = true,
+                userFacing = true,
+                showOverlay = true,
+                firstInstall = false,
+                minimalOverlay = true,
+            })
+        end)
+        return
+    end
+    lua_thread.create(function()
+        wait(2500)
+        pcall(function()
+            autoupdate.sync(manifest, {
+                mode = 'full',
+                includeCore = true,
+                reload = true,
+                quietChat = true,
+                userFacing = true,
+                showOverlay = true,
+                firstInstall = false,
+                minimalOverlay = true,
+            })
+        end)
+    end)
+end
+
 local function runInstallPipeline()
     local firstInstall = not corePresent()
     if firstInstall then
@@ -443,25 +496,31 @@ local function runInstallPipeline()
     end
 
     bootstrapLog('checking for updates...')
-    local willReload, syncStatus = autoupdate.sync(manifest, {
-        mode = 'full',
-        includeCore = true,
-        reload = false,
-        quietChat = true,
-        userFacing = true,
-        showOverlay = true,
-        firstInstall = firstInstall,
-        minimalOverlay = true,
-    })
-    local sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending'
-    if syncStatus == 'fail' then
-        return false, false, firstInstall
-    end
-    if willReload then
-        print('[Report Desk] update applied, loading core in same session')
-        if autoupdate.applyPendingFiles then
-            autoupdate.applyPendingFiles({ includeLauncher = false })
-            clearDeskModuleCache()
+    local deferUpdate = false
+    local sessionUpdated = false
+    if autoupdate.planHasWork and autoupdate.planHasWork(manifest, { mode = 'full', includeCore = true })
+            and canDeferInGameUpdate(firstInstall) then
+        deferUpdate = true
+        bootstrapLog('in-game restart: deferring download to background')
+        bootstrapSay(DEFERRED_UPDATE_MSG)
+        scheduleDeferredSync(autoupdate, manifest, userOpts)
+    else
+        local willReload, syncStatus = autoupdate.sync(manifest, {
+            mode = 'full',
+            includeCore = true,
+            reload = true,
+            quietChat = true,
+            userFacing = true,
+            showOverlay = true,
+            firstInstall = firstInstall,
+            minimalOverlay = true,
+        })
+        sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending' or syncStatus == 'reload'
+        if syncStatus == 'fail' then
+            return false, false, firstInstall
+        end
+        if willReload or syncStatus == 'reload' then
+            return true, true, firstInstall
         end
     end
 

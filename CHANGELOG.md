@@ -1,5 +1,15 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.5
+
+**Hotfix: лаги при обновлении + GM на транспорте.**
+
+- In-game restart: скачивание обновления в фоне, скрипт сразу стартует с локальной версии; после загрузки — авто-перезагрузка.
+- mimgui: один набор MoonLoader-хендлеров на всю сессию (больше не дублируются при F4).
+- Сброс imgui/renderer при выгрузке скрипта; отложенная распаковка assets (+4 с после старта).
+- Обновление mimgui/runtime теперь тоже требует чистой перезагрузки скрипта.
+- GM на машине: `setCarProofs` каждый кадр (как AdminTools), хук `onSetVehicleHealth`, восстановление HP < 950.
+
 ## 1 Beta.1.4
 
 **Hotfix: checker `/adms` при входе на сервер (релизный путь).**
@@ -106,6 +116,7 @@
 ### GodMode / cheats
 
 - GodMode 1:1 как AdminTools (`setCharProofs`, `onSetPlayerHealth`, auto `/hp`).
+- GM на транспорте: `setCarProofs` каждый кадр, хук `onSetVehicleHealth`, восстановление HP < 950.
 - Airbreak, wallhack HUD, каталог скинов/транспорта с prewarm превью.
 
 ### Стабильность (важно для админов)

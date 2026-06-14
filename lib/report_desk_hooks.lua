@@ -118,7 +118,7 @@ function deskOnPlayerQuit(playerId, reason)
     end
 end
 
--- Godmode: РєР°Рє AdminTools вЂ” С‚РѕР»СЊРєРѕ onSetPlayerHealth.
+-- Godmode: как AdminTools — onSetPlayerHealth + onSetVehicleHealth, setCarProofs каждый тик.
 function installDeskGodmodeHealthHook()
     if not sampev then return end
     if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
@@ -141,9 +141,37 @@ function installDeskGodmodeHealthHook()
     sampev.onSetPlayerHealth = deskCache.gmHealthHandler
 end
 
+function installDeskGodmodeVehicleHealthHook()
+    if not sampev then return end
+    if deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler then
+        return
+    end
+    local prev = sampev.onSetVehicleHealth
+    if prev == deskCache.gmVehHealthHandler then prev = nil end
+    deskCache.hookPrevSetVehicleHealth = prev
+    deskCache.gmVehHealthHandler = function(vehicleId, health)
+        local block
+        local okGm, errGm = pcall(function()
+            block = cheatsOnSetVehicleHealth(vehicleId, health)
+        end)
+        if not okGm then
+            print('[Report Desk] godmode veh hook: ' .. tostring(errGm))
+        end
+        if block == false then return false end
+        return deskCallHookPrev(deskCache.hookPrevSetVehicleHealth, vehicleId, health)
+    end
+    sampev.onSetVehicleHealth = deskCache.gmVehHealthHandler
+end
+
+function installDeskGodmodeHooks()
+    installDeskGodmodeHealthHook()
+    installDeskGodmodeVehicleHealthHook()
+end
+
 function deskGodmodeHooksActive()
     if not sampev then return false end
     return deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler
+        and deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler
 end
 
 -- Quit РёРіСЂРѕРєР° в†’ checker, spectate exit, thread offline.
@@ -371,7 +399,11 @@ function deskUninstall()
     if deskCache.gmHealthHandler and sampev.onSetPlayerHealth == deskCache.gmHealthHandler then
         sampev.onSetPlayerHealth = deskCache.hookPrevSetPlayerHealth
     end
+    if deskCache.gmVehHealthHandler and sampev.onSetVehicleHealth == deskCache.gmVehHealthHandler then
+        sampev.onSetVehicleHealth = deskCache.hookPrevSetVehicleHealth
+    end
     deskCache.gmHealthHandler = nil
+    deskCache.gmVehHealthHandler = nil
     deskCache.serverMsgHandler = nil
     deskCache.specDialogHandler = nil
     deskCache.specToggleHandler = nil
