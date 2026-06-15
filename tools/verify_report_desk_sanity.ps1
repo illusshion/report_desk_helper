@@ -355,6 +355,21 @@ if ($intentsCfg -notmatch 'id = "faq\.gameplay\.join_news"' -or $intentsCfg -not
     Fail 'report_desk_intents.lua join_news must have stem=true'
 } else { Ok 'join_news stem enabled' }
 
+# 19) sp anticheat bundled + CP1251 chat strings
+$bundlePs1 = Get-Content (Join-Path $root 'tools\bundle_report_desk.ps1') -Raw -Encoding Default
+foreach ($mod in @('report_desk_sp_anticheat.lua', 'report_desk_sp_anticheat_ui.lua')) {
+    if ($bundlePs1 -notmatch [regex]::Escape($mod)) { Fail "bundle_report_desk.ps1 missing $mod" }
+    else { Ok "bundle includes $mod" }
+}
+$spAc = Get-Content (Join-Path $lib 'report_desk_sp_anticheat.lua') -Raw -Encoding Default
+if ($spAc -notmatch "require 'report_desk_sp_anticheat'") { Ok 'sp_anticheat standalone module' }
+if ($statsCtx -notmatch "require 'report_desk_sp_anticheat'") { Fail 'sp_stats_ctx must require sp_anticheat' }
+else { Ok 'sp_stats_ctx requires sp_anticheat' }
+if ($spAc -match 'notifyChat' -and $spAc -match 'MSG_SHOT_WARN') { Ok 'sp_anticheat chat CP1251 escapes' }
+else { Fail 'sp_anticheat missing notifyChat/MSG_* CP1251 strings' }
+if ($spAc -notmatch 'MSG_SHOT_WARN' -or $spAc -notmatch 'drawAimLine') { Fail 'sp_anticheat missing core APIs' }
+else { Ok 'sp_anticheat core APIs' }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'Sanity verify: OK' -ForegroundColor Green; exit 0 }
 else { Write-Host "Sanity verify: $fail issue(s)" -ForegroundColor Red; exit 1 }

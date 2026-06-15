@@ -1924,6 +1924,15 @@ function drawMainWindow()
             end
             imgui.EndTabItem()
         end
+        if imgui.BeginTabItem(uiText('\xC0\xED\xF2\xE8\xF7\xE8\xF2') .. '##tab_sp_ac') then
+            local okAc, errAc = pcall(drawSpAnticheatTab)
+            if not okAc then
+                imgui.TextColored(col_warn, 'Anticheat UI error:')
+                imgui.TextWrapped(tostring(errAc))
+                print('[Report Desk] sp anticheat UI: ' .. tostring(errAc))
+            end
+            imgui.EndTabItem()
+        end
         if imgui.BeginTabItem(uiText('\xD7\xE5\xEA\xE5\xF0') .. '##tab_checker') then
             if type(drawCheckerTab) ~= 'function' then
                 imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xF7\xE5\xEA\xE5\xF0\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
@@ -2274,6 +2283,36 @@ function installDeskUiFrames()
 end
 
 pcall(installDeskUiFrames)
+
+-- Draw Sp Anticheat Tab
+function drawSpAnticheatTab()
+    local ok, mod = pcall(require, 'report_desk_sp_anticheat_ui')
+    if not ok or type(mod) ~= 'table' or type(mod.drawTab) ~= 'function' then
+        imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xE0\xED\xF2\xE8\xF7\xE8\xF2\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED'))
+        return
+    end
+    if mod.configure then
+        mod.configure({
+            getSettings = function() return settings end,
+            markDirtySettings = markDirtySettings,
+            flushDirtyConfigNow = flushDirtyConfigNow,
+            uiText = uiText,
+            col_accent = col_accent,
+            col_chat_bg = col_chat_bg,
+            pushPanelStyle = pushPanelStyle,
+            popPanelStyle = popPanelStyle,
+            deskFormPanelBegin = deskFormPanelBegin,
+            deskFormPanelEnd = deskFormPanelEnd,
+            deskFormCheckboxRow = deskFormCheckboxRow,
+            drawSettingsCardHeader = drawSettingsCardHeader,
+            settingsHint = settingsHint,
+            deskFormRowAvail = deskFormRowAvail,
+            deskFormPushBindButtonStyle = deskFormPushBindButtonStyle,
+            deskFormPopBindButtonStyle = deskFormPopBindButtonStyle,
+        })
+    end
+    mod.drawTab()
+end
 
 -- Draw Desk Sp Spectate Overlay
 function drawDeskSpSpectateOverlay()

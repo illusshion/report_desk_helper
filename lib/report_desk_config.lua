@@ -223,6 +223,10 @@ function loadConfig()
             end
         end
         ensureCheatsSettings()
+        pcall(function()
+            local ac = require 'report_desk_sp_anticheat'
+            if ac.ensureSettings then ac.ensureSettings() end
+        end)
         bumpScenariosGen()
         deskConfigReady = true
         if doesFileExist(USER_CONFIG_PATH) then
@@ -242,10 +246,13 @@ function loadConfig()
 
     if type(data.settings) == 'table' then
         for k, v in pairs(data.settings) do
-            if k ~= 'cheats' then settings[k] = v end
+            if k ~= 'cheats' and k ~= 'sp_anticheat' then settings[k] = v end
         end
         if type(data.settings.cheats) == 'table' then
             settings.cheats = data.settings.cheats
+        end
+        if type(data.settings.sp_anticheat) == 'table' then
+            settings.sp_anticheat = data.settings.sp_anticheat
         end
     end
     if settings.watch_notify then
@@ -268,6 +275,10 @@ function loadConfig()
             normalizeStoredText(settings.tech_reply, true), DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    pcall(function()
+        local ac = require 'report_desk_sp_anticheat'
+        if ac.ensureSettings then ac.ensureSettings() end
+    end)
     if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
     if type(ensureExactTimeSettings) == 'function' then pcall(ensureExactTimeSettings) end
     if type(ensureTempLeadershipSettings) == 'function' then pcall(ensureTempLeadershipSettings) end
@@ -682,6 +693,34 @@ function saveConfig()
     f:write(string.format('      hud_x = %d,\n', math.floor(tonumber(ch.hud_x) or 12)))
     f:write(string.format('      hud_y = %d,\n', math.floor(tonumber(ch.hud_y) or 80)))
     f:write('    },\n')
+    pcall(function()
+        local acMod = require 'report_desk_sp_anticheat'
+        if acMod.ensureSettings then acMod.ensureSettings() end
+    end)
+    local ac = type(settings.sp_anticheat) == 'table' and settings.sp_anticheat or nil
+    if ac then
+        f:write('    sp_anticheat = {\n')
+        f:write(string.format('      tracers = %s,\n', ac.tracers ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_all_vision = %s,\n', ac.tracers_all_vision ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_hit_sound = %s,\n', ac.tracers_hit_sound ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_text3d = %s,\n', ac.tracers_text3d ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_sound_id = %d,\n', tonumber(ac.tracers_sound_id) or 1058))
+        f:write(string.format('      tracers_max = %d,\n', tonumber(ac.tracers_max) or 10))
+        f:write(string.format('      tracers_live_sec = %d,\n', tonumber(ac.tracers_live_sec) or 5))
+        f:write(string.format('      tracers_warn_sec = %d,\n', tonumber(ac.tracers_warn_sec) or 15))
+        f:write(string.format('      tracers_line_border = %.2f,\n', tonumber(ac.tracers_line_border) or 2))
+        f:write(string.format('      aim_line = %s,\n', ac.aim_line ~= false and 'true' or 'false'))
+        f:write(string.format('      aim_line_r = %.3f,\n', tonumber(ac.aim_line_r) or 0.55))
+        f:write(string.format('      aim_line_g = %.3f,\n', tonumber(ac.aim_line_g) or 0.21))
+        f:write(string.format('      aim_line_b = %.3f,\n', tonumber(ac.aim_line_b) or 1.0))
+        f:write(string.format('      aim_line_a = %.3f,\n', tonumber(ac.aim_line_a) or 1.0))
+        f:write(string.format('      aim_line_border = %d,\n', tonumber(ac.aim_line_border) or 2))
+        f:write(string.format('      shot_warn = %s,\n', ac.shot_warn ~= false and 'true' or 'false'))
+        f:write(string.format('      shot_deagle_sec = %.3f,\n', tonumber(ac.shot_deagle_sec) or 0.3))
+        f:write(string.format('      shot_m4_sec = %.3f,\n', tonumber(ac.shot_m4_sec) or 0.01))
+        f:write(string.format('      anim_cancel = %s,\n', ac.anim_cancel ~= false and 'true' or 'false'))
+        f:write('    },\n')
+    end
     f:write('  },\n')
 
     if type(settings.report_colors) == 'table' and #settings.report_colors > 0 then

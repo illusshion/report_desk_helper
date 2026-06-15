@@ -85,6 +85,10 @@ local function deskOnPlayerQuitBody(playerId, reason)
             deskSpectateStats.notifyTargetQuit(playerId)
         end
     end)
+    pcall(function()
+        local ok, mod = pcall(require, 'report_desk_sp_anticheat')
+        if ok and mod.onPlayerQuit then mod.onPlayerQuit(playerId) end
+    end)
     local quitNk = ''
     if type(threads) == 'table' then
         for _, t in pairs(threads) do

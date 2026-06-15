@@ -16,6 +16,7 @@ local bundleLoadError = nil
 local function prepareDeskReload()
     for _, name in ipairs({
         'report_desk_spectate_stats',
+        'report_desk_sp_stats_ctx',
         'report_desk_sp_ui',
         'report_desk_spectate_menu',
         'report_desk_spectate_session',
@@ -24,6 +25,8 @@ local function prepareDeskReload()
         'report_desk_sp_theme',
         'report_desk_sp_vehicle_hud',
         'report_desk_sp_keys_hud',
+        'report_desk_sp_anticheat',
+        'report_desk_sp_anticheat_ui',
         'report_desk_checker_parser',
         'report_desk_checker_catalog',
     }) do

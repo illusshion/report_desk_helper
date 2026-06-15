@@ -4212,6 +4212,1116 @@ end
 
 
 
+package.preload['report_desk_sp_anticheat'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Модуль: anticheat /sp (трассеры, aim line, rapid fire, сбив анимации). ]]
+local M = {}
+
+local ffi = require 'ffi'
+local vector = require 'vector3d'
+local vkeys = require 'lib.vkeys'
+
+local TD_ACCURACY_BASE = 1007
+local AIM_LENGTH = 8.0
+local AIM_TRANSITION = 0.2
+local HP_BUBBLE_COLOR = -1721303041
+local ANIM_GUM_EAT = 1157
+local ANIM_NAME_GUM = 'gum_eat'
+
+local WEAPON_DEAGLE = 24
+local WEAPON_M4 = 31
+local WEAPON_NAMES = {
+    [WEAPON_DEAGLE] = 'Deagle',
+    [WEAPON_M4] = 'M4',
+}
+
+-- CP1251: сообщения в SAMP-чат (файл может быть UTF-8 — только \x..)
+local MSG_HIT_WALL = '%s[%d] \xEF\xEE\xEF\xE0\xEB \xE2 %s \xF1\xEA\xE2\xEE\xE7\xFC \xF2\xE5\xEA\xF1\xF2\xF3\xF0\xF3/\xEC\xE0\xF8\xE8\xED\xF3'
+local MSG_SHOT_WARN = '[Warning] %s[%d] \xF1\xEB\xE8\xF8\xEA\xEE\xEC \xE1\xFB\xF1\xF2\xF0\xEE \xF1\xF2\xF0\xE5\xEB\xFF\xE5\xF2 \xF1 %s {FF0000}%0.2fs./ {00FF08}%0.2fs.'
+local MSG_ACCURACY = '\xD2\xEE\xF7\xED\xEE\xF1\xF2\xFC: %d %% ( %d/%d )'
+local MSG_SBIV = '\xC2\xEE\xE7\xEC\xEE\xE6\xED\xEE \xF1\xE1\xE8\xE2 \xE0\xED\xE8\xEC\xE0\xF6\xE8\xE8 %s[%d]'
+local MSG_NO_ANIM = '\xCD\xE5 \xE2\xEE\xF1\xEF\xF0\xEE\xE8\xE7\xE2\xE5\xEB\xE0\xF1\xFC \xE0\xED\xE8\xEC\xE0\xF6\xE8\xFF \xE0\xEF\xF2\xE5\xF7\xEA\xE8 \xF3 \xE8\xE3\xF0\xEE\xEA\xE0: %s[%d]'
+
+local players = {}
+setmetatable(players, {
+    __index = function(t, k)
+        rawset(t, k, {
+            shots = 0,
+            hits = 0,
+            accuracy = 0,
+            last = 0,
+            nick = M.playerNick(k),
+            lines = {},
+        })
+        return t[k]
+    end,
+})
+
+local shotWarning = {}
+local sbivList = {}
+local cameraData = {} -- [playerId] = { timer, new, old, front? }
+local deps = {}
+local sampevRef
+local hookPrev = {}
+local handlers = {}
+
+local function resolveSettings(getSettingsOverride)
+    local fn = getSettingsOverride or (deps.getSettings)
+    if fn then
+        local ok, s = pcall(fn)
+        if ok and type(s) == 'table' then return s end
+    end
+    local g = rawget(_G, 'settings')
+    if type(g) == 'table' then return g end
+    return nil
+end
+
+local getBonePosition = ffi.cast('int (__thiscall*)(void*, float*, int, bool)', 0x5E4280)
+
+-- Default Settings
+function M.defaultSettings()
+    return {
+        tracers = true,
+        tracers_all_vision = true,
+        tracers_hit_sound = true,
+        tracers_text3d = true,
+        tracers_sound_id = 1058,
+        tracers_max = 10,
+        tracers_live_sec = 5,
+        tracers_warn_sec = 15,
+        tracers_line_border = 2.0,
+        aim_line = true,
+        aim_line_r = 0.55,
+        aim_line_g = 0.21,
+        aim_line_b = 1.0,
+        aim_line_a = 1.0,
+        aim_line_border = 2,
+        shot_warn = true,
+        shot_deagle_sec = 0.3,
+        shot_m4_sec = 0.01,
+        anim_cancel = true,
+    }
+end
+
+-- Ensure Settings
+function M.ensureSettings(getSettingsOverride)
+    local settings = resolveSettings(getSettingsOverride)
+    if type(settings) ~= 'table' then return end
+    if type(settings.sp_anticheat) ~= 'table' then
+        settings.sp_anticheat = M.defaultSettings()
+    end
+    local ac = settings.sp_anticheat
+    local d = M.defaultSettings()
+    for k, v in pairs(d) do
+        if ac[k] == nil then ac[k] = v end
+    end
+    ac.distant_chat = nil
+    ac.distant_chat_x = nil
+    ac.distant_chat_y = nil
+    ac.distant_chat_font = nil
+    ac.distant_chat_page = nil
+    ac.distant_chat_max = nil
+    ac.distant_chat_hotkey = nil
+end
+
+local function acfg()
+    M.ensureSettings()
+    local settings = resolveSettings()
+    if settings and settings.sp_anticheat then return settings.sp_anticheat end
+    return M.defaultSettings()
+end
+
+-- Player Nick
+function M.playerNick(id)
+    id = tonumber(id)
+    if id and type(sampIsPlayerConnected) == 'function' and sampIsPlayerConnected(id) then
+        local ok, n = pcall(sampGetPlayerNickname, id)
+        if ok and n and n ~= '' then return n end
+    end
+    if id and PLAYER_PED and type(sampGetPlayerIdByCharHandle) == 'function' then
+        local ok, myId = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
+        if ok and myId == id and type(sampGetPlayerNickname) == 'function' then
+            local ok2, n = pcall(sampGetPlayerNickname, id)
+            if ok2 and n then return n end
+        end
+    end
+    return 'player:' .. tostring(id)
+end
+
+local function localPlayerId()
+    if not PLAYER_PED or type(sampGetPlayerIdByCharHandle) ~= 'function' then return -1 end
+    local ok, id = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
+    return ok and tonumber(id) or -1
+end
+
+local function spectateTargetId()
+    if deps.getTargetId then
+        local ok, id = pcall(deps.getTargetId)
+        if ok then return tonumber(id) or -1 end
+    end
+    if type(deskSpectateStats) == 'table' and deskSpectateStats.getTargetId then
+        local ok, id = pcall(deskSpectateStats.getTargetId)
+        if ok then return tonumber(id) or -1 end
+    end
+    return -1
+end
+
+local function isSpectating()
+    if deps.isSpectating then
+        local ok, v = pcall(deps.isSpectating)
+        if ok and v == true then return true end
+    end
+    if spectateTargetId() >= 0 then return true end
+    local g = rawget(_G, 'deskSpectatingNow')
+    if type(g) == 'function' then
+        local ok, v = pcall(g)
+        if ok and v == true then return true end
+    end
+    if type(deskSpectateStats) == 'table' and type(deskSpectateStats.isSpectating) == 'function' then
+        local ok, v = pcall(deskSpectateStats.isSpectating)
+        if ok and v == true then return true end
+    end
+    return false
+end
+
+local function copyVec(v)
+    if not v then return nil end
+    return vector(tonumber(v.x) or 0, tonumber(v.y) or 0, tonumber(v.z) or 0)
+end
+
+local function spectateTargetPed()
+    if deps.resolveSpectateTargetPed then
+        local ok, ped, id = pcall(deps.resolveSpectateTargetPed)
+        if ok and ped and type(doesCharExist) == 'function' and doesCharExist(ped) then
+            return ped, tonumber(id) or spectateTargetId()
+        end
+        if ok and id then return nil, tonumber(id) or spectateTargetId() end
+    end
+    local id = spectateTargetId()
+    if id < 0 or type(sampGetCharHandleBySampPlayerId) ~= 'function' then return nil, id end
+    local ok, ped = pcall(sampGetCharHandleBySampPlayerId, id)
+    if ok and ped and type(doesCharExist) == 'function' and doesCharExist(ped) then
+        return ped, id
+    end
+    return nil, id
+end
+
+local function aimOffsetFromSync(headPos, data)
+    if not data then return nil end
+    local cp = data.camPos
+    if cp and (cp.x ~= 0 or cp.y ~= 0 or cp.z ~= 0) then
+        return copyVec(headPos - cp)
+    end
+    local cf = data.camFront
+    if cf then
+        local fx, fy, fz = tonumber(cf.x) or 0, tonumber(cf.y) or 0, tonumber(cf.z) or 0
+        local len = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if len > 0.001 then
+            return vector(fx / len * AIM_LENGTH, fy / len * AIM_LENGTH, fz / len * AIM_LENGTH)
+        end
+    end
+    return nil
+end
+
+local function featureActive()
+    if deps.isGameMenuOpen then
+        local ok, open = pcall(deps.isGameMenuOpen)
+        if ok and open then return false end
+    end
+    if deps.isSampInGame then
+        local ok, ingame = pcall(deps.isSampInGame)
+        if ok and not ingame then return false end
+    end
+    return isSpectating()
+end
+
+local function aimEndFromHeading(headPos, ped)
+    if not ped or type(getCharHeading) ~= 'function' then return nil end
+    local ok, heading = pcall(getCharHeading, ped)
+    if not ok or not heading then return nil end
+    local rad = math.rad(tonumber(heading) or 0)
+    return headPos + vector(-math.sin(rad) * AIM_LENGTH, math.cos(rad) * AIM_LENGTH, 0.05)
+end
+
+local function joinArgb(a, r, g, b)
+    local argb = b
+    argb = bit.bor(argb, bit.lshift(g, 8))
+    argb = bit.bor(argb, bit.lshift(r, 16))
+    argb = bit.bor(argb, bit.lshift(a, 24))
+    return argb
+end
+
+local function getBodyPartCoordinates(boneId, handle)
+    if not getCharPointer or type(getCharPointer) ~= 'function' then return false end
+    local ptr = getCharPointer(handle)
+    if ptr == 0 then return false end
+    local pos = ffi.new('float[3]')
+    getBonePosition(ffi.cast('void*', ptr), pos, boneId, true)
+    return true, vector(pos[0], pos[1], pos[2])
+end
+
+local function bringFloatTo(from, dest, startTime, duration)
+    local timer = os.clock() - startTime
+    if timer >= 0 and timer <= duration then
+        local count = timer / (duration / 100)
+        return from + (count * (dest - from) / 100)
+    end
+    return timer > duration and dest or from
+end
+
+local function notifyChat(text)
+    text = tostring(text or '')
+    if text == '' then return end
+    if deps.ensureWireCp1251 then
+        local ok, wired = pcall(deps.ensureWireCp1251, text)
+        if ok and type(wired) == 'string' and wired ~= '' then text = wired end
+    end
+    if type(sampAddChatMessage) == 'function' then
+        pcall(sampAddChatMessage, text, -1)
+    end
+end
+
+local function aimLineEnabled()
+    return acfg().aim_line == true
+end
+
+local function aimLineContextActive()
+    return aimLineEnabled() and spectateTargetId() >= 0
+end
+
+local function drawAimLine(ac, data)
+    local ped = spectateTargetPed()
+    if not ped or type(doesCharExist) ~= 'function' or not doesCharExist(ped) then return end
+    local result, headPos = getBodyPartCoordinates(8, ped)
+    if not result then return end
+
+    local camPos
+    if data and data.front then
+        local front = data.front
+        local fl = front:length()
+        if fl > 0.001 then
+            camPos = headPos + front * (AIM_LENGTH / fl)
+        end
+    end
+    if not camPos and data and data.new and data.old then
+        local offset = data.old
+        offset.x = bringFloatTo(data.old.x, data.new.x, data.timer, AIM_TRANSITION)
+        offset.y = bringFloatTo(data.old.y, data.new.y, data.timer, AIM_TRANSITION)
+        offset.z = bringFloatTo(data.old.z, data.new.z, data.timer, AIM_TRANSITION)
+        camPos = headPos + offset
+        local fullLen = (camPos - headPos):length()
+        if fullLen > 0.001 then
+            camPos = headPos + (camPos - headPos) * (AIM_LENGTH / fullLen)
+        end
+    end
+    if not camPos then
+        camPos = aimEndFromHeading(headPos, ped)
+    end
+    if not camPos then return end
+
+    local r = math.floor((tonumber(ac.aim_line_r) or 0.55) * 255)
+    local g = math.floor((tonumber(ac.aim_line_g) or 0.21) * 255)
+    local b = math.floor((tonumber(ac.aim_line_b) or 1) * 255)
+    local a = math.floor((tonumber(ac.aim_line_a) or 1) * 255)
+    local col = joinArgb(a, r, g, b)
+    local border = tonumber(ac.aim_line_border) or 2
+    local hx, hy, hz = headPos:get()
+    local cx, cy, cz = camPos:get()
+    if type(convert3DCoordsToScreen) == 'function' and type(renderDrawLine) == 'function' then
+        local pX, pY = convert3DCoordsToScreen(hx, hy, hz)
+        local cX, cY = convert3DCoordsToScreen(cx, cy, cz)
+        renderDrawLine(pX, pY, cX, cY, border, col)
+        if type(renderDrawPolygon) == 'function' then
+            renderDrawPolygon(cX, cY, 4, 4, 8, 0, 0xFFFFFFFF)
+        end
+    end
+end
+
+local function vehicleModelName(id)
+    if type(sampGetCarHandleBySampVehicleId) ~= 'function' then return 'veh:' .. tostring(id) end
+    local res, car = sampGetCarHandleBySampVehicleId(id)
+    if res and type(getCarModel) == 'function' and type(getNameOfVehicleModel) == 'function' then
+        return getNameOfVehicleModel(getCarModel(car))
+    end
+    return 'veh:' .. tostring(id)
+end
+
+local function destroyAccuracyText(id)
+    id = tonumber(id)
+    if not id then return end
+    local drawId = TD_ACCURACY_BASE + id
+    if type(sampIs3dTextDefined) == 'function' and type(sampDestroy3dText) == 'function' then
+        if sampIs3dTextDefined(drawId) then pcall(sampDestroy3dText, drawId) end
+    end
+end
+
+local function destroyAllAccuracyTexts()
+    if type(sampGetMaxPlayerId) ~= 'function' then return end
+    local ok, maxId = pcall(sampGetMaxPlayerId, false)
+    maxId = ok and tonumber(maxId) or 1000
+    for id = 0, maxId do destroyAccuracyText(id) end
+end
+
+local function renderLine3d(x, y, z, x2, y2, z2, width, color)
+    if type(convert3DCoordsToScreen) ~= 'function' or type(renderDrawLine) ~= 'function' then return end
+    local pX, pY = convert3DCoordsToScreen(x, y, z)
+    local pX2, pY2 = convert3DCoordsToScreen(x2, y2, z2)
+    if type(isPointOnScreen) == 'function' then
+        if not isPointOnScreen(x, y, z, 1) or not isPointOnScreen(x2, y2, z2, 1) then return end
+    end
+    renderDrawLine(pX, pY, pX2, pY2, width, color)
+end
+
+local function shouldShowTracersFor(id)
+    local ac = acfg()
+    if not ac.tracers then return false end
+    if not featureActive() then return false end
+    local target = spectateTargetId()
+    if id == target then return true end
+    if ac.tracers_all_vision then return true end
+    if deps.isVkDown and deps.isVkDown(vkeys.VK_MENU) then return true end
+    if type(isKeyDown) == 'function' and isKeyDown(vkeys.VK_MENU) then return true end
+    return false
+end
+
+local function processBulletSync(playerId, data)
+    if not data or not data.origin or not data.target then return end
+    local ac = acfg()
+    if not ac.tracers and not ac.tracers_hit_sound and not ac.tracers_text3d and not ac.shot_warn then
+        return
+    end
+
+    playerId = tonumber(playerId) or localPlayerId()
+    local last = players[playerId]
+    last.nick = M.playerNick(playerId)
+
+    local O, T = data.origin, data.target
+    local target = spectateTargetId()
+
+    if ac.tracers_hit_sound and playerId == target and data.targetType == 1 then
+        if type(addOneOffSound) == 'function' then
+            pcall(addOneOffSound, 0, 0, 0, tonumber(ac.tracers_sound_id) or 1058)
+        end
+    end
+
+    local hitState = data.targetType == 1 and M.playerNick(data.targetId)
+        or data.targetType == 2 and vehicleModelName(data.targetId)
+        or 'Miss'
+
+    last.last = os.clock()
+    last.shots = last.shots + 1
+    if data.targetType == 1 or data.targetType == 2 then
+        last.hits = last.hits + 1
+    end
+
+    local warning = false
+    if ac.tracers and data.targetType == 1 and type(isLineOfSightClear) == 'function' then
+        if not isLineOfSightClear(O.x, O.y, O.z, T.x, T.y, T.z, true, false, false, false, true) then
+            warning = true
+            notifyChat(string.format(MSG_HIT_WALL, last.nick, playerId, hitState))
+        end
+    end
+
+    local accuracy = math.floor(math.max(100 * last.hits / last.shots, 0))
+    last.accuracy = accuracy
+
+    if ac.tracers then
+        local color
+        if warning then
+            color = 0xFFFF0000
+        elseif type(sampGetPlayerColor) == 'function' then
+            local ok, pc = pcall(sampGetPlayerColor, playerId)
+            if ok and pc then
+                color = bit.bor(bit.band(0xFFFFFF, pc), bit.lshift(0xFF, 24))
+            else
+                color = 0xFFFFFFFF
+            end
+        else
+            color = 0xFFFFFFFF
+        end
+        local btrace = {
+            from = { x = O.x, y = O.y, z = O.z },
+            to = { x = T.x, y = T.y, z = T.z },
+            color = color,
+            expires = os.clock() + (warning and (tonumber(ac.tracers_warn_sec) or 15) or (tonumber(ac.tracers_live_sec) or 5)),
+        }
+        local maxN = math.max(1, tonumber(ac.tracers_max) or 10)
+        while #last.lines >= maxN do table.remove(last.lines, 1) end
+        last.lines[#last.lines + 1] = btrace
+    end
+
+    if ac.tracers_text3d and playerId ~= localPlayerId() then
+        if type(sampCreate3dTextEx) == 'function' and type(sampGetPlayerColor) == 'function' then
+            local ok, pc = pcall(sampGetPlayerColor, playerId)
+            local col = ok and pc and bit.bor(bit.band(0xFFFFFF, pc), bit.lshift(0xFF, 24)) or 0xFFFFFFFF
+            local text = string.format(MSG_ACCURACY, accuracy, last.hits, last.shots)
+            pcall(sampCreate3dTextEx, TD_ACCURACY_BASE + playerId, text, col, 0, 0, -0.7, 20, false, playerId, -1)
+        end
+    end
+
+    if ac.shot_warn and WEAPON_NAMES[data.weaponId] then
+        local minSec = data.weaponId == WEAPON_DEAGLE and (tonumber(ac.shot_deagle_sec) or 0.3)
+            or (tonumber(ac.shot_m4_sec) or 0.01)
+        if not shotWarning[playerId] then shotWarning[playerId] = {} end
+        if not shotWarning[playerId][data.weaponId] then
+            shotWarning[playerId][data.weaponId] = { last_tick = 0, warning = 0, warning_tick = 0 }
+        end
+        local pData = shotWarning[playerId][data.weaponId]
+        if os.clock() - pData.last_tick < minSec then
+            pData.warning = (tonumber(pData.warning) or 0) + 1
+            pData.warning_tick = os.clock()
+            if pData.warning > 2 then
+                local wname = WEAPON_NAMES[data.weaponId] or ('gun:' .. tostring(data.weaponId))
+                local dt = os.clock() - pData.last_tick
+                notifyChat(string.format(MSG_SHOT_WARN, last.nick, playerId, wname, dt, minSec))
+                pData.warning = 0
+            end
+        end
+        pData.last_tick = os.clock()
+    end
+end
+
+local function trackSbiv(playerId, ped, durationSec)
+    if not acfg().anim_cancel then return end
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 then return end
+    sbivList[playerId] = {
+        time = os.clock() + (tonumber(durationSec) or 4),
+        ped = ped,
+        id = playerId,
+        start = false,
+    }
+end
+
+local function checkSbivSync(playerId, data)
+    if not acfg().anim_cancel then return end
+    local pData = sbivList[playerId]
+    if not pData then return end
+    if pData.time <= os.clock() or not pData.ped or (type(doesCharExist) == 'function' and not doesCharExist(pData.ped)) then
+        sbivList[playerId] = nil
+        return
+    end
+    if type(isCharInAnyCar) == 'function' and isCharInAnyCar(pData.ped) then
+        sbivList[playerId] = nil
+        return
+    end
+    local animId = data and data.animationId
+    if animId ~= ANIM_GUM_EAT and pData.start then
+        notifyChat(string.format(MSG_SBIV, M.playerNick(playerId), playerId))
+        sbivList[playerId] = nil
+    elseif animId ~= ANIM_GUM_EAT and not pData.start and (pData.time - os.clock() < 2.1) then
+        notifyChat(string.format(MSG_NO_ANIM, M.playerNick(playerId), playerId))
+        sbivList[playerId] = nil
+    elseif not pData.start and animId == ANIM_GUM_EAT then
+        pData.start = true
+    end
+end
+
+function M.onSpectateStart()
+    cameraData = {}
+end
+
+function M.onSpectateEnd()
+    cameraData = {}
+    destroyAllAccuracyTexts()
+end
+
+function M.onPlayerQuit(playerId)
+    playerId = tonumber(playerId)
+    if not playerId then return end
+    destroyAccuracyText(playerId)
+    players[playerId] = nil
+    shotWarning[playerId] = nil
+    sbivList[playerId] = nil
+end
+
+function M.resetSession()
+    players = {}
+    setmetatable(players, {
+        __index = function(t, k)
+            rawset(t, k, {
+                shots = 0, hits = 0, accuracy = 0, last = 0,
+                nick = M.playerNick(k), lines = {},
+            })
+            return t[k]
+        end,
+    })
+    shotWarning = {}
+    sbivList = {}
+    cameraData = {}
+    destroyAllAccuracyTexts()
+end
+
+function M.tick()
+    M.ensureSettings()
+    local ac = acfg()
+    local now = os.clock()
+
+    for playerId, gunData in pairs(shotWarning) do
+        if playerId == localPlayerId()
+                or (type(sampIsPlayerConnected) == 'function' and sampIsPlayerConnected(playerId)) then
+            for _, pData in pairs(gunData or {}) do
+                if now - (pData.warning_tick or 0) > 7 then pData.warning = 0 end
+            end
+        else
+            shotWarning[playerId] = nil
+        end
+    end
+
+    for id, pdata in pairs(players) do
+        if type(sampIsPlayerConnected) == 'function' and not sampIsPlayerConnected(id) and id ~= localPlayerId() then
+            destroyAccuracyText(id)
+            players[id] = nil
+        end
+    end
+end
+
+function M.shouldDrawNative()
+    local ac = acfg()
+    if not ac then return false end
+    if ac.tracers and featureActive() then return true end
+    if ac.aim_line and aimLineContextActive() then return true end
+    return false
+end
+
+function M.drawNative()
+    if not M.shouldDrawNative() then return end
+    if type(sampIsScoreboardOpen) == 'function' and sampIsScoreboardOpen() then return end
+    local ac = acfg()
+    local clock = os.clock()
+    local target = spectateTargetId()
+
+    if ac.tracers then
+        local border = tonumber(ac.tracers_line_border) or 2
+        for id, pdata in pairs(players) do
+            if shouldShowTracersFor(id) and pdata.lines and #pdata.lines > 0 then
+                for k = #pdata.lines, 1, -1 do
+                    local btrace = pdata.lines[k]
+                    if btrace and clock < btrace.expires then
+                        local fx, fy, fz = btrace.from.x, btrace.from.y, btrace.from.z
+                        local tx, ty, tz = btrace.to.x, btrace.to.y, btrace.to.z
+                        if type(isPointOnScreen) == 'function'
+                                and isPointOnScreen(fx, fy, fz) and isPointOnScreen(tx, ty, tz) then
+                            local ax, ay = convert3DCoordsToScreen(fx, fy, fz)
+                            local bx, by = convert3DCoordsToScreen(tx, ty, tz)
+                            renderDrawLine(ax, ay, bx, by, border, btrace.color)
+                            if type(renderDrawPolygon) == 'function' then
+                                renderDrawPolygon(ax, ay, 4, 4, 8, 0, 0xFFFFFFFF)
+                                renderDrawPolygon(bx, by, 4, 4, 8, 0, 0xFFFFFFFF)
+                            end
+                        end
+                    else
+                        table.remove(pdata.lines, k)
+                    end
+                end
+            end
+        end
+    end
+
+    if ac.aim_line and target >= 0 then
+        drawAimLine(ac, cameraData[target])
+        for id, _ in pairs(cameraData) do
+            if tonumber(id) ~= target then cameraData[id] = nil end
+        end
+    end
+end
+
+function M.onText3dDisabled()
+    destroyAllAccuracyTexts()
+end
+
+function M.previewHitSound()
+    local ac = acfg()
+    if type(addOneOffSound) == 'function' then
+        pcall(addOneOffSound, 0, 0, 0, tonumber(ac.tracers_sound_id) or 1058)
+    end
+end
+
+function M.configure(d)
+    deps = d or {}
+    if deps.getSettings == nil and type(rawget(_G, 'settings')) == 'table' then
+        deps.getSettings = function() return rawget(_G, 'settings') end
+    end
+end
+
+local function updateAimCameraData(playerId, data)
+    playerId = tonumber(playerId)
+    if not playerId or playerId < 0 or not data then return end
+    if not aimLineContextActive() then return end
+    if playerId ~= spectateTargetId() then return end
+
+    local newOff
+    local ped = spectateTargetPed()
+    if ped then
+        local result, headPos = getBodyPartCoordinates(8, ped)
+        if result then
+            newOff = aimOffsetFromSync(headPos, data)
+        end
+    end
+    local front
+    if data.camFront then
+        local cf = data.camFront
+        if (tonumber(cf.x) or 0) ~= 0 or (tonumber(cf.y) or 0) ~= 0 or (tonumber(cf.z) or 0) ~= 0 then
+            front = copyVec(cf)
+        end
+    end
+    if not newOff and not front then return end
+
+    if not cameraData[playerId] then
+        cameraData[playerId] = {
+            timer = os.clock(),
+            new = newOff and copyVec(newOff) or nil,
+            old = newOff and copyVec(newOff) or nil,
+            front = front,
+        }
+    else
+        local slot = cameraData[playerId]
+        slot.timer = os.clock()
+        if newOff then
+            slot.old = slot.new and copyVec(slot.new) or copyVec(newOff)
+            slot.new = copyVec(newOff)
+        end
+        if front then slot.front = front end
+    end
+end
+
+local function buildHandlers()
+    handlers.onBulletSync = function(playerId, data)
+        if featureActive() then pcall(processBulletSync, playerId, data) end
+        if type(hookPrev.onBulletSync) == 'function' then return hookPrev.onBulletSync(playerId, data) end
+    end
+
+    handlers.onSendBulletSync = function(data)
+        if featureActive() then
+            local ok, myId = pcall(sampGetPlayerIdByCharHandle, PLAYER_PED)
+            pcall(processBulletSync, ok and myId or localPlayerId(), data)
+        end
+        if type(hookPrev.onSendBulletSync) == 'function' then return hookPrev.onSendBulletSync(data) end
+    end
+
+    handlers.onAimSync = function(playerId, data)
+        pcall(updateAimCameraData, playerId, data)
+        if type(hookPrev.onAimSync) == 'function' then return hookPrev.onAimSync(playerId, data) end
+    end
+
+    handlers.onApplyPlayerAnimation = function(playerId, animLib, animName, frameDelta, loop, lockX, lockY, freeze, time)
+        if featureActive() and animName == ANIM_NAME_GUM then
+            local bool, handler = pcall(sampGetCharHandleBySampPlayerId, playerId)
+            local selfId = localPlayerId()
+            if playerId == selfId then bool, handler = true, PLAYER_PED end
+            if bool and handler and (not isCharInAnyCar or not isCharInAnyCar(handler)) then
+                trackSbiv(playerId, handler, frameDelta)
+            end
+        end
+        if type(hookPrev.onApplyPlayerAnimation) == 'function' then
+            return hookPrev.onApplyPlayerAnimation(playerId, animLib, animName, frameDelta, loop, lockX, lockY, freeze, time)
+        end
+    end
+
+    handlers.onClearPlayerAnimation = function(playerId)
+        sbivList[playerId] = nil
+        if type(hookPrev.onClearPlayerAnimation) == 'function' then
+            return hookPrev.onClearPlayerAnimation(playerId)
+        end
+    end
+
+    handlers.onPlayerSync = function(playerId, data)
+        if featureActive() then pcall(checkSbivSync, playerId, data) end
+        if type(hookPrev.onPlayerSync) == 'function' then return hookPrev.onPlayerSync(playerId, data) end
+    end
+
+    handlers.onSendPlayerSync = function(data)
+        if featureActive() then pcall(checkSbivSync, localPlayerId(), data) end
+        if type(hookPrev.onSendPlayerSync) == 'function' then return hookPrev.onSendPlayerSync(data) end
+    end
+
+    handlers.onPlayerChatBubble = function(playerId, color, distance, duration, message)
+        if featureActive() then
+            local ac = acfg()
+            if ac and ac.anim_cancel and color == HP_BUBBLE_COLOR and message and message:match('%+%d+%s+Hp') then
+                local bool, handler = pcall(sampGetCharHandleBySampPlayerId, playerId)
+                if bool and handler and (not isCharInAnyCar or not isCharInAnyCar(handler)) then
+                    trackSbiv(playerId, handler, 4)
+                end
+            end
+        end
+        if type(hookPrev.onPlayerChatBubble) == 'function' then
+            return hookPrev.onPlayerChatBubble(playerId, color, distance, duration, message)
+        end
+    end
+end
+
+local function ensureHandlers()
+    if handlers.onAimSync then return end
+    buildHandlers()
+end
+
+local function chain(name)
+    if not sampevRef then return end
+    local handler = handlers[name]
+    if not handler then return end
+    hookPrev[name] = sampevRef[name]
+    if hookPrev[name] == handler then hookPrev[name] = nil end
+    sampevRef[name] = handler
+end
+
+function M.installSampev(sampev)
+    if not sampev or sampevRef then return end
+    sampevRef = sampev
+    M.ensureSettings()
+    ensureHandlers()
+
+    chain('onBulletSync')
+    chain('onSendBulletSync')
+    chain('onAimSync')
+    chain('onApplyPlayerAnimation')
+    chain('onClearPlayerAnimation')
+    chain('onPlayerSync')
+    chain('onSendPlayerSync')
+    chain('onPlayerChatBubble')
+end
+
+function M.uninstallSampev(sampev)
+    local ev = sampev or sampevRef
+    if not ev then return end
+    ensureHandlers()
+    for name, handler in pairs(handlers) do
+        if ev[name] == handler then
+            ev[name] = hookPrev[name]
+        end
+    end
+    sampevRef = nil
+    hookPrev = {}
+    handlers = {}
+end
+
+return M
+
+
+]=], '@report_desk_sp_anticheat')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_anticheat') end
+
+    return fn()
+
+end
+
+
+
+package.preload['report_desk_sp_anticheat_ui'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Модуль: вкладка «Античит» в /adesk. ]]
+local M = {}
+
+local spAc = require 'report_desk_sp_anticheat'
+
+local uiSynced = false
+local imgui = require 'mimgui'
+local new = imgui.new
+
+local uiTracers = new.bool(true)
+local uiTracersAll = new.bool(true)
+local uiTracersSound = new.bool(true)
+local uiTracersText3d = new.bool(true)
+local uiTracersSoundId = new.int(1058)
+local uiTracersMax = new.int(10)
+local uiTracersLive = new.int(5)
+local uiTracersWarn = new.int(15)
+local uiTracersBorder = new.float(2.0)
+
+local uiAimLine = new.bool(true)
+local uiAimColor = new.float[4](0.55, 0.21, 1.0, 1.0)
+local uiAimBorder = new.int(2)
+
+local uiShotWarn = new.bool(true)
+local uiShotDeagle = new.float(0.3)
+local uiShotM4 = new.float(0.01)
+
+local uiAnimCancel = new.bool(true)
+
+local getSettingsFn
+local markDirtySettingsFn, flushDirtyConfigNowFn
+local uiTextFn
+local col_accent_ref, col_chat_bg_ref
+local pushPanelStyleFn, popPanelStyleFn
+local deskFormPanelBeginFn, deskFormPanelEndFn, deskFormCheckboxRowFn
+local drawSettingsCardHeaderFn, settingsHintFn
+local deskFormRowAvailFn, deskFormPushBindButtonStyleFn, deskFormPopBindButtonStyleFn
+
+local function settingsTbl()
+    if getSettingsFn then
+        local ok, s = pcall(getSettingsFn)
+        if ok and type(s) == 'table' then return s end
+    end
+    local g = rawget(_G, 'settings')
+    if type(g) == 'table' then return g end
+    return nil
+end
+
+local function uiTextSafe(s)
+    if uiTextFn then return uiTextFn(s) end
+    if type(_G.uiText) == 'function' then return _G.uiText(s) end
+    return s
+end
+
+local function ac()
+    spAc.ensureSettings(getSettingsFn)
+    local s = settingsTbl()
+    return s and s.sp_anticheat
+end
+
+function M.configure(deps)
+    if type(deps) ~= 'table' then return end
+    if deps.getSettings ~= nil then getSettingsFn = deps.getSettings end
+    if deps.markDirtySettings ~= nil then markDirtySettingsFn = deps.markDirtySettings end
+    if deps.flushDirtyConfigNow ~= nil then flushDirtyConfigNowFn = deps.flushDirtyConfigNow end
+    if deps.uiText ~= nil then uiTextFn = deps.uiText end
+    if deps.col_accent ~= nil then col_accent_ref = deps.col_accent end
+    if deps.col_chat_bg ~= nil then col_chat_bg_ref = deps.col_chat_bg end
+    if deps.pushPanelStyle ~= nil then pushPanelStyleFn = deps.pushPanelStyle end
+    if deps.popPanelStyle ~= nil then popPanelStyleFn = deps.popPanelStyle end
+    if deps.deskFormPanelBegin ~= nil then deskFormPanelBeginFn = deps.deskFormPanelBegin end
+    if deps.deskFormPanelEnd ~= nil then deskFormPanelEndFn = deps.deskFormPanelEnd end
+    if deps.deskFormCheckboxRow ~= nil then deskFormCheckboxRowFn = deps.deskFormCheckboxRow end
+    if deps.drawSettingsCardHeader ~= nil then drawSettingsCardHeaderFn = deps.drawSettingsCardHeader end
+    if deps.settingsHint ~= nil then settingsHintFn = deps.settingsHint end
+    if deps.deskFormRowAvail ~= nil then deskFormRowAvailFn = deps.deskFormRowAvail end
+    if deps.deskFormPushBindButtonStyle ~= nil then deskFormPushBindButtonStyleFn = deps.deskFormPushBindButtonStyle end
+    if deps.deskFormPopBindButtonStyle ~= nil then deskFormPopBindButtonStyleFn = deps.deskFormPopBindButtonStyle end
+    spAc.configure(deps)
+end
+
+function M.syncFromSettings()
+    spAc.ensureSettings(getSettingsFn)
+    local s = settingsTbl()
+    if not s or not s.sp_anticheat then return end
+    s = s.sp_anticheat
+    uiTracers[0] = s.tracers ~= false
+    uiTracersAll[0] = s.tracers_all_vision ~= false
+    uiTracersSound[0] = s.tracers_hit_sound ~= false
+    uiTracersText3d[0] = s.tracers_text3d ~= false
+    uiTracersSoundId[0] = tonumber(s.tracers_sound_id) or 1058
+    uiTracersMax[0] = tonumber(s.tracers_max) or 10
+    uiTracersLive[0] = tonumber(s.tracers_live_sec) or 5
+    uiTracersWarn[0] = tonumber(s.tracers_warn_sec) or 15
+    uiTracersBorder[0] = tonumber(s.tracers_line_border) or 2.0
+    uiAimLine[0] = s.aim_line ~= false
+    uiAimColor[0] = tonumber(s.aim_line_r) or 0.55
+    uiAimColor[1] = tonumber(s.aim_line_g) or 0.21
+    uiAimColor[2] = tonumber(s.aim_line_b) or 1.0
+    uiAimColor[3] = tonumber(s.aim_line_a) or 1.0
+    uiAimBorder[0] = tonumber(s.aim_line_border) or 2
+    uiShotWarn[0] = s.shot_warn ~= false
+    uiShotDeagle[0] = tonumber(s.shot_deagle_sec) or 0.3
+    uiShotM4[0] = tonumber(s.shot_m4_sec) or 0.01
+    uiAnimCancel[0] = s.anim_cancel ~= false
+    uiSynced = true
+end
+
+local function persist()
+    if markDirtySettingsFn then pcall(markDirtySettingsFn) end
+end
+
+local function sliderInt(label, var, vmin, vmax, id)
+    local labelW = rawget(_G, 'DESK_FORM_LABEL_W') or 200
+    local inputW = rawget(_G, 'DESK_FORM_INPUT_W') or 180
+    local rowAvail = deskFormRowAvailFn or rawget(_G, 'deskFormRowAvail')
+    local w = inputW
+    if type(rowAvail) == 'function' then
+        w = math.min(inputW, rowAvail(label, labelW))
+    end
+    imgui.PushItemWidth(w)
+    local changed = imgui.SliderInt(label .. id, var, vmin, vmax)
+    imgui.PopItemWidth()
+    return changed
+end
+
+local function sliderFloat(label, var, vmin, vmax, fmt, id)
+    local labelW = rawget(_G, 'DESK_FORM_LABEL_W') or 200
+    local inputW = rawget(_G, 'DESK_FORM_INPUT_W') or 180
+    local rowAvail = deskFormRowAvailFn or rawget(_G, 'deskFormRowAvail')
+    local w = inputW
+    if type(rowAvail) == 'function' then
+        w = math.min(inputW, rowAvail(label, labelW))
+    end
+    imgui.PushItemWidth(w)
+    local changed
+    if fmt then
+        changed = imgui.SliderFloat(label .. id, var, vmin, vmax, fmt)
+    else
+        changed = imgui.SliderFloat(label .. id, var, vmin, vmax)
+    end
+    imgui.PopItemWidth()
+    return changed
+end
+
+function M.drawTab()
+    if not uiSynced then M.syncFromSettings() end
+    spAc.ensureSettings(getSettingsFn)
+
+    local settings = settingsTbl()
+    if not settings then
+        imgui.TextColored(imgui.ImVec4(1, 0.4, 0.4, 1), 'settings unavailable')
+        return
+    end
+
+    local uiText = uiTextSafe
+    local col_accent = col_accent_ref or rawget(_G, 'col_accent') or imgui.ImVec4(0.62, 0.48, 0.92, 1)
+    local col_chat_bg = col_chat_bg_ref or rawget(_G, 'col_chat_bg') or imgui.ImVec4(0.11, 0.09, 0.16, 0.95)
+    local pushPanelStyle = pushPanelStyleFn or rawget(_G, 'pushPanelStyle')
+    local popPanelStyle = popPanelStyleFn or rawget(_G, 'popPanelStyle')
+    local deskFormPanelBegin = deskFormPanelBeginFn or rawget(_G, 'deskFormPanelBegin')
+    local deskFormPanelEnd = deskFormPanelEndFn or rawget(_G, 'deskFormPanelEnd')
+    local deskFormCheckboxRow = deskFormCheckboxRowFn or rawget(_G, 'deskFormCheckboxRow')
+    local drawSettingsCardHeader = drawSettingsCardHeaderFn or rawget(_G, 'drawSettingsCardHeader')
+    local settingsHint = settingsHintFn or rawget(_G, 'settingsHint')
+    local deskFormRowAvail = deskFormRowAvailFn or rawget(_G, 'deskFormRowAvail')
+    local deskFormPushBindButtonStyle = deskFormPushBindButtonStyleFn or rawget(_G, 'deskFormPushBindButtonStyle')
+    local deskFormPopBindButtonStyle = deskFormPopBindButtonStyleFn or rawget(_G, 'deskFormPopBindButtonStyle')
+    local flushDirtyConfigNow = flushDirtyConfigNowFn or rawget(_G, 'flushDirtyConfigNow')
+
+    if not pushPanelStyle or not deskFormPanelBegin then
+        imgui.TextColored(imgui.ImVec4(1, 0.4, 0.4, 1), 'UI helpers unavailable')
+        return
+    end
+
+    pushPanelStyle(col_chat_bg)
+    local panelFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.BeginChild('##sp_ac_panel', imgui.ImVec2(-1, -1), false, panelFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    imgui.TextColored(col_accent, uiText('\xC0\xED\xF2\xE8\xF7\xE8\xF2 \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8'))
+    imgui.TextWrapped(uiText(
+        '\xC2\xE8\xE7\xF3\xE0\xEB\xFC\xED\xFB\xE5 \xEF\xEE\xE4\xF1\xEA\xE0\xE7\xEA\xE8 \xE8 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xFF \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.'))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+
+    deskFormPanelBegin('##sp_ac_tr')
+    drawSettingsCardHeader('\xD2\xF0\xE0\xF1\xF1\xE5\xF0\xFB \xE2\xFB\xF1\xF2\xF0\xE5\xEB\xEE\xE2', '')
+    if deskFormCheckboxRow('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xF2\xFC \xEB\xE8\xED\xE8\xE8 \xE2\xFB\xF1\xF2\xF0\xE5\xEB\xEE\xE2', uiTracers, function(v)
+        ac().tracers = v; persist()
+    end, 'sp_ac_tr') then end
+    if uiTracers[0] then
+        if deskFormCheckboxRow('\xC2\xF1\xE5 \xF2\xF0\xE0\xF1\xF1\xE5\xF0\xFB (\xE8\xEB\xE8 \xF3\xE4\xE5\xF0\xE6. ALT)', uiTracersAll, function(v)
+            ac().tracers_all_vision = v; persist()
+        end, 'sp_ac_tr_all') then end
+        if deskFormCheckboxRow('\xC7\xE2\xF3\xEA \xEF\xF0\xE8 \xEF\xEE\xEF\xE0\xE4\xE0\xED\xE8\xE8 \xF6\xE5\xEB\xE8', uiTracersSound, function(v)
+            ac().tracers_hit_sound = v; persist()
+        end, 'sp_ac_tr_snd') then end
+        if deskFormCheckboxRow('3D-\xF2\xE5\xEA\xF1\xF2 \xF2\xEE\xF7\xED\xEE\xF1\xF2\xE8 \xED\xE0 \xF1\xEA\xE8\xED\xE5', uiTracersText3d, function(v)
+            ac().tracers_text3d = v
+            if not v and spAc.onText3dDisabled then pcall(spAc.onText3dDisabled) end
+            persist()
+        end, 'sp_ac_tr_3d') then end
+        if sliderFloat(uiText('\xD2\xEE\xEB\xF9\xE8\xED\xE0 \xEB\xE8\xED\xE8\xE8'), uiTracersBorder, 0.1, 5.0, '%.1f', '##sp_ac_tr_b') then
+            ac().tracers_line_border = uiTracersBorder[0]; persist()
+        end
+        if sliderInt(uiText('\xCC\xE0\xEA\xF1. \xF2\xF0\xE0\xF1\xF1\xE5\xF0\xEE\xE2 \xED\xE0 \xE8\xE3\xF0\xEE\xEA\xE0'), uiTracersMax, 3, 100, '##sp_ac_tr_m') then
+            ac().tracers_max = uiTracersMax[0]; persist()
+        end
+        if sliderInt(uiText('\xC2\xF0\xE5\xEC\xFF \xE6\xE8\xE7\xED\xE8 \xEB\xE8\xED\xE8\xE8 (\xF1\xE5\xEA)'), uiTracersLive, 1, 50, '##sp_ac_tr_l') then
+            ac().tracers_live_sec = uiTracersLive[0]; persist()
+        end
+        if sliderInt(uiText('\xC2\xF0\xE5\xEC\xFF \xEA\xF0\xE0\xF1\xED\xEE\xE9 \xEB\xE8\xED\xE8\xE8 (\xF1\xE5\xEA)'), uiTracersWarn, 1, 50, '##sp_ac_tr_w') then
+            ac().tracers_warn_sec = uiTracersWarn[0]; persist()
+        end
+        imgui.PushItemWidth(math.min(120, deskFormRowAvail('Sound ID', DESK_FORM_LABEL_W or 200)))
+        if imgui.InputInt(uiText('\xC8\xD7 \xE7\xE2\xF3\xEA\xE0 \xEF\xEE\xEF\xE0\xE4\xE0\xED\xE8\xFF') .. '##sp_ac_sid', uiTracersSoundId) then
+            ac().tracers_sound_id = uiTracersSoundId[0]; persist()
+        end
+        imgui.PopItemWidth()
+        imgui.SameLine()
+        if imgui.Button(uiText('\xCF\xF0\xEE\xF1\xEB\xF3\xF8\xE0\xF2\xFC') .. '##sp_ac_prev_snd') then
+            ac().tracers_sound_id = uiTracersSoundId[0]
+            pcall(spAc.previewHitSound)
+        end
+    end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##sp_ac_aim')
+    drawSettingsCardHeader('\xCD\xE0\xEF\xF0\xE0\xE2\xEB\xE5\xED\xE8\xE5 \xE2\xE7\xE3\xEB\xFF\xE4\xE0', '')
+    if deskFormCheckboxRow('\xCB\xE8\xED\xE8\xFF \xEA\xF3\xE4\xE0 \xF1\xEC\xEE\xF2\xF0\xE8\xF2 \xF6\xE5\xEB\xFC', uiAimLine, function(v)
+        ac().aim_line = v; persist()
+    end, 'sp_ac_aim') then end
+    if uiAimLine[0] then
+        if imgui.ColorEdit4('##sp_ac_aim_col', uiAimColor, imgui.ColorEditFlags.NoInputs + imgui.ColorEditFlags.AlphaBar) then
+            ac().aim_line_r = uiAimColor[0]
+            ac().aim_line_g = uiAimColor[1]
+            ac().aim_line_b = uiAimColor[2]
+            ac().aim_line_a = uiAimColor[3]
+            persist()
+        end
+        imgui.SameLine()
+        imgui.Text(uiText('\xF6\xE2\xE5\xF2 \xEB\xE8\xED\xE8\xE8'))
+        if sliderInt(uiText('\xD2\xEE\xEB\xF9\xE8\xED\xE0'), uiAimBorder, 1, 10, '##sp_ac_aim_b') then
+            ac().aim_line_border = uiAimBorder[0]; persist()
+        end
+    end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##sp_ac_warn')
+    drawSettingsCardHeader('\xC1\xFB\xF1\xF2\xF0\xE0\xFF \xF1\xF2\xF0\xE5\xEB\xFC\xE1\xE0', '')
+    if deskFormCheckboxRow('\xCF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xFF Deagle / M4', uiShotWarn, function(v)
+        ac().shot_warn = v; persist()
+    end, 'sp_ac_sw') then end
+    if uiShotWarn[0] then
+        if sliderFloat(uiText('Deagle (\xF1\xE5\xEA \xEC\xE5\xE6\xE4\xF3 \xE2\xFB\xF1\xF2\xF0\xE5\xEB\xE0\xEC\xE8)'), uiShotDeagle, 0.01, 1.5, '%.2f', '##sp_ac_dg') then
+            ac().shot_deagle_sec = uiShotDeagle[0]; persist()
+        end
+        if sliderFloat(uiText('M4 (\xF1\xE5\xEA \xEC\xE5\xE6\xE4\xF3 \xE2\xFB\xF1\xF2\xF0\xE5\xEB\xE0\xEC\xE8)'), uiShotM4, 0.01, 0.5, '%.2f', '##sp_ac_m4') then
+            ac().shot_m4_sec = uiShotM4[0]; persist()
+        end
+    end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##sp_ac_anim')
+    drawSettingsCardHeader('\xC0\xED\xE8\xEC\xE0\xF6\xE8\xE8', '')
+    if deskFormCheckboxRow('\xD1\xE1\xE8\xE2 \xE0\xED\xE8\xEC\xE0\xF6\xE8\xE8 \xE0\xEF\xF2\xE5\xF7\xEA\xE8', uiAnimCancel, function(v)
+        ac().anim_cancel = v; persist()
+    end, 'sp_ac_anim') then end
+    deskFormPanelEnd()
+
+    imgui.Dummy(imgui.ImVec2(0, 8))
+    local btnW = math.min(220, math.max(140, imgui.GetContentRegionAvail().x - 8))
+    imgui.SetCursorPosX(math.max(0, (imgui.GetContentRegionAvail().x - btnW) * 0.5))
+    deskFormPushBindButtonStyle()
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    if imgui.Button(uiText('\xD1\xE1\xF0\xEE\xF1 \xED\xE0\xF1\xF2\xF0\xEE\xE5\xEA \xE0\xED\xF2\xE8\xF7\xE8\xF2\xE0') .. '##sp_ac_rst', imgui.ImVec2(btnW, (rawget(_G, 'DESK_FORM_ROW_H') or 28))) then
+        settings.sp_anticheat = spAc.defaultSettings()
+        uiSynced = false
+        M.syncFromSettings()
+        pcall(spAc.onText3dDisabled)
+        persist()
+        if type(flushDirtyConfigNow) == 'function' then pcall(flushDirtyConfigNow) end
+    end
+    imgui.PopStyleVar()
+    deskFormPopBindButtonStyle()
+
+    imgui.PopStyleVar(2)
+    imgui.EndChild()
+    popPanelStyle()
+end
+
+return M
+
+
+]=], '@report_desk_sp_anticheat_ui')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_anticheat_ui') end
+
+    return fn()
+
+end
+
+
+
 package.preload['report_desk_spectate_camera'] = function()
 
     local fn, err = loadstring([=[
@@ -8277,6 +9387,7 @@ local specMenuMod = require 'report_desk_spectate_menu'
 local spTheme = require 'report_desk_sp_theme'
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
 local keysHud = require 'report_desk_sp_keys_hud'
+local spAnticheat = require 'report_desk_sp_anticheat'
 local specCamera = require 'report_desk_spectate_camera'
 local spRefresh = require 'report_desk_sp_refresh'
 local wmDispatchCached
@@ -10823,6 +11934,7 @@ function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
         pcall(specCamera.onSpectateStart)
+        pcall(spAnticheat.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
@@ -10833,6 +11945,7 @@ function M.onTogglePlayerSpectating(toggle)
     expectSpectateOff = false
     if specPlayerActive() then return end
     pcall(specCamera.onSpectateEnd)
+    pcall(spAnticheat.onSpectateEnd)
     spUi.onToggleSpectating(false)
 end
 
@@ -11410,6 +12523,22 @@ function M.drawOverlayImpl(settings)
     spTheme.popHudChrome()
 end
 
+local function configureSpAnticheat(deps)
+    spAnticheat.configure({
+        getTargetId = M.getTargetId,
+        getSettings = getSettings or (deps and deps.getSettings),
+        markDirtySettings = markDirtySettings or (deps and deps.markDirtySettings),
+        resolveSpectateTargetPed = function() return M.resolveSpectateTargetPed() end,
+        isSpectating = function()
+            return specPlayerActive() or (specSession.isActive and specSession.isActive())
+        end,
+        isVkDown = deps and deps.isVkDown,
+        isGameMenuOpen = deps and deps.getShowWindow,
+        isSampInGame = deps and deps.isSampInGame,
+        ensureWireCp1251 = deps and deps.ensureWireCp1251,
+    })
+end
+
 function M.installInputHooks(deps)
     inputDeps = deps
     ctx.inputDeps = inputDeps
@@ -11422,6 +12551,8 @@ function M.installInputHooks(deps)
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
     pcall(keysHud.installSampev, deps.sampev)
+    configureSpAnticheat(deps)
+    pcall(spAnticheat.installSampev, deps.sampev)
     keysHud.configure({
         isVkDown = deps.isVkDown,
         vkeys = deps.vkeys,
@@ -11451,6 +12582,17 @@ end
 function M.ensureInputHooks()
     if not inputDeps or not inputDeps.sampev then return end
     spUi.ensureInputHooks()
+end
+
+function M.tickAnticheat()
+    if spAnticheat.tick then pcall(spAnticheat.tick) end
+end
+
+function M.drawAnticheatNative()
+    if spAnticheat.shouldDrawNative and spAnticheat.drawNative then
+        local ok, show = pcall(spAnticheat.shouldDrawNative)
+        if ok and show then pcall(spAnticheat.drawNative) end
+    end
 end
 
 function M.uninstallSpSpectateOverlayFrame()
@@ -28244,6 +29386,10 @@ function loadConfig()
             end
         end
         ensureCheatsSettings()
+        pcall(function()
+            local ac = require 'report_desk_sp_anticheat'
+            if ac.ensureSettings then ac.ensureSettings() end
+        end)
         bumpScenariosGen()
         deskConfigReady = true
         if doesFileExist(USER_CONFIG_PATH) then
@@ -28263,10 +29409,13 @@ function loadConfig()
 
     if type(data.settings) == 'table' then
         for k, v in pairs(data.settings) do
-            if k ~= 'cheats' then settings[k] = v end
+            if k ~= 'cheats' and k ~= 'sp_anticheat' then settings[k] = v end
         end
         if type(data.settings.cheats) == 'table' then
             settings.cheats = data.settings.cheats
+        end
+        if type(data.settings.sp_anticheat) == 'table' then
+            settings.sp_anticheat = data.settings.sp_anticheat
         end
     end
     if settings.watch_notify then
@@ -28289,6 +29438,10 @@ function loadConfig()
             normalizeStoredText(settings.tech_reply, true), DEFAULT_TECH_REPLY)
     end
     ensureCheatsSettings()
+    pcall(function()
+        local ac = require 'report_desk_sp_anticheat'
+        if ac.ensureSettings then ac.ensureSettings() end
+    end)
     if type(ensureAdminPunishSettings) == 'function' then pcall(ensureAdminPunishSettings) end
     if type(ensureExactTimeSettings) == 'function' then pcall(ensureExactTimeSettings) end
     if type(ensureTempLeadershipSettings) == 'function' then pcall(ensureTempLeadershipSettings) end
@@ -28703,6 +29856,34 @@ function saveConfig()
     f:write(string.format('      hud_x = %d,\n', math.floor(tonumber(ch.hud_x) or 12)))
     f:write(string.format('      hud_y = %d,\n', math.floor(tonumber(ch.hud_y) or 80)))
     f:write('    },\n')
+    pcall(function()
+        local acMod = require 'report_desk_sp_anticheat'
+        if acMod.ensureSettings then acMod.ensureSettings() end
+    end)
+    local ac = type(settings.sp_anticheat) == 'table' and settings.sp_anticheat or nil
+    if ac then
+        f:write('    sp_anticheat = {\n')
+        f:write(string.format('      tracers = %s,\n', ac.tracers ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_all_vision = %s,\n', ac.tracers_all_vision ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_hit_sound = %s,\n', ac.tracers_hit_sound ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_text3d = %s,\n', ac.tracers_text3d ~= false and 'true' or 'false'))
+        f:write(string.format('      tracers_sound_id = %d,\n', tonumber(ac.tracers_sound_id) or 1058))
+        f:write(string.format('      tracers_max = %d,\n', tonumber(ac.tracers_max) or 10))
+        f:write(string.format('      tracers_live_sec = %d,\n', tonumber(ac.tracers_live_sec) or 5))
+        f:write(string.format('      tracers_warn_sec = %d,\n', tonumber(ac.tracers_warn_sec) or 15))
+        f:write(string.format('      tracers_line_border = %.2f,\n', tonumber(ac.tracers_line_border) or 2))
+        f:write(string.format('      aim_line = %s,\n', ac.aim_line ~= false and 'true' or 'false'))
+        f:write(string.format('      aim_line_r = %.3f,\n', tonumber(ac.aim_line_r) or 0.55))
+        f:write(string.format('      aim_line_g = %.3f,\n', tonumber(ac.aim_line_g) or 0.21))
+        f:write(string.format('      aim_line_b = %.3f,\n', tonumber(ac.aim_line_b) or 1.0))
+        f:write(string.format('      aim_line_a = %.3f,\n', tonumber(ac.aim_line_a) or 1.0))
+        f:write(string.format('      aim_line_border = %d,\n', tonumber(ac.aim_line_border) or 2))
+        f:write(string.format('      shot_warn = %s,\n', ac.shot_warn ~= false and 'true' or 'false'))
+        f:write(string.format('      shot_deagle_sec = %.3f,\n', tonumber(ac.shot_deagle_sec) or 0.3))
+        f:write(string.format('      shot_m4_sec = %.3f,\n', tonumber(ac.shot_m4_sec) or 0.01))
+        f:write(string.format('      anim_cancel = %s,\n', ac.anim_cancel ~= false and 'true' or 'false'))
+        f:write('    },\n')
+    end
     f:write('  },\n')
 
     if type(settings.report_colors) == 'table' and #settings.report_colors > 0 then
@@ -34272,6 +35453,15 @@ function drawMainWindow()
             end
             imgui.EndTabItem()
         end
+        if imgui.BeginTabItem(uiText('\xC0\xED\xF2\xE8\xF7\xE8\xF2') .. '##tab_sp_ac') then
+            local okAc, errAc = pcall(drawSpAnticheatTab)
+            if not okAc then
+                imgui.TextColored(col_warn, 'Anticheat UI error:')
+                imgui.TextWrapped(tostring(errAc))
+                print('[Report Desk] sp anticheat UI: ' .. tostring(errAc))
+            end
+            imgui.EndTabItem()
+        end
         if imgui.BeginTabItem(uiText('\xD7\xE5\xEA\xE5\xF0') .. '##tab_checker') then
             if type(drawCheckerTab) ~= 'function' then
                 imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xF7\xE5\xEA\xE5\xF0\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
@@ -34622,6 +35812,36 @@ function installDeskUiFrames()
 end
 
 pcall(installDeskUiFrames)
+
+-- Draw Sp Anticheat Tab
+function drawSpAnticheatTab()
+    local ok, mod = pcall(require, 'report_desk_sp_anticheat_ui')
+    if not ok or type(mod) ~= 'table' or type(mod.drawTab) ~= 'function' then
+        imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xE0\xED\xF2\xE8\xF7\xE8\xF2\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED'))
+        return
+    end
+    if mod.configure then
+        mod.configure({
+            getSettings = function() return settings end,
+            markDirtySettings = markDirtySettings,
+            flushDirtyConfigNow = flushDirtyConfigNow,
+            uiText = uiText,
+            col_accent = col_accent,
+            col_chat_bg = col_chat_bg,
+            pushPanelStyle = pushPanelStyle,
+            popPanelStyle = popPanelStyle,
+            deskFormPanelBegin = deskFormPanelBegin,
+            deskFormPanelEnd = deskFormPanelEnd,
+            deskFormCheckboxRow = deskFormCheckboxRow,
+            drawSettingsCardHeader = drawSettingsCardHeader,
+            settingsHint = settingsHint,
+            deskFormRowAvail = deskFormRowAvail,
+            deskFormPushBindButtonStyle = deskFormPushBindButtonStyle,
+            deskFormPopBindButtonStyle = deskFormPopBindButtonStyle,
+        })
+    end
+    mod.drawTab()
+end
 
 -- Draw Desk Sp Spectate Overlay
 function drawDeskSpSpectateOverlay()
@@ -35612,6 +36832,10 @@ local function deskOnPlayerQuitBody(playerId, reason)
             deskSpectateStats.notifyTargetQuit(playerId)
         end
     end)
+    pcall(function()
+        local ok, mod = pcall(require, 'report_desk_sp_anticheat')
+        if ok and mod.onPlayerQuit then mod.onPlayerQuit(playerId) end
+    end)
     local quitNk = ''
     if type(threads) == 'table' then
         for _, t in pairs(threads) do
@@ -36332,6 +37556,8 @@ function main()
         isDeskTypingActive = deskWindowWantsKeyboard,
         getPlayerSpectating = function() return deskInputState.playerSpectating end,
         setPlayerSpectating = deskSetPlayerSpectating,
+        isSampInGame = deskSampInGame,
+        ensureWireCp1251 = ensureWireCp1251,
         sampIsChatInputActive = sampIsChatInputActive,
         sampIsDialogActive = sampIsDialogActive,
         sendSlapPlayer = sendSlapPlayer,
@@ -36646,6 +37872,12 @@ function main()
         pcall(function()
             if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
                 deskSpectateStats.tickPendingSp()
+            end
+        end)
+        pcall(function()
+            if type(deskSpectateStats) == 'table' then
+                if deskSpectateStats.tickAnticheat then deskSpectateStats.tickAnticheat() end
+                if deskSpectateStats.drawAnticheatNative then deskSpectateStats.drawAnticheatNative() end
             end
         end)
         pcall(function()

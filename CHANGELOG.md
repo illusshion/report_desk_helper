@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.6
+
+**Spectate anticheat (/sp) + вкладка «Античит» в /adesk.**
+
+- Трассеры выстрелов, звук попадания, 3D-текст точности, предупреждение wallshot.
+- Линия направления взгляда цели (aim sync + fallback по heading).
+- Rapid fire warning (Deagle / M4), детект сбивa анимации аптечки.
+- Настройки в `/adesk` → «Античит»; уведомления в чат в CP1251 (без иероглифов).
+
 ## 1 Beta.1.5
 
 **Hotfix: лаги при обновлении + GM на транспорте.**

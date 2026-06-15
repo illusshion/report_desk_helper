@@ -64,6 +64,8 @@ function main()
         isDeskTypingActive = deskWindowWantsKeyboard,
         getPlayerSpectating = function() return deskInputState.playerSpectating end,
         setPlayerSpectating = deskSetPlayerSpectating,
+        isSampInGame = deskSampInGame,
+        ensureWireCp1251 = ensureWireCp1251,
         sampIsChatInputActive = sampIsChatInputActive,
         sampIsDialogActive = sampIsDialogActive,
         sendSlapPlayer = sendSlapPlayer,
@@ -378,6 +380,12 @@ function main()
         pcall(function()
             if type(deskSpectateStats) == 'table' and deskSpectateStats.tickPendingSp then
                 deskSpectateStats.tickPendingSp()
+            end
+        end)
+        pcall(function()
+            if type(deskSpectateStats) == 'table' then
+                if deskSpectateStats.tickAnticheat then deskSpectateStats.tickAnticheat() end
+                if deskSpectateStats.drawAnticheatNative then deskSpectateStats.drawAnticheatNative() end
             end
         end)
         pcall(function()

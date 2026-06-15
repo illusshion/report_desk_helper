@@ -16,6 +16,7 @@ local specMenuMod = require 'report_desk_spectate_menu'
 local spTheme = require 'report_desk_sp_theme'
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
 local keysHud = require 'report_desk_sp_keys_hud'
+local spAnticheat = require 'report_desk_sp_anticheat'
 local specCamera = require 'report_desk_spectate_camera'
 local spRefresh = require 'report_desk_sp_refresh'
 local wmDispatchCached
@@ -2562,6 +2563,7 @@ function M.onTogglePlayerSpectating(toggle)
     if not inputDeps then return end
     if toggle then
         pcall(specCamera.onSpectateStart)
+        pcall(spAnticheat.onSpectateStart)
         spUi.onToggleSpectating(true)
         return
     end
@@ -2572,6 +2574,7 @@ function M.onTogglePlayerSpectating(toggle)
     expectSpectateOff = false
     if specPlayerActive() then return end
     pcall(specCamera.onSpectateEnd)
+    pcall(spAnticheat.onSpectateEnd)
     spUi.onToggleSpectating(false)
 end
 
@@ -3149,6 +3152,22 @@ function M.drawOverlayImpl(settings)
     spTheme.popHudChrome()
 end
 
+local function configureSpAnticheat(deps)
+    spAnticheat.configure({
+        getTargetId = M.getTargetId,
+        getSettings = getSettings or (deps and deps.getSettings),
+        markDirtySettings = markDirtySettings or (deps and deps.markDirtySettings),
+        resolveSpectateTargetPed = function() return M.resolveSpectateTargetPed() end,
+        isSpectating = function()
+            return specPlayerActive() or (specSession.isActive and specSession.isActive())
+        end,
+        isVkDown = deps and deps.isVkDown,
+        isGameMenuOpen = deps and deps.getShowWindow,
+        isSampInGame = deps and deps.isSampInGame,
+        ensureWireCp1251 = deps and deps.ensureWireCp1251,
+    })
+end
+
 function M.installInputHooks(deps)
     inputDeps = deps
     ctx.inputDeps = inputDeps
@@ -3161,6 +3180,8 @@ function M.installInputHooks(deps)
     ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
     pcall(keysHud.installSampev, deps.sampev)
+    configureSpAnticheat(deps)
+    pcall(spAnticheat.installSampev, deps.sampev)
     keysHud.configure({
         isVkDown = deps.isVkDown,
         vkeys = deps.vkeys,
@@ -3190,6 +3211,17 @@ end
 function M.ensureInputHooks()
     if not inputDeps or not inputDeps.sampev then return end
     spUi.ensureInputHooks()
+end
+
+function M.tickAnticheat()
+    if spAnticheat.tick then pcall(spAnticheat.tick) end
+end
+
+function M.drawAnticheatNative()
+    if spAnticheat.shouldDrawNative and spAnticheat.drawNative then
+        local ok, show = pcall(spAnticheat.shouldDrawNative)
+        if ok and show then pcall(spAnticheat.drawNative) end
+    end
 end
 
 function M.uninstallSpSpectateOverlayFrame()
