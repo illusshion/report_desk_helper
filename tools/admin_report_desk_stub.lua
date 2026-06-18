@@ -1,7 +1,7 @@
 --[[ Legacy launcher ? use AdminDesk.luac in moonloader root. ]]
 script_name('Admin Report Desk (legacy)')
 script_author('ARP Helper')
-script_version('1 Beta.1.7.3')
+script_version('1 Beta.1.8')
 script_moonloader(26)
 
 function main()

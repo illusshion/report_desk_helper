@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.7.3')
+script_version('1 Beta.1.8')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -128,6 +128,7 @@ end
 local FIRST_RUN_INTRO = '\xD6\xF2\xEE \xE2\xE0\xF8 \xEF\xE5\xF0\xE2\xFB\xE9 \xE7\xE0\xEF\xF3\xF1\xEA. \xCF\xF0\xEE\xE2\xE5\xF0\xFE \xEE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xFF \xE8 \xF3\xF1\xF2\xE0\xED\xEE\xE2\xEB\xFE \xE2\xF1\xB8 \xED\xF3\xE6\xED\xEE\xE5. \xC2\xEE\xE7\xEC\xEE\xE6\xED\xE0 \xEF\xF0\xEE\xF1\xE0\xE4\xEA\xE0 FPS \xED\xE0 \xEF\xE0\xF0\xF3 \xF1\xE5\xEA\xF3\xED\xE4 \xB7 \xFD\xF2\xEE \xED\xEE\xF0\xEC\xE0\xEB\xFC\xED\xEE.'
 local FIRST_RUN_FAIL = '\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xF3\xF1\xF2\xE0\xED\xEE\xE2\xE8\xF2\xFC. \xCF\xF0\xEE\xE2\xE5\xF0\xFC\xF2\xE5 \xE8\xED\xF2\xE5\xF0\xED\xE5\xF2 \xE8 \xEF\xEE\xEF\xF0\xEE\xE1\xF3\xE9\xF2\xE5 /deskrepair'
 local FIRST_RUN_READY = '\xC3\xEE\xF2\xEE\xE2\xEE! \xCE\xF2\xEA\xF0\xEE\xE9\xF2\xE5 \xEE\xEA\xED\xEE \xEA\xEE\xEC\xE0\xED\xE4\xEE\xE9 /adesk'
+local DEFERRED_UPDATE_MSG = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF0\xE5\xF1\xF3\xF0\xF1\xEE\xE2 \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xE2 \xF4\xEE\xED\xE5. \xCF\xEE\xF1\xEB\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 \xF1\xEA\xF0\xE8\xEF\xF2 \xEF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xE8\xF2\xF1\xFF \xF1\xE0\xEC.'
 
 local function bootstrapLog(text)
     print('[Report Desk] ' .. tostring(text or ''))
@@ -212,76 +213,6 @@ local function requireDeps()
     return nil
 end
 
-local function manifestFileMeta(raw, asset)
-    local esc = asset:gsub('([%.%-])', '%%%1')
-    local block = raw:match('"' .. esc .. '"%s*:%s*{([^}]+)}')
-    if not block then return nil end
-    local url = block:match('"url"%s*:%s*"([^"]+)"')
-    if not url or url == '' then
-        local base = manifestField(raw, 'release_base')
-        if base and base ~= '' then
-            url = base .. '/' .. asset
-        end
-    end
-    return {
-        sha256 = block:match('"sha256"%s*:%s*"([^"]+)"'),
-        bytes = tonumber(block:match('"bytes"%s*:%s*(%d+)')),
-        url = url,
-    }
-end
-
-local function bootstrapRefreshUpdaterLibs()
-    if not downloadUrlToFile then
-        return true
-    end
-    local root = getWorkingDirectory()
-    local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
-    ensureDirFor(tmpJson)
-    local ok = downloadWait(MANIFEST_URL, tmpJson, 32, 30)
-    if not ok then
-        bootstrapLog('updater refresh: manifest skip (offline)')
-        return true
-    end
-    local f = io.open(tmpJson, 'r')
-    if not f then
-        return true
-    end
-    local raw = f:read('*a') or ''
-    f:close()
-    local refreshed = false
-    for _, asset in ipairs(SEED_LIBS) do
-        local meta = manifestFileMeta(raw, asset)
-        if meta and meta.url and meta.url ~= '' then
-            local dest = libPath(asset)
-            local need = not doesFileExist(dest)
-            if not need and meta.bytes and meta.bytes > 0 then
-                local df = io.open(dest, 'rb')
-                if df then
-                    local n = df:seek('end') or 0
-                    df:close()
-                    if n ~= meta.bytes then
-                        need = true
-                    end
-                end
-            end
-            if need then
-                bootstrapLog('refreshing ' .. asset)
-                ok = downloadWait(meta.url, dest, 256, 180)
-                if ok then
-                    refreshed = true
-                else
-                    bootstrapLog('refresh failed: ' .. asset)
-                end
-            end
-        end
-    end
-    if refreshed then
-        clearDeskModuleCache()
-        bootstrapLog('updater modules refreshed')
-    end
-    return true
-end
-
 local function bootstrapSeedUpdater()
     if updaterInstalled() then
         return true
@@ -331,92 +262,6 @@ local function bootstrapSeedUpdater()
     return true
 end
 
-local function applyLauncherPendingOnStartup()
-    if not updaterInstalled() then
-        return false
-    end
-    local ok, applied = pcall(function()
-        local autoupdate = requireAutoupdate()
-        if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
-            return false
-        end
-        return autoupdate.applyLauncherPending() == true
-    end)
-    if not ok then
-        print('[Report Desk] launcher pending skipped: ' .. tostring(applied))
-        return false
-    end
-    if applied then
-        print('[Report Desk] launcher updated on disk')
-    end
-    return applied == true
-end
-
-local function applyPendingBootstrap()
-    if not updaterInstalled() then
-        return
-    end
-    local autoupdate = requireAutoupdate()
-    if type(autoupdate) ~= 'table' then return end
-    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles({ includeLauncher = false }) then
-        clearDeskModuleCache()
-        print('[Report Desk] pending module files applied')
-    end
-end
-
-local function registerUpdateCommands(autoupdate, chatSay)
-    if not sampRegisterChatCommand or not autoupdate then return end
-    sampRegisterChatCommand('deskupdate', function()
-        if autoupdate.printDiagnostics then
-            autoupdate.printDiagnostics()
-        elseif chatSay then
-            chatSay('autoupdate unavailable')
-        end
-    end)
-    sampRegisterChatCommand('deskrepair', function()
-        if not autoupdate.repair then
-            if chatSay then chatSay('repair unavailable') end
-            return
-        end
-        if chatSay then
-            chatSay('\xCF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xE2\xE5\xF0\xF1\xE8\xE8...')
-        end
-        local function finishRepair(willReload, status)
-            if willReload then
-                clearDeskModuleCache()
-                local pipelineOk, updated, firstInstall = runInstallPipeline()
-                if pipelineOk then
-                    loadAndRunCore(updated, firstInstall)
-                end
-                return
-            end
-            if status == 'fail' and chatSay then
-                chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
-            elseif status == 'uptodate' and chatSay then
-                chatSay('\xC2\xE5\xF0\xF1\xE8\xFF \xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xE0')
-            end
-        end
-        if not lua_thread or not lua_thread.create then
-            if chatSay then chatSay('repair: lua_thread unavailable') end
-            return
-        end
-        lua_thread.create(function()
-            wait(0)
-            local okRepair, willReload, status = pcall(function()
-                return autoupdate.repair()
-            end)
-            if not okRepair then
-                bootstrapLog('repair: ' .. tostring(willReload))
-                if chatSay then
-                    chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
-                end
-                return
-            end
-            finishRepair(willReload, status)
-        end)
-    end)
-end
-
 local function isLuaBytecodeFile(path)
     if not doesFileExist(path) then return false end
     local f = io.open(path, 'rb')
@@ -438,19 +283,97 @@ local function purgeBrokenLauncherPending()
     end
 end
 
-local function tryRecoverCore(autoupdate, initErr, firstInstall)
-    if type(autoupdate) ~= 'table' or not autoupdate.recoverFromCoreFailure then
+local function applyLauncherPendingOnStartup()
+    if not updaterInstalled() then
         return false
     end
-    bootstrapLog('core recovery: attempting repair')
-    local okRecover = select(1, autoupdate.recoverFromCoreFailure(initErr, {
-        quietChat = true,
-        userFacing = true,
-        showOverlay = true,
-        firstInstall = firstInstall,
-        minimalOverlay = true,
-    }))
-    return okRecover == true
+    local ok, applied = pcall(function()
+        local autoupdate = requireAutoupdate()
+        if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
+            return false
+        end
+        return autoupdate.applyLauncherPending() == true
+    end)
+    if not ok then
+        print('[Report Desk] launcher pending skipped: ' .. tostring(applied))
+        return false
+    end
+    if applied then
+        bootstrapLog('launcher updated — reloading')
+        wait(300)
+        if thisScript and thisScript().reload then
+            thisScript():reload()
+        end
+    end
+    return applied == true
+end
+
+local function applyPendingBootstrap()
+    if not updaterInstalled() then
+        return
+    end
+    local autoupdate = requireAutoupdate()
+    if type(autoupdate) ~= 'table' then return end
+    if autoupdate.applyPendingFiles and autoupdate.applyPendingFiles({ includeLauncher = false }) then
+        clearDeskModuleCache()
+        bootstrapLog('pending module files applied')
+    end
+end
+
+local function registerUpdateCommands(autoupdate, chatSay)
+    if not sampRegisterChatCommand or not autoupdate then return end
+    sampRegisterChatCommand('deskupdate', function()
+        if autoupdate.printDiagnostics then
+            autoupdate.printDiagnostics()
+        elseif chatSay then
+            chatSay('autoupdate unavailable')
+        end
+    end)
+    sampRegisterChatCommand('deskrepair', function()
+        if not autoupdate.repair then
+            if chatSay then chatSay('repair unavailable') end
+            return
+        end
+        if chatSay then
+            chatSay('\xCF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xE2\xE5\xF0\xF1\xE8\xE8...')
+        end
+        if not lua_thread or not lua_thread.create then
+            if chatSay then chatSay('repair: lua_thread unavailable') end
+            return
+        end
+        lua_thread.create(function()
+            wait(0)
+            local okRepair, willReload, status = pcall(function()
+                return autoupdate.repair({ quietChat = false, userFacing = true })
+            end)
+            if not okRepair then
+                bootstrapLog('repair: ' .. tostring(willReload))
+                if chatSay then
+                    chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
+                end
+                return
+            end
+            if willReload then
+                clearDeskModuleCache()
+                local pipelineOk, updated, firstInstall = runInstallPipeline()
+                if pipelineOk then
+                    loadAndRunCore(updated, firstInstall)
+                end
+                return
+            end
+            if status == 'fail' and chatSay then
+                chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
+            elseif status == 'uptodate' and chatSay then
+                chatSay('\xC2\xE5\xF0\xF1\xE8\xFF \xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xE0')
+            end
+        end)
+    end)
+end
+
+local function coreLoadLooksBroken(errText)
+    errText = tostring(errText or '')
+    return errText:find("module 'report_desk_", 1, true) ~= nil
+        or errText:find('not found', 1, true) ~= nil
 end
 
 local function loadAndRunCore(sessionUpdated, firstInstall)
@@ -458,15 +381,8 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     local fn, loadErr = loadCore()
     if not fn then
         bootstrapLog(tostring(loadErr))
-        if tryRecoverCore(autoupdate, loadErr, firstInstall) then
-            clearDeskModuleCache()
-            autoupdate = requireAutoupdate()
-            fn, loadErr = loadCore()
-        end
-        if not fn then
-            bootstrapSay(FIRST_RUN_FAIL)
-            return false
-        end
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false
     end
 
     if autoupdate and autoupdate.showWelcomeMessage then
@@ -477,9 +393,17 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     end
 
     local initOk, initErr = pcall(fn)
-    if not initOk then
+    if not initOk and autoupdate and autoupdate.repair and coreLoadLooksBroken(initErr) then
         bootstrapLog('core init: ' .. tostring(initErr))
-        if tryRecoverCore(autoupdate, initErr, firstInstall) then
+        bootstrapLog('repairing broken core...')
+        local repaired = select(1, autoupdate.repair({
+            brokenCore = true,
+            quietChat = true,
+            userFacing = true,
+            showOverlay = true,
+            minimalOverlay = true,
+        }))
+        if repaired then
             clearDeskModuleCache()
             autoupdate = requireAutoupdate()
             fn, loadErr = loadCore()
@@ -487,10 +411,11 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
                 initOk, initErr = pcall(fn)
             end
         end
-        if not initOk then
-            bootstrapSay(FIRST_RUN_FAIL)
-            return false
-        end
+    end
+    if not initOk then
+        bootstrapLog('core init: ' .. tostring(initErr))
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false
     end
 
     if type(main) ~= 'function' then
@@ -508,24 +433,6 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     return true
 end
 
-local DEFERRED_UPDATE_MSG = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF0\xE5\xF1\xF3\xF0\xF1\xEE\xE2 \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xE2 \xF4\xEE\xED\xE5. \xCF\xEE\xF1\xEB\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 \xF1\xEA\xF0\xE8\xEF\xF2 \xEF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xE8\xF2\xF1\xFF \xF1\xE0\xEC.'
-
-local function applyLauncherReloadIfNeeded(autoupdate)
-    if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
-        return false
-    end
-    if not autoupdate.applyLauncherPending() then
-        return false
-    end
-    bootstrapLog('launcher updated — reloading once')
-    wait(500)
-    if thisScript and thisScript().reload then
-        thisScript():reload()
-        return true
-    end
-    return false
-end
-
 local function runInstallPipeline()
     local firstInstall = not corePresent()
     if firstInstall then
@@ -536,19 +443,12 @@ local function runInstallPipeline()
         return false, false, firstInstall
     end
 
-    if not bootstrapRefreshUpdaterLibs() then
-        return false, false, firstInstall
-    end
-
     local autoupdate, autoupdateErr = requireAutoupdate()
     if not autoupdate then
         bootstrapLog(tostring(autoupdateErr or 'autoupdate missing'))
         bootstrapSay(FIRST_RUN_FAIL)
         return false, false, firstInstall
     end
-
-    local chatSay = autoupdate.chatSay
-    registerUpdateCommands(autoupdate, chatSay)
 
     local userOpts = {
         quietChat = true,
@@ -558,7 +458,7 @@ local function runInstallPipeline()
         minimalOverlay = true,
     }
 
-    local manifest, manifestErr = autoupdate.fetchRemoteManifest()
+    local manifest = autoupdate.fetchRemoteManifest()
     if not manifest then
         if corePresent() then
             bootstrapLog('offline, using local core')
@@ -568,72 +468,34 @@ local function runInstallPipeline()
         return false, false, firstInstall
     end
 
+    registerUpdateCommands(autoupdate, autoupdate.chatSay)
     bootstrapLog('checking for updates...')
-    local sessionUpdated = false
-    local syncOpts = {
-        mode = 'full',
-        includeCore = true,
-        reload = false,
-        quietChat = true,
-        userFacing = true,
-        showOverlay = true,
-        firstInstall = firstInstall,
-        minimalOverlay = true,
-    }
 
-    if autoupdate.planHasCriticalWork and autoupdate.planHasCriticalWork(manifest, syncOpts) then
-        bootstrapLog('critical update required — blocking sync')
-        local _, critStatus = autoupdate.syncCritical(manifest, syncOpts)
-        if critStatus == 'fail' then
-            return false, false, firstInstall
-        end
-        sessionUpdated = critStatus == 'updated' or critStatus == 'pending' or critStatus == 'reload'
-        clearDeskModuleCache()
-        autoupdate = requireAutoupdate()
-        chatSay = autoupdate.chatSay
-        registerUpdateCommands(autoupdate, chatSay)
-        if applyLauncherReloadIfNeeded(autoupdate) then
-            return true, true, firstInstall
-        end
-    end
-
-    if autoupdate.planHasWork and autoupdate.planHasWork(manifest, syncOpts)
-            and autoupdate.shouldDeferInGameSync
-            and autoupdate.shouldDeferInGameSync(manifest, { firstInstall = firstInstall }) then
-        bootstrapLog('in-game: deferring asset download to background')
-        bootstrapSay(DEFERRED_UPDATE_MSG)
-        if autoupdate.deferAssets then
-            autoupdate.deferAssets(manifest, userOpts)
-        end
-    elseif autoupdate.planHasWork and autoupdate.planHasWork(manifest, syncOpts) then
-        local willReload, syncStatus = autoupdate.sync(manifest, {
+    local willReload, syncStatus
+    if autoupdate.startupSync then
+        willReload, syncStatus = autoupdate.startupSync(manifest, userOpts)
+    else
+        willReload, syncStatus = autoupdate.sync(manifest, {
             mode = 'full',
             includeCore = true,
             reload = true,
-            quietChat = true,
-            userFacing = true,
-            showOverlay = true,
-            firstInstall = firstInstall,
-            minimalOverlay = true,
         })
-        sessionUpdated = syncStatus == 'updated' or syncStatus == 'pending' or syncStatus == 'reload'
-        if syncStatus == 'fail' then
-            return false, false, firstInstall
-        end
-        if willReload or syncStatus == 'reload' then
-            return true, true, firstInstall
-        end
+    end
+
+    if syncStatus == 'fail' then
+        bootstrapSay(FIRST_RUN_FAIL)
+        return false, false, firstInstall
+    end
+    if syncStatus == 'deferred' then
+        bootstrapSay(DEFERRED_UPDATE_MSG)
+    end
+    if willReload or syncStatus == 'reload' then
+        return true, true, firstInstall
     end
 
     clearDeskModuleCache()
     autoupdate = requireAutoupdate()
-    if not autoupdate then
-        bootstrapLog('autoupdate lost after sync')
-        bootstrapSay(FIRST_RUN_FAIL)
-        return false, false, firstInstall
-    end
-    chatSay = autoupdate.chatSay
-    registerUpdateCommands(autoupdate, chatSay)
+    registerUpdateCommands(autoupdate, autoupdate.chatSay)
 
     local deps = requireDeps()
     if not deps then
@@ -662,20 +524,14 @@ local function runInstallPipeline()
     if autoupdate.hideUpdateOverlay then
         pcall(autoupdate.hideUpdateOverlay)
     end
-
     if autoupdate.reconcileAssetsState then
         pcall(autoupdate.reconcileAssetsState, manifest)
     end
-
-    if firstInstall and not sessionUpdated then
+    if firstInstall and syncStatus == 'uptodate' then
         bootstrapSay(FIRST_RUN_READY)
     end
 
-    if autoupdate.deferAssets then
-        autoupdate.deferAssets(manifest, userOpts)
-    end
-
-    return true, sessionUpdated, firstInstall
+    return true, syncStatus == 'updated', firstInstall
 end
 
 function main()

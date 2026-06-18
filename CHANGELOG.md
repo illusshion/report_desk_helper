@@ -1,29 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
-## 1 Beta.1.7.3
+## 1 Beta.1.8
 
-**Hotfix: самовосстановление обновления (критический sync).**
+**Стабильный релиз: spectate bundle, обновления, Edge UI.**
 
-- Autoupdate: политика defer только для assets; core/bootstrap/autoupdate всегда ставятся блокирующим sync до запуска ядра.
-- Bootstrap: перед запуском сверяет и подтягивает устаревшие updater-модули с manifest.
-- При падении init ядра — repair без reload-loop (удаление битого core + повторная установка).
-- Release verify: обязательные preload `report_desk_sp_state`, `sp_hooks`, `sp_spectate_health`.
-
-## 1 Beta.1.7.2
-
-**Hotfix: релизный bundle не грузился (spectate modules).**
-
-- В `AdminDeskCore.luac` добавлены пропущенные preload-модули: `report_desk_sp_state`, `report_desk_sp_hooks`, `report_desk_sp_spectate_health`.
-- Bootstrap: убран бесконечный reload при ошибке init ядра (зацикливание «Не удалось установить»).
-- CI: sanity-проверка closure зависимостей bundle preload.
-
-## 1 Beta.1.7.1
-
-**Hotfix: обновление в игре (mimgui DLL + /deskrepair).**
-
-- Autoupdate: не переустанавливает mimgui/runtime при repair, если уже установлены.
-- Если `cimguidx9.dll` занят — обновление не падает, ядро и конфиги ставятся, mimgui остаётся как есть.
-- `/deskrepair` выполняется в `lua_thread` (фикс `attempt to yield across C-call boundary`).
+- Релизный bundle: все spectate-модули в preload (`sp_state`, `sp_hooks`, `sp_spectate_health`).
+- Autoupdate: единая политика `startupSync` — core/updater блокирующе, assets в фоне в игре.
+- Bootstrap упрощён: без reload-loop, launcher через `.pending` + reload, repair через `/deskrepair`.
+- Edge UI, журнал наказаний без крашей при массовых `/kick`/`/mute` во время `/sp`.
+- Release verify: SHA256 + обязательные preload в CI.
 
 ## 1 Beta.1.7
 

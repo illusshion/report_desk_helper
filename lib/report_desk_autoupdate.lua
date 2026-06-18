@@ -1256,7 +1256,7 @@ end
 
 local function isCriticalManifestAsset(asset)
     asset = tostring(asset or '')
-    if asset == 'AdminDeskCore.luac' or asset == 'AdminDesk.luac' then
+    if asset == 'AdminDeskCore.luac' then
         return true
     end
     if asset == 'report_desk_autoupdate.lua'
@@ -1353,22 +1353,19 @@ function M.removeCoreFiles()
     end
 end
 
-function M.recoverFromCoreFailure(err, opts)
-    opts = M.resolveUserNotifyOpts(opts or {})
-    err = tostring(err or '')
-    if err:find("module 'report_desk_", 1, true) or err:find('not found', 1, true) then
+function M.repair(opts)
+    opts = opts or {}
+    local manifest, err = M.fetchRemoteManifest()
+    if not manifest then
+        return false, err or 'no manifest'
+    end
+    if opts.brokenCore == true then
         M.removeCoreFiles()
     end
-    local manifest, manifestErr = M.fetchRemoteManifest()
-    if not manifest then
-        log('core recovery offline: ' .. tostring(manifestErr))
-        return false, manifestErr or 'offline'
-    end
-    local _, status = M.sync(manifest, {
+    local willReload, status = M.sync(manifest, {
         mode = 'repair',
         force = true,
         includeCore = true,
-        criticalOnly = true,
         reload = false,
         quietChat = opts.quietChat,
         userFacing = opts.userFacing,
@@ -1378,22 +1375,85 @@ function M.recoverFromCoreFailure(err, opts)
     if status == 'fail' then
         return false, status
     end
-    if M.applyPendingFiles then
+    if willReload then
         M.applyPendingFiles({ includeLauncher = false })
+        package.loaded['report_desk_autoupdate'] = nil
+        package.loaded['lib.report_desk_autoupdate'] = nil
+        if M.applyLauncherPending and M.applyLauncherPending() then
+            log('launcher pending committed on disk')
+        end
     end
-    if M.applyLauncherPending and M.applyLauncherPending() then
-        log('launcher updated during core recovery')
+    if M.needsAssets(manifest) then
+        local ok = M.ensureAssets(manifest, opts)
+        if not ok then
+            return false, 'assets_fail'
+        end
     end
-    package.loaded['report_desk_autoupdate'] = nil
-    package.loaded['lib.report_desk_autoupdate'] = nil
-    reloadDeskSupportModules()
-    return status ~= 'fail', status
+    return willReload, status
 end
 
 function M.syncCritical(manifest, opts)
     opts = opts or {}
     opts.criticalOnly = true
     return M.sync(manifest, opts)
+end
+
+--[[
+    Startup sync policy (bootstrap calls this once per session):
+    1) blocking install of core + updater support libs when outdated
+    2) defer heavy assets in-game when core is current
+    3) otherwise full sync (configs, launcher .pending, etc.)
+]]
+function M.startupSync(manifest, opts)
+    opts = M.resolveUserNotifyOpts(opts or {})
+    if not manifest then
+        return false, 'offline'
+    end
+
+    local baseOpts = {
+        mode = 'full',
+        includeCore = true,
+        reload = false,
+        quietChat = opts.quietChat,
+        userFacing = opts.userFacing,
+        showOverlay = opts.showOverlay,
+        firstInstall = opts.firstInstall,
+        minimalOverlay = opts.minimalOverlay,
+    }
+
+    if M.planHasCriticalWork(manifest, baseOpts) then
+        log('startup: blocking sync (core/updater)')
+        local _, status = M.syncCritical(manifest, baseOpts)
+        if status == 'fail' then
+            return false, 'fail'
+        end
+        if M.applyLauncherPending and M.applyLauncherPending() then
+            return true, 'reload'
+        end
+    end
+
+    local fullOpts = {
+        mode = 'full',
+        includeCore = true,
+        reload = true,
+        quietChat = opts.quietChat,
+        userFacing = opts.userFacing,
+        showOverlay = opts.showOverlay,
+        firstInstall = opts.firstInstall,
+        minimalOverlay = opts.minimalOverlay,
+    }
+
+    if M.shouldDeferInGameSync(manifest, opts) and M.planHasWork(manifest, fullOpts) then
+        log('startup: deferring assets')
+        M.deferAssets(manifest, opts)
+        return false, 'deferred'
+    end
+
+    if M.planHasWork(manifest, fullOpts) then
+        return M.sync(manifest, fullOpts)
+    end
+
+    return false, 'uptodate'
 end
 
 local function downloadPlan(plan, manifest, opts)
@@ -1821,33 +1881,6 @@ function M.forceDownload(corePath)
         return true
     end
     return false, status
-end
-
--- Публичный API модуля.
-function M.repair()
-    local manifest, err = M.fetchRemoteManifest()
-    if not manifest then
-        return false, err or 'no manifest'
-    end
-    local willReload, status = M.sync(manifest, { mode = 'repair', force = true, includeCore = true, reload = false })
-    if status == 'fail' then
-        return false, status
-    end
-    if willReload then
-        M.applyPendingFiles({ includeLauncher = false })
-        package.loaded['report_desk_autoupdate'] = nil
-        package.loaded['lib.report_desk_autoupdate'] = nil
-        if M.applyLauncherPending and M.applyLauncherPending() then
-            log('launcher pending committed on disk (next game start)')
-        end
-    end
-    if M.needsAssets(manifest) then
-        local ok, assetsUpdated = M.ensureAssets(manifest, { quietChat = false })
-        if not ok then
-            return false, 'assets_fail'
-        end
-    end
-    return willReload, status
 end
 
 -- Публичный API модуля.
