@@ -1254,6 +1254,148 @@ function M.planHasWork(manifest, opts)
     return fileCount > 0 or hasExtra
 end
 
+local function isCriticalManifestAsset(asset)
+    asset = tostring(asset or '')
+    if asset == 'AdminDeskCore.luac' or asset == 'AdminDesk.luac' then
+        return true
+    end
+    if asset == 'report_desk_autoupdate.lua'
+        or asset == 'report_desk_deps.lua'
+        or asset == 'report_desk_sha256.lua'
+        or asset == 'report_desk_zip.lua'
+        or asset == 'report_desk_fs.lua'
+        or asset == 'report_desk_update_overlay.lua' then
+        return true
+    end
+    return false
+end
+
+local function manifestCoreSpec(manifest)
+    if type(manifest) ~= 'table' or type(manifest.files) ~= 'table' then
+        return nil
+    end
+    local spec = manifest.files['AdminDeskCore.luac']
+    if type(spec) ~= 'table' or not spec.dest then
+        return nil
+    end
+    return {
+        asset = 'AdminDeskCore.luac',
+        dest = tostring(spec.dest):gsub('/', '\\'),
+        sha256 = tostring(spec.sha256 or ''):lower(),
+        bytes = tonumber(spec.bytes) or 0,
+        url = tostring(spec.url or ''),
+        pending = false,
+    }
+end
+
+function M.coreMatchesManifest(manifest)
+    local spec = manifestCoreSpec(manifest)
+    if not spec then
+        return true
+    end
+    if not M.corePresent() then
+        return false
+    end
+    return localFileMatches(spec)
+end
+
+function M.planHasCriticalWork(manifest, opts)
+    if not M.coreMatchesManifest(manifest) then
+        return true
+    end
+    local plan = buildUpdatePlan(manifest, opts or {})
+    for _, spec in ipairs(plan) do
+        if isCriticalManifestAsset(spec.asset) then
+            return true
+        end
+    end
+    return false
+end
+
+function M.shouldDeferInGameSync(manifest, opts)
+    opts = opts or {}
+    if opts.firstInstall or not M.corePresent() then
+        return false
+    end
+    if M.planHasCriticalWork(manifest, opts) then
+        return false
+    end
+    if not M.coreMatchesManifest(manifest) then
+        return false
+    end
+    if not isSampfuncsLoaded or not isSampfuncsLoaded() then
+        return false
+    end
+    if not isSampLoaded or not isSampLoaded() then
+        return false
+    end
+    return true
+end
+
+local function filterCriticalPlan(plan)
+    local filtered = {}
+    for _, spec in ipairs(plan) do
+        if isCriticalManifestAsset(spec.asset) then
+            filtered[#filtered + 1] = spec
+        end
+    end
+    return filtered
+end
+
+function M.removeCoreFiles()
+    local dir = M.path('report_desk')
+    for _, name in ipairs(CORE_FILE_NAMES) do
+        local path = dir .. '\\' .. name
+        if doesFileExist(path) then
+            pcall(os.remove, path)
+            log('removed core file: ' .. path)
+        end
+    end
+end
+
+function M.recoverFromCoreFailure(err, opts)
+    opts = M.resolveUserNotifyOpts(opts or {})
+    err = tostring(err or '')
+    if err:find("module 'report_desk_", 1, true) or err:find('not found', 1, true) then
+        M.removeCoreFiles()
+    end
+    local manifest, manifestErr = M.fetchRemoteManifest()
+    if not manifest then
+        log('core recovery offline: ' .. tostring(manifestErr))
+        return false, manifestErr or 'offline'
+    end
+    local _, status = M.sync(manifest, {
+        mode = 'repair',
+        force = true,
+        includeCore = true,
+        criticalOnly = true,
+        reload = false,
+        quietChat = opts.quietChat,
+        userFacing = opts.userFacing,
+        showOverlay = opts.showOverlay,
+        minimalOverlay = opts.minimalOverlay,
+    })
+    if status == 'fail' then
+        return false, status
+    end
+    if M.applyPendingFiles then
+        M.applyPendingFiles({ includeLauncher = false })
+    end
+    if M.applyLauncherPending and M.applyLauncherPending() then
+        log('launcher updated during core recovery')
+    end
+    package.loaded['report_desk_autoupdate'] = nil
+    package.loaded['lib.report_desk_autoupdate'] = nil
+    reloadDeskSupportModules()
+    return status ~= 'fail', status
+end
+
+function M.syncCritical(manifest, opts)
+    opts = opts or {}
+    opts.criticalOnly = true
+    return M.sync(manifest, opts)
+end
+
 local function downloadPlan(plan, manifest, opts)
     opts = M.resolveUserNotifyOpts(opts or {})
     clearStaging()
@@ -1503,6 +1645,18 @@ function M.sync(manifest, opts)
         return false, 'offline'
     end
     local plan, state, allFiles = buildUpdatePlan(manifest, opts)
+    if opts.criticalOnly then
+        plan = filterCriticalPlan(plan)
+        plan.runtime = nil
+        plan.iconv = nil
+        plan.mimgui = nil
+        if #plan == 0 and not M.coreMatchesManifest(manifest) then
+            local coreSpec = manifestCoreSpec(manifest)
+            if coreSpec and coreSpec.url ~= '' then
+                plan = { coreSpec }
+            end
+        end
+    end
     local fileCount = #plan
     local hasExtra = plan.runtime ~= nil or plan.iconv ~= nil or plan.mimgui ~= nil or plan.mimgui ~= nil
     if fileCount == 0 and not hasExtra then

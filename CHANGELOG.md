@@ -1,5 +1,14 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.7.3
+
+**Hotfix: самовосстановление обновления (критический sync).**
+
+- Autoupdate: политика defer только для assets; core/bootstrap/autoupdate всегда ставятся блокирующим sync до запуска ядра.
+- Bootstrap: перед запуском сверяет и подтягивает устаревшие updater-модули с manifest.
+- При падении init ядра — repair без reload-loop (удаление битого core + повторная установка).
+- Release verify: обязательные preload `report_desk_sp_state`, `sp_hooks`, `sp_spectate_health`.
+
 ## 1 Beta.1.7.2
 
 **Hotfix: релизный bundle не грузился (spectate modules).**

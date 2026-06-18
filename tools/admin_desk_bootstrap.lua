@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.7.2')
+script_version('1 Beta.1.7.3')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -212,6 +212,76 @@ local function requireDeps()
     return nil
 end
 
+local function manifestFileMeta(raw, asset)
+    local esc = asset:gsub('([%.%-])', '%%%1')
+    local block = raw:match('"' .. esc .. '"%s*:%s*{([^}]+)}')
+    if not block then return nil end
+    local url = block:match('"url"%s*:%s*"([^"]+)"')
+    if not url or url == '' then
+        local base = manifestField(raw, 'release_base')
+        if base and base ~= '' then
+            url = base .. '/' .. asset
+        end
+    end
+    return {
+        sha256 = block:match('"sha256"%s*:%s*"([^"]+)"'),
+        bytes = tonumber(block:match('"bytes"%s*:%s*(%d+)')),
+        url = url,
+    }
+end
+
+local function bootstrapRefreshUpdaterLibs()
+    if not downloadUrlToFile then
+        return true
+    end
+    local root = getWorkingDirectory()
+    local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
+    ensureDirFor(tmpJson)
+    local ok = downloadWait(MANIFEST_URL, tmpJson, 32, 30)
+    if not ok then
+        bootstrapLog('updater refresh: manifest skip (offline)')
+        return true
+    end
+    local f = io.open(tmpJson, 'r')
+    if not f then
+        return true
+    end
+    local raw = f:read('*a') or ''
+    f:close()
+    local refreshed = false
+    for _, asset in ipairs(SEED_LIBS) do
+        local meta = manifestFileMeta(raw, asset)
+        if meta and meta.url and meta.url ~= '' then
+            local dest = libPath(asset)
+            local need = not doesFileExist(dest)
+            if not need and meta.bytes and meta.bytes > 0 then
+                local df = io.open(dest, 'rb')
+                if df then
+                    local n = df:seek('end') or 0
+                    df:close()
+                    if n ~= meta.bytes then
+                        need = true
+                    end
+                end
+            end
+            if need then
+                bootstrapLog('refreshing ' .. asset)
+                ok = downloadWait(meta.url, dest, 256, 180)
+                if ok then
+                    refreshed = true
+                else
+                    bootstrapLog('refresh failed: ' .. asset)
+                end
+            end
+        end
+    end
+    if refreshed then
+        clearDeskModuleCache()
+        bootstrapLog('updater modules refreshed')
+    end
+    return true
+end
+
 local function bootstrapSeedUpdater()
     if updaterInstalled() then
         return true
@@ -368,14 +438,19 @@ local function purgeBrokenLauncherPending()
     end
 end
 
-local function bootstrapReload(reason)
-    bootstrapLog('reload: ' .. tostring(reason))
-    wait(2000)
-    if thisScript and thisScript().reload then
-        thisScript():reload()
-        return true
+local function tryRecoverCore(autoupdate, initErr, firstInstall)
+    if type(autoupdate) ~= 'table' or not autoupdate.recoverFromCoreFailure then
+        return false
     end
-    return false
+    bootstrapLog('core recovery: attempting repair')
+    local okRecover = select(1, autoupdate.recoverFromCoreFailure(initErr, {
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+        firstInstall = firstInstall,
+        minimalOverlay = true,
+    }))
+    return okRecover == true
 end
 
 local function loadAndRunCore(sessionUpdated, firstInstall)
@@ -383,8 +458,15 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     local fn, loadErr = loadCore()
     if not fn then
         bootstrapLog(tostring(loadErr))
-        bootstrapSay(FIRST_RUN_FAIL)
-        return false
+        if tryRecoverCore(autoupdate, loadErr, firstInstall) then
+            clearDeskModuleCache()
+            autoupdate = requireAutoupdate()
+            fn, loadErr = loadCore()
+        end
+        if not fn then
+            bootstrapSay(FIRST_RUN_FAIL)
+            return false
+        end
     end
 
     if autoupdate and autoupdate.showWelcomeMessage then
@@ -397,8 +479,18 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     local initOk, initErr = pcall(fn)
     if not initOk then
         bootstrapLog('core init: ' .. tostring(initErr))
-        bootstrapSay(FIRST_RUN_FAIL)
-        return false
+        if tryRecoverCore(autoupdate, initErr, firstInstall) then
+            clearDeskModuleCache()
+            autoupdate = requireAutoupdate()
+            fn, loadErr = loadCore()
+            if fn then
+                initOk, initErr = pcall(fn)
+            end
+        end
+        if not initOk then
+            bootstrapSay(FIRST_RUN_FAIL)
+            return false
+        end
     end
 
     if type(main) ~= 'function' then
@@ -416,58 +508,22 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     return true
 end
 
-local DEFERRED_UPDATE_MSG = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xE2 \xF4\xEE\xED\xE5. \xCF\xEE\xF1\xEB\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 \xF1\xEA\xF0\xE8\xEF\xF2 \xEF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xE8\xF2\xF1\xFF \xF1\xE0\xEC.'
+local DEFERRED_UPDATE_MSG = '\xCE\xE1\xED\xEE\xE2\xEB\xE5\xED\xE8\xE5 \xF0\xE5\xF1\xF3\xF0\xF1\xEE\xE2 \xF1\xEA\xE0\xF7\xE0\xE5\xF2\xF1\xFF \xE2 \xF4\xEE\xED\xE5. \xCF\xEE\xF1\xEB\xE5 \xE7\xE0\xE3\xF0\xF3\xE7\xEA\xE8 \xF1\xEA\xF0\xE8\xEF\xF2 \xEF\xE5\xF0\xE5\xE7\xE0\xE3\xF0\xF3\xE7\xE8\xF2\xF1\xFF \xF1\xE0\xEC.'
 
-local deferredSyncScheduled = false
-
-local function canDeferInGameUpdate(firstInstall)
-    if firstInstall or not corePresent() then
+local function applyLauncherReloadIfNeeded(autoupdate)
+    if type(autoupdate) ~= 'table' or not autoupdate.applyLauncherPending then
         return false
     end
-    if not isSampfuncsLoaded or not isSampfuncsLoaded() then
+    if not autoupdate.applyLauncherPending() then
         return false
     end
-    if not isSampLoaded or not isSampLoaded() then
-        return false
+    bootstrapLog('launcher updated — reloading once')
+    wait(500)
+    if thisScript and thisScript().reload then
+        thisScript():reload()
+        return true
     end
-    return true
-end
-
-local function scheduleDeferredSync(autoupdate, manifest, userOpts)
-    if deferredSyncScheduled or type(autoupdate) ~= 'table' or type(manifest) ~= 'table' then
-        return
-    end
-    deferredSyncScheduled = true
-    if not lua_thread or not lua_thread.create then
-        pcall(function()
-            autoupdate.sync(manifest, {
-                mode = 'full',
-                includeCore = true,
-                reload = true,
-                quietChat = true,
-                userFacing = true,
-                showOverlay = true,
-                firstInstall = false,
-                minimalOverlay = true,
-            })
-        end)
-        return
-    end
-    lua_thread.create(function()
-        wait(2500)
-        pcall(function()
-            autoupdate.sync(manifest, {
-                mode = 'full',
-                includeCore = true,
-                reload = true,
-                quietChat = true,
-                userFacing = true,
-                showOverlay = true,
-                firstInstall = false,
-                minimalOverlay = true,
-            })
-        end)
-    end)
+    return false
 end
 
 local function runInstallPipeline()
@@ -477,6 +533,10 @@ local function runInstallPipeline()
     end
 
     if not bootstrapSeedUpdater() then
+        return false, false, firstInstall
+    end
+
+    if not bootstrapRefreshUpdaterLibs() then
         return false, false, firstInstall
     end
 
@@ -509,15 +569,43 @@ local function runInstallPipeline()
     end
 
     bootstrapLog('checking for updates...')
-    local deferUpdate = false
     local sessionUpdated = false
-    if autoupdate.planHasWork and autoupdate.planHasWork(manifest, { mode = 'full', includeCore = true })
-            and canDeferInGameUpdate(firstInstall) then
-        deferUpdate = true
-        bootstrapLog('in-game restart: deferring download to background')
+    local syncOpts = {
+        mode = 'full',
+        includeCore = true,
+        reload = false,
+        quietChat = true,
+        userFacing = true,
+        showOverlay = true,
+        firstInstall = firstInstall,
+        minimalOverlay = true,
+    }
+
+    if autoupdate.planHasCriticalWork and autoupdate.planHasCriticalWork(manifest, syncOpts) then
+        bootstrapLog('critical update required — blocking sync')
+        local _, critStatus = autoupdate.syncCritical(manifest, syncOpts)
+        if critStatus == 'fail' then
+            return false, false, firstInstall
+        end
+        sessionUpdated = critStatus == 'updated' or critStatus == 'pending' or critStatus == 'reload'
+        clearDeskModuleCache()
+        autoupdate = requireAutoupdate()
+        chatSay = autoupdate.chatSay
+        registerUpdateCommands(autoupdate, chatSay)
+        if applyLauncherReloadIfNeeded(autoupdate) then
+            return true, true, firstInstall
+        end
+    end
+
+    if autoupdate.planHasWork and autoupdate.planHasWork(manifest, syncOpts)
+            and autoupdate.shouldDeferInGameSync
+            and autoupdate.shouldDeferInGameSync(manifest, { firstInstall = firstInstall }) then
+        bootstrapLog('in-game: deferring asset download to background')
         bootstrapSay(DEFERRED_UPDATE_MSG)
-        scheduleDeferredSync(autoupdate, manifest, userOpts)
-    else
+        if autoupdate.deferAssets then
+            autoupdate.deferAssets(manifest, userOpts)
+        end
+    elseif autoupdate.planHasWork and autoupdate.planHasWork(manifest, syncOpts) then
         local willReload, syncStatus = autoupdate.sync(manifest, {
             mode = 'full',
             includeCore = true,
