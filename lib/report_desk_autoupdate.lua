@@ -961,6 +961,18 @@ function M.canRequireMimgui()
     return pcall(require, 'mimgui') == true
 end
 
+local function mimguiKeepExistingInstall(manifest, reason)
+    if not mimguiHasDeskPatch() then
+        return false
+    end
+    if not doesFileExist(M.path('lib\\mimgui\\cimguidx9.dll')) then
+        return false
+    end
+    log('mimgui: ' .. tostring(reason or 'keeping existing install'))
+    markDeskMimguiInstalled(manifest or {})
+    return true
+end
+
 function M.installMimguiZip(zipPath)
     reloadDeskSupportModules()
     local root = M.root()
@@ -968,6 +980,9 @@ function M.installMimguiZip(zipPath)
     local ok, err = deskZip.extract(zipPath, root .. '\\lib')
     if not ok then
         log('mimgui extract: ' .. tostring(err))
+        if type(err) == 'string' and err:find('cimguidx9%.dll', 1, true) then
+            return mimguiKeepExistingInstall(nil, 'DLL in use, skipped replace')
+        end
         return false
     end
     return M.hasMimgui()
@@ -1199,11 +1214,12 @@ local function buildUpdatePlan(manifest, opts)
     end
 
     local rt = runtimeSpec(manifest)
-    if force or needsRuntimeLibs(manifest) then
+    if needsRuntimeLibs(manifest) then
         plan.runtime = rt
     end
 
-    if force or needsDeskMimgui(manifest) then
+    -- Не переустанавливать mimgui/runtime при repair/force: DLL заняты загруженным MoonLoader.
+    if needsDeskMimgui(manifest) then
         plan.mimgui = mimguiSpec(manifest)
     end
 
@@ -1411,16 +1427,20 @@ local function commitPlan(downloaded, manifest, allFiles, opts)
 
     if downloaded.mimgui then
         overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or (opts.userFacing and OVERLAY_INSTALL or '\xD0\xE0\xF1\xEF\xE0\xEA\xEE\xE2\xEA\xE0 mimgui...'), 0.96, opts)
-        if not M.installMimguiZip(downloaded.mimgui) then
+        local mmInstalled = M.installMimguiZip(downloaded.mimgui)
+        if not mmInstalled and not mimguiKeepExistingInstall(manifest, 'unpack failed, existing kept') then
             return false, 'mimgui unpack failed'
         end
-        package.loaded.mimgui = nil
-        local mmShared = rawget(_G, '__report_desk_mimgui_shared')
-        if type(mmShared) == 'table' then
-            mmShared.renderer = nil
+        if mmInstalled then
+            package.loaded.mimgui = nil
+            local mmShared = rawget(_G, '__report_desk_mimgui_shared')
+            if type(mmShared) == 'table' then
+                mmShared.renderer = nil
+            end
+            markDeskMimguiInstalled(manifest)
         end
-        markDeskMimguiInstalled(manifest)
         pcall(os.remove, downloaded.mimgui)
+        downloaded.mimgui = nil
     end
 
     if downloaded.iconv then
@@ -2338,7 +2358,8 @@ function M.ensureDependencies(manifest, opts)
         if opts.userFacing then
             overlayUpdate(wantsMinimalOverlay(opts) and OVERLAY_FRIENDLY_INSTALL or OVERLAY_INSTALL, 0.9, opts)
         end
-        if not M.installMimguiZip(zipPath) then
+        local mmInstalled = M.installMimguiZip(zipPath)
+        if not mmInstalled and not mimguiKeepExistingInstall(manifest, 'unpack failed, existing kept') then
             overlayHide()
             setOverlayContext(nil)
             if opts.userFacing then
@@ -2348,7 +2369,9 @@ function M.ensureDependencies(manifest, opts)
             end
             return false, false
         end
-        package.loaded.mimgui = nil
+        if mmInstalled then
+            package.loaded.mimgui = nil
+        end
         if not M.canRequireMimgui() then
             overlayHide()
             setOverlayContext(nil)

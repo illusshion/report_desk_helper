@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.7.1
+
+**Hotfix: обновление в игре (mimgui DLL + /deskrepair).**
+
+- Autoupdate: не переустанавливает mimgui/runtime при repair, если уже установлены.
+- Если `cimguidx9.dll` занят — обновление не падает, ядро и конфиги ставятся, mimgui остаётся как есть.
+- `/deskrepair` выполняется в `lua_thread` (фикс `attempt to yield across C-call boundary`).
+
 ## 1 Beta.1.7
 
 **Edge UI redesign + стабильность наказаний и spectate.**

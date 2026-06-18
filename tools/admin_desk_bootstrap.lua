@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.7')
+script_version('1 Beta.1.7.1')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -311,20 +311,39 @@ local function registerUpdateCommands(autoupdate, chatSay)
         if chatSay then
             chatSay('\xCF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xE2\xE5\xF0\xF1\xE8\xE8...')
         end
-        local willReload, status = autoupdate.repair()
-        if willReload then
-            clearDeskModuleCache()
-            local pipelineOk, updated, firstInstall = runInstallPipeline()
-            if pipelineOk then
-                loadAndRunCore(updated, firstInstall)
+        local function finishRepair(willReload, status)
+            if willReload then
+                clearDeskModuleCache()
+                local pipelineOk, updated, firstInstall = runInstallPipeline()
+                if pipelineOk then
+                    loadAndRunCore(updated, firstInstall)
+                end
+                return
             end
+            if status == 'fail' and chatSay then
+                chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
+            elseif status == 'uptodate' and chatSay then
+                chatSay('\xC2\xE5\xF0\xF1\xE8\xFF \xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xE0')
+            end
+        end
+        if not lua_thread or not lua_thread.create then
+            if chatSay then chatSay('repair: lua_thread unavailable') end
             return
         end
-        if status == 'fail' and chatSay then
-            chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
-        elseif status == 'uptodate' and chatSay then
-            chatSay('\xC2\xE5\xF0\xF1\xE8\xFF \xE0\xEA\xF2\xF3\xE0\xEB\xFC\xED\xE0')
-        end
+        lua_thread.create(function()
+            wait(0)
+            local okRepair, willReload, status = pcall(function()
+                return autoupdate.repair()
+            end)
+            if not okRepair then
+                bootstrapLog('repair: ' .. tostring(willReload))
+                if chatSay then
+                    chatSay('\xCE\xF8\xE8\xE1\xEA\xE0 \xEF\xE5\xF0\xE5\xF3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE8 (moonloader.log)')
+                end
+                return
+            end
+            finishRepair(willReload, status)
+        end)
     end)
 end
 
