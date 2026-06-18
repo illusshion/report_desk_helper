@@ -1342,6 +1342,71 @@ local function filterCriticalPlan(plan)
     return filtered
 end
 
+local function uiAssetsMarkerOk()
+    local paths = {
+        M.path('res\\report_desk_ui\\rail_icons\\reports.png'),
+        M.path('res\\report_desk_ui\\edge_rail_icons.png'),
+        M.path('res\\report_desk_ui\\report_desk_logo.png'),
+    }
+    for _, p in ipairs(paths) do
+        if not doesFileExist(p) then
+            return false
+        end
+        local sz = fileBytes(p)
+        if type(sz) ~= 'number' or sz < 64 then
+            return false
+        end
+    end
+    return true
+end
+
+local function assetMarkerOk()
+    local paths = {
+        M.path('res\\report_desk_skins\\skin-1.png'),
+        M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png'),
+    }
+    for _, p in ipairs(paths) do
+        if doesFileExist(p) then
+            local sz = fileBytes(p)
+            if type(sz) == 'number' and sz > 256 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function M.uiAssetsOk()
+    return uiAssetsMarkerOk()
+end
+
+function M.verifyInstall(manifest)
+    manifest = manifest or {}
+    local missing = {}
+    if not M.corePresent() then
+        missing[#missing + 1] = 'core'
+    end
+    if not uiAssetsMarkerOk() then
+        missing[#missing + 1] = 'ui'
+    end
+    if not assetMarkerOk() then
+        missing[#missing + 1] = 'skins'
+    end
+    if not runtimeLibsInstalled(manifest) then
+        missing[#missing + 1] = 'runtime'
+    end
+    if not deskMimguiInstalled(manifest) then
+        missing[#missing + 1] = 'mimgui'
+    end
+    if not doesFileExist(M.path('lib\\report_desk_autoupdate.lua')) then
+        missing[#missing + 1] = 'autoupdate'
+    end
+    if not doesFileExist(M.path('lib\\report_desk_deps.lua')) then
+        missing[#missing + 1] = 'deps'
+    end
+    return #missing == 0, missing
+end
+
 function M.removeCoreFiles()
     local dir = M.path('report_desk')
     for _, name in ipairs(CORE_FILE_NAMES) do
@@ -1593,71 +1658,6 @@ local function disableLegacyLauncher()
             log('disabled legacy launcher: ' .. legacy)
         end
     end
-end
-
-local function uiAssetsMarkerOk()
-    local paths = {
-        M.path('res\\report_desk_ui\\rail_icons\\reports.png'),
-        M.path('res\\report_desk_ui\\edge_rail_icons.png'),
-        M.path('res\\report_desk_ui\\report_desk_logo.png'),
-    }
-    for _, p in ipairs(paths) do
-        if not doesFileExist(p) then
-            return false
-        end
-        local sz = fileBytes(p)
-        if type(sz) ~= 'number' or sz < 64 then
-            return false
-        end
-    end
-    return true
-end
-
-function M.uiAssetsOk()
-    return uiAssetsMarkerOk()
-end
-
-function M.verifyInstall(manifest)
-    manifest = manifest or {}
-    local missing = {}
-    if not M.corePresent() then
-        missing[#missing + 1] = 'core'
-    end
-    if not uiAssetsMarkerOk() then
-        missing[#missing + 1] = 'ui'
-    end
-    if not assetMarkerOk() then
-        missing[#missing + 1] = 'skins'
-    end
-    if not runtimeLibsInstalled(manifest) then
-        missing[#missing + 1] = 'runtime'
-    end
-    if not deskMimguiInstalled(manifest) then
-        missing[#missing + 1] = 'mimgui'
-    end
-    if not doesFileExist(M.path('lib\\report_desk_autoupdate.lua')) then
-        missing[#missing + 1] = 'autoupdate'
-    end
-    if not doesFileExist(M.path('lib\\report_desk_deps.lua')) then
-        missing[#missing + 1] = 'deps'
-    end
-    return #missing == 0, missing
-end
-
-local function assetMarkerOk()
-    local paths = {
-        M.path('res\\report_desk_skins\\skin-1.png'),
-        M.path('config\\AdminDesk\\assets\\res\\report_desk_skins\\skin-1.png'),
-    }
-    for _, p in ipairs(paths) do
-        if doesFileExist(p) then
-            local sz = fileBytes(p)
-            if type(sz) == 'number' and sz > 256 then
-                return true
-            end
-        end
-    end
-    return false
 end
 
 local function commitPlan(downloaded, manifest, allFiles, opts)
