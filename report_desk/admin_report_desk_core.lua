@@ -1603,6 +1603,263 @@ end
 
 
 
+package.preload['report_desk_sp_state'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Единый источник правды для /sp: phase, targetId, specMode.
+     Протокол Advance: [SP] chat → targetId; toggle → вход/выход; spec RPC → mode. ]]
+local M = {}
+
+local ENTERING_TIMEOUT_SEC = 2.5
+local ENTERING_BLOCK_OFF_SEC = 0.8
+
+local st = {
+    phase = 'idle',
+    targetId = -1,
+    targetNick = '',
+    specMode = nil,
+    vehicleId = -1,
+    pendingId = -1,
+    pendingNick = '',
+    pendingAt = 0,
+    spectating = false,
+}
+
+local teardownFns = {}
+local onTargetConfirmedFns = {}
+local onSessionEndFns = {}
+local onSpecModeChangedFns = {}
+
+local function trim(s)
+    return tostring(s or ''):match('^%s*(.-)%s*$') or ''
+end
+
+function M.registerTeardown(fn)
+    if type(fn) == 'function' then teardownFns[#teardownFns + 1] = fn end
+end
+
+function M.onTargetConfirmed(fn)
+    if type(fn) == 'function' then onTargetConfirmedFns[#onTargetConfirmedFns + 1] = fn end
+end
+
+function M.onSessionEnd(fn)
+    if type(fn) == 'function' then onSessionEndFns[#onSessionEndFns + 1] = fn end
+end
+
+function M.onSpecModeChanged(fn)
+    if type(fn) == 'function' then onSpecModeChangedFns[#onSpecModeChangedFns + 1] = fn end
+end
+
+function M.getPhase()
+    return st.phase
+end
+
+function M.getConfirmedTargetId()
+    if st.phase == 'active' and st.targetId >= 0 then return st.targetId end
+    return -1
+end
+
+function M.getEffectiveTargetId()
+    if st.phase == 'active' and st.targetId >= 0 then return st.targetId end
+    if st.phase == 'entering' and st.pendingId >= 0 then return st.pendingId end
+    return -1
+end
+
+function M.getTargetNick()
+    if st.phase == 'active' then return st.targetNick end
+    if st.phase == 'entering' then return st.pendingNick end
+    return ''
+end
+
+function M.isActive()
+    return st.phase == 'active' and st.targetId >= 0
+end
+
+function M.isHandshaking()
+    return st.phase == 'entering'
+end
+
+function M.isSpectating()
+    return st.spectating == true
+end
+
+function M.getSpecMode()
+    return st.specMode
+end
+
+function M.getVehicleId()
+    local v = tonumber(st.vehicleId)
+    if v and v >= 0 then return v end
+    return -1
+end
+
+function M.getPendingId()
+    if st.phase == 'entering' then return tonumber(st.pendingId) or -1 end
+    return -1
+end
+
+function M.onEntering(id, nick)
+    id = tonumber(id)
+    if not id or id < 0 then return false end
+    nick = trim(nick)
+    st.phase = 'entering'
+    st.pendingId = id
+    st.pendingNick = nick
+    st.pendingAt = os.clock()
+    return true
+end
+
+function M.cancelEntering()
+    if st.phase ~= 'entering' then return end
+    st.pendingId = -1
+    st.pendingNick = ''
+    st.pendingAt = 0
+    if not st.spectating then
+        st.phase = 'idle'
+    elseif st.targetId >= 0 then
+        st.phase = 'active'
+    else
+        st.phase = 'idle'
+    end
+end
+
+function M.onTargetConfirmed(id, nick, opts)
+    opts = opts or {}
+    id = tonumber(id)
+    if not id or id < 0 then return false end
+    nick = trim(nick)
+    local prevId = st.targetId
+    local changed = prevId ~= id or st.phase ~= 'active'
+    st.phase = 'active'
+    st.targetId = id
+    if nick ~= '' then st.targetNick = nick end
+    st.pendingId = -1
+    st.pendingNick = ''
+    st.pendingAt = 0
+    st.spectating = true
+    for _, fn in ipairs(onTargetConfirmedFns) do
+        pcall(fn, id, st.targetNick, opts, changed)
+    end
+    return true
+end
+
+function M.onSpecModePlayer(playerId)
+    playerId = tonumber(playerId)
+    if st.phase ~= 'active' then return end
+    if playerId and playerId >= 0 and st.targetId >= 0 and playerId ~= st.targetId then
+        return
+    end
+    local prev = st.specMode
+    st.specMode = 'player'
+    st.vehicleId = -1
+    if prev ~= 'player' then
+        for _, fn in ipairs(onSpecModeChangedFns) do
+            pcall(fn, 'player', playerId)
+        end
+    end
+end
+
+function M.onSpecModeVehicle(vehicleId)
+    vehicleId = tonumber(vehicleId)
+    if st.phase ~= 'active' then return end
+    if not vehicleId or vehicleId < 0 then return end
+    local prev = st.specMode
+    st.specMode = 'vehicle'
+    st.vehicleId = vehicleId
+    if prev ~= 'vehicle' then
+        for _, fn in ipairs(onSpecModeChangedFns) do
+            pcall(fn, 'vehicle', vehicleId)
+        end
+    end
+end
+
+function M.onToggle(on)
+    on = on and true or false
+    st.spectating = on
+    if not on then
+        M.endSession('toggle_false')
+    end
+end
+
+function M.setSpectatingFlag(on)
+    st.spectating = on and true or false
+end
+
+function M.endSession(reason, opts)
+    opts = opts or {}
+    local hadActive = st.phase == 'active' or st.spectating
+    st.phase = 'idle'
+    st.targetId = -1
+    st.targetNick = ''
+    st.specMode = nil
+    st.vehicleId = -1
+    st.pendingId = -1
+    st.pendingNick = ''
+    st.pendingAt = 0
+    st.spectating = false
+    for _, fn in ipairs(onSessionEndFns) do
+        pcall(fn, reason, opts)
+    end
+    for _, fn in ipairs(teardownFns) do
+        pcall(fn, reason, opts)
+    end
+    return hadActive
+end
+
+function M.shouldBlockSpectateOff()
+    if st.phase ~= 'entering' then return false end
+    local at = tonumber(st.pendingAt) or 0
+    if at <= 0 then return false end
+    return (os.clock() - at) < ENTERING_BLOCK_OFF_SEC
+end
+
+function M.tick()
+    if st.phase ~= 'entering' then return end
+    local at = tonumber(st.pendingAt) or 0
+    if at <= 0 then return end
+    if os.clock() - at > ENTERING_TIMEOUT_SEC then
+        M.cancelEntering()
+        if not st.spectating and st.targetId < 0 then
+            st.phase = 'idle'
+        end
+    end
+end
+
+function M.syncSessionView(session)
+    if type(session) ~= 'table' then return end
+    session.active = st.phase == 'active'
+    session.spectating = st.spectating
+    session.targetId = st.phase == 'active' and st.targetId or -1
+    session.targetNick = st.phase == 'active' and st.targetNick or ''
+    session.awaitingSpectate = st.phase == 'entering'
+end
+
+function M.reset()
+    st.phase = 'idle'
+    st.targetId = -1
+    st.targetNick = ''
+    st.specMode = nil
+    st.vehicleId = -1
+    st.pendingId = -1
+    st.pendingNick = ''
+    st.pendingAt = 0
+    st.spectating = false
+end
+
+return M
+
+
+]=], '@report_desk_sp_state')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_state') end
+
+    return fn()
+
+end
+
+
+
 package.preload['report_desk_sp_theme'] = function()
 
     local fn, err = loadstring([=[
@@ -9467,6 +9724,52 @@ end
 
 
 
+package.preload['report_desk_sp_hooks'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Единая установка SP sampev-хуков (spectate player/vehicle → session). ]]
+local M = {}
+
+local specSession = require 'report_desk_spectate_session'
+
+function M.installSampev(sampev)
+    if not sampev then return end
+    specSession.installSampevHooks(sampev)
+end
+
+function M.uninstallSampev(sampev)
+    if not sampev then return end
+    specSession.uninstallSampevHooks(sampev)
+end
+
+function M.areActive(sampev)
+    return specSession.areSampevHooksActive(sampev)
+end
+
+function M.syncTextDraw(sampev)
+    if not sampev then return end
+    specSession.syncTextDrawHooks(sampev)
+end
+
+function M.tickTdLifecycle(sampev)
+    if not sampev then return end
+    specSession.tickTdHooksLifecycle(sampev)
+end
+
+return M
+
+
+]=], '@report_desk_sp_hooks')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_hooks') end
+
+    return fn()
+
+end
+
+
+
 package.preload['report_desk_sp_stats_ctx'] = function()
 
     local fn, err = loadstring([=[
@@ -13011,6 +13314,121 @@ end
 ]=], '@report_desk_sp_spectate_pending')
 
     if not fn then error(err or 'bundle load failed: report_desk_sp_spectate_pending') end
+
+    return fn()
+
+end
+
+
+
+package.preload['report_desk_sp_spectate_health'] = function()
+
+    local fn, err = loadstring([=[
+
+--[[ Модуль: spectate health tick (orphan recovery, auto /st retry). ]]
+return function(ctx)
+    local M = ctx.M
+    local specSession = ctx.specSession
+    local spRefresh = ctx.spRefresh
+    local state = ctx.state
+    local specPlayerActive = ctx.specPlayerActive
+    local getSettings = ctx.getSettings
+    local sampIsPlayerConnected = ctx.sampIsPlayerConnected
+    local PENDING_SP_SEC = ctx.PENDING_SP_SEC
+    local AUTO_ST_COOLDOWN = ctx.AUTO_ST_COOLDOWN
+    local SPECTATE_HEALTH_INTERVAL = ctx.SPECTATE_HEALTH_INTERVAL
+    local SPECTATE_ORPHAN_GRACE_SEC = ctx.SPECTATE_ORPHAN_GRACE_SEC
+    local SPECTATE_TARGET_OFFLINE_GRACE_SEC = ctx.SPECTATE_TARGET_OFFLINE_GRACE_SEC
+
+    function M.tickSpectateHealth()
+        if specPlayerActive() and spRefresh.needsTick and spRefresh.needsTick() then
+            pcall(spRefresh.tick)
+        end
+        local now = os.clock()
+        if now - ctx.lastSpectateHealthAt < SPECTATE_HEALTH_INTERVAL then
+            return
+        end
+        ctx.lastSpectateHealthAt = now
+        if not ctx.gameAppActive then
+            ctx.targetOfflineSinceAt = nil
+            ctx.orphanSinceAt = nil
+            ctx.orphanRecoveryTried = false
+            return
+        end
+        if not specPlayerActive() then
+            ctx.orphanSinceAt = nil
+            ctx.orphanRecoveryTried = false
+            ctx.targetOfflineSinceAt = nil
+            return
+        end
+        local sessionConfirmed = specSession.isActive and specSession.isActive()
+        if M.hasPendingSp() and not sessionConfirmed then
+            ctx.orphanSinceAt = nil
+            ctx.orphanRecoveryTried = false
+            ctx.targetOfflineSinceAt = nil
+            return
+        end
+        if M.hasPendingSp() and sessionConfirmed then
+            M.cancelPendingSp()
+        end
+        local stRetryId = M.getTargetId()
+        if stRetryId >= 0 and sessionConfirmed and not M.hasPendingSt() and not M.hasFullStats(stRetryId) then
+            local s = getSettings and getSettings()
+            local stCooldown = M.hasStats(stRetryId) and AUTO_ST_COOLDOWN or 2.0
+            if s and s.spectate_hud ~= false
+                    and (now - (state.lastAutoStAt or 0)) >= stCooldown then
+                state.lastAutoStAt = now
+                M.requestStats(stRetryId, { force = true })
+            end
+        end
+        if specPlayerActive() and not sessionConfirmed then
+            local outboundAt = tonumber(state.lastSpOutboundAt) or 0
+            if outboundAt > 0 and (now - outboundAt) < PENDING_SP_SEC + 2.0 then
+                ctx.orphanSinceAt = nil
+                ctx.orphanRecoveryTried = false
+                ctx.targetOfflineSinceAt = nil
+                return
+            end
+        end
+        local id = M.getTargetId()
+        if id < 0 then
+            ctx.targetOfflineSinceAt = nil
+            ctx.orphanSinceAt = ctx.orphanSinceAt or now
+            local elapsed = now - ctx.orphanSinceAt
+            if elapsed >= 1.0 and not ctx.orphanRecoveryTried then
+                ctx.orphanRecoveryTried = true
+                if specSession.tryRecoverFromChat and specSession.tryRecoverFromChat() then
+                    ctx.orphanSinceAt = nil
+                    return
+                end
+            end
+            if elapsed < SPECTATE_ORPHAN_GRACE_SEC then
+                return
+            end
+            ctx.orphanSinceAt = nil
+            ctx.orphanRecoveryTried = false
+            M.forceExitSpectate({ reason = 'orphan', sendServer = true })
+            return
+        end
+        ctx.orphanSinceAt = nil
+        ctx.orphanRecoveryTried = false
+        if sessionConfirmed and id >= 0 and sampIsPlayerConnected and not sampIsPlayerConnected(id) then
+            ctx.targetOfflineSinceAt = ctx.targetOfflineSinceAt or now
+            if now - ctx.targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC + 1.5 then
+                return
+            end
+            ctx.targetOfflineSinceAt = nil
+            M.forceExitSpectate({ reason = 'target_offline', sendServer = true })
+            return
+        end
+        ctx.targetOfflineSinceAt = nil
+    end
+end
+
+
+]=], '@report_desk_sp_spectate_health')
+
+    if not fn then error(err or 'bundle load failed: report_desk_sp_spectate_health') end
 
     return fn()
 

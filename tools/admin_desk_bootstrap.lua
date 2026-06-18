@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.7.1')
+script_version('1 Beta.1.7.2')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -384,9 +384,6 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     if not fn then
         bootstrapLog(tostring(loadErr))
         bootstrapSay(FIRST_RUN_FAIL)
-        if autoupdate and autoupdate.repair then
-            bootstrapReload('core load fail')
-        end
         return false
     end
 
@@ -401,9 +398,6 @@ local function loadAndRunCore(sessionUpdated, firstInstall)
     if not initOk then
         bootstrapLog('core init: ' .. tostring(initErr))
         bootstrapSay(FIRST_RUN_FAIL)
-        if autoupdate and autoupdate.repair then
-            bootstrapReload('core init fail')
-        end
         return false
     end
 

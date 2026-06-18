@@ -1,5 +1,13 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.7.2
+
+**Hotfix: релизный bundle не грузился (spectate modules).**
+
+- В `AdminDeskCore.luac` добавлены пропущенные preload-модули: `report_desk_sp_state`, `report_desk_sp_hooks`, `report_desk_sp_spectate_health`.
+- Bootstrap: убран бесконечный reload при ошибке init ядра (зацикливание «Не удалось установить»).
+- CI: sanity-проверка closure зависимостей bundle preload.
+
 ## 1 Beta.1.7.1
 
 **Hotfix: обновление в игре (mimgui DLL + /deskrepair).**
