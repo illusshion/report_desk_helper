@@ -1432,6 +1432,25 @@ function M.startupSync(manifest, opts)
         end
     end
 
+    if M.needsAssets(manifest) then
+        local mustBlock = not uiAssetsMarkerOk() or opts.firstInstall
+        if mustBlock then
+            log('startup: blocking assets (UI required)')
+            local ok = select(1, M.ensureAssets(manifest, baseOpts))
+            if not ok then
+                return false, 'fail'
+            end
+        elseif M.shouldDeferInGameSync(manifest, opts) then
+            log('startup: deferring asset refresh')
+            M.deferAssets(manifest, opts)
+        else
+            local ok = select(1, M.ensureAssets(manifest, baseOpts))
+            if not ok then
+                return false, 'fail'
+            end
+        end
+    end
+
     local fullOpts = {
         mode = 'full',
         includeCore = true,
@@ -1442,12 +1461,6 @@ function M.startupSync(manifest, opts)
         firstInstall = opts.firstInstall,
         minimalOverlay = opts.minimalOverlay,
     }
-
-    if M.shouldDeferInGameSync(manifest, opts) and M.planHasWork(manifest, fullOpts) then
-        log('startup: deferring assets')
-        M.deferAssets(manifest, opts)
-        return false, 'deferred'
-    end
 
     if M.planHasWork(manifest, fullOpts) then
         return M.sync(manifest, fullOpts)
@@ -1580,6 +1593,55 @@ local function disableLegacyLauncher()
             log('disabled legacy launcher: ' .. legacy)
         end
     end
+end
+
+local function uiAssetsMarkerOk()
+    local paths = {
+        M.path('res\\report_desk_ui\\rail_icons\\reports.png'),
+        M.path('res\\report_desk_ui\\edge_rail_icons.png'),
+        M.path('res\\report_desk_ui\\report_desk_logo.png'),
+    }
+    for _, p in ipairs(paths) do
+        if not doesFileExist(p) then
+            return false
+        end
+        local sz = fileBytes(p)
+        if type(sz) ~= 'number' or sz < 64 then
+            return false
+        end
+    end
+    return true
+end
+
+function M.uiAssetsOk()
+    return uiAssetsMarkerOk()
+end
+
+function M.verifyInstall(manifest)
+    manifest = manifest or {}
+    local missing = {}
+    if not M.corePresent() then
+        missing[#missing + 1] = 'core'
+    end
+    if not uiAssetsMarkerOk() then
+        missing[#missing + 1] = 'ui'
+    end
+    if not assetMarkerOk() then
+        missing[#missing + 1] = 'skins'
+    end
+    if not runtimeLibsInstalled(manifest) then
+        missing[#missing + 1] = 'runtime'
+    end
+    if not deskMimguiInstalled(manifest) then
+        missing[#missing + 1] = 'mimgui'
+    end
+    if not doesFileExist(M.path('lib\\report_desk_autoupdate.lua')) then
+        missing[#missing + 1] = 'autoupdate'
+    end
+    if not doesFileExist(M.path('lib\\report_desk_deps.lua')) then
+        missing[#missing + 1] = 'deps'
+    end
+    return #missing == 0, missing
 end
 
 local function assetMarkerOk()
@@ -1910,8 +1972,9 @@ function M.diagnose()
     if type(manifest.assets) == 'table' then
         result.remote_assets_version = tostring(manifest.assets.version or '')
         result.assets_ok = tostring(result.assets_version) == result.remote_assets_version
-            and assetMarkerOk()
+            and assetMarkerOk() and uiAssetsMarkerOk()
     end
+    result.ui_assets_ok = uiAssetsMarkerOk()
 
     local files = normalizeManifestFiles(manifest)
     for _, spec in ipairs(files) do
@@ -1962,6 +2025,9 @@ function M.printDiagnostics()
     end
     if not d.mimgui_ok then
         M.chatSay('mimgui: \xED\xF3\xE6\xE5\xED patched lib/mimgui (\xED\xE5 vanilla)')
+    end
+    if d.ui_assets_ok == false then
+        M.chatSay('UI icons: \xED\xE5\xF2 res/report_desk_ui (rail_icons)')
     end
     local bad = 0
     for _, entry in ipairs(d.files) do
@@ -2109,7 +2175,7 @@ end
 
 function M.assetsInstalledFor(manifest)
     manifest = manifest or {}
-    if not assetMarkerOk() then
+    if not assetMarkerOk() or not uiAssetsMarkerOk() then
         return false
     end
     local assets = manifest.assets
@@ -2128,7 +2194,7 @@ end
 function M.reconcileAssetsState(manifest)
     manifest = manifest or {}
     local assets = manifest.assets
-    if type(assets) ~= 'table' or not assetMarkerOk() then
+    if type(assets) ~= 'table' or not assetMarkerOk() or not uiAssetsMarkerOk() then
         return false
     end
     if M.needsAssets(manifest) then
@@ -2152,6 +2218,9 @@ function M.needsAssets(manifest)
     manifest = manifest or {}
     if M.isDevEnvironment() then
         return false
+    end
+    if not uiAssetsMarkerOk() then
+        return true
     end
     local assets = manifest.assets
     if type(assets) ~= 'table' then
@@ -2210,10 +2279,10 @@ local function extractAssetsZip(zipPath)
     if not ok then
         return false, err or 'extract failed'
     end
-    if assetMarkerOk() then
+    if assetMarkerOk() and uiAssetsMarkerOk() then
         return true
     end
-    return false, 'marker missing'
+    return false, 'assets incomplete after extract'
 end
 
 function M.ensureAssets(manifest, opts)

@@ -1,5 +1,22 @@
 ﻿# Admin Report Desk Changelog
 
+## 1 Beta.1.9.1
+
+**Fix: первый запуск / неполная установка.**
+
+- Первый запуск: скачивает `report_desk_helper_main.zip` целиком (core, lib, UI, mimgui).
+- Seed больше не пропускается, если есть старый autoupdate без core.
+- `verifyInstall` проверяет core, UI, skins, mimgui, runtime, deps — auto-repair при пробелах.
+- Быстрая сборка релиза (`-SkipSkinOptimize`).
+
+## 1 Beta.1.9
+
+**Fix: иконки бокового меню в релизе.**
+
+- Autoupdate: `needsAssets` теперь требует UI-иконки (`rail_icons`, atlas, logo), не только skin-1.png.
+- `startupSync`: при отсутствии UI assets — блокирующая установка (не defer).
+- Release verify: main zip и assets zip обязаны содержать edge UI PNG.
+
 ## 1 Beta.1.8
 
 **Стабильный релиз: spectate bundle, обновления, Edge UI.**

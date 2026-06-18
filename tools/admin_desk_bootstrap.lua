@@ -4,7 +4,7 @@
 ]]
 script_name('Admin Report Desk')
 script_author('ARP Helper')
-script_version('1 Beta.1.8')
+script_version('1 Beta.1.9.1')
 script_description('/adesk \xF0\xE5\xEF\xEE\xF0\xF2\xFB, \xE0\xE2\xF2\xEE\xEE\xF2\xE2\xE5\xF2\xFB, \xE1\xE8\xED\xE4')
 script_dependencies('SAMP', 'SAMPFUNCS')
 script_moonloader(26)
@@ -213,16 +213,88 @@ local function requireDeps()
     return nil
 end
 
-local function bootstrapSeedUpdater()
-    if updaterInstalled() then
-        return true
+local MINIMAL_SEED_LIBS = {
+    'report_desk_sha256.lua',
+    'report_desk_zip.lua',
+    'report_desk_fs.lua',
+}
+
+local SEED_PROGRESS = '\xC7\xE0\xE3\xF0\xF3\xE7\xEA\xE0: '
+
+local function seedOneLib(raw, asset, minBytes, showProgress)
+    local dest = libPath(asset)
+    if doesFileExist(dest) then
+        local df = io.open(dest, 'rb')
+        if df then
+            local n = df:seek('end') or 0
+            df:close()
+            if n >= minBytes then
+                return true
+            end
+        end
+        pcall(os.remove, dest)
     end
-    bootstrapLog('first run — seeding updater modules')
+    local url = manifestAssetUrl(raw, asset)
+    if not url then
+        bootstrapLog('missing url for ' .. asset)
+        return false, 'no url'
+    end
+    if showProgress then
+        bootstrapSay(SEED_PROGRESS .. asset)
+    end
+    bootstrapLog('downloading ' .. asset)
+    local ok, err = downloadWait(url, dest, minBytes, 120)
+    if not ok then
+        return false, err or 'timeout'
+    end
+    bootstrapLog('seeded ' .. asset)
+    return true
+end
+
+local function bootstrapExtractMainZip(zipUrl)
+    for _, name in ipairs(MINIMAL_SEED_LIBS) do
+        local ok, err = preloadLib(name:gsub('%.lua$', ''))
+        if not ok then
+            bootstrapLog('preload ' .. name .. ': ' .. tostring(err))
+            return false
+        end
+    end
+    local deskZip = package.loaded['report_desk_zip']
+    if type(deskZip) ~= 'table' or not deskZip.extract then
+        bootstrapLog('zip module unavailable')
+        return false
+    end
+    local root = getWorkingDirectory()
+    local zipPath = root .. '\\report_desk\\_bootstrap_main.zip'
+    ensureDirFor(zipPath)
+    bootstrapSay('\xD3\xF1\xF2\xE0\xED\xEE\xE2\xEA\xE0 \xEF\xE0\xEA\xE5\xF2\xE0 Report Desk...')
+    bootstrapLog('downloading main zip')
+    if not downloadWait(zipUrl, zipPath, 1048576, 420) then
+        bootstrapLog('main zip download failed')
+        pcall(os.remove, zipPath)
+        return false
+    end
+    local ok, err = deskZip.extract(zipPath, root, { yieldEvery = 48 })
+    pcall(os.remove, zipPath)
+    if not ok then
+        bootstrapLog('main zip extract: ' .. tostring(err))
+        return false
+    end
+    return corePresent()
+end
+
+local function bootstrapSeedUpdater(firstInstall)
     local root = getWorkingDirectory()
     local tmpJson = root .. '\\report_desk\\_bootstrap_manifest.json'
     ensureDirFor(tmpJson)
     ensureDirFor(libPath('report_desk_autoupdate.lua'))
-    local ok, err = downloadWait(MANIFEST_URL, tmpJson, 32, 45)
+
+    if updaterInstalled() and corePresent() and not firstInstall then
+        return true
+    end
+
+    bootstrapLog('seeding updater (firstInstall=' .. tostring(firstInstall) .. ')')
+    local ok, err = downloadWait(MANIFEST_URL, tmpJson, 32, 60)
     if not ok then
         bootstrapLog('manifest download failed: ' .. tostring(err))
         bootstrapSay(FIRST_RUN_FAIL)
@@ -236,22 +308,34 @@ local function bootstrapSeedUpdater()
     end
     local raw = f:read('*a') or ''
     f:close()
+
+    for _, asset in ipairs(MINIMAL_SEED_LIBS) do
+        local seedOk = seedOneLib(raw, asset, 256, firstInstall)
+        if not seedOk then
+            bootstrapSay(FIRST_RUN_FAIL)
+            return false
+        end
+    end
+
+    if firstInstall and not corePresent() then
+        local zipUrl = manifestField(raw, 'zip_url')
+        if zipUrl and zipUrl ~= '' then
+            if bootstrapExtractMainZip(zipUrl) then
+                bootstrapLog('main zip install complete')
+                clearDeskModuleCache()
+                return true
+            end
+            bootstrapLog('main zip install failed, falling back to module seed')
+        end
+    end
+
     for _, asset in ipairs(SEED_LIBS) do
-        local dest = libPath(asset)
-        if not doesFileExist(dest) then
-            local url = manifestAssetUrl(raw, asset)
-            if not url then
-                bootstrapLog('missing url for ' .. asset)
+        if not doesFileExist(libPath(asset)) then
+            local seedOk = seedOneLib(raw, asset, 256, firstInstall)
+            if not seedOk then
                 bootstrapSay(FIRST_RUN_FAIL)
                 return false
             end
-            ok, err = downloadWait(url, dest, 256, 180)
-            if not ok then
-                bootstrapLog('seed failed ' .. asset .. ': ' .. tostring(err))
-                bootstrapSay(FIRST_RUN_FAIL)
-                return false
-            end
-            bootstrapLog('seeded ' .. asset)
         end
     end
     wait(50)
@@ -439,7 +523,7 @@ local function runInstallPipeline()
         bootstrapSay(FIRST_RUN_INTRO)
     end
 
-    if not bootstrapSeedUpdater() then
+    if not bootstrapSeedUpdater(firstInstall) then
         return false, false, firstInstall
     end
 
@@ -527,6 +611,29 @@ local function runInstallPipeline()
     if autoupdate.reconcileAssetsState then
         pcall(autoupdate.reconcileAssetsState, manifest)
     end
+
+    if autoupdate.verifyInstall then
+        local ready, missing = autoupdate.verifyInstall(manifest)
+        if not ready then
+            bootstrapLog('install incomplete: ' .. table.concat(missing, ', '))
+            if autoupdate.repair then
+                bootstrapLog('repair after incomplete install')
+                local repaired = select(1, autoupdate.repair({
+                    quietChat = true,
+                    userFacing = true,
+                    showOverlay = true,
+                    minimalOverlay = true,
+                }))
+                if not repaired then
+                    bootstrapSay(FIRST_RUN_FAIL)
+                    return false, false, firstInstall
+                end
+                clearDeskModuleCache()
+                autoupdate = requireAutoupdate()
+            end
+        end
+    end
+
     if firstInstall and syncStatus == 'uptodate' then
         bootstrapSay(FIRST_RUN_READY)
     end
