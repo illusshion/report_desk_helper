@@ -1614,21 +1614,21 @@ local imgui = require 'mimgui'
 
 M.PANEL_W = 240
 M.HUD_LIST_W = 218
-M.HUD_OVERLAY_ALPHA = 0.80
+M.HUD_OVERLAY_ALPHA = 0.48
 M.HUD_LABEL_W = 104
 M.WINDOW_ROUNDING = 12
 M.FRAME_ROUNDING = 8
-M.BG_ALPHA = 0.80
+M.BG_ALPHA = 0.48
 
 -- Публичный API модуля.
 function M.windowBg(alpha)
     alpha = tonumber(alpha) or M.BG_ALPHA
-    return imgui.ImVec4(0.11, 0.09, 0.16, alpha)
+    return imgui.ImVec4(0.016, 0.016, 0.031, alpha)
 end
 
 -- Публичный API модуля.
 function M.borderCol()
-    return imgui.ImVec4(0.62, 0.48, 0.92, 0.28)
+    return imgui.ImVec4(1, 1, 1, 0.08)
 end
 
 -- Публичный API модуля.
@@ -1822,9 +1822,10 @@ end
 -- Публичный API модуля.
 function M.drawSectionLabel(text, colMuted, uiTextFn)
     uiTextFn = uiTextFn or function(s) return s end
-    colMuted = colMuted or M.labelCol()
-    imgui.Dummy(imgui.ImVec2(0, 2))
+    colMuted = colMuted or imgui.ImVec4(0.92, 0.92, 0.95, 0.85)
+    imgui.Dummy(imgui.ImVec2(0, 4))
     imgui.TextColored(colMuted, uiTextFn(text or ''))
+    imgui.Dummy(imgui.ImVec2(0, 2))
 end
 
 -- Публичный API модуля.
@@ -1891,6 +1892,7 @@ local M = {}
 
 local imgui = require 'mimgui'
 local spTheme = require 'report_desk_sp_theme'
+local spState = require 'report_desk_sp_state'
 
 local VEHICLE_HUD_X_MIN_DEFAULT = 400   -- зона server TD спидометра, px (640x448)
 local VEHICLE_HUD_X_MAX_DEFAULT = 480
@@ -2803,6 +2805,9 @@ function M.shouldShow(settings)
         hovered = false
         return false
     end
+    if spState.isActive() and spState.getSpecMode() == 'vehicle' then
+        return M.peekActive() or M.isActive() or true
+    end
     if M.isLocalInVehicle() then return true end
     local ok, inVeh = pcall(isSpectateTargetInVehicle)
     if not ok or not inVeh then return false end
@@ -3081,7 +3086,7 @@ local function drawRadialGlow(dl, cx, cy, r)
         { mul = 0.58, a = 0.14 },
     }
     for _, layer in ipairs(layers) do
-        local col = imgui.ImVec4(0.07, 0.06, 0.11, layer.a)
+        local col = imgui.ImVec4(0.016, 0.016, 0.031, layer.a * 0.85)
         dl:AddCircleFilled(imgui.ImVec2(cx, cy), r * layer.mul, colorU32(col))
     end
 end
@@ -3156,12 +3161,12 @@ local function drawInnerPlate(dl, lay, plateCx, plateCy)
     if not dl or not dl.AddCircleFilled then return end
     plateCx = plateCx or lay.cx
     plateCy = plateCy or lay.cy
-    local col = imgui.ImVec4(0.07, 0.06, 0.11, 0.68)
+    local col = imgui.ImVec4(0.016, 0.016, 0.031, 0.48)
     dl:AddCircleFilled(imgui.ImVec2(plateCx, plateCy), lay.innerR, colorU32(col))
     if dl.AddCircle then
         dl:AddCircle(
             imgui.ImVec2(plateCx, plateCy), lay.innerR,
-            colorU32(imgui.ImVec4(0.52, 0.38, 0.78, 0.12)), 36, 1.0)
+            colorU32(imgui.ImVec4(1, 1, 1, 0.08)), 36, 1.0)
     end
 end
 
@@ -3646,6 +3651,7 @@ local M = {}
 
 local imgui = require 'mimgui'
 local spTheme = require 'report_desk_sp_theme'
+local spState = require 'report_desk_sp_state'
 local specSession = require 'report_desk_spectate_session'
 
 local HUD_MARGIN = 10
@@ -3734,6 +3740,11 @@ end
 
 -- Player State Key
 local function playerStateKey()
+    if spState.isActive() then
+        local mode = spState.getSpecMode()
+        if mode == 'vehicle' then return 'vehicle' end
+        if mode == 'player' then return 'onfoot' end
+    end
     local ped = targetChar()
     if not ped then return nil end
     if isCharOnFoot and isCharOnFoot(ped) then return 'onfoot' end
@@ -5127,35 +5138,49 @@ local function persist()
 end
 
 local function sliderInt(label, var, vmin, vmax, id)
-    local labelW = rawget(_G, 'DESK_FORM_LABEL_W') or 200
-    local inputW = rawget(_G, 'DESK_FORM_INPUT_W') or 180
-    local rowAvail = deskFormRowAvailFn or rawget(_G, 'deskFormRowAvail')
-    local w = inputW
-    if type(rowAvail) == 'function' then
-        w = math.min(inputW, rowAvail(label, labelW))
+    local hdrCol = rawget(_G, 'col_muted2') or imgui.ImVec4(0.65, 0.65, 0.72, 1.0)
+    imgui.TextColored(hdrCol, uiTextSafe(label))
+    local rowW = 180
+    if type(deskEdgePanelContentW) == 'function' then
+        rowW = deskEdgePanelContentW()
+    elseif type(deskFormRowAvailFn) == 'function' then
+        rowW = deskFormRowAvailFn('', rawget(_G, 'DESK_FORM_LABEL_W') or 200)
     end
-    imgui.PushItemWidth(w)
-    local changed = imgui.SliderInt(label .. id, var, vmin, vmax)
+    imgui.PushItemWidth(rowW)
+    if type(rawget(_G, 'deskPushFlatInputStyle')) == 'function' then
+        rawget(_G, 'deskPushFlatInputStyle')()
+    end
+    local changed = imgui.SliderInt(id, var, vmin, vmax, '%d')
+    if type(rawget(_G, 'deskPopFlatInputStyle')) == 'function' then
+        rawget(_G, 'deskPopFlatInputStyle')()
+    end
     imgui.PopItemWidth()
+    imgui.Dummy(imgui.ImVec2(0, 2))
     return changed
 end
 
 local function sliderFloat(label, var, vmin, vmax, fmt, id)
-    local labelW = rawget(_G, 'DESK_FORM_LABEL_W') or 200
-    local inputW = rawget(_G, 'DESK_FORM_INPUT_W') or 180
-    local rowAvail = deskFormRowAvailFn or rawget(_G, 'deskFormRowAvail')
-    local w = inputW
-    if type(rowAvail) == 'function' then
-        w = math.min(inputW, rowAvail(label, labelW))
+    local hdrCol = rawget(_G, 'col_muted2') or imgui.ImVec4(0.65, 0.65, 0.72, 1.0)
+    imgui.TextColored(hdrCol, uiTextSafe(label))
+    local rowW = 180
+    if type(deskEdgePanelContentW) == 'function' then
+        rowW = deskEdgePanelContentW()
     end
-    imgui.PushItemWidth(w)
+    imgui.PushItemWidth(rowW)
+    if type(rawget(_G, 'deskPushFlatInputStyle')) == 'function' then
+        rawget(_G, 'deskPushFlatInputStyle')()
+    end
     local changed
     if fmt then
-        changed = imgui.SliderFloat(label .. id, var, vmin, vmax, fmt)
+        changed = imgui.SliderFloat(id, var, vmin, vmax, fmt)
     else
-        changed = imgui.SliderFloat(label .. id, var, vmin, vmax)
+        changed = imgui.SliderFloat(id, var, vmin, vmax)
+    end
+    if type(rawget(_G, 'deskPopFlatInputStyle')) == 'function' then
+        rawget(_G, 'deskPopFlatInputStyle')()
     end
     imgui.PopItemWidth()
+    imgui.Dummy(imgui.ImVec2(0, 2))
     return changed
 end
 
@@ -5195,13 +5220,16 @@ function M.drawTab()
         panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##sp_ac_panel', imgui.ImVec2(-1, -1), false, panelFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
 
-    imgui.TextColored(col_accent, uiText('\xC0\xED\xF2\xE8\xF7\xE8\xF2 \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8'))
-    imgui.TextWrapped(uiText(
-        '\xC2\xE8\xE7\xF3\xE0\xEB\xFC\xED\xFB\xE5 \xEF\xEE\xE4\xF1\xEA\xE0\xE7\xEA\xE8 \xE8 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xFF \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.'))
-    imgui.Dummy(imgui.ImVec2(0, 6))
+    local drawSettingsHint = rawget(_G, 'drawSettingsHint')
+    if type(drawSettingsHint) == 'function' then
+        drawSettingsHint(
+            '\xC2\xE8\xE7\xF3\xE0\xEB\xFC\xED\xFB\xE5 \xEF\xEE\xE4\xF1\xEA\xE0\xE7\xEA\xE8 \xE8 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xFF \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.')
+    elseif settingsHint then
+        settingsHint(
+            '\xC2\xE8\xE7\xF3\xE0\xEB\xFC\xED\xFB\xE5 \xEF\xEE\xE4\xF1\xEA\xE0\xE7\xEA\xE8 \xE8 \xEF\xF0\xE5\xE4\xF3\xEF\xF0\xE5\xE6\xE4\xE5\xED\xE8\xFF \xEF\xF0\xE8 \xED\xE0\xE1\xEB\xFE\xE4\xE5\xED\xE8\xE8 \xE7\xE0 \xE8\xE3\xF0\xEE\xEA\xEE\xEC.')
+    end
 
     deskFormPanelBegin('##sp_ac_tr')
     drawSettingsCardHeader('\xD2\xF0\xE0\xF1\xF1\xE5\xF0\xFB \xE2\xFB\xF1\xF2\xF0\xE5\xEB\xEE\xE2', '')
@@ -5232,9 +5260,16 @@ function M.drawTab()
         if sliderInt(uiText('\xC2\xF0\xE5\xEC\xFF \xEA\xF0\xE0\xF1\xED\xEE\xE9 \xEB\xE8\xED\xE8\xE8 (\xF1\xE5\xEA)'), uiTracersWarn, 1, 50, '##sp_ac_tr_w') then
             ac().tracers_warn_sec = uiTracersWarn[0]; persist()
         end
-        imgui.PushItemWidth(math.min(120, deskFormRowAvail('Sound ID', DESK_FORM_LABEL_W or 200)))
-        if imgui.InputInt(uiText('\xC8\xD7 \xE7\xE2\xF3\xEA\xE0 \xEF\xEE\xEF\xE0\xE4\xE0\xED\xE8\xFF') .. '##sp_ac_sid', uiTracersSoundId) then
+        imgui.PushItemWidth(math.min(120, deskFormRowAvail(
+            uiText('\xC8\xD7 \xE7\xE2\xF3\xEA\xE0 \xEF\xEE\xEF\xE0\xE4\xE0\xED\xE8\xFF'), DESK_FORM_LABEL_W or 200)))
+        if type(rawget(_G, 'deskPushFlatInputStyle')) == 'function' then
+            rawget(_G, 'deskPushFlatInputStyle')()
+        end
+        if imgui.InputInt('##sp_ac_sid', uiTracersSoundId) then
             ac().tracers_sound_id = uiTracersSoundId[0]; persist()
+        end
+        if type(rawget(_G, 'deskPopFlatInputStyle')) == 'function' then
+            rawget(_G, 'deskPopFlatInputStyle')()
         end
         imgui.PopItemWidth()
         imgui.SameLine()
@@ -5304,7 +5339,7 @@ function M.drawTab()
     imgui.PopStyleVar()
     deskFormPopBindButtonStyle()
 
-    imgui.PopStyleVar(2)
+    imgui.PopStyleVar()
     imgui.EndChild()
     popPanelStyle()
 end
@@ -5539,6 +5574,7 @@ local M = {}
 local vehicleHud = require 'report_desk_sp_vehicle_hud'
 
 local session
+local spStateMod
 local trimFn, getSettingsFn, cbEnsureTdHooks
 local blockedSpMenuTdIds = {}
 
@@ -5574,12 +5610,16 @@ local VEHICLE_HUD_X_MAX = 480
 function M.configure(cfg)
     cfg = cfg or {}
     session = cfg.session
+    spStateMod = cfg.spState
     trimFn = cfg.trim
     getSettingsFn = cfg.getSettings
     cbEnsureTdHooks = cfg.ensureTdHooks
 end
 
 function M.getTargetId()
+    if spStateMod and spStateMod.getConfirmedTargetId then
+        return spStateMod.getConfirmedTargetId()
+    end
     if not session then return -1 end
     return tonumber(session.targetId) or -1
 end
@@ -5698,18 +5738,31 @@ end
 
 function M.shouldSuppressServerSpMenu()
     if not uiEnabled() then return false end
+    if spStateMod then
+        return spStateMod.isActive() or spStateMod.isHandshaking()
+    end
     if M.getTargetId() >= 0 then return true end
     if session and session.awaitingSpectate == true then return true end
     return false
 end
 
 function M.isAwaitingSpectate()
+    if spStateMod then return spStateMod.isHandshaking() end
     return session and session.awaitingSpectate == true
 end
 
 function M.markAwaitingSpectate(on)
-    if not session then return end
-    session.awaitingSpectate = on and true or false
+    if spStateMod then
+        if on and spStateMod.getPendingId() < 0 then
+            local id = spStateMod.getEffectiveTargetId()
+            if id >= 0 then spStateMod.onEntering(id, '') end
+        elseif not on then
+            spStateMod.cancelEntering()
+        end
+        if session then spStateMod.syncSessionView(session) end
+    elseif session then
+        session.awaitingSpectate = on and true or false
+    end
     if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
 end
 
@@ -5935,6 +5988,7 @@ local function callHookPrev(fn, ...)
     end
     return unpack(results, 2)
 end
+local spState = require 'report_desk_sp_state'
 local menuBlock = require 'report_desk_sp_menu_td_block'
 local tdRouter = require 'report_desk_sp_td_router'
 
@@ -5943,11 +5997,22 @@ function M.shouldSuppressServerSpMenu()
 end
 
 function M.isAwaitingSpectate()
-    return menuBlock.isAwaitingSpectate()
+    return spState.isHandshaking()
 end
 
 function M.markAwaitingSpectate(on)
-    menuBlock.markAwaitingSpectate(on)
+    if on then
+        local pid = spState.getPendingId()
+        if pid < 0 then
+            pid = spState.getEffectiveTargetId()
+        end
+        if pid >= 0 then
+            spState.onEntering(pid, spState.getTargetNick())
+        end
+    else
+        spState.cancelEntering()
+    end
+    spState.syncSessionView(session)
 end
 
 function M.tdHooksNeeded()
@@ -6201,16 +6266,17 @@ end
 -- Публичный API модуля.
 
 function M.isSpectatingMode()
-    return playerSpectatingNow() or M.isActive()
+    return spState.isSpectating() or spState.isActive() or spState.isHandshaking()
 end
 
 -- Публичный API модуля.
 
 function M.setSpectating(on)
     on = on and true or false
-    session.spectating = on
+    spState.setSpectatingFlag(on)
+    spState.syncSessionView(session)
     if on then
-        if M.getTargetId() < 0 and session.awaitingSpectate ~= true then
+        if M.getTargetId() < 0 and not spState.isHandshaking() then
             M.markAwaitingSpectate(true)
         end
         if cbEnsureSampevHooks then pcall(cbEnsureSampevHooks) end
@@ -6240,19 +6306,31 @@ end
 -- Публичный API модуля.
 
 function M.getTargetId()
-    return tonumber(session.targetId) or -1
+    return spState.getConfirmedTargetId()
+end
+
+function M.getEffectiveTargetId()
+    return spState.getEffectiveTargetId()
 end
 
 -- Публичный API модуля.
 
 function M.getTargetNick()
-    return session.targetNick or ''
+    return spState.getTargetNick()
 end
 
 -- Публичный API модуля.
 
 function M.isActive()
-    return session.active == true and M.getTargetId() >= 0
+    return spState.isActive()
+end
+
+function M.isHandshaking()
+    return spState.isHandshaking()
+end
+
+function M.getSpecMode()
+    return spState.getSpecMode()
 end
 
 -- Публичный API модуля.
@@ -6298,8 +6376,8 @@ function M.parseSpLine(text)
     if spChatLineIsExit(text) then
         local _, exitId = text:match('%[SP%]%s*(.-)%[(%d+)%]')
         exitId = tonumber(exitId)
-        if exitId and exitId >= 0 and session.active and session.targetId == exitId then
-            M.endSession()
+        if exitId and exitId >= 0 and spState.isActive() and spState.getConfirmedTargetId() == exitId then
+            M.endSpectateSession('sp_chat_exit')
         end
         return false
     end
@@ -6338,27 +6416,22 @@ function M.beginSession(id, nick, opts)
     if not id or id < 0 then return false end
     opts = opts or {}
     nick = trim(nick or '')
-    local changed = session.targetId ~= id
+    local prevId = spState.getConfirmedTargetId()
+    local changed = prevId ~= id
     local forceSync = opts.forceSync == true or isServerConfirmedSource(opts.source)
     local now = os.clock()
     if not changed and id == lastBeginSessionId
             and (now - lastBeginSessionAt) < BEGIN_SESSION_DEDUPE_SEC then
-        session.active = true
-        session.spectating = true
-        session.awaitingSpectate = false
-        session.targetId = id
-        if nick ~= '' then session.targetNick = nick end
+        spState.onTargetConfirmed(id, nick, opts)
+        spState.syncSessionView(session)
         if forceSync and cbOnBegin then pcall(cbOnBegin, id, nick, opts) end
         persistReloadSnapshot()
         return true
     end
     lastBeginSessionId = id
     lastBeginSessionAt = now
-    session.active = true
-    session.spectating = true
-    session.awaitingSpectate = false
-    session.targetId = id
-    session.targetNick = nick
+    spState.onTargetConfirmed(id, nick, opts)
+    spState.syncSessionView(session)
     if changed then
         clearMenuColumnState()
         pcall(vehicleHud.reset)
@@ -6374,22 +6447,26 @@ function M.beginSession(id, nick, opts)
     return true
 end
 
--- Публичный API модуля.
+-- Единый выход из spectate: state + локальная очистка + callbacks.
 
-function M.endSession()
-    session.active = false
-    session.spectating = false
-    session.awaitingSpectate = false
-    session.targetId = -1
-    session.targetNick = ''
+function M.endSpectateSession(reason, opts)
+    opts = opts or {}
+    session.outbound = {}
     session.menuWantsCursor = false
     session.menuHovered = false
-    session.outbound = {}
     clearMenuColumnState()
     pcall(vehicleHud.reset)
     if cbResetMenuSelection then pcall(cbResetMenuSelection) end
-    if cbOnEnd then pcall(cbOnEnd) end
+    spState.endSession(reason, opts)
+    spState.syncSessionView(session)
+    if cbOnEnd then pcall(cbOnEnd, reason, opts) end
     if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
+end
+
+-- Публичный API модуля.
+
+function M.endSession()
+    M.endSpectateSession('session_end')
 end
 
 -- Outbound Base
@@ -6459,15 +6536,24 @@ function M.flushOutbound()
     if not cmd or cmd == '' then return end
     session.lastOutboundAt = now
     session.lastOutboundCmd = cmd
-    local cache = rawget(_G, 'deskCache')
     local spId = cmd:match('^sp%s+(%d+)%s*$')
-    if spId and type(cache) == 'table' then
-        cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+    local function doSend()
+        pcall(sendChatFn, cmd)
     end
-    pcall(sendChatFn, cmd)
-    if spId and type(cache) == 'table' then
-        local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
-        cache.skipSpHookLocal = n > 0 and n or nil
+    if spId and type(withSkipSpHook) == 'function' then
+        withSkipSpHook(doSend)
+    elseif spId then
+        local cache = rawget(_G, 'deskCache')
+        if type(cache) == 'table' then
+            cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+        end
+        doSend()
+        if type(cache) == 'table' then
+            local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
+            cache.skipSpHookLocal = n > 0 and n or nil
+        end
+    else
+        doSend()
     end
 end
 local vehicleHandler, hookPrevVehicle
@@ -6486,7 +6572,13 @@ function M.installSampevHooks(sampev)
     playerHandler = function(id)
         local ok, err = pcall(function()
             id = tonumber(id)
-            if id and id >= 0 then
+            if not id or id < 0 then return end
+            M.setSpectating(true)
+            if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
+            spState.onSpecModePlayer(id)
+            spState.syncSessionView(session)
+            if spState.getConfirmedTargetId() < 0 and spState.isHandshaking()
+                    and spState.getPendingId() == id then
                 local nick = ''
                 pcall(function()
                     if deps.sampIsPlayerConnected and deps.sampIsPlayerConnected(id)
@@ -6494,9 +6586,8 @@ function M.installSampevHooks(sampev)
                         nick = deps.sampGetPlayerNickname(id) or ''
                     end
                 end)
-                M.setSpectating(true)
-                if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, true) end
                 M.beginSession(id, nick, { source = 'spectate_player' })
+            elseif spState.getConfirmedTargetId() == id then
                 pcall(function()
                     local stats = package.loaded['report_desk_spectate_stats']
                     if stats and stats.onSpRefreshSpectatePlayer then
@@ -6516,6 +6607,10 @@ function M.installSampevHooks(sampev)
     hookPrevVehicle = prevVeh
     vehicleHandler = function(vehicleId)
         pcall(function()
+            vehicleId = tonumber(vehicleId)
+            if not vehicleId or vehicleId < 0 then return end
+            spState.onSpecModeVehicle(vehicleId)
+            spState.syncSessionView(session)
             local stats = package.loaded['report_desk_spectate_stats']
             if stats and stats.onSpRefreshSpectateVehicle then
                 stats.onSpRefreshSpectateVehicle(vehicleId)
@@ -6657,15 +6752,17 @@ function M.configure(cfg)
     cbResetMenuSelection = deps.resetMenuSelection
     cbEnsureSampevHooks = deps.ensureSampevHooks
     cbEnsureTdHooks = deps.ensureTdHooks
+    spState.syncSessionView(session)
 menuBlock.configure({
         session = session,
+        spState = spState,
         trim = trimFn,
         getSettings = getSettingsFn,
         ensureTdHooks = function()
             if cbEnsureTdHooks then pcall(cbEnsureTdHooks) end
         end,
     })
-    tdRouter.configure({ menuBlock = menuBlock, getSettings = getSettingsFn })
+    tdRouter.configure({ menuBlock = menuBlock, getSettings = getSettingsFn, spState = spState })
 end
 
 -- Публичный API модуля.
@@ -8109,6 +8206,26 @@ local MENU_HEADER_BG = imgui.ImVec4(0.0, 0.0, 0.0, 0.62)
 
 -- Draw Menu Header
 
+local function menuPlayerNickColor(targetId)
+    targetId = tonumber(targetId) or -1
+    if targetId >= 0 and deps.nickColorFor then
+        local ok, c = pcall(deps.nickColorFor, targetId)
+        if ok and c then return c end
+    end
+    local isConn = deps.sampIsPlayerConnected
+    local getCol = deps.sampGetPlayerColor
+    local toIm = deps.sampColorToImVec4
+    if targetId >= 0 and type(isConn) == 'function' and type(getCol) == 'function'
+            and isConn(targetId) then
+        local ok, raw = pcall(getCol, targetId)
+        if ok and raw and type(toIm) == 'function' then
+            local c = toIm(raw)
+            if c then return c end
+        end
+    end
+    return imgui.ImVec4(0.98, 0.98, 1.0, 1.0)
+end
+
 local function drawMenuHeader(nick, targetId, uiTextFn, baseFontScale)
 
     baseFontScale = tonumber(baseFontScale) or SP_FONT_SCALE
@@ -8117,15 +8234,7 @@ local function drawMenuHeader(nick, targetId, uiTextFn, baseFontScale)
 
     local startY = imgui.GetCursorPosY()
 
-    local nickCol = imgui.ImVec4(0.98, 0.98, 1.0, 1.0)
-    if targetId >= 0 and type(sampGetPlayerColor) == 'function' and type(sampIsPlayerConnected) == 'function'
-            and sampIsPlayerConnected(targetId) then
-        local ok, raw = pcall(sampGetPlayerColor, targetId)
-        if ok and raw and type(sampColorToImVec4) == 'function' then
-            local c = sampColorToImVec4(raw)
-            if c then nickCol = c end
-        end
-    end
+    local nickCol = menuPlayerNickColor(targetId)
 
     spTheme.drawPlayerHeader(
 
@@ -8677,6 +8786,10 @@ local function wireMenuDeps()
         hasPendingSp = deps.hasPendingSp,
         isRefreshInFlight = deps.isRefreshInFlight,
         getTargetNick = deps.getTargetNick,
+        nickColorFor = deps.nickColorFor,
+        sampGetPlayerColor = deps.sampGetPlayerColor,
+        sampIsPlayerConnected = deps.sampIsPlayerConnected,
+        sampColorToImVec4 = deps.sampColorToImVec4,
         getPlayerSpectating = deps.getPlayerSpectating,
         isSpectating = spectatingNow,
         isGameTextInputActive = deps.isGameTextInputActive,
@@ -8761,12 +8874,9 @@ end
 
 -- Finish Spectate Locally
 local function finishSpectateLocally(reason, opts)
-    reason = reason or 'sp_ui'
     opts = opts or { sendServer = false }
-    session.markAwaitingSpectate(false)
     if deps.setPlayerSpectating then pcall(deps.setPlayerSpectating, false) end
-    session.setSpectating(false)
-    session.endSession()
+    session.endSpectateSession(reason or 'sp_ui', opts)
     if deps.onSpectatingOff then pcall(deps.onSpectatingOff) end
 end
 
@@ -8916,443 +9026,435 @@ package.preload['report_desk_sp_refresh'] = function()
 
     local fn, err = loadstring([=[
 
---[[ Авто /sp при смене mobility/interior цели.
-     Snapshot + refreshGeneration; interiorCommitted блокирует повтор interior /sp.
-     Тихий /sp без markPendingSp. ]]
-local M = {}
-
-local COOLDOWN_SEC = 3.0
-local ENTRY_GRACE_SEC = 10.0
-local REFRESH_IN_FLIGHT_SEC = 4.5
-local AUTO_ST_SKIP_SEC = 2.5
-local RPC_MOBILITY_TTL = 1.2
-local SYNC_MOBILITY_TTL = 3.0
-local VEHICLE_ENTER_SYNC_MAX = 1.8
-local PENDING_GIVEUP_SEC = 6.0
-local RPC_ORDER_SLACK = 0.05
-
-local deps = {}
-
-local ctx = {
-    seeded = false,
-    mobility = nil,
-    interior = 0,
-    interiorCommitted = nil,
-    appliedInterior = nil,
-    spectateMode = nil,
-    lastRefreshAt = 0,
-    autoRefreshAt = 0,
-    refreshGeneration = 0,
-    confirmedGeneration = 0,
-    rpcMobility = nil,
-    rpcMobilityAt = 0,
-    lastVehicleSyncAt = 0,
-    lastPlayerSyncAt = 0,
-    pending = nil,
-    entryConfirmedAt = 0,
-    refreshInFlightUntil = 0,
-}
-
-local function getTargetId()
-    if deps.getTargetId then
-        return tonumber(deps.getTargetId()) or -1
-    end
-    return -1
-end
-
-local function autoRefreshEnabled()
-    if deps.getSettings then
-        local s = deps.getSettings()
-        if s and s.spectate_auto_refresh == false then return false end
-    end
-    return true
-end
-
-local function watchingTarget()
-    if deps.isSpectating and not deps.isSpectating() then return false end
-    if deps.sessionActive and not deps.sessionActive() then return false end
-    return getTargetId() >= 0
-end
-
-local function readLocalInterior()
-    if deps.getLocalInterior then
-        local ok, v = pcall(deps.getLocalInterior)
-        if ok and v ~= nil then return tonumber(v) or 0 end
-    end
-    return nil
-end
-
-local function readTargetPed()
-    if not deps.getTargetPed then return nil end
-    local ok, ped = pcall(deps.getTargetPed)
-    if ok and ped then return ped end
-    return nil
-end
-
-local function vehicleSyncRecent(maxAge)
-    maxAge = tonumber(maxAge) or VEHICLE_ENTER_SYNC_MAX
-    local at = tonumber(ctx.lastVehicleSyncAt) or 0
-    return at > 0 and (os.clock() - at) < maxAge
-end
-
-local function readMobility()
-    local now = os.clock()
-    if ctx.rpcMobility and (now - (ctx.rpcMobilityAt or 0)) < RPC_MOBILITY_TTL then
-        return ctx.rpcMobility
-    end
-    local vAt = tonumber(ctx.lastVehicleSyncAt) or 0
-    local pAt = tonumber(ctx.lastPlayerSyncAt) or 0
-    if vAt > 0 and vAt >= pAt and (now - vAt) < SYNC_MOBILITY_TTL then
-        return 'vehicle'
-    end
-    if pAt > 0 and (now - pAt) < SYNC_MOBILITY_TTL then
-        return 'onfoot'
-    end
-    return ctx.mobility
-end
-
-local function syncSnapshotFromServerMode()
-    if ctx.spectateMode == 'vehicle' then
-        ctx.mobility = 'vehicle'
-    elseif ctx.spectateMode == 'player' then
-        ctx.mobility = 'onfoot'
-    end
-    if ctx.appliedInterior ~= nil then
-        ctx.interior = ctx.appliedInterior
-    end
-end
-
-function M.getAutoRefreshAt()
-    return ctx.autoRefreshAt or 0
-end
-
-function M.shouldSkipAutoSt(id)
-    id = tonumber(id)
-    local at = tonumber(ctx.autoRefreshAt) or 0
-    if at <= 0 or not id or id < 0 then return false end
-    if os.clock() - at > AUTO_ST_SKIP_SEC then return false end
-    local cur = getTargetId()
-    return cur < 0 or cur == id
-end
-
-function M.resetContext()
-    ctx.seeded = false
-    ctx.mobility = nil
-    ctx.interior = 0
-    ctx.interiorCommitted = nil
-    ctx.appliedInterior = nil
-    ctx.spectateMode = nil
-    ctx.rpcMobility = nil
-    ctx.rpcMobilityAt = 0
-    ctx.lastVehicleSyncAt = 0
-    ctx.lastPlayerSyncAt = 0
-    ctx.pending = nil
-    ctx.confirmedGeneration = 0
-    ctx.entryConfirmedAt = 0
-    ctx.refreshInFlightUntil = 0
-end
-
-local function captureBaseline()
-    ctx.mobility = readMobility() or 'onfoot'
-    local interior = tonumber(ctx.appliedInterior)
-    if interior == nil then
-        interior = readLocalInterior()
-    end
-    if interior ~= nil then
-        ctx.interior = interior
-        ctx.interiorCommitted = interior
-    end
-    ctx.seeded = true
-end
-
-function M.isRefreshInFlight()
-    local untilAt = ctx.refreshInFlightUntil or 0
-    return os.clock() < untilAt
-end
-
-function M.onTargetConfirmed(id, opts)
-    opts = opts or {}
-    id = tonumber(id)
-    if not id or id < 0 then return end
-    if opts.fullBaseline == true or not ctx.seeded then
-        captureBaseline()
-    else
-        syncSnapshotFromServerMode()
-        ctx.confirmedGeneration = ctx.refreshGeneration
-    end
-    ctx.rpcMobility = nil
-    ctx.rpcMobilityAt = 0
-    ctx.pending = nil
-    ctx.entryConfirmedAt = os.clock()
-    ctx.refreshInFlightUntil = 0
-end
-
-function M.onServerSpectatePlayer(playerId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    ctx.spectateMode = 'player'
-    if ctx.seeded then
-        ctx.mobility = 'onfoot'
-    end
-    if ctx.pending and ctx.pending.mobility == 'onfoot' then
-        ctx.pending = nil
-    end
-    ctx.refreshInFlightUntil = 0
-end
-
-function M.onServerSpectateVehicle(vehicleId)
-    vehicleId = tonumber(vehicleId)
-    if not vehicleId or vehicleId < 0 then return end
-    ctx.spectateMode = 'vehicle'
-    if ctx.seeded then
-        ctx.mobility = 'vehicle'
-    end
-    ctx.pending = nil
-    ctx.refreshInFlightUntil = 0
-end
-
-local function markAutoRefreshSent()
-    local now = os.clock()
-    ctx.autoRefreshAt = now
-    ctx.refreshGeneration = (tonumber(ctx.refreshGeneration) or 0) + 1
-    local cache = rawget(_G, 'deskCache')
-    if type(cache) == 'table' then
-        cache.spAutoRefreshAt = now
-    end
-end
-
-local function sendSpRefresh(id)
-    id = tonumber(id)
-    if not id or id < 0 then return false end
-    local cmd = 'sp ' .. tostring(id)
-    local ok = false
-    if deps.sendMenuOutbound then
-        ok = pcall(deps.sendMenuOutbound, cmd, { quietSp = true }) ~= false
-    elseif deps.sendChat then
-        local cache = rawget(_G, 'deskCache')
-        if type(cache) == 'table' then
-            cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
-        end
-        ok = pcall(deps.sendChat, '/sp ' .. tostring(id)) ~= false
-        if type(cache) == 'table' then
-            local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
-            cache.skipSpHookLocal = n > 0 and n or nil
-        end
-    end
-    if ok then
-        markAutoRefreshSent()
-        ctx.refreshInFlightUntil = os.clock() + REFRESH_IN_FLIGHT_SEC
-    end
-    return ok
-end
-
-local function serverModeMatches(mobility)
-    if mobility == 'vehicle' then return ctx.spectateMode == 'vehicle' end
-    if mobility == 'onfoot' then return ctx.spectateMode == 'player' end
-    return false
-end
-
-local function tryRefresh(reason)
-    local id = getTargetId()
-    if not id or id < 0 then return false end
-    if not autoRefreshEnabled() then return false end
-    if not watchingTarget() then return false end
-    if deps.hasPendingSp and deps.hasPendingSp() then return false end
-    if deps.isHandshaking and deps.isHandshaking() then return false end
-    if deps.hasOutboundPending and deps.hasOutboundPending() then return false end
-    if not ctx.seeded then return false end
-    if not ctx.spectateMode then return false end
-    local now = os.clock()
-    if ctx.entryConfirmedAt and (now - ctx.entryConfirmedAt) < ENTRY_GRACE_SEC then return false end
-    if M.isRefreshInFlight() then return false end
-    if now - (ctx.lastRefreshAt or 0) < COOLDOWN_SEC then return false end
-    if not sendSpRefresh(id) then return false end
-    ctx.lastRefreshAt = now
-    ctx.rpcMobility = nil
-    ctx.rpcMobilityAt = 0
-    return true
-end
-
-local function commitSnapshot(mobility, interior)
-    if mobility then ctx.mobility = mobility end
-    if interior ~= nil then
-        ctx.interior = interior
-        ctx.appliedInterior = interior
-        ctx.interiorCommitted = interior
-    end
-end
-
-local function applyChange(mobility, interior, reason)
-    if not ctx.seeded then
-        commitSnapshot(mobility, interior)
-        return true
-    end
-
-    local mobChanged = mobility and ctx.mobility and mobility ~= ctx.mobility
-    local intChanged = interior ~= nil and ctx.interior ~= interior
-    if not mobChanged and not intChanged then return true end
-
-    if mobChanged and serverModeMatches(mobility) then
-        commitSnapshot(mobility, nil)
-        mobChanged = false
-    end
-    if not mobChanged and not intChanged then return true end
-
-    if tryRefresh(reason) then
-        commitSnapshot(mobility, interior)
-        return true
-    end
-    return false
-end
-
-local function schedulePending(mobility, interior, reason, delay)
-    local now = os.clock()
-    if ctx.pending and ctx.pending.reason == reason
-            and ctx.pending.mobility == mobility
-            and ctx.pending.interior == interior then
-        return
-    end
-    ctx.pending = {
-        mobility = mobility,
-        interior = interior,
-        reason = reason or 'pending',
-        at = now + (tonumber(delay) or 0),
-        createdAt = now,
-    }
-end
-
-local function vehicleEnterReady()
-    if vehicleSyncRecent(VEHICLE_ENTER_SYNC_MAX) then return true end
-    local ped = readTargetPed()
-    if ped and isCharInAnyCar and isCharInAnyCar(ped) then return true end
-    return false
-end
-
-local function giveUpPending(p)
-    ctx.pending = nil
-end
-
-local function flushPending()
-    local p = ctx.pending
-    if not p then return end
-    if os.clock() < (p.at or 0) then return end
-    if not watchingTarget() or not ctx.seeded then
-        ctx.pending = nil
-        return
-    end
-    if p.createdAt and (os.clock() - p.createdAt) >= PENDING_GIVEUP_SEC then
-        giveUpPending(p)
-        return
-    end
-    if p.mobility == 'vehicle' and not vehicleEnterReady() then
-        return
-    end
-    if applyChange(p.mobility, p.interior, p.reason) then
-        ctx.pending = nil
-        return
-    end
-    p.at = os.clock() + COOLDOWN_SEC
-end
-
-function M.onTargetEnterVehicle(playerId, vehicleId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    local now = os.clock()
-    ctx.rpcMobility = 'vehicle'
-    ctx.rpcMobilityAt = now
-    if not ctx.seeded then
-        ctx.mobility = 'vehicle'
-        return
-    end
-    if ctx.mobility == 'vehicle' and ctx.spectateMode == 'vehicle' then return end
-    schedulePending('vehicle', nil, 'rpc_enter_vehicle', RPC_ORDER_SLACK)
-    flushPending()
-end
-
-function M.onTargetExitVehicle(playerId, vehicleId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    local now = os.clock()
-    ctx.rpcMobility = 'onfoot'
-    ctx.rpcMobilityAt = now
-    ctx.lastPlayerSyncAt = now
-    ctx.lastVehicleSyncAt = 0
-    if not ctx.seeded then
-        ctx.mobility = 'onfoot'
-        return
-    end
-    if ctx.mobility == 'onfoot' and ctx.spectateMode == 'player' then return end
-    schedulePending('onfoot', nil, 'rpc_exit_vehicle', RPC_ORDER_SLACK)
-    flushPending()
-end
-
-function M.onLocalSetInterior(interior)
-    interior = tonumber(interior)
-    if interior == nil then return end
-    ctx.appliedInterior = interior
-    if not ctx.seeded then
-        ctx.interior = interior
-        ctx.interiorCommitted = interior
-        return
-    end
-    if ctx.interiorCommitted == interior then
-        ctx.interior = interior
-        return
-    end
-    if ctx.interior == interior then return end
-    if ctx.pending and ctx.pending.mobility then return end
-    schedulePending(nil, interior, 'rpc_set_interior', RPC_ORDER_SLACK)
-    flushPending()
-end
-
-function M.onTargetVehicleSync(playerId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    ctx.lastVehicleSyncAt = os.clock()
-    if ctx.pending then flushPending() end
-end
-
-function M.onTargetPassengerSync(playerId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    ctx.lastVehicleSyncAt = os.clock()
-    if ctx.pending then flushPending() end
-end
-
-function M.onTargetPlayerSync(playerId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    ctx.lastPlayerSyncAt = os.clock()
-    if ctx.pending and ctx.pending.mobility == 'onfoot' then
-        flushPending()
-    end
-end
-
-function M.onTargetStreamIn(playerId)
-    playerId = tonumber(playerId)
-    if not playerId or playerId ~= getTargetId() then return end
-    if ctx.pending and ctx.pending.mobility == 'vehicle' then
-        flushPending()
-    end
-end
-
-function M.needsTick()
-    if not watchingTarget() then return false end
-    local p = ctx.pending
-    if not p then return false end
-    return os.clock() >= (p.at or 0)
-end
-
-function M.tick()
-    if not M.needsTick() then return end
-    flushPending()
-end
-
-function M.configure(cfg)
-    deps = cfg or deps or {}
-end
-
-return M
+--[[ Авто /sp при смене mobility/interior цели. Читает specMode из sp_state. ]]
+local M = {}
+
+local spState = require 'report_desk_sp_state'
+
+local COOLDOWN_SEC = 1.5
+local ENTRY_GRACE_SEC = 3.0
+local REFRESH_IN_FLIGHT_SEC = 3.0
+local AUTO_ST_SKIP_SEC = 2.5
+-- Выход из ТС: SAMP onPlayerExitVehicle — в начале анимации; сервер SPEC_PLAYER ~1.0–1.5с позже (probe: 1.44с).
+-- GetOutTime в handling.cfg ≈ 0.35–0.45 (норм. anim time); при 30 FPS ≈ 30–45 кадров → ~1.0–1.5с.
+local EXIT_VEHICLE_ANIM_MIN_SEC = 1.15
+local EXIT_VEHICLE_ANIM_MAX_SEC = 2.20
+local EXIT_VEHICLE_POLL_SEC = 0.10
+local RPC_MOBILITY_TTL = 1.2
+
+local deps = {}
+
+local ctx = {
+    seeded = false,
+    mobility = nil,
+    interior = 0,
+    interiorCommitted = nil,
+    appliedInterior = nil,
+    lastRefreshAt = 0,
+    autoRefreshAt = 0,
+    rpcMobility = nil,
+    rpcMobilityAt = 0,
+    lastVehicleSyncAt = 0,
+    lastPlayerSyncAt = 0,
+    pending = nil,
+    entryConfirmedAt = 0,
+    refreshInFlightUntil = 0,
+}
+
+local function getTargetId()
+    return spState.getConfirmedTargetId()
+end
+
+local function autoRefreshEnabled()
+    if deps.getSettings then
+        local s = deps.getSettings()
+        if s and s.spectate_auto_refresh == false then return false end
+    end
+    return true
+end
+
+local function watchingTarget()
+    if spState.isHandshaking() then return false end
+    if deps.isSpectating and not deps.isSpectating() then return false end
+    if deps.sessionActive and not deps.sessionActive() then return false end
+    return getTargetId() >= 0
+end
+
+local function readLocalInterior()
+    if deps.getLocalInterior then
+        local ok, v = pcall(deps.getLocalInterior)
+        if ok and v ~= nil then return tonumber(v) or 0 end
+    end
+    return nil
+end
+
+local function readTargetPed()
+    if not deps.getTargetPed then return nil end
+    local ok, ped = pcall(deps.getTargetPed)
+    if ok and ped then return ped end
+    return nil
+end
+
+local function targetPedOnFootReady()
+    local ped = readTargetPed()
+    if not ped then return false end
+    if isCharInAnyCar and isCharInAnyCar(ped) then return false end
+    if isCharOnFoot and isCharOnFoot(ped) then return true end
+    return true
+end
+
+local function exitVehicleRefreshReady(p)
+    if not p or p.reason ~= 'rpc_exit_vehicle' then return true end
+    local elapsed = os.clock() - (tonumber(p.createdAt) or 0)
+    if elapsed < EXIT_VEHICLE_ANIM_MIN_SEC then
+        return false
+    end
+    if spState.getSpecMode() == 'player' then
+        return true
+    end
+    if targetPedOnFootReady() then
+        return true
+    end
+    return elapsed >= EXIT_VEHICLE_ANIM_MAX_SEC
+end
+
+local function deferExitVehiclePending(p)
+    if not p then return end
+    p.at = os.clock() + EXIT_VEHICLE_POLL_SEC
+end
+
+local function readMobility()
+    local now = os.clock()
+    if ctx.rpcMobility and (now - (ctx.rpcMobilityAt or 0)) < RPC_MOBILITY_TTL then
+        return ctx.rpcMobility
+    end
+    local vAt = tonumber(ctx.lastVehicleSyncAt) or 0
+    local pAt = tonumber(ctx.lastPlayerSyncAt) or 0
+    if vAt > 0 and vAt >= pAt and (now - vAt) < 3.0 then
+        return 'vehicle'
+    end
+    if pAt > 0 and (now - pAt) < 3.0 then
+        return 'onfoot'
+    end
+    return ctx.mobility
+end
+
+local function serverModeMatches(mobility)
+    local mode = spState.getSpecMode()
+    if mobility == 'vehicle' then return mode == 'vehicle' end
+    if mobility == 'onfoot' then return mode == 'player' end
+    return false
+end
+
+function M.getAutoRefreshAt()
+    return ctx.autoRefreshAt or 0
+end
+
+function M.shouldSkipAutoSt(id)
+    id = tonumber(id)
+    local at = tonumber(ctx.autoRefreshAt) or 0
+    if at <= 0 or not id or id < 0 then return false end
+    if os.clock() - at > AUTO_ST_SKIP_SEC then return false end
+    local cur = getTargetId()
+    return cur < 0 or cur == id
+end
+
+function M.resetContext()
+    ctx.seeded = false
+    ctx.mobility = nil
+    ctx.interior = 0
+    ctx.interiorCommitted = nil
+    ctx.appliedInterior = nil
+    ctx.rpcMobility = nil
+    ctx.rpcMobilityAt = 0
+    ctx.lastVehicleSyncAt = 0
+    ctx.lastPlayerSyncAt = 0
+    ctx.pending = nil
+    ctx.entryConfirmedAt = 0
+    ctx.refreshInFlightUntil = 0
+end
+
+local function captureBaseline()
+    ctx.mobility = readMobility() or 'onfoot'
+    local interior = tonumber(ctx.appliedInterior)
+    if interior == nil then
+        interior = readLocalInterior()
+    end
+    if interior ~= nil then
+        ctx.interior = interior
+        ctx.interiorCommitted = interior
+    end
+    ctx.seeded = true
+end
+
+function M.isRefreshInFlight()
+    return os.clock() < (ctx.refreshInFlightUntil or 0)
+end
+
+function M.onTargetConfirmed(id, opts)
+    opts = opts or {}
+    id = tonumber(id)
+    if not id or id < 0 then return end
+    if opts.fullBaseline == true or not ctx.seeded then
+        captureBaseline()
+    else
+        local mode = spState.getSpecMode()
+        if mode == 'vehicle' then ctx.mobility = 'vehicle'
+        elseif mode == 'player' then ctx.mobility = 'onfoot' end
+        if ctx.appliedInterior ~= nil then ctx.interior = ctx.appliedInterior end
+    end
+    ctx.rpcMobility = nil
+    ctx.rpcMobilityAt = 0
+    ctx.pending = nil
+    ctx.entryConfirmedAt = os.clock()
+    ctx.refreshInFlightUntil = 0
+end
+
+function M.onServerSpectatePlayer(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    if ctx.seeded then ctx.mobility = 'onfoot' end
+    if ctx.pending and ctx.pending.mobility == 'onfoot' then ctx.pending = nil end
+    ctx.refreshInFlightUntil = 0
+end
+
+function M.onServerSpectateVehicle(vehicleId)
+    vehicleId = tonumber(vehicleId)
+    if not vehicleId or vehicleId < 0 then return end
+    if ctx.seeded then ctx.mobility = 'vehicle' end
+    ctx.pending = nil
+    ctx.refreshInFlightUntil = 0
+end
+
+local function markAutoRefreshSent()
+    local now = os.clock()
+    ctx.autoRefreshAt = now
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then cache.spAutoRefreshAt = now end
+end
+
+local function sendSpRefresh(id)
+    id = tonumber(id)
+    if not id or id < 0 then return false end
+    local cmd = 'sp ' .. tostring(id)
+    local ok = false
+    if deps.sendMenuOutbound then
+        ok = pcall(deps.sendMenuOutbound, cmd, { quietSp = true }) ~= false
+    elseif deps.sendChat then
+        if deps.withSkipSpHook then
+            ok = deps.withSkipSpHook(function()
+                return pcall(deps.sendChat, '/sp ' .. tostring(id)) ~= false
+            end)
+        else
+            ok = pcall(deps.sendChat, '/sp ' .. tostring(id)) ~= false
+        end
+    end
+    if ok then
+        markAutoRefreshSent()
+        ctx.refreshInFlightUntil = os.clock() + REFRESH_IN_FLIGHT_SEC
+    end
+    return ok
+end
+
+local function tryRefresh(reason)
+    local id = getTargetId()
+    if not id or id < 0 then return false end
+    if not autoRefreshEnabled() then return false end
+    if not watchingTarget() then return false end
+    if deps.hasPendingSp and deps.hasPendingSp() then return false end
+    if deps.isHandshaking and deps.isHandshaking() then return false end
+    if deps.hasOutboundPending and deps.hasOutboundPending() then return false end
+    if not ctx.seeded then return false end
+    if not spState.getSpecMode() then return false end
+    local now = os.clock()
+    if ctx.entryConfirmedAt and (now - ctx.entryConfirmedAt) < ENTRY_GRACE_SEC then return false end
+    if M.isRefreshInFlight() then return false end
+    if now - (ctx.lastRefreshAt or 0) < COOLDOWN_SEC then return false end
+    if not sendSpRefresh(id) then return false end
+    ctx.lastRefreshAt = now
+    ctx.rpcMobility = nil
+    ctx.rpcMobilityAt = 0
+    return true
+end
+
+local function commitSnapshot(mobility, interior)
+    if mobility then ctx.mobility = mobility end
+    if interior ~= nil then
+        ctx.interior = interior
+        ctx.appliedInterior = interior
+        ctx.interiorCommitted = interior
+    end
+end
+
+local function applyChange(mobility, interior, reason)
+    if not ctx.seeded then
+        commitSnapshot(mobility, interior)
+        return true
+    end
+    local mobChanged = mobility and ctx.mobility and mobility ~= ctx.mobility
+    local intChanged = interior ~= nil and ctx.interior ~= interior
+    if not mobChanged and not intChanged then return true end
+    if mobChanged and serverModeMatches(mobility) then
+        commitSnapshot(mobility, nil)
+        mobChanged = false
+    end
+    if not mobChanged and not intChanged then return true end
+    if tryRefresh(reason) then
+        commitSnapshot(mobility, interior)
+        return true
+    end
+    return false
+end
+
+local function schedulePending(mobility, interior, reason, delay)
+    local now = os.clock()
+    if ctx.pending and ctx.pending.reason == reason
+            and ctx.pending.mobility == mobility
+            and ctx.pending.interior == interior then
+        return
+    end
+    ctx.pending = {
+        mobility = mobility,
+        interior = interior,
+        reason = reason or 'pending',
+        at = now + (tonumber(delay) or 0),
+        createdAt = now,
+    }
+end
+
+local function flushPending()
+    local p = ctx.pending
+    if not p then return end
+    if os.clock() < (p.at or 0) then return end
+    if not watchingTarget() or not ctx.seeded then
+        ctx.pending = nil
+        return
+    end
+    if p.mobility == 'vehicle' then
+        local ped = readTargetPed()
+        if not ped and (os.clock() - (p.createdAt or 0)) < 1.2 then
+            return
+        end
+    end
+    if p.mobility == 'onfoot' and p.reason == 'rpc_exit_vehicle' then
+        if not exitVehicleRefreshReady(p) then
+            deferExitVehiclePending(p)
+            return
+        end
+    end
+    if applyChange(p.mobility, p.interior, p.reason) then
+        ctx.pending = nil
+        return
+    end
+    if p.createdAt and (os.clock() - p.createdAt) >= 4.0 then
+        ctx.pending = nil
+        return
+    end
+    p.at = os.clock() + COOLDOWN_SEC
+end
+
+function M.onTargetEnterVehicle(playerId, vehicleId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    local now = os.clock()
+    ctx.rpcMobility = 'vehicle'
+    ctx.rpcMobilityAt = now
+    if not ctx.seeded then
+        ctx.mobility = 'vehicle'
+        return
+    end
+    if ctx.mobility == 'vehicle' and spState.getSpecMode() == 'vehicle' then return end
+    schedulePending('vehicle', nil, 'rpc_enter_vehicle', 0.05)
+    flushPending()
+end
+
+function M.onTargetExitVehicle(playerId, vehicleId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    local now = os.clock()
+    ctx.rpcMobility = 'onfoot'
+    ctx.rpcMobilityAt = now
+    ctx.lastPlayerSyncAt = now
+    ctx.lastVehicleSyncAt = 0
+    if not ctx.seeded then
+        ctx.mobility = 'onfoot'
+        return
+    end
+    if ctx.mobility == 'onfoot' and spState.getSpecMode() == 'player' then return end
+    schedulePending('onfoot', nil, 'rpc_exit_vehicle', 0.05)
+    -- Не flush сразу: player sync приходит в начале анимации выхода.
+end
+
+function M.onLocalSetInterior(interior)
+    interior = tonumber(interior)
+    if interior == nil then return end
+    ctx.appliedInterior = interior
+    if not ctx.seeded then
+        ctx.interior = interior
+        ctx.interiorCommitted = interior
+        return
+    end
+    if ctx.interiorCommitted == interior then
+        ctx.interior = interior
+        return
+    end
+    if ctx.interior == interior then return end
+    if ctx.pending and ctx.pending.mobility then return end
+    schedulePending(nil, interior, 'rpc_set_interior', 0.05)
+    flushPending()
+end
+
+function M.onTargetVehicleSync(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    ctx.lastVehicleSyncAt = os.clock()
+    if ctx.pending then flushPending() end
+end
+
+function M.onTargetPassengerSync(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    ctx.lastVehicleSyncAt = os.clock()
+    if ctx.pending then flushPending() end
+end
+
+function M.onTargetPlayerSync(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    ctx.lastPlayerSyncAt = os.clock()
+    if not ctx.pending or ctx.pending.mobility ~= 'onfoot' then return end
+    if ctx.pending.reason == 'rpc_exit_vehicle' then
+        if not exitVehicleRefreshReady(ctx.pending) then
+            deferExitVehiclePending(ctx.pending)
+            return
+        end
+    end
+    flushPending()
+end
+
+function M.onTargetStreamIn(playerId)
+    playerId = tonumber(playerId)
+    if not playerId or playerId ~= getTargetId() then return end
+    if ctx.pending and ctx.pending.mobility == 'vehicle' then flushPending() end
+end
+
+function M.needsTick()
+    if not watchingTarget() then return false end
+    local p = ctx.pending
+    return p ~= nil and os.clock() >= (p.at or 0)
+end
+
+function M.tick()
+    spState.tick()
+    if not M.needsTick() then return end
+    flushPending()
+end
+
+function M.configure(cfg)
+    deps = cfg or deps or {}
+end
+
+return M
 
 
 ]=], '@report_desk_sp_refresh')
@@ -9382,6 +9484,7 @@ end
 
 local imgui = require 'mimgui'
 local specSession = require 'report_desk_spectate_session'
+local spState = require 'report_desk_sp_state'
 local spUi = require 'report_desk_sp_ui'
 local specMenuMod = require 'report_desk_spectate_menu'
 local spTheme = require 'report_desk_sp_theme'
@@ -9408,7 +9511,7 @@ local PENDING_ST_SEC = 12.0
 local AUTO_ST_COOLDOWN = 4.0
 local SPEC_STEP_COOLDOWN = 0.45
 local SPEC_STEP_AUTO_ST_DELAY = 2.5
-local PENDING_SP_SEC = 6.0
+local PENDING_SP_SEC = 2.5
 local SPECTATE_FORCE_EXIT_COOLDOWN = 0.8
 local SPECTATE_ORPHAN_GRACE_SEC = 3.0
 local SPECTATE_TARGET_OFFLINE_GRACE_SEC = 2.5
@@ -9581,6 +9684,42 @@ local function low(s)
     s = trim(s or '')
     if s == '' then return '' end
     return s:lower()
+end
+
+local function hayFind(hay, ...)
+    for i = 1, select('#', ...) do
+        local p = select(i, ...)
+        if p and p ~= '' and hay:find(p, 1, true) then return true end
+    end
+    return false
+end
+
+-- Короткие подписи для длинных названий министерств в HUD.
+local function abbrevOrgForHud(val)
+    val = trim(val or '')
+    if val == '' then return val end
+    local hay = low(val)
+    if hayFind(hay,
+            '\xEC\xE2\xE4',
+            '\xEC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xE2\xED\xF3\xF2\xF0\xE5\xED\xED',
+            '\xE2\xED\xF3\xF2\xF0\xE5\xED\xED\xE8\xF5 \xE4\xE5\xEB',
+            '\xEF\xEE\xEB\xE8\xF6', 'police', 'internal affairs') then
+        return '\xCC\xC2\xC4'
+    end
+    if hayFind(hay,
+            '\xEC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xEE\xE1\xEE\xF0\xEE\xED',
+            '\xEE\xE1\xEE\xF0\xEE\xED', 'army', '\xE2\xEE\xE5\xED', '\xE0\xF0\xEC\xE8',
+            '\xF1\xF3\xF5\xEE\xEF\xF3\xF2', '\xE2\xE2\xF1') then
+        return '\xCC\xCE'
+    end
+    if hayFind(hay,
+            '\xEC\xE8\xED\xE8\xF1\xF2\xE5\xF0\xF1\xF2\xE2\xEE \xE7\xE4\xF0\xE0\xE2',
+            '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2',
+            '\xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED', '\xE1\xEE\xEB\xFC\xED\xE8\xF6',
+            'hospital', '\xEA\xEB\xE8\xED\xE8\xF7', '\xEC\xE3\xEC\xF6') then
+        return '\xCC\xC7'
+    end
+    return val
 end
 
 -- Vec4
@@ -10844,18 +10983,20 @@ local function drawStarRatingRow(label, current, maxSlots, colorFn)
     imgui.AlignTextToFramePadding()
     imgui.TextColored(lblCol, uiText(label))
     imgui.SameLine(labelW)
+    imgui.AlignTextToFramePadding()
     local dl = imgui.GetWindowDrawList()
+    local frameH = imgui.GetFrameHeight()
     local starH = WANTED_STAR_OUTER * 2 + STAR_ROW_PAD
-    local lineH = math.max(imgui.GetTextLineHeight(), starH)
+    local rowH = math.max(frameH, starH)
     local base = imgui.GetCursorScreenPos()
-    local centerY = base.y + lineH * 0.5
+    local centerY = base.y + frameH * 0.5
     local startX = base.x + WANTED_STAR_OUTER
     for i = 1, maxSlots do
         local cx = startX + (i - 1) * WANTED_STAR_STEP
         local active = i <= current
         drawWantedStar(dl, cx, centerY, active, colorFn(i, active, current))
     end
-    imgui.Dummy(imgui.ImVec2(maxSlots * WANTED_STAR_STEP + WANTED_STAR_OUTER, lineH))
+    imgui.Dummy(imgui.ImVec2(maxSlots * WANTED_STAR_STEP + WANTED_STAR_OUTER, rowH))
 end
 
 -- Публичный API модуля.
@@ -10900,6 +11041,9 @@ local function drawStatsBody(e)
     local hasAny = false
     for _, key in ipairs(HUD_FIELD_ORDER) do
         local val = e.fields[key]
+        if key == 'org' and val then
+            val = abbrevOrgForHud(val)
+        end
         if fieldValueVisible(key, val) then
             hasAny = true
             local lbl = FIELD_LABELS[key] or key
@@ -10987,6 +11131,9 @@ local WM = {
 -- Активен ли режим spectate (SAMP flag).
 
 local function specIsSpectating()
+    if spState.isSpectating() or spState.isActive() or spState.isHandshaking() then
+        return true
+    end
     return specPlayerActive()
 end
 
@@ -11037,13 +11184,16 @@ local function buildSpUiDeps(deps)
             return pid and (os.clock() - (state.pendingStAt or 0)) < PENDING_ST_SEC
         end,
         getConfirmedTargetId = function()
-            return specSession.getTargetId and specSession.getTargetId() or -1
+            return spState.getConfirmedTargetId()
         end,
-        getOutboundId = function() return state.pendingSpId end,
+        nickColorFor = function(id)
+            return M.nickColorFor(id)
+        end,
+        sampColorToImVec4 = sampColorToImVec4,
+        getOutboundId = function() return spState.getPendingId() end,
         hasPendingSp = M.hasPendingSp,
         isHandshaking = function()
-            return M.hasPendingSp()
-                or (specSession.isAwaitingSpectate and specSession.isAwaitingSpectate())
+            return spState.isHandshaking()
         end,
         isRefreshInFlight = spRefresh.isRefreshInFlight,
         queueOutbound = function(cmd)
@@ -11051,6 +11201,7 @@ local function buildSpUiDeps(deps)
         end,
         setPlayerSpectating = deps and deps.setPlayerSpectating,
         sampIsPlayerConnected = sampIsPlayerConnected,
+        sampGetPlayerColor = sampGetPlayerColor,
         sampGetPlayerNickname = sampGetPlayerNickname,
         onSpLocalExit = function()
             expectSpectateOff = true
@@ -11075,9 +11226,8 @@ local function buildSpUiDeps(deps)
             end
             M.syncFromSession(id, nick, getSettings and getSettings(), syncOpts)
         end,
-        onSessionEnd = function()
-            local sid = specSession.getTargetId and specSession.getTargetId() or -1
-            if sid >= 0 then return end
+        onSessionEnd = function(reason)
+            if spState.isActive() then return end
             M.clearSpectateTarget(false)
         end,
         onSpectatingOn = deps and deps.onSpectatingOn,
@@ -11258,18 +11408,11 @@ function M.nickColorFor(id, e)
 end
 
 function M.getTargetId()
-    local sid = specSession.getTargetId and specSession.getTargetId() or -1
-    if sid >= 0 then return sid end
-    if specPlayerActive() then
-        local pending = tonumber(state.pendingSpId)
-        if pending and pending >= 0 then return pending end
-        local tid = tonumber(state.targetId)
-        if tid and tid >= 0 then return tid end
-        return -1
-    end
-    local tid = tonumber(state.targetId)
-    if tid and tid >= 0 then return tid end
-    return -1
+    return spState.getEffectiveTargetId()
+end
+
+function M.getConfirmedTargetId()
+    return spState.getConfirmedTargetId()
 end
 
 function M.getLastSubject()
@@ -11761,7 +11904,10 @@ function M.forceExitSpectate(opts)
     lastForceExitAt = now
     expectSpectateOff = true
     M.clearSpectateTarget(true)
-    M.onSpCommandOff()
+    if inputDeps and inputDeps.setPlayerSpectating then
+        pcall(inputDeps.setPlayerSpectating, false)
+    end
+    specSession.endSpectateSession(opts.reason or 'force_exit', opts)
     if opts.sendServer ~= false then
         if sendMenuOutbound then
             sendMenuOutbound('sp')
@@ -11770,91 +11916,6 @@ function M.forceExitSpectate(opts)
         end
     end
     return true
-end
-
-function M.tickSpectateHealth()
-    if specPlayerActive() and spRefresh.needsTick and spRefresh.needsTick() then
-        pcall(spRefresh.tick)
-    end
-    local now = os.clock()
-    if now - lastSpectateHealthAt < SPECTATE_HEALTH_INTERVAL then
-        return
-    end
-    lastSpectateHealthAt = now
-    if not gameAppActive then
-        targetOfflineSinceAt = nil
-        orphanSinceAt = nil
-        orphanRecoveryTried = false
-        return
-    end
-    if not specPlayerActive() then
-        orphanSinceAt = nil
-        orphanRecoveryTried = false
-        targetOfflineSinceAt = nil
-        return
-    end
-    local sessionConfirmed = specSession.isActive and specSession.isActive()
-    if M.hasPendingSp() and not sessionConfirmed then
-        orphanSinceAt = nil
-        orphanRecoveryTried = false
-        targetOfflineSinceAt = nil
-        return
-    end
-    if M.hasPendingSp() and sessionConfirmed then
-        M.cancelPendingSp()
-    end
-    local stRetryId = M.getTargetId()
-    if stRetryId >= 0 and sessionConfirmed and not M.hasPendingSt() and not M.hasFullStats(stRetryId) then
-        local s = getSettings and getSettings()
-        local stCooldown = M.hasStats(stRetryId) and AUTO_ST_COOLDOWN or 2.0
-        if s and s.spectate_hud ~= false
-                and (now - (state.lastAutoStAt or 0)) >= stCooldown then
-            state.lastAutoStAt = now
-            M.requestStats(stRetryId, { force = true })
-        end
-    end
-    if specPlayerActive() and not sessionConfirmed then
-        local outboundAt = tonumber(state.lastSpOutboundAt) or 0
-        if outboundAt > 0 and (now - outboundAt) < PENDING_SP_SEC + 2.0 then
-            orphanSinceAt = nil
-            orphanRecoveryTried = false
-            targetOfflineSinceAt = nil
-            return
-        end
-    end
-    local id = M.getTargetId()
-    if id < 0 then
-        targetOfflineSinceAt = nil
-        orphanSinceAt = orphanSinceAt or now
-        local elapsed = now - orphanSinceAt
-        if elapsed >= 1.0 and not orphanRecoveryTried then
-            orphanRecoveryTried = true
-            if specSession.tryRecoverFromChat and specSession.tryRecoverFromChat() then
-                orphanSinceAt = nil
-                return
-            end
-        end
-        if elapsed < SPECTATE_ORPHAN_GRACE_SEC then
-            return
-        end
-        orphanSinceAt = nil
-        orphanRecoveryTried = false
-        -- Локальная очистка UI: сервер может быть в валидном SP refresh, sp toggle опасен.
-        M.forceExitSpectate({ reason = 'orphan', sendServer = true })
-        return
-    end
-    orphanSinceAt = nil
-    orphanRecoveryTried = false
-    if sessionConfirmed and id >= 0 and sampIsPlayerConnected and not sampIsPlayerConnected(id) then
-        targetOfflineSinceAt = targetOfflineSinceAt or now
-        if now - targetOfflineSinceAt < SPECTATE_TARGET_OFFLINE_GRACE_SEC + 1.5 then
-            return
-        end
-        targetOfflineSinceAt = nil
-        M.forceExitSpectate({ reason = 'target_offline', sendServer = true })
-        return
-    end
-    targetOfflineSinceAt = nil
 end
 
 function M.setSpectateTarget(id, nick, settings)
@@ -11921,13 +11982,7 @@ end
 
 function M.shouldBlockSpectateOff()
     if expectSpectateOff then return false end
-    if state.pendingSpId then return true end
-    if specSession.isAwaitingSpectate and specSession.isAwaitingSpectate() then return true end
-    local outboundAt = tonumber(state.lastSpOutboundAt) or 0
-    if outboundAt > 0 and (os.clock() - outboundAt) < (PENDING_SP_SEC + 2.0) then
-        return true
-    end
-    return false
+    return spState.shouldBlockSpectateOff()
 end
 
 function M.onTogglePlayerSpectating(toggle)
@@ -11943,7 +11998,6 @@ function M.onTogglePlayerSpectating(toggle)
         return
     end
     expectSpectateOff = false
-    if specPlayerActive() then return end
     pcall(specCamera.onSpectateEnd)
     pcall(spAnticheat.onSpectateEnd)
     spUi.onToggleSpectating(false)
@@ -12009,22 +12063,20 @@ end
 
 local function configureSpRefresh()
     spRefresh.configure({
-        getTargetId = function() return M.getTargetId() end,
+        getTargetId = function() return spState.getConfirmedTargetId() end,
         getSettings = getSettings,
         isSpectating = specPlayerActive,
-        sessionActive = function() return specSession.isActive() end,
+        sessionActive = function() return spState.isActive() end,
         hasPendingSp = M.hasPendingSp,
-        isHandshaking = function()
-            return M.hasPendingSp()
-                or (specSession.isAwaitingSpectate and specSession.isAwaitingSpectate())
-        end,
+        isHandshaking = function() return spState.isHandshaking() end,
         hasOutboundPending = function()
             return specSession.hasOutboundPending and specSession.hasOutboundPending() or false
         end,
         sendMenuOutbound = sendMenuOutbound,
         sendChat = sendChat,
+        withSkipSpHook = type(withSkipSpHook) == 'function' and withSkipSpHook or nil,
         getTargetPed = function()
-            local id = M.getTargetId()
+            local id = spState.getConfirmedTargetId()
             if id < 0 or not sampGetCharHandleBySampPlayerId then return nil end
             local ok, ped = sampGetCharHandleBySampPlayerId(id)
             if ok and ped and doesCharExist and doesCharExist(ped) then return ped end
@@ -12197,6 +12249,12 @@ end
 function M.install(deps)
     M.configure(deps)
     configureSpRefresh()
+    spState.registerTeardown(function()
+        pcall(spRefresh.resetContext)
+        pcall(keysHud.reset)
+        pcall(specCamera.onSpectateEnd)
+        pcall(spAnticheat.onSpectateEnd)
+    end)
     markDirtySettings = deps.markDirtySettings
     flushDirtyConfigNow = deps.flushDirtyConfigNow
     ctx.markDirtySettings = markDirtySettings
@@ -12213,7 +12271,7 @@ function M.install(deps)
         markDirtySettings = markDirtySettings,
         flushDirtyConfigNow = flushDirtyConfigNow,
         getSettings = getSettings,
-        getSpectateTargetId = function() return M.getTargetId() end,
+        getSpectateTargetId = function() return spState.getConfirmedTargetId() end,
         resolveSpectateTargetPed = function() return M.resolveSpectateTargetPed() end,
         inputDeps = deps,
     })
@@ -12227,7 +12285,7 @@ function M.install(deps)
         markDirtySettings = markDirtySettings,
         flushDirtyConfigNow = flushDirtyConfigNow,
         getSettings = getSettings,
-        getSpectateTargetId = function() return M.getTargetId() end,
+        getSpectateTargetId = function() return spState.getConfirmedTargetId() end,
         resolveSpectateTargetPed = function() return M.resolveSpectateTargetPed() end,
         isSpectating = function()
             return specPlayerActive()
@@ -12525,12 +12583,12 @@ end
 
 local function configureSpAnticheat(deps)
     spAnticheat.configure({
-        getTargetId = M.getTargetId,
+        getTargetId = function() return spState.getConfirmedTargetId() end,
         getSettings = getSettings or (deps and deps.getSettings),
         markDirtySettings = markDirtySettings or (deps and deps.markDirtySettings),
         resolveSpectateTargetPed = function() return M.resolveSpectateTargetPed() end,
         isSpectating = function()
-            return specPlayerActive() or (specSession.isActive and specSession.isActive())
+            return spState.isActive() or specPlayerActive()
         end,
         isVkDown = deps and deps.isVkDown,
         isGameMenuOpen = deps and deps.getShowWindow,
@@ -12548,8 +12606,9 @@ function M.installInputHooks(deps)
     spUi.install(uiDeps)
     spUi.installInputHooks(uiDeps)
     configureSpRefresh()
-    ensureSpSpectateFrame()
     specCamera.install(specCameraDeps(deps.sampev))
+    local spHooks = require 'report_desk_sp_hooks'
+    pcall(spHooks.installSampev, deps.sampev)
     pcall(keysHud.installSampev, deps.sampev)
     configureSpAnticheat(deps)
     pcall(spAnticheat.installSampev, deps.sampev)
@@ -12838,9 +12897,11 @@ package.preload['report_desk_sp_spectate_pending'] = function()
 
     local fn, err = loadstring([=[
 
---[[ Модуль: pending /sp handshake. ]]
+--[[ Модуль: pending /sp handshake (делегирует phase=entering в sp_state). ]]
 return function(ctx)
     local M = ctx.M
+    local spState = require 'report_desk_sp_state'
+    local PENDING_SP_SEC = 2.5
 
     function M.markPendingSpCommand(id, nick)
         local state = ctx.state
@@ -12869,72 +12930,75 @@ return function(ctx)
         state.pendingSpNick = nick
         state.pendingSpAt = os.clock()
         state.lastSpOutboundAt = state.pendingSpAt
-        state.spChatRecoveryTried = false
-        local cur = M.getTargetId()
+        spState.onEntering(id, nick)
+        if specSession and specSession.markAwaitingSpectate then
+            pcall(specSession.markAwaitingSpectate, true)
+        end
+        local cur = spState.getConfirmedTargetId()
         if cur ~= id then
             if cur >= 0 then clearPendingSt() end
             if vehicleHud and vehicleHud.reset then pcall(vehicleHud.reset) end
             if keysHud and keysHud.reset then pcall(keysHud.reset) end
             if spRefresh and spRefresh.resetContext then pcall(spRefresh.resetContext) end
         end
-        if specSession and specSession.markAwaitingSpectate then
-            pcall(specSession.markAwaitingSpectate, true)
-        end
-        if spUi and spUi.syncTdHooks then
-            pcall(spUi.syncTdHooks)
-        end
+        if spUi and spUi.syncTdHooks then pcall(spUi.syncTdHooks) end
         if spUi and spUi.ensureSpectateSampevHooks then
             local sampev = inputDeps and inputDeps.sampev
             local specSessionMod = package.loaded['report_desk_spectate_session']
             local hooksOk = sampev and specSessionMod and specSessionMod.areSampevHooksActive
                 and specSessionMod.areSampevHooksActive(sampev)
-            if not hooksOk then
-                pcall(spUi.ensureSpectateSampevHooks)
-            end
+            if not hooksOk then pcall(spUi.ensureSpectateSampevHooks) end
         end
     end
 
     function M.cancelPendingSp()
         local state = ctx.state
         local specSession = ctx.specSession
-        if not state.pendingSpId then return end
         state.pendingSpId = nil
         state.pendingSpNick = ''
         state.pendingSpAt = 0
         state.pendingSpStepDelta = nil
+        spState.cancelEntering()
         if specSession and specSession.markAwaitingSpectate then
             pcall(specSession.markAwaitingSpectate, false)
         end
     end
 
     function M.hasPendingSp()
-        return ctx.state.pendingSpId ~= nil
+        return spState.isHandshaking()
+    end
+
+    function M.isHandshaking()
+        return spState.isHandshaking()
+    end
+
+    function M.getConfirmedTargetId()
+        return spState.getConfirmedTargetId()
     end
 
     function M.tickPendingSp()
         local state = ctx.state
         local specPlayerActive = ctx.specPlayerActive
-        local PENDING_SP_SEC = ctx.PENDING_SP_SEC
         local specSession = ctx.specSession
 
-        if state.pendingSpId or specPlayerActive() then
+        spState.tick()
+        if spState.isHandshaking() or specPlayerActive() then
             M.tickSpectateHealth()
         end
-        local id = state.pendingSpId
-        if not id then return end
+        if not spState.isHandshaking() then return end
         local at = tonumber(state.pendingSpAt) or 0
         local elapsed = at > 0 and (os.clock() - at) or 0
-        local confirmed = specSession and specSession.isActive and specSession.isActive()
-        if not confirmed and specPlayerActive() and elapsed >= 1.0 and elapsed <= PENDING_SP_SEC then
-            if not state.spChatRecoveryTried then
-                state.spChatRecoveryTried = true
-                if specSession and specSession.tryRecoverFromChat then
-                    pcall(specSession.tryRecoverFromChat)
-                end
-                if specSession and specSession.isActive and specSession.isActive() then
-                    M.cancelPendingSp()
-                    return
-                end
+        if spState.isActive() then
+            M.cancelPendingSp()
+            return
+        end
+        if not spState.isActive() and specPlayerActive() and elapsed >= 0.5 and elapsed <= PENDING_SP_SEC then
+            if specSession and specSession.tryRecoverFromChat then
+                pcall(specSession.tryRecoverFromChat)
+            end
+            if spState.isActive() then
+                M.cancelPendingSp()
+                return
             end
         end
         if at > 0 and elapsed > PENDING_SP_SEC then
@@ -12961,6 +13025,7 @@ package.preload['report_desk_spectate_stats'] = function()
 --[[ Модуль: /st stats parse, HUD overlay, spectate health (facade). ]]
 local ctx = require 'report_desk_sp_stats_ctx'
 ctx.extend(require 'report_desk_sp_spectate_pending')
+ctx.extend(require 'report_desk_sp_spectate_health')
 return ctx.M
 
 
@@ -13656,7 +13721,7 @@ local col_accent_dim = imgui.ImVec4(0.45, 0.22, 0.72, 1.0)
 local col_muted = imgui.ImVec4(0.55, 0.55, 0.60, 1.0)
 local col_muted2 = imgui.ImVec4(0.42, 0.42, 0.48, 1.0)
 local col_warn = imgui.ImVec4(0.95, 0.75, 0.35, 1.0)
-local col_chat_bg = imgui.ImVec4(0.05, 0.05, 0.07, 0.98)
+local col_chat_bg = imgui.ImVec4(0.04, 0.04, 0.06, 0.22)
 
 local settingsRef, sendChatFn, sayFn, markDirtyFn, deskTex
 
@@ -13703,8 +13768,12 @@ end
 
 -- Push Panel
 local function pushPanel()
+    if type(pushPanelStyle) == 'function' then
+        pushPanelStyle(col_chat_bg)
+        return
+    end
     imgui.PushStyleColor(imgui.Col.ChildBg, col_chat_bg)
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.18, 0.18, 0.22, 0.35))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(1, 1, 1, 0.06))
     imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 8)
     imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 10))
@@ -13712,6 +13781,10 @@ end
 
 -- Pop Panel
 local function popPanel()
+    if type(popPanelStyle) == 'function' then
+        popPanelStyle()
+        return
+    end
     imgui.PopStyleVar(3)
     imgui.PopStyleColor(2)
 end
@@ -13830,6 +13903,17 @@ end
 local function drawTexSafe(tex, id, w, h, asButton, label)
     if not tex or not id or not deskTex or not deskTex.has(TEX_NS_VEH, id) then return false, false end
     local size = imgui.ImVec2(w, h)
+    if asButton and imgui.Image and imgui.InvisibleButton then
+        local pos = (imgui.GetCursorScreenPos and imgui.GetCursorScreenPos()) or nil
+        local okImg = pcall(imgui.Image, tex, size)
+        if not okImg then return false, false end
+        if pos and imgui.SetCursorScreenPos then
+            imgui.SetCursorScreenPos(pos)
+        end
+        local btnId = label or ('##v_img_' .. tostring(id))
+        local clicked = imgui.InvisibleButton(btnId, size)
+        return true, clicked
+    end
     if asButton and imgui.ImageButton then
         local ok, clicked = pcall(imgui.ImageButton, tex, size)
         return ok, ok and clicked
@@ -13944,10 +14028,6 @@ local function drawCell(entry, layout)
     local sel = (entry.id == vehSelectedId)
     local tw = layout and layout.thumbW or VEH_THUMB_W
     local th = layout and layout.thumbH or VEH_THUMB_H
-    if sel then
-        imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
-    end
     local tex = peekTex(entry)
     local label = entry.lowQuality and (tostring(entry.id) .. '~') or tostring(entry.id)
     local okDraw, clicked = drawTexSafe(
@@ -13956,7 +14036,26 @@ local function drawCell(entry, layout)
     if not okDraw then
         clicked = imgui.Button(label .. '##v_' .. entry.id, imgui.ImVec2(tw, th))
     end
-    if sel then imgui.PopStyleColor(2) end
+    if sel then
+        local dl = imgui.GetWindowDrawList()
+        if dl and dl.AddRect and type(toU32) == 'function' then
+            local mn = imgui.GetItemRectMin()
+            local mx = imgui.GetItemRectMax()
+            pcall(function()
+                dl:AddRectFilled(mn, mx, toU32(imgui.ImVec4(0.67, 0.33, 1.0, 0.10)), 6)
+                dl:AddRect(mn, mx, toU32(col_accent), 6, 0, 2.0)
+            end)
+        end
+    elseif imgui.IsItemHovered() then
+        local dl = imgui.GetWindowDrawList()
+        if dl and dl.AddRect and type(toU32) == 'function' then
+            local mn = imgui.GetItemRectMin()
+            local mx = imgui.GetItemRectMax()
+            pcall(function()
+                dl:AddRect(mn, mx, toU32(imgui.ImVec4(0.67, 0.33, 1.0, 0.35)), 6, 0, 1.0)
+            end)
+        end
+    end
     if clicked then vehSelectedId = entry.id end
     if imgui.IsItemHovered() then
         if imgui.IsMouseDoubleClicked and imgui.IsMouseDoubleClicked(0) then
@@ -13985,14 +14084,9 @@ function M.drawTab()
         vehTabSynced = true
     end
 
-    pushPanel()
-    imgui.BeginChild('##veh_panel', imgui.ImVec2(-1, -1), true)
-
     if #vehCatalog == 0 then
         imgui.TextColored(col_warn, uiText('\xCD\xE5\xF2 \xEA\xE0\xF0\xF2\xE8\xED\xEE\xEA \xD2\xD1.'))
         imgui.TextWrapped(uiText('PNG: res\\report_desk_vehicles\\veh-{ID}.png \xE8\xEB\xE8 overrides\\veh-{ID}.png'))
-        imgui.EndChild()
-        popPanel()
         return
     end
 
@@ -14000,7 +14094,13 @@ function M.drawTab()
     local sel = vehCatalogById[vehSelectedId]
     local loadedPre, totalPre = M.preloadProgress()
 
-    imgui.BeginChild('##veh_side', imgui.ImVec2(VEH_SIDEBAR_W, -1), true)
+    if type(deskEdgeBeginCatalogSidebar) == 'function' then
+        deskEdgeBeginCatalogSidebar('##veh_side', VEH_SIDEBAR_W)
+    else
+        pushPanel()
+        imgui.BeginChild('##veh_side', imgui.ImVec2(VEH_SIDEBAR_W, -1), false)
+        if type(pushEdgeSurface) == 'function' then pushEdgeSurface() end
+    end
     if sel then
         local tex = peekTex(sel)
         local pw, ph = deskGrid.fitPreview(VEH_PREVIEW_W, VEH_PREVIEW_H, imgui.GetContentRegionAvail().x)
@@ -14030,13 +14130,25 @@ function M.drawTab()
         if settingsRef then settingsRef.veh_spawn_count = uiVehSpawnCount[0]; markDirty() end
     end
     imgui.PopItemWidth()
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(true) end
     if imgui.Button(uiText(string.format('\xD1\xEF\xE0\xE2\xED\xE8\xF2\xFC (%d \xF8\xF2.)', uiVehSpawnCount[0])) .. '##veh_spawn', imgui.ImVec2(-1, 34)) then
         spawnVehicles()
     end
-    imgui.EndChild()
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(true) end
+    if type(deskEdgeEndCatalogSidebar) == 'function' then
+        deskEdgeEndCatalogSidebar()
+    else
+        imgui.EndChild()
+        if type(popEdgeSurface) == 'function' then popEdgeSurface() end
+        popPanel()
+    end
 
-    imgui.SameLine()
-    imgui.BeginChild('##veh_main', imgui.ImVec2(-1, -1), true)
+    imgui.SameLine(0, 0)
+    if type(deskEdgeBeginCatalogMain) == 'function' then
+        deskEdgeBeginCatalogMain('##veh_main')
+    else
+        imgui.BeginChild('##veh_main', imgui.ImVec2(-1, -1), false)
+    end
     drawVehSearchClearRow(rebuildFilter)
     imgui.TextColored(col_muted2, uiText(string.format(
         '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE: %d',
@@ -14052,16 +14164,29 @@ function M.drawTab()
     end
     local layout = vehGridLayoutCache
 
-    imgui.BeginChild('##veh_grid', imgui.ImVec2(-1, -1), true)
+    imgui.BeginChild('##veh_grid', imgui.ImVec2(-1, -1), false)
+    local cellBg = imgui.ImVec4(1, 1, 1, 0.03)
+    local cellBgH = imgui.ImVec4(1, 1, 1, 0.06)
+    local cellBgA = imgui.ImVec4(0.67, 0.33, 1.0, 0.10)
+    imgui.PushStyleColor(imgui.Col.Button, cellBg)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, cellBgH)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, cellBgA)
+    if imgui.Col.FrameBg then
+        imgui.PushStyleColor(imgui.Col.FrameBg, cellBg)
+        imgui.PushStyleColor(imgui.Col.FrameBgHovered, cellBgH)
+        imgui.PushStyleColor(imgui.Col.FrameBgActive, cellBgA)
+    end
     pcall(deskGrid.drawVirtual, vehFiltered, layout, drawCell, {
         overscanRows = 1,
         onVisible = enqueueVisible,
     })
+    imgui.PopStyleColor(imgui.Col.FrameBg and 6 or 3)
     imgui.EndChild()
-    imgui.EndChild()
-
-    imgui.EndChild()
-    popPanel()
+    if type(deskEdgeEndCatalogMain) == 'function' then
+        deskEdgeEndCatalogMain()
+    else
+        imgui.EndChild()
+    end
 end
 
 return M
@@ -16959,7 +17084,7 @@ CHAT_POLL_LINES_OPEN = 40
 CHAT_POLL_LINES_CLOSED = 40
 HOOK_HEALTH_CHECK_INTERVAL = 30.0 -- переустановка SAMP hooks, сек
 
-WIN_W, WIN_H = 980, 640           -- размер главного окна Report Desk, px
+WIN_W, WIN_H = 1080, 720          -- размер главного окна Report Desk, px
 SESSION_WARMUP = 0
 MAX_SEEN_LINES = 400                -- лимит chatSeen.lines
 MAX_CONSUMED_REPORT_LINES = 1500
@@ -17004,7 +17129,7 @@ if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 col_accent = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
 col_accent_dim = imgui.ImVec4(0.45, 0.22, 0.72, 1.0)
 col_muted = imgui.ImVec4(0.55, 0.55, 0.60, 1.0)
-col_muted2 = imgui.ImVec4(0.42, 0.42, 0.48, 1.0)
+col_muted2 = imgui.ImVec4(0.65, 0.65, 0.72, 1.0)
 col_warn = imgui.ImVec4(0.95, 0.75, 0.35, 1.0)
 col_label = imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
 col_bubble_in = imgui.ImVec4(0.16, 0.18, 0.26, 1.0)
@@ -17019,19 +17144,19 @@ col_bubble_punish = imgui.ImVec4(0.32, 0.12, 0.12, 1.0)
 col_event_label = imgui.ImVec4(0.48, 0.48, 0.52, 1.0)
 col_event_border = imgui.ImVec4(0.28, 0.28, 0.32, 0.45)
 col_punish_label = imgui.ImVec4(0.95, 0.45, 0.45, 1.0)
-col_sidebar = imgui.ImVec4(0.07, 0.07, 0.09, 0.98)
-col_chat_bg = imgui.ImVec4(0.05, 0.05, 0.07, 0.98)
-col_header = imgui.ImVec4(0.06, 0.06, 0.085, 0.98)
+col_sidebar = imgui.ImVec4(0.04, 0.04, 0.06, 0.50)
+col_chat_bg = imgui.ImVec4(0.04, 0.04, 0.06, 0.22)
+col_header = imgui.ImVec4(0.05, 0.05, 0.07, 0.55)
 col_header_sep = imgui.ImVec4(0.36, 0.36, 0.42, 0.50)
-col_composer = imgui.ImVec4(0.09, 0.09, 0.12, 1.0)
+col_composer = imgui.ImVec4(0.09, 0.09, 0.12, 0.62)
 col_row_sel = imgui.ImVec4(0.22, 0.14, 0.32, 0.85)
 col_row_hover = imgui.ImVec4(0.14, 0.14, 0.18, 0.6)
 col_unread = imgui.ImVec4(0.67, 0.33, 1.0, 1.0)
 col_player_nick = imgui.ImVec4(0.58, 0.76, 0.96, 1.0)
 col_player_nick_offline = imgui.ImVec4(0.38, 0.44, 0.52, 0.72)
 
-LIST_W = 310  -- ширина sidebar списка тредов, px
-THREAD_ROW_H = 74
+LIST_W = 352  -- ширина sidebar списка тредов, px
+THREAD_ROW_H = 78
 THREAD_PAD_L = 10
 THREAD_TEXT_OFF = 16
 THREAD_BADGE_W = 18
@@ -17040,10 +17165,13 @@ CHAT_HEADER_H = 50
 COMPOSER_H = 86
 COMPOSER_QUICK_H = 26
 COMPOSER_QUICK_GAP = 6
+COMPOSER_QUICK_PAD_L = 10
 COMPOSER_ROW_GAP = 6
 COMPOSER_SEND_MIN_W = 78
 DEFAULT_GG_REPLY = '\xCF\xF0\xE8\xFF\xF2\xED\xEE\xE9 \xE8\xE3\xF0\xFB \xED\xE0 ARP Blue)'
 DEFAULT_TIME_REPLY = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF: {datetime}'
+DEFAULT_MPJAIL_REASON = '\xC2\xFB\xE1\xFB\xEB(\xE0) \xF1 \xEC\xE5\xF0\xEE\xEF\xF0\xE8\xFF\xF2\xE8\xFF.'
+DEFAULT_MPJAIL_MINUTES = 20
 DEFAULT_TECH_REPLY = '\xCB\xF3\xF7\xF8\xE5 \xEE\xE1\xF0\xE0\xF2\xE8\xF2\xE5\xF1\xFC \xE2 \xF2\xE5\xF5\xED\xE8\xF7\xE5\xF1\xEA\xE8\xE9 \xF0\xE0\xE7\xE4\xE5\xEB \xED\xE0 \xF4\xEE\xF0\xF3\xEC\xE5 ARP'
 PANEL_PAD = 12
 BUBBLE_PAD_X = 14
@@ -17085,26 +17213,26 @@ function applyModernDarkStyle()
     invalidateEllipsizeCache()
     local s = imgui.GetStyle()
     local Col = imgui.Col
-    s.WindowPadding = imgui.ImVec2(14, 12)
+    s.WindowPadding = imgui.ImVec2(0, 0)
     s.FramePadding = imgui.ImVec2(10, 7)
     s.ItemSpacing = imgui.ImVec2(10, 8)
     s.ItemInnerSpacing = imgui.ImVec2(8, 6)
-    s.WindowRounding = 10
+    s.WindowRounding = 16
     s.FrameRounding = 8
     s.ChildRounding = 10
     s.GrabRounding = 6
     s.TabRounding = 6
     s.ScrollbarSize = 10
-    s.WindowBorderSize = 1
-    s.Colors[Col.WindowBg] = imgui.ImVec4(0.06, 0.06, 0.07, 0.97)
-    s.Colors[Col.ChildBg] = imgui.ImVec4(0.08, 0.08, 0.09, 0.95)
+    s.WindowBorderSize = 0
+    s.Colors[Col.WindowBg] = imgui.ImVec4(0.039, 0.039, 0.055, 0.42)
+    s.Colors[Col.ChildBg] = imgui.ImVec4(0, 0, 0, 0)
     s.Colors[Col.TitleBg] = imgui.ImVec4(0.06, 0.06, 0.07, 1.0)
     s.Colors[Col.TitleBgActive] = imgui.ImVec4(0.12, 0.08, 0.18, 1.0)
-    s.Colors[Col.Border] = imgui.ImVec4(0.2, 0.18, 0.25, 0.6)
+    s.Colors[Col.Border] = imgui.ImVec4(1, 1, 1, 0.06)
     s.Colors[Col.FrameBg] = imgui.ImVec4(0.1, 0.1, 0.12, 0.9)
-    s.Colors[Col.Button] = imgui.ImVec4(0.18, 0.12, 0.25, 0.9)
-    s.Colors[Col.ButtonHovered] = imgui.ImVec4(0.25, 0.15, 0.35, 1.0)
-    s.Colors[Col.ButtonActive] = imgui.ImVec4(0.30, 0.18, 0.40, 1.0)
+    s.Colors[Col.Button] = imgui.ImVec4(1, 1, 1, 0.06)
+    s.Colors[Col.ButtonHovered] = imgui.ImVec4(1, 1, 1, 0.10)
+    s.Colors[Col.ButtonActive] = imgui.ImVec4(0.67, 0.33, 1.0, 0.22)
     s.Colors[Col.Tab] = imgui.ImVec4(0.1, 0.1, 0.12, 0.9)
     s.Colors[Col.TabHovered] = imgui.ImVec4(0.25, 0.15, 0.35, 1.0)
     s.Colors[Col.TabActive] = imgui.ImVec4(0.18, 0.10, 0.25, 1.0)
@@ -17167,6 +17295,8 @@ settings = {
     sound = false,
     watch_notify = 'see',
     watch_auto_notify = true,
+    mpjail_reason = DEFAULT_MPJAIL_REASON,
+    mpjail_minutes = DEFAULT_MPJAIL_MINUTES,
     gg_reply = DEFAULT_GG_REPLY,
     time_reply = DEFAULT_TIME_REPLY,
     tech_reply = DEFAULT_TECH_REPLY,
@@ -17401,6 +17531,7 @@ local skinTargetBuf = new.char[96]()
 local skinFilterBuf = new.char[32]()
 local skinFiltered = {}
 local skinsTabSynced = false
+local uiMpjailMinutes = new.int(DEFAULT_MPJAIL_MINUTES or 20)
 local uiSkinRadius = new.int(20)
 local uiAdminLevel = new.int(3)
 local skinRadiusJob = { active = false, cancel = false }
@@ -17571,6 +17702,7 @@ local deskReplyBuf = {
     time = new.char[512](),
     gg = new.char[512](),
     tech = new.char[512](),
+    mpjail = new.char[256](),
 }
 composerQuickSelected = 1
 composerQuickUiSynced = false
@@ -17593,6 +17725,7 @@ local uiSpecWheelZoom = new.bool(true)
 local uiProfanityFilter = new.bool(true)
 local uiRemoteChatSamp = new.bool(true)
 local uiProfanitySound = new.bool(true)
+local uiShellAlphaPct = new.int(72)
 local uiAdminPunishEnabled = new.bool(false)
 local uiAdminPunishSignCmd = new.bool(true)
 adminPunishUiSynced = false
@@ -17654,7 +17787,8 @@ end
 --[[ РњРѕРґСѓР»СЊ: РѕР±С‰РёРµ СѓС‚РёР»РёС‚С‹ (СЃС‚СЂРѕРєРё, РєРѕРґРёСЂРѕРІРєРё, ingest dedup, sendChat, Р·РІСѓРєРё). ]]
 
 function trim(s)
-    return (s or ''):match('^%s*(.-)%s*$') or ''
+    if type(s) ~= 'string' then s = tostring(s or '') end
+    return s:match('^%s*(.-)%s*$') or ''
 end
 
 -- Encoding helpers: report_desk_util_encoding.lua (same core_a chunk)
@@ -18364,6 +18498,21 @@ end
 
 --[[ Модуль: исходящие команды в SAMP (sendChat, sendMenuOutbound). ]]
 
+function withSkipSpHook(fn)
+    if type(fn) ~= 'function' then return false end
+    local cache = rawget(_G, 'deskCache')
+    if type(cache) == 'table' then
+        cache.skipSpHookLocal = (tonumber(cache.skipSpHookLocal) or 0) + 1
+    end
+    local ok, res = pcall(fn)
+    if type(cache) == 'table' then
+        local n = (tonumber(cache.skipSpHookLocal) or 0) - 1
+        cache.skipSpHookLocal = n > 0 and n or nil
+    end
+    if ok then return res end
+    return false
+end
+
 function sendChat(line)
     line = trim(line)
     if line == '' then return false end
@@ -19052,6 +19201,7 @@ INTENT_CONTEXT_UNKNOWN = 'unknown'
 local DEFAULT_REPORT_MARKERS = {
     'dm', 'дм', 'id', '\xF3\xE1\xE8\xEB', '\xF3\xE1\xE8\xEB\xE0', '\xF7\xE8\xF2', '\xF7\xE8\xF2\xE5\xF0',
     'hack', 'cheat', 'kill', 'killed', '\xED\xE0\xF0\xF3\xF8', 'report', '\xF0\xE5\xEF\xEE\xF0\xF2',
+    'osc', 'оск',
 }
 
 local DEFAULT_FAQ_HINTS = {
@@ -19799,7 +19949,11 @@ function resolveMessageIntents(text)
     if text == '' then return {}, INTENT_CONTEXT_UNKNOWN end
     ensureDeskIntentsLoaded()
     local bags = intentNormalizeBags(text)
-    if bags.key == '' then return {}, INTENT_CONTEXT_UNKNOWN end
+    if bags.key == '' then
+        local suspectId = extractReportSuspectId(text)
+        if not suspectId then return {}, INTENT_CONTEXT_UNKNOWN end
+        bags.key = 'id:' .. tostring(suspectId)
+    end
 
     local sig = tostring(intentsGen) .. '|' .. tostring(#deskIntents)
     if type(settings) == 'table' then
@@ -19870,8 +20024,8 @@ function resolveMessageIntents(text)
                 })
             end
             if watchIntent then
-                table.insert(results, { intent = watchIntent, score = 5, id = watchIntent.id })
-                if #results > maxBtns then
+                table.insert(results, 1, { intent = watchIntent, score = 1000, id = watchIntent.id })
+                while #results > maxBtns do
                     table.remove(results)
                 end
             end
@@ -22337,6 +22491,9 @@ end
 function drawDeskBindField(opts)
     opts = opts or {}
     local capW = math.max(140, imgui.GetContentRegionAvail().x)
+    if type(deskEdgePanelContentW) == 'function' then
+        capW = math.max(140, deskEdgePanelContentW())
+    end
     local capturing = opts.capturing == true
     local idleText = opts.idleText or '\xCD\xE0\xE6\xE0\xF2\xE5 \xE4\xEB\xFF \xED\xE0\xE7\xED\xE0\xF7\xE5\xED\xE8\xFF'
     local preview = opts.previewText or ''
@@ -22454,27 +22611,44 @@ function deskFormToggleRow(label, boolRef, onChange, stableId)
     local tw = DESK_FORM_TOGGLE_W
     local th = DESK_FORM_TOGGLE_H
     local rowH = math.max(th, DESK_FORM_ROW_H)
-    local avail = imgui.GetContentRegionAvail().x
-    if avail < tw + 80 then
-        deskFormRowLabel(label)
-        avail = imgui.GetContentRegionAvail().x
+    local on = boolRef[0]
+    local rowW = imgui.GetContentRegionAvail().x
+    if type(deskEdgePanelContentW) == 'function' then
+        rowW = deskEdgePanelContentW()
     end
-    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+    rowW = math.max(tw + 80, rowW)
+    local narrow = rowW < 200
     local y = imgui.GetCursorPosY()
     local x = imgui.GetCursorPosX()
     local dl = imgui.GetWindowDrawList()
     local changed = false
+
+    if narrow then
+        deskFormRowLabel(label)
+        y = imgui.GetCursorPosY()
+        x = imgui.GetCursorPosX()
+        rowW = imgui.GetContentRegionAvail().x
+        if type(deskEdgePanelContentW) == 'function' then
+            rowW = deskEdgePanelContentW()
+        end
+    else
+        local lineH = imgui.GetTextLineHeight() or 14
+        imgui.SetCursorPos(imgui.ImVec2(x, y + math.max(0, (rowH - lineH) * 0.5)))
+        imgui.TextColored(on and col_label or col_muted2, uiText(label or ''))
+    end
+
+    local toggleX = x + rowW - tw
+    imgui.SetCursorPos(imgui.ImVec2(toggleX, y))
     if imgui.InvisibleButton('##tg_' .. stableId, imgui.ImVec2(tw, rowH)) then
         boolRef[0] = not boolRef[0]
+        on = boolRef[0]
         changed = true
     end
     local p0 = imgui.GetItemRectMin()
     local p1 = imgui.GetItemRectMax()
     local midY = (p0.y + p1.y) * 0.5
-    local track = imgui.ImVec2(tw, th)
     local t0 = imgui.ImVec2(p0.x, midY - th * 0.5)
     local t1 = imgui.ImVec2(p0.x + tw, midY + th * 0.5)
-    local on = boolRef[0]
     local bgOff = imgui.ImVec4(0.16, 0.16, 0.20, 1.0)
     local bgOn = imgui.ImVec4(0.38, 0.22, 0.58, 1.0)
     local knob = imgui.ImVec4(0.95, 0.94, 0.98, on and 1.0 or 0.82)
@@ -22484,10 +22658,8 @@ function deskFormToggleRow(label, boolRef, onChange, stableId)
         local kx = on and (t1.x - kr - 3) or (t0.x + kr + 3)
         dl:AddCircleFilled(imgui.ImVec2(kx, midY), kr, toU32(knob))
     end
-    imgui.SetCursorPos(imgui.ImVec2(x + tw + 10, y + (rowH - (imgui.GetTextLineHeight() or 14)) * 0.5))
-    imgui.TextColored(on and col_label or col_muted2, uiText(label or ''))
     imgui.SetCursorPos(imgui.ImVec2(x, y + rowH))
-    imgui.Dummy(imgui.ImVec2(avail, 0))
+    imgui.Dummy(imgui.ImVec2(rowW, 0))
     if changed and onChange then onChange(boolRef[0]) end
     return changed
 end
@@ -22526,46 +22698,46 @@ DESK_EDITOR_LIST_W = 248
 
 -- Desk hook/helper.
 function deskFormSection(title)
-    imgui.Dummy(imgui.ImVec2(0, 8))
-    local dl = imgui.GetWindowDrawList()
-    local p = imgui.GetCursorScreenPos()
-    local w = math.max(40, imgui.GetContentRegionAvail().x)
-    if dl and w > 20 then
-        dl:AddRectFilled(
-            imgui.ImVec2(p.x, p.y),
-            imgui.ImVec2(p.x + 3, p.y + 18),
-            toU32(col_accent_dim), 2)
+    if not title or title == '' then return end
+    imgui.TextColored(col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0), uiText(title))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+end
+
+-- Desk hook/helper.
+function deskFormPanelReset()
+    if type(deskEdgePanelReset) == 'function' then
+        deskEdgePanelReset()
     end
-    imgui.SetCursorPosX(imgui.GetCursorPosX() + 10)
-    imgui.TextColored(col_label, uiText(title or ''))
-    imgui.Dummy(imgui.ImVec2(0, 8))
+    if type(deskCache) == 'table' and type(deskCache.ui) == 'table' then
+        deskCache.ui.panelStack = {}
+    end
 end
 
 -- Desk hook/helper.
 function deskFormPanelBegin(id)
     id = tostring(id or 'panel')
     deskCache.ui.panelStack[#deskCache.ui.panelStack + 1] = id
+    if type(deskEdgePanelBegin) == 'function' then
+        deskEdgePanelBegin(id)
+        return
+    end
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     imgui.Dummy(imgui.ImVec2(0, 4))
-    imgui.Indent(6)
+    imgui.Indent(10)
 end
 
 -- Desk hook/helper.
 function deskFormPanelEnd()
-    imgui.Unindent(6)
+    if type(deskEdgePanelEnd) == 'function' and type(deskCache) == 'table'
+            and type(deskCache.ui) == 'table' and #deskCache.ui.panelStack > 0 then
+        deskEdgePanelEnd()
+        table.remove(deskCache.ui.panelStack)
+        return
+    end
+    imgui.Unindent(10)
     imgui.PopStyleVar()
     if #deskCache.ui.panelStack > 0 then
         table.remove(deskCache.ui.panelStack)
-    end
-    local dl = imgui.GetWindowDrawList()
-    if dl then
-        local p = imgui.GetCursorScreenPos()
-        local w = math.max(40, imgui.GetContentRegionAvail().x)
-        dl:AddLine(
-            imgui.ImVec2(p.x, p.y + 3),
-            imgui.ImVec2(p.x + w, p.y + 3),
-            toU32(imgui.ImVec4(col_accent_dim.x, col_accent_dim.y, col_accent_dim.z, 0.28)),
-            1.0)
     end
     imgui.Dummy(imgui.ImVec2(0, 10))
 end
@@ -22582,12 +22754,20 @@ function deskFormRowAvail(label, labelW)
         local yAfter = imgui.GetCursorPosY()
         if yAfter > y + (imgui.GetTextLineHeight() or 14) + 2 then
             imgui.SetCursorPos(imgui.ImVec2(x, yAfter))
-            return math.max(72, imgui.GetContentRegionAvail().x - 4)
+            local avail = imgui.GetContentRegionAvail().x
+            if type(deskEdgePanelContentW) == 'function' then
+                avail = deskEdgePanelContentW()
+            end
+            return math.max(72, avail - 4)
         end
         imgui.SetCursorPos(imgui.ImVec2(x + labelW, y))
         if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
     end
-    return math.max(72, imgui.GetContentRegionAvail().x - 4)
+    local avail = imgui.GetContentRegionAvail().x
+    if type(deskEdgePanelContentW) == 'function' then
+        avail = deskEdgePanelContentW()
+    end
+    return math.max(72, avail - 4)
 end
 
 -- Draw Cheat Card Begin
@@ -22605,17 +22785,26 @@ function drawCheatCardTitle(title, tag)
     if tag and tag ~= '' then
         head = head .. '  [' .. tag .. ']'
     end
-    deskFormSection(head)
+    if type(deskEdgeGroupTitle) == 'function' then
+        deskEdgeGroupTitle(head)
+    else
+        deskFormSection(head)
+    end
 end
 
 -- Draw Cheat Feature Card
 function drawCheatFeatureCard(title, tag, captureId, prefix, stateEnabled, uiEnabled, uiOnStart, onStartKey, onToggle)
     deskFormPanelBegin('##ch_' .. captureId)
     drawCheatCardTitle(title, tag)
-    local enLabel = stateEnabled
+    local statusCol = stateEnabled
+        and imgui.ImVec4(0.50, 0.84, 0.66, 1.0)
+        or col_muted2
+    local statusTxt = stateEnabled
         and '\xC2\xEA\xEB\xFE\xF7\xE5\xED'
         or '\xC2\xFB\xEA\xEB\xFE\xF7\xE5\xED'
-    if deskFormCheckboxRow(enLabel, uiEnabled, onToggle, captureId .. '_en') then end
+    imgui.TextColored(statusCol, uiText(statusTxt))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED', uiEnabled, onToggle, captureId .. '_en') then end
     if deskFormCheckboxRow('\xC7\xE0\xEF\xF3\xF1\xEA \xEF\xF0\xE8 \xF1\xF2\xE0\xF0\xF2\xE5', uiOnStart, function(v)
         ensureCheatsSettings()
         settings.cheats[onStartKey] = v and true or false
@@ -23116,6 +23305,7 @@ function syncCheatsUiFromSettings()
     uiCheatWhStart[0] = c.wh_on_start and true or false
     uiCheatHud[0] = c.show_hud and true or false
     if uiCheatMaskId then uiCheatMaskId[0] = c.mask_player_id ~= false end
+    if uiRemoteChatSamp then uiRemoteChatSamp[0] = settings.remote_chat_samp_mirror ~= false end
     cheatState.uiMarkerWheel[0] = c.marker_wheel ~= false
     uiCheatAbSpeed[0] = tonumber(c.ab_speed) or 1.0
     cheatsUiSynced = true
@@ -23603,6 +23793,17 @@ end
 function skinDrawTextureSafe(tex, id, w, h, asButton, label)
     if not tex or not id or not deskTex.has(TEX_NS_SKIN, id) then return false, false end
     local size = imgui.ImVec2(w, h)
+    if asButton and imgui.Image and imgui.InvisibleButton then
+        local pos = (imgui.GetCursorScreenPos and imgui.GetCursorScreenPos()) or nil
+        local okImg = pcall(imgui.Image, tex, size)
+        if not okImg then return false, false end
+        if pos and imgui.SetCursorScreenPos then
+            imgui.SetCursorScreenPos(pos)
+        end
+        local btnId = label or ('##sk_img_' .. tostring(id))
+        local clicked = imgui.InvisibleButton(btnId, size)
+        return true, clicked
+    end
     if asButton and imgui.ImageButton then
         local ok, clicked = pcall(imgui.ImageButton, tex, size)
         return ok, ok and clicked
@@ -24016,10 +24217,6 @@ function skinsDrawGridCell(entry, layout)
     local selected = (entry.id == skinSelectedId)
     local tw = layout and layout.thumbW or SKIN_THUMB_W
     local th = layout and layout.thumbH or SKIN_THUMB_H
-    if selected then
-        imgui.PushStyleColor(imgui.Col.Button, col_accent_dim)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent)
-    end
     local tex = skinPeekTexture(entry)
     local okDraw, clicked = skinDrawTextureSafe(
         tex, entry.id, tw, th, true, tostring(entry.id) .. '##sk_' .. entry.id
@@ -24027,7 +24224,26 @@ function skinsDrawGridCell(entry, layout)
     if not okDraw then
         clicked = imgui.Button(tostring(entry.id) .. '##sk_' .. entry.id, imgui.ImVec2(tw, th))
     end
-    if selected then imgui.PopStyleColor(2) end
+    if selected then
+        local dl = imgui.GetWindowDrawList()
+        if dl and dl.AddRect and type(toU32) == 'function' then
+            local mn = imgui.GetItemRectMin()
+            local mx = imgui.GetItemRectMax()
+            pcall(function()
+                dl:AddRectFilled(mn, mx, toU32(imgui.ImVec4(0.67, 0.33, 1.0, 0.10)), 6)
+                dl:AddRect(mn, mx, toU32(col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 1.0)), 6, 0, 2.0)
+            end)
+        end
+    elseif imgui.IsItemHovered() then
+        local dl = imgui.GetWindowDrawList()
+        if dl and dl.AddRect and type(toU32) == 'function' then
+            local mn = imgui.GetItemRectMin()
+            local mx = imgui.GetItemRectMax()
+            pcall(function()
+                dl:AddRect(mn, mx, toU32(imgui.ImVec4(0.67, 0.33, 1.0, 0.35)), 6, 0, 1.0)
+            end)
+        end
+    end
     if clicked then skinSelectedId = entry.id end
     if imgui.IsItemHovered() and imgui.SetTooltip then
         imgui.SetTooltip(uiText('ID ' .. entry.id))
@@ -24045,25 +24261,23 @@ function drawSkinsTab()
         skinsTabSynced = true
     end
 
-    pushPanelStyle(col_chat_bg)
-    imgui.BeginChild('##skins_panel', imgui.ImVec2(-1, -1), true)
-
     local fileCount = #skinCatalog > 0 and #skinCatalog or skinsCountFiles()
     if fileCount == 0 then
         imgui.TextColored(col_warn, uiText('\xCD\xE5\xF2 \xEA\xE0\xF0\xF2\xE8\xED\xEE\xEA \xF1\xEA\xE8\xED\xEE\xE2.'))
         imgui.TextWrapped(uiText('tools\\download_adv_skins.ps1'))
-        imgui.EndChild()
-        popPanelStyle()
         return
     end
 
     if #skinFiltered == 0 then skinsRebuildFilter() end
     local selEntry = skinCatalogById[skinSelectedId]
-
     local loadedPre, totalPre = skinsPreloadProgress()
 
-    -- Левая панель: крупное превью и выдача
-    imgui.BeginChild('##skin_sidebar', imgui.ImVec2(SKIN_SIDEBAR_W, -1), true)
+    if type(deskEdgeBeginCatalogSidebar) == 'function' then
+        deskEdgeBeginCatalogSidebar('##skin_sidebar', SKIN_SIDEBAR_W)
+    else
+        imgui.BeginChild('##skin_sidebar', imgui.ImVec2(SKIN_SIDEBAR_W, -1), false)
+        if type(pushEdgeSurface) == 'function' then pushEdgeSurface() end
+    end
     if selEntry then
         local prevTex = skinPeekTexture(selEntry)
         local pw, ph = deskGrid.fitPreview(SKIN_PREVIEW_W, SKIN_PREVIEW_H, imgui.GetContentRegionAvail().x)
@@ -24097,31 +24311,43 @@ function drawSkinsTab()
     end
     deskPopFlatInputStyle()
     imgui.PopItemWidth()
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(true) end
     if skinRadiusJob.active then
-        if imgui.Button(uiText('\xCE\xF2\xEC\xE5\xED\xE0') .. '##skin_apply_cancel', imgui.ImVec2(-1, 32)) then
+        if imgui.Button(uiText('\xCE\xF2\xEC\xE5\xED\xE0') .. '##skin_apply_cancel', imgui.ImVec2(-1, 34)) then
             skinsCancelApplyJob()
         end
     else
-        if imgui.Button(uiText('\xC2\xFB\xE4\xE0\xF2\xFC \xEF\xEE \xF1\xEF\xE8\xF1\xEA\xF3') .. '##skin_apply_list', imgui.ImVec2(-1, 32)) then
+        if imgui.Button(uiText('\xC2\xFB\xE4\xE0\xF2\xFC \xEF\xEE \xF1\xEF\xE8\xF1\xEA\xF3') .. '##skin_apply_list', imgui.ImVec2(-1, 34)) then
             skinsApplyToListedTargets()
         end
     end
-    imgui.Separator()
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(true) end
+    imgui.Dummy(imgui.ImVec2(0, 8))
     imgui.TextColored(col_muted2, uiText('\xC2 \xF0\xE0\xE4\xE8\xF3\xF1\xE5 (\xEC)'))
     drawSkinRadiusControl()
-    imgui.Dummy(imgui.ImVec2(0, 4))
+    imgui.Dummy(imgui.ImVec2(0, 6))
     local nearbyCount = skinRadiusJob.active and 0 or skinsGetNearbyCount()
     if not skinRadiusJob.active then
-        if imgui.Button(uiText(string.format('\xC2\xF1\xE5\xEC (%d)', nearbyCount)) .. '##skin_radius_apply', imgui.ImVec2(-1, 28)) then
+        if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
+        if imgui.Button(uiText(string.format('\xC2\xF1\xE5\xEC (%d)', nearbyCount)) .. '##skin_radius_apply', imgui.ImVec2(-1, 32)) then
             skinsApplyInRadius()
         end
+        if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
     end
-    imgui.EndChild()
+    if type(deskEdgeEndCatalogSidebar) == 'function' then
+        deskEdgeEndCatalogSidebar()
+    else
+        imgui.EndChild()
+        if type(popEdgeSurface) == 'function' then popEdgeSurface() end
+    end
 
-    imgui.SameLine()
+    imgui.SameLine(0, 0)
 
-    -- Правая часть: поиск + сетка
-    imgui.BeginChild('##skin_main', imgui.ImVec2(-1, -1), true)
+    if type(deskEdgeBeginCatalogMain) == 'function' then
+        deskEdgeBeginCatalogMain('##skin_main')
+    else
+        imgui.BeginChild('##skin_main', imgui.ImVec2(-1, -1), false)
+    end
     drawDeskSearchClearRow('\xCF\xEE\xE8\xF1\xEA ID \xF1\xEA\xE8\xED\xE0', skinFilterBuf, sizeof(skinFilterBuf),
         skinsRebuildFilter, 'skin')
     imgui.TextColored(col_muted2, uiText(string.format(
@@ -24138,16 +24364,30 @@ function drawSkinsTab()
     end
     local layout = deskCache.skinGridLayoutCache
 
-    imgui.BeginChild('##skin_grid', imgui.ImVec2(-1, -1), true)
+    imgui.BeginChild('##skin_grid', imgui.ImVec2(-1, -1), false)
+    local cellBg = imgui.ImVec4(1, 1, 1, 0.03)
+    local cellBgH = imgui.ImVec4(1, 1, 1, 0.06)
+    local cellBgA = imgui.ImVec4(0.67, 0.33, 1.0, 0.10)
+    imgui.PushStyleColor(imgui.Col.Button, cellBg)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, cellBgH)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, cellBgA)
+    if imgui.Col.FrameBg then
+        imgui.PushStyleColor(imgui.Col.FrameBg, cellBg)
+        imgui.PushStyleColor(imgui.Col.FrameBgHovered, cellBgH)
+        imgui.PushStyleColor(imgui.Col.FrameBgActive, cellBgA)
+    end
     pcall(deskGrid.drawVirtual, skinFiltered, layout, skinsDrawGridCell, {
         overscanRows = 1,
         onVisible = skinsEnqueueVisible,
     })
+    local gridStyleN = imgui.Col.FrameBg and 6 or 3
+    imgui.PopStyleColor(gridStyleN)
     imgui.EndChild()
-    imgui.EndChild()
-
-    imgui.EndChild()
-    popPanelStyle()
+    if type(deskEdgeEndCatalogMain) == 'function' then
+        deskEdgeEndCatalogMain()
+    else
+        imgui.EndChild()
+    end
 end
 
 -- Skins Release Textures
@@ -24169,19 +24409,24 @@ function drawCheatsTab()
         panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##cheats_panel', imgui.ImVec2(-1, -1), false, panelFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    imgui.Columns(3, '##cheat_grid', false)
     drawCheatFeatureCard('Godmode', 'GM', 'gm', 'gm',
         cheatState.godmode, uiCheatGm, uiCheatGmStart, 'gm_on_start', cheatsApplyGodmode)
-
+    imgui.NextColumn()
     drawCheatFeatureCard('Wallhack', 'WH', 'wh', 'wh',
         cheatState.wallhack, uiCheatWh, uiCheatWhStart, 'wh_on_start', cheatsApplyWallhack)
+    imgui.NextColumn()
 
     deskFormPanelBegin('##ch_ab')
     drawCheatCardTitle('Airbreak', 'AB')
-    local abLabel = cheatState.airbreak and '\xC2\xEA\xEB\xFE\xF7\xE5\xED' or '\xC2\xFB\xEA\xEB\xFE\xF7\xE5\xED'
-    if deskFormCheckboxRow(abLabel, uiCheatAb, cheatsSetAirbreak, 'ab_en') then end
-    local spdW = math.min(DESK_FORM_INPUT_W, deskFormRowAvail('\xD1\xEA\xEE\xF0\xEE\xF1\xF2\xFC', DESK_FORM_LABEL_W))
+    local abOn = cheatState.airbreak
+    imgui.TextColored(abOn and imgui.ImVec4(0.50, 0.84, 0.66, 1.0) or col_muted2,
+        uiText(abOn and '\xC2\xEA\xEB\xFE\xF7\xE5\xED' or '\xC2\xFB\xEA\xEB\xFE\xF7\xE5\xED'))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+    if deskFormCheckboxRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED', uiCheatAb, cheatsSetAirbreak, 'ab_en') then end
+    local spdW = math.min(120, math.max(72, imgui.GetContentRegionAvail().x - 4))
     imgui.PushItemWidth(spdW)
     deskPushFlatInputStyle()
     local abSpdChanged = false
@@ -24199,10 +24444,12 @@ function drawCheatsTab()
     imgui.PopItemWidth()
     if cheatState.airbreak then
         imgui.TextColored(col_muted2, uiText(
-            string.format('Q \xEC\xE8\xED\xF3\xF1 / E \xEF\xEB\xFE\xF1 \xF3\xE4\xE5\xF0\xE6 \xB7 %.2f', cheatsGetAbSpeed())))
+            string.format('Q/E \xB7 %.2f', cheatsGetAbSpeed())))
     end
     drawCheatBindRow('ab', 'ab')
     deskFormPanelEnd()
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 8))
 
     deskFormPanelBegin('##ch_mk')
     drawCheatCardTitle('CLICKWARP', '')
@@ -24224,6 +24471,7 @@ function drawCheatsTab()
         imgui.PopStyleColor(3)
     end
     deskFormPanelEnd()
+    imgui.Columns(1)
 
     deskFormPanelBegin('##ch_opts')
     drawCheatCardTitle('\xCE\xEF\xF6\xE8\xE8', '')
@@ -24241,10 +24489,23 @@ function drawCheatsTab()
         flushDirtyConfigNow()
     end, 'mask_id') then end
     drawSettingsHint('\xCF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xE5\xF2 \xED\xEE\xEC\xE5\xF0 ID \xED\xE0\xE4 \xED\xE8\xEA\xEE\xEC, \xE5\xF1\xEB\xE8 \xED\xE8\xEA \xF2\xB8\xEC\xED\xFB\xE9 \xE8\xEB\xE8 \xED\xE5 \xF7\xE8\xF2\xE0\xE5\xF2\xF1\xFF')
+    if uiRemoteChatSamp and deskFormCheckboxRow('\xC4\xE0\xEB\xFC\xED\xE8\xE9 \xF7\xE0\xF2', uiRemoteChatSamp, function(v)
+        settings.remote_chat_samp_mirror = v
+        if type(remoteChatSetMirrorEnabled) == 'function' then
+            pcall(remoteChatSetMirrorEnabled, v)
+        elseif v == false and type(remoteChatClearQueue) == 'function' then
+            pcall(remoteChatClearQueue)
+        end
+        markDirtySettings()
+        flushDirtyConfigNow()
+    end, 'remote_chat_samp') then end
+    if uiRemoteChatSamp then
+        drawSettingsHint('Bubble / me / do \xF0\xFF\xE4\xEE\xEC \xB7 \xE2 SAMP-\xF7\xE0\xF2 \xF1 \xEC\xE5\xF2\xEA\xEE\xE9 [Bubble]')
+    end
     deskFormPanelEnd()
 
-    imgui.PopStyleVar(2)
-    imgui.Dummy(imgui.ImVec2(0, 10))
+    imgui.PopStyleVar()
+    imgui.Dummy(imgui.ImVec2(0, 12))
     local btnW = math.min(200, math.max(140, imgui.GetContentRegionAvail().x - 8))
     imgui.SetCursorPosX(math.max(0, (imgui.GetContentRegionAvail().x - btnW) * 0.5))
     deskFormPushBindButtonStyle()
@@ -25382,6 +25643,51 @@ function sendSlapPlayer(targetId)
     sendGameCmd('slap ' .. targetId)
 end
 
+function getMpjailReasonText()
+    local text = trim(settings.mpjail_reason or '')
+    if text == '' then text = DEFAULT_MPJAIL_REASON or '' end
+    return text
+end
+
+function getMpjailMinutes()
+    local minutes = math.floor(tonumber(settings.mpjail_minutes) or DEFAULT_MPJAIL_MINUTES or 20)
+    if minutes < 1 then minutes = 1 end
+    if minutes > 999 then minutes = 999 end
+    return minutes
+end
+
+function sendMpjail(arg)
+    local targetId = clampSuspectPlayerId(tonumber(arg and tostring(arg):match('(%d+)')))
+    if not targetId then
+        say('\xC8\xF1\xEF\xEE\xEB\xFC\xE7\xF3\xE9\xF2\xE5 /mpjail [ID]')
+        return false
+    end
+    if type(sampIsPlayerConnected) == 'function' and not sampIsPlayerConnected(targetId) then
+        say('\xC8\xE3\xF0\xEE\xEA\xE0 \xF1 \xF2\xE0\xEA\xE8\xEC ID \xED\xE0 \xF1\xE5\xF0\xE2\xE5\xF0\xE5 \xED\xE5\xF2.')
+        return false
+    end
+
+    local reason = getMpjailReasonText()
+    if reason == '' then
+        say('\xC7\xE0\xE4\xE0\xE9\xF2\xE5 \xEF\xF0\xE8\xF7\xE8\xED\xF3 /mpjail \xE2 \xED\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE0\xF5 Report Desk.')
+        return false
+    end
+
+    local minutes = getMpjailMinutes()
+    local jailLine = string.format('jail %d %d %s', targetId, minutes, reason)
+    local unjailLine = string.format('unjail %d', targetId)
+    local proxy = getLocalAdminLevel() <= 2
+
+    if proxy then
+        sendChat('/a /' .. jailLine)
+        sendChat('/a /' .. unjailLine)
+    else
+        sendChat('/' .. jailLine)
+        sendChat('/' .. unjailLine)
+    end
+    return true
+end
+
 -- Отправка команды/сообщения на сервер.
 function sendTrPlayer(targetId)
     targetId = clampSuspectPlayerId(targetId)
@@ -25389,15 +25695,19 @@ function sendTrPlayer(targetId)
         say('\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEE\xEF\xF0\xE5\xE4\xE5\xEB\xE8\xF2\xFC ID \xE8\xE3\xF0\xEE\xEA\xE0')
         return
     end
-    if getLocalAdminLevel() <= 2 then
-        sendChat(string.format('/a /tr %d', targetId))
+    local okReq, roadTp = pcall(require, 'report_desk_road_tp')
+    if not okReq or type(roadTp) ~= 'table' then
+        say('[RoadTP] \xEC\xEE\xE4\xF3\xEB\xFC \xED\xE5\xE4\xEE\xF1\xF2\xF3\xEF\xE5\xED')
         return
     end
-    if showWindow[0] then
-        sendGameCmd('tr ' .. targetId)
-    else
-        sendMenuOutbound('tr ' .. targetId)
-    end
+    roadTp.configure({
+        say = say,
+        sendChat = sendChat,
+        trim = trim,
+        getAdminLevel = getLocalAdminLevel,
+        notePunishOutgoing = adminPunishNoteOutgoingMessage,
+    })
+    roadTp.runChatCommand(tostring(targetId))
 end
 
 -- ID онлайн-игрока -> ник (общая логика /hist, /iget, /ilog, /iskill).
@@ -25572,9 +25882,9 @@ end
 
 -- Push Player Action Btn Style
 function pushPlayerActionBtnStyle()
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.16, 0.24, 0.96))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28, 0.22, 0.38, 1.0))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent_dim)
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.67, 0.33, 1.0, 0.52))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.72, 0.38, 1.0, 0.68))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.58, 0.28, 0.92, 0.82))
     imgui.PushStyleColor(imgui.Col.Text, col_label)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
     imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 4))
@@ -25619,6 +25929,7 @@ local function stripReportSuspectText(text)
     if text == '' then return '' end
     -- Ведущее HH:MM:SS в теле сообщения (не ID нарушителя).
     text = text:gsub('^%d%d?:%d%d:?%d%d?%s+', '')
+    text = text:gsub('^[%#\xFC]%s*', '')
     return trim(text)
 end
 
@@ -25645,7 +25956,11 @@ local function extractReportSuspectIdCore(text, opts)
     id = text:match('(%d+)%s*[dD][mM]')
     if id then return clampSuspectPlayerId(id) end
 
-    id = text:match('^(%d+)$')
+    -- 255оск / 255osc / 255dm — ID слитно с пометкой (без пробела).
+    id = text:match('^[%#\xFC]?(%d+)[%a\xC0-\xFF]+')
+    if id then return clampSuspectPlayerId(id) end
+
+    id = text:match('^[%#\xFC]?(%d+)$')
     if id then return clampSuspectPlayerId(id) end
 
     id = text:match('^(%d+)[%s%,%.%-%):;]')
@@ -26850,6 +27165,7 @@ getfenv(1).uiAutoRulesEnabled = uiAutoRulesEnabled
 getfenv(1).uiAutoTimeEnabled = uiAutoTimeEnabled
 getfenv(1).uiAutoGgEnabled = uiAutoGgEnabled
 getfenv(1).uiWatchAutoNotify = uiWatchAutoNotify
+getfenv(1).uiMpjailMinutes = uiMpjailMinutes
 getfenv(1).uiSpecHud = uiSpecHud
 getfenv(1).uiSpecNearbyHud = uiSpecNearbyHud
 getfenv(1).uiSpecAutoSt = uiSpecAutoSt
@@ -26862,6 +27178,7 @@ getfenv(1).uiSpecWheelZoom = uiSpecWheelZoom
 getfenv(1).uiProfanityFilter = uiProfanityFilter
 getfenv(1).uiRemoteChatSamp = uiRemoteChatSamp
 getfenv(1).uiProfanitySound = uiProfanitySound
+getfenv(1).uiShellAlphaPct = uiShellAlphaPct
 getfenv(1).uiAdminPunishEnabled = uiAdminPunishEnabled
 getfenv(1).uiAdminPunishSignCmd = uiAdminPunishSignCmd
 getfenv(1).myPlayerNick = myPlayerNick
@@ -26971,6 +27288,8 @@ local apState = {
     pendingOfflineSince = nil,
     punishLogDedup = { key = '', at = 0 },
     punishLogQueue = {},
+    punishLogFlushing = false,
+    noLiveNickLookup = false,
     bootstrapped = false,
 }
 local AP_LINE_REJECT_SEC = 50
@@ -26981,6 +27300,8 @@ local AP_POLL_INTERVAL_FALLBACK = 0.45
 local AP_OFFLINE_CANCEL_SEC = 0.35
 local AP_HANDLED_MAX = 512
 local AP_LINE_SEEN_MAX = 2048
+local AP_PUNISH_LOG_QUEUE_MAX = 64
+local AP_PUNISH_LOG_FLUSH_BATCH = 12
 local AP_HOOK_REINSTALL_SEC = 30.0
 local apPollLastAt = 0
 local apHookReinstallAt = 0
@@ -27546,6 +27867,9 @@ end
 local function apResolveOnlineNick(id)
     id = tonumber(id)
     if not id then return nil, nil end
+    if apState.noLiveNickLookup then
+        return id, 'ID ' .. tostring(id)
+    end
     local nick = 'ID ' .. tostring(id)
     if apPlayerConnected(id) and type(sampGetPlayerNickname) == 'function' then
         local live = trim(sampGetPlayerNickname(id) or '')
@@ -28036,7 +28360,7 @@ local function apBuildPunishLogEntry(p, outbound)
     }
 end
 
--- Журнал наказаний: только главный поток (etState.punish + imgui-таблица).
+-- Журнал наказаний: очередь в хуке, запись в etState/диск — в главном цикле.
 local function apExtractPunishOutgoing(message)
     message = trim(tostring(message or ''))
     if message == '' then return nil end
@@ -28086,21 +28410,43 @@ local function apEnqueuePunishLog(entry)
         q = {}
         apState.punishLogQueue = q
     end
-    q[#q + 1] = entry
-end
-
-function adminPunishFlushDeferredLogs()
-    local q = apState.punishLogQueue
-    if type(q) ~= 'table' or #q == 0 then return end
-    apState.punishLogQueue = {}
-    for i = 1, #q do
-        pcall(apRecordPunishLogNow, q[i])
+    local copy = {}
+    for k, v in pairs(entry) do
+        copy[k] = v
+    end
+    q[#q + 1] = copy
+    while #q > AP_PUNISH_LOG_QUEUE_MAX do
+        table.remove(q, 1)
     end
 end
 
+function adminPunishFlushDeferredLogs()
+    if apState.punishLogFlushing then return end
+    local q = apState.punishLogQueue
+    if type(q) ~= 'table' or #q == 0 then return end
+    apState.punishLogFlushing = true
+    local batch = q
+    apState.punishLogQueue = {}
+    local take = math.min(#batch, AP_PUNISH_LOG_FLUSH_BATCH)
+    for i = 1, take do
+        pcall(apRecordPunishLogNow, batch[i])
+    end
+    if take < #batch then
+        local rest = apState.punishLogQueue
+        if type(rest) ~= 'table' then
+            rest = {}
+            apState.punishLogQueue = rest
+        end
+        for i = take + 1, #batch do
+            rest[#rest + 1] = batch[i]
+        end
+    end
+    apState.punishLogFlushing = false
+end
+
+-- Только очередь: запись в etState + диск — в главном цикле (не в onSendChat/imgui).
 local function apRecordPunishLog(entry)
     apEnqueuePunishLog(entry)
-    adminPunishFlushDeferredLogs()
 end
 
 local function apReleasePunishStatsHook()
@@ -28157,8 +28503,10 @@ function adminPunishNoteOutgoingMessage(message)
     if not adminPunishOutgoingLooksRelevant(message) then return end
     local punishCmd, src, fullLine = apExtractPunishOutgoing(message)
     if not punishCmd then return end
-    local parsed = apParsePunishCommand(punishCmd)
-    if not parsed then return end
+    apState.noLiveNickLookup = true
+    local okParse, parsed = pcall(apParsePunishCommand, punishCmd)
+    apState.noLiveNickLookup = false
+    if not okParse or not parsed then return end
     apRecordPunishLog({
         ts = os.time(),
         kind = apPunishKindFromCommand(punishCmd),
@@ -28637,7 +28985,6 @@ function drawAdminPunishTab()
         panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##admin_punish_panel', imgui.ImVec2(-1, -1), false, panelFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
 
     if adminPunishHasPending() then
@@ -28698,7 +29045,7 @@ function drawAdminPunishTab()
     })
     deskFormPanelEnd()
 
-    imgui.PopStyleVar(2)
+    imgui.PopStyleVar()
     imgui.Dummy(imgui.ImVec2(0, 12))
     imgui.EndChild()
     popPanelStyle()
@@ -29437,6 +29784,19 @@ function loadConfig()
         settings.tech_reply = repairStoredConfigText(
             normalizeStoredText(settings.tech_reply, true), DEFAULT_TECH_REPLY)
     end
+    if settings.mpjail_reason then
+        if looksCorruptedConfigText(settings.mpjail_reason) then markDirtySettings() end
+        settings.mpjail_reason = repairStoredConfigText(
+            normalizeStoredText(settings.mpjail_reason, true), DEFAULT_MPJAIL_REASON)
+    end
+    local mpMin = tonumber(settings.mpjail_minutes)
+    if mpMin == nil or mpMin < 1 then
+        settings.mpjail_minutes = DEFAULT_MPJAIL_MINUTES or 20
+    elseif mpMin > 999 then
+        settings.mpjail_minutes = 999
+    else
+        settings.mpjail_minutes = math.floor(mpMin)
+    end
     ensureCheatsSettings()
     pcall(function()
         local ac = require 'report_desk_sp_anticheat'
@@ -29579,6 +29939,7 @@ function saveUserConfig()
     f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
     f:write(string.format('    tech_reply = %s,\n', luaQuoteUtf8(getTechReplyText())))
     f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
+    f:write(string.format('    mpjail_reason = %s,\n', luaQuoteUtf8(getMpjailReasonText())))
     f:write('  },\n')
 
     f:write('  composer_quick_buttons = {\n')
@@ -29666,6 +30027,9 @@ function loadUserConfig()
         if data.strings.watch_notify ~= nil and trim(data.strings.watch_notify) ~= '' then
             settings.watch_notify = normalizeStoredText(data.strings.watch_notify, true)
         end
+        if data.strings.mpjail_reason ~= nil and trim(data.strings.mpjail_reason) ~= '' then
+            settings.mpjail_reason = normalizeStoredText(data.strings.mpjail_reason, true)
+        end
     end
     if type(data.composer_quick_buttons) == 'table' and #data.composer_quick_buttons > 0 then
         local list = {}
@@ -29737,6 +30101,8 @@ function saveConfig()
     f:write(string.format('    sound = %s,\n', settings.sound and 'true' or 'false'))
     f:write(string.format('    watch_notify = %s,\n', luaQuoteUtf8(settings.watch_notify or 'see')))
     f:write(string.format('    watch_auto_notify = %s,\n', settings.watch_auto_notify ~= false and 'true' or 'false'))
+    f:write(string.format('    mpjail_reason = %s,\n', luaQuoteUtf8(getMpjailReasonText())))
+    f:write(string.format('    mpjail_minutes = %d,\n', getMpjailMinutes()))
     f:write(string.format('    gg_reply = %s,\n', luaQuoteUtf8(getGgReplyText())))
     f:write(string.format('    tech_reply = %s,\n', luaQuoteUtf8(getTechReplyText())))
     f:write(string.format('    auto_rules_enabled = %s,\n', settings.auto_rules_enabled ~= false and 'true' or 'false'))
@@ -29809,6 +30175,11 @@ function saveConfig()
     f:write(string.format('    exact_time_enabled = %s,\n', settings.exact_time_enabled ~= false and 'true' or 'false'))
     f:write(string.format('    exact_time_daily_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)))
     f:write(string.format('    exact_time_monthly_norm_h = %d,\n', math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112)))
+    f:write(string.format('    ui_shell_alpha = %.3f,\n',
+        math.max(0.30, math.min(1.0, tonumber(settings.ui_shell_alpha) or 0.55))))
+    if settings.ui_rail_expanded == false then
+        f:write('    ui_rail_expanded = false,\n')
+    end
     f:write(string.format('    temp_leadership_auto_restore = %s,\n', settings.temp_leadership_auto_restore ~= false and 'true' or 'false'))
     local tlOrg = tostring(settings.temp_leadership_org or '0 0')
     if tlOrg == '' then tlOrg = '0 0' end
@@ -31074,11 +31445,25 @@ function drawAccentStrip()
 end
 
 function pushPanelStyle(bg)
-    imgui.PushStyleColor(imgui.Col.ChildBg, bg or col_sidebar)
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.18, 0.18, 0.22, 0.35))
-    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 8)
+    local edge = type(deskEdgeTheme) == 'table'
+    local surface = (edge and deskEdgeTheme.SURFACE) or imgui.ImVec4(1, 1, 1, 0.03)
+    local border = (edge and imgui.ImVec4(0, 0, 0, 0))
+        or ((deskEdgeTheme and deskEdgeTheme.BORDER) or imgui.ImVec4(1, 1, 1, 0.06))
+    local pad = (edge and deskEdgeTheme.GROUP_PAD) or PANEL_PAD
+    local childBg = bg or surface
+    if edge then
+        local mainBg = (deskEdgeTheme and deskEdgeTheme.MAIN_BG) or imgui.ImVec4(0, 0, 0, 0)
+        local inboxBg = deskEdgeTheme and deskEdgeTheme.INBOX_BG
+        local listBg = deskEdgeTheme and deskEdgeTheme.INBOX_LIST_BG
+        if not bg or bg == col_chat_bg or bg == inboxBg or bg == listBg then
+            childBg = mainBg
+        end
+    end
+    imgui.PushStyleColor(imgui.Col.ChildBg, childBg)
+    imgui.PushStyleColor(imgui.Col.Border, border)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, edge and 0 or 8)
     imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(PANEL_PAD, PANEL_PAD))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(pad, pad))
 end
 
 function popPanelStyle()
@@ -31285,1787 +31670,6 @@ end
 local SET_BIND_BTN_H = DESK_FORM_ROW_H
 
 -- Desk hook/helper.
-
-
-
-]=], '@report_desk_app_core_b')
-
-    if not chunkFn then error('[Report Desk] bundle group report_desk_app_core_b: ' .. tostring(chunkErr)) end
-
-    setfenv(chunkFn, __desk_bundle_env)
-
-    chunkFn()
-
-end
-
-
-
-do
-
-    local chunkFn, chunkErr = loadstring([=[
-
---[[ /c 60 — кастомное окно «Точное время» (интеграция ARP Exact Time). ]]
-if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
-
-local ET_WIN_W = 408
-local ET_LINE = imgui.ImVec4(1.0, 1.0, 1.0, 0.10)
-local ET_ROW_GAP = 5
-local ET_LABEL_W = 228
-local ET_WEEKLY_COLOR = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
-local ET_MONTHLY_COLOR = imgui.ImVec4(0.52, 0.62, 0.92, 1.0)
-local ET_HELP_WEEK_MAX_BACK = 52
-local ET_ONLINE_RETAIN_DAYS = 400
-local EXACT_TIME_TIMEOUT = 10.0
-local SAMP_DIALOG_ACTIVE_OFF = 40
-
-local ET_ONLINE_PATH = getWorkingDirectory() .. '\\config\\arp_exact_time_online.ini'
-local ET_ANS_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_ans.ini'
-local ET_PUNISH_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_punish.jsonl'
-local ET_PUNISH_RETAIN_DAYS = 6
-local ET_PUNISH_MAX_STORE = 2000
-local ET_PUNISH_UI_MAX = 100
-local ET_LEGACY_ONLINE = getWorkingDirectory() .. '\\config\\arp_helper_online.ini'
-local ET_LEGACY_CONFIG = getWorkingDirectory() .. '\\config\\arp_exact_time.ini'
-
-local ET_WD_SHORT = {
-    ['Mon'] = '\xCF\xED', ['Tue'] = '\xC2\xF2', ['Wed'] = '\xD1\xF0',
-    ['Thu'] = '\xD7\xF2', ['Fri'] = '\xCF\xF2', ['Sat'] = '\xD1\xE1', ['Sun'] = '\xC2\xF1',
-}
-local ET_COL_OK = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
-local ET_COL_FAIL = imgui.ImVec4(0.92, 0.42, 0.42, 1.0)
-
-local L_ET_ONLINE_TODAY = '\xCE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
-local L_ET_AFK_TODAY = 'AFK \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
-local L_ET_PER_HOUR = '\xC2\xF0\xE5\xEC\xFF \xE2 \xE8\xE3\xF0\xE5 \xE7\xE0 \xF7\xE0\xF1'
-local L_ET_ONLINE_YDAY = '\xCE\xED\xEB\xE0\xE9\xED \xE2\xF7\xE5\xF0\xE0'
-local L_ET_AFK_YDAY = 'AFK \xE7\xE0 \xE2\xF7\xE5\xF0\xE0'
-local L_ET_CLEAN = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
-local L_ET_CLEAN_WEEK = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE'
-local L_ET_CLEAN_MONTH = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xEC\xE5\xF1\xFF\xF6'
-local L_TITLE = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF'
-local L_CLOSE = '\xC7\xE0\xEA\xF0\xFB\xF2\xFC'
-
-local ET_COL = {
-    accent   = imgui.ImVec4(0.62, 0.48, 0.92, 1.0),
-    muted    = imgui.ImVec4(0.55, 0.55, 0.60, 1.0),
-    label    = imgui.ImVec4(0.92, 0.92, 0.95, 1.0),
-    value    = imgui.ImVec4(0.90, 0.90, 0.93, 1.0),
-    time     = imgui.ImVec4(0.93, 0.93, 0.96, 1.0),
-}
-local LAW_BTN   = imgui.ImVec4(0.16, 0.16, 0.19, 1.0)
-local LAW_BTN_H = imgui.ImVec4(0.20, 0.20, 0.24, 1.0)
-local LAW_BTN_A = imgui.ImVec4(0.24, 0.24, 0.28, 1.0)
-
-local etState = {
-    pendingCmdAt = nil,
-    showOpen = false,
-    data = {},
-    online = { weekKey = nil, monthKey = nil, days = {} },
-    ans = { days = {}, backfilled = false },
-    punish = { entries = {}, filter = 'all', weekCache = nil },
-    helpWeekOffset = 0,
-}
-exactTimeUiSynced = false
-
-local uiExactTimeEnabled = imgui and imgui.new and imgui.new.bool(true) or nil
-local uiExactTimeDailyH = imgui and imgui.new and imgui.new.int(4) or nil
-local uiExactTimeMonthlyH = imgui and imgui.new and imgui.new.int(112) or nil
-local etShowWindowBuf = imgui and imgui.new and imgui.new.bool(false) or nil
-
-local function etPushWindowStyle()
-    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.10, 0.10, 0.12, 0.98))
-    imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
-    imgui.PushStyleColor(imgui.Col.TitleBgActive, imgui.ImVec4(0.11, 0.10, 0.14, 1.0))
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.22, 0.26, 0.40))
-    imgui.PushStyleColor(imgui.Col.Button, LAW_BTN)
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, LAW_BTN_H)
-    imgui.PushStyleColor(imgui.Col.ButtonActive, LAW_BTN_A)
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 5)
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-end
-
-local function etPopWindowStyle()
-    imgui.PopStyleVar(4)
-    imgui.PopStyleColor(7)
-end
-
-function ensureExactTimeSettings()
-    if type(settings) ~= 'table' then return end
-    if settings.exact_time_enabled == nil then settings.exact_time_enabled = true end
-    if settings.exact_time_daily_norm_h == nil then
-        local wh = tonumber(settings.exact_time_weekly_norm_h)
-        if wh and wh >= 7 then
-            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(wh / 7)))
-        else
-            settings.exact_time_daily_norm_h = 4
-        end
-    end
-    local dh = tonumber(settings.exact_time_daily_norm_h)
-    if not dh or dh < 1 or dh > 24 then settings.exact_time_daily_norm_h = 4 end
-    local mh = tonumber(settings.exact_time_monthly_norm_h)
-    if not mh or mh < 1 or mh > 744 then settings.exact_time_monthly_norm_h = 112 end
-end
-
-local function etEnabled()
-    return type(settings) == 'table' and settings.exact_time_enabled ~= false
-end
-
-local function etDailyNormMin()
-    ensureExactTimeSettings()
-    return math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) * 60
-end
-
-local function etMonthlyNormMin()
-    ensureExactTimeSettings()
-    return math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) * 60
-end
-
-local function etSetNativeDialogVisible(visible)
-    if not sampGetDialogInfoPtr or not memory or not memory.setint32 then return end
-    local ptr = sampGetDialogInfoPtr()
-    if not ptr or ptr == 0 then return end
-    pcall(function()
-        memory.setint32(ptr + SAMP_DIALOG_ACTIVE_OFF, visible and 1 or 0, true)
-    end)
-end
-
-local function etResolveCloseButton(button1, button2)
-    local function isClose(label)
-        label = trim(stripTags(label or ''))
-        return label ~= '' and (label:find(L_CLOSE, 1, true) or label:lower():find('close', 1, true))
-    end
-    if isClose(button1) then return 1 end
-    if isClose(button2) then return 0 end
-    if trim(stripTags(button2 or '')) == '' then return 1 end
-    return 0
-end
-
--- Скрытый диалог: только RPC-ответ серверу + сброс active (без UI-close и без chat enable).
-local function etSendDialogResponseOnce(dialogId, button1, button2)
-    etSetNativeDialogVisible(false)
-    if not dialogId or not sampSendDialogResponse then return end
-    local btn = etResolveCloseButton(button1, button2)
-    pcall(function() sampSendDialogResponse(dialogId, btn, 0, '') end)
-    etSetNativeDialogVisible(false)
-end
-
-local function etSendDialogClose(dialogId, button1, button2)
-    etSendDialogResponseOnce(dialogId, button1, button2)
-    if not dialogId or not lua_thread or not lua_thread.create then return end
-    local id, b1, b2 = dialogId, button1, button2
-    lua_thread.create(function()
-        wait(150)
-        if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then
-            etSendDialogResponseOnce(id, b1, b2)
-        end
-    end)
-end
-
-local function etClearData()
-    etState.data = {}
-end
-
-local etCloseWindow
-
-etCloseWindow = function()
-    if not etState.showOpen then return end
-    local d = etState.data
-    local id, b1, b2 = d.dialogId, d.button1, d.button2
-    etState.showOpen = false
-    if etShowWindowBuf then etShowWindowBuf[0] = false end
-    etClearData()
-    if id then
-        etSendDialogClose(id, b1, b2)
-    else
-        etSetNativeDialogVisible(false)
-    end
-    if type(updateMimguiGameInputPassthrough) == 'function' then
-        pcall(updateMimguiGameInputPassthrough)
-    end
-end
-
-local function etParseDialogLines(text)
-    text = stripTags(text or '')
-    local rows, seen = {}, {}
-    for raw in (text .. '\n'):gmatch('([^\r\n]+)') do
-        local line = trim(raw)
-        if line ~= '' then
-            local label, value = line:match('^(.-)[:\t]+(.+)$')
-            if label and value then
-                label, value = trim(label), trim(value)
-                if label ~= '' and value ~= '' then
-                    local key = label:lower()
-                    if not seen[key] then
-                        seen[key] = true
-                        rows[#rows + 1] = { label = label, value = value }
-                    end
-                end
-            end
-        end
-    end
-    return rows
-end
-
-local function etParseRussianPlayTimeToMinutes(s)
-    if not s or s == '' then return nil end
-    s = trim(stripTags(s))
-    local h, m = s:match('(%d+)%s*[\xF7ч]%s*(%d+)%s*[\xEC\xE8\xEDmin]+')
-    if h then return tonumber(h) * 60 + tonumber(m) end
-    h = tonumber(s:match('(%d+)%s*[\xF7ч]')) or 0
-    m = tonumber(s:match('(%d+)%s*[\xEC\xE8\xEDmin]+')) or 0
-    if h == 0 and m == 0 then return nil end
-    return h * 60 + m
-end
-
-local function etFormatMinutesAsRussianDuration(totalMin)
-    totalMin = math.max(0, math.floor(tonumber(totalMin) or 0))
-    local h = math.floor(totalMin / 60)
-    local m = totalMin % 60
-    if h > 0 and m > 0 then return string.format('%d \xF7 %d \xEC\xE8\xED', h, m) end
-    if h > 0 then return string.format('%d \xF7', h) end
-    return string.format('%d \xEC\xE8\xED', m)
-end
-
-local ET_HELP_DAY_HDR = '\xC4\xE5\xED\xFC'
-local ET_HELP_DATE_HDR = '\xC4\xE0\xF2\xE0'
-local ET_HELP_TOTAL_LABEL = '\xC8\xF2\xEE\xE3\xEE'
-local ET_HELP_ANS_HDR = '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2'
-local ET_HELP_ONLINE_HDR = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
-
-local function etHelpColTextW(text, pad)
-    pad = pad or 8
-    return imgui.CalcTextSize(uiText(text or '')).x + pad
-end
-
-local ET_HELP_COL_GAP = 16
-
-local function etHelpTableWidths(availW)
-    availW = math.max(260, tonumber(availW) or 260)
-    local wDay = etHelpColTextW(ET_HELP_DAY_HDR, 10)
-    wDay = math.max(wDay, etHelpColTextW(ET_HELP_TOTAL_LABEL, 12))
-    for _, wd in pairs(ET_WD_SHORT) do
-        wDay = math.max(wDay, etHelpColTextW(wd, 6))
-    end
-    local wDate = math.max(etHelpColTextW(ET_HELP_DATE_HDR, 10), etHelpColTextW('31.12', 8))
-    local wGap = ET_HELP_COL_GAP
-    local wAns = etHelpColTextW(ET_HELP_ANS_HDR, 10)
-    local wOnline = availW - wDay - wDate - wGap - wAns - 12
-    if wOnline < 80 then
-        wOnline = 80
-        wAns = math.max(etHelpColTextW('0', 10), availW - wDay - wDate - wGap - wOnline - 12)
-    end
-    return wDay, wDate, wGap, wOnline, wAns
-end
-
-local function etFindRowValue(rows, ...)
-    local needles = { ... }
-    for _, row in ipairs(rows) do
-        for _, n in ipairs(needles) do
-            local enc = normalizeStoredText(n, isUtf8Text(n))
-            if row.label:find(enc, 1, true) or row.label:find(n, 1, true) then
-                return row.value
-            end
-        end
-    end
-    return nil
-end
-
-local function etExtractTextAfterLabel(text, labelUtf8)
-    text = stripTags(text or '')
-    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
-    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
-    if not chunk then return nil end
-    chunk = trim(chunk)
-    if chunk == '' then return nil end
-    for segment in chunk:gmatch('[^\t]+') do
-        segment = trim(segment)
-        if segment ~= '' then return segment end
-    end
-    return chunk
-end
-
-local function etExtractDurationAfterLabel(text, labelUtf8)
-    text = stripTags(text or '')
-    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
-    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
-    if chunk then
-        for segment in chunk:gmatch('[^\t]+') do
-            local mins = etParseRussianPlayTimeToMinutes(segment)
-            if mins ~= nil then return mins end
-        end
-    end
-    chunk = text:match(label .. '[%s:\r\n]+([^\r\n]+)')
-    if chunk then return etParseRussianPlayTimeToMinutes(chunk) end
-    local idx = text:find(label, 1, true)
-    if idx then
-        local slice = text:sub(idx, idx + 160)
-        local dur = slice:match('(%d+%s*[\xF7ч]%s*%d+%s*[\xEC\xE8\xEDmin]+)')
-            or slice:match('(%d+%s*[\xEC\xE8\xEDmin]+)')
-            or slice:match('(%d+%s*[\xF7ч])')
-        if dur then return etParseRussianPlayTimeToMinutes(dur) end
-    end
-    return nil
-end
-
-local function etMinutesFromDialogRows(rows, ...)
-    local val = etFindRowValue(rows, ...)
-    if val then return etParseRussianPlayTimeToMinutes(val) end
-    return nil
-end
-
-local function etParseServerClock(text, rows)
-    local plain = stripTags(text or '')
-    local serverTime = etFindRowValue(rows, 'Текущее время', 'Точное время', 'Серверное время', 'Время на сервере')
-        or etExtractTextAfterLabel(text, 'Текущее время')
-        or etExtractTextAfterLabel(text, 'Точное время')
-        or plain:match('(%d%d:%d%d:%d%d)') or plain:match('(%d%d:%d%d)')
-    local serverDate = etFindRowValue(rows, 'Дата', 'Текущая дата', 'Сегодняшняя дата')
-        or etExtractTextAfterLabel(text, 'Дата')
-        or plain:match('(%d%d%.%d%d%.%d%d%d%d)')
-        or os.date('%d.%m.%Y')
-    local weekday = etFindRowValue(rows, 'День недели', 'День')
-        or etExtractTextAfterLabel(text, 'День недели')
-    return serverTime, serverDate, weekday
-end
-
-local function etParseClockHms(timeStr)
-    local plain = trim(stripTags(timeStr or ''))
-    if plain == '' then return nil end
-    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
-    if h then return tonumber(h), tonumber(m), tonumber(s) end
-    h, m = plain:match('(%d%d):(%d%d)')
-    if h then return tonumber(h), tonumber(m), 0 end
-    return nil
-end
-
-local function etLiveClockValue(timeStr)
-    local d = etState.data
-    local base = d.clockBase
-    if base then
-        local elapsed = math.floor(os.clock() - base.at)
-        if d._clockTick == elapsed and d._clockStr then
-            return d._clockStr
-        end
-        local total = (base.h * 3600 + base.m * 60 + base.s + elapsed) % 86400
-        d._clockStr = string.format('%02d:%02d:%02d',
-            math.floor(total / 3600), math.floor((total % 3600) / 60), total % 60)
-        d._clockTick = elapsed
-        return d._clockStr
-    end
-    d._clockTick = nil
-    d._clockStr = nil
-    local plain = trim(stripTags(timeStr or ''))
-    if plain == '' then return os.date('%H:%M:%S') end
-    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
-    if h then return string.format('%s:%s:%s', h, m, s) end
-    h, m = plain:match('(%d%d):(%d%d)')
-    if h then return string.format('%s:%s:%02d', h, m, tonumber(os.date('%S'))) end
-    return os.date('%H:%M:%S')
-end
-
-local function etFormatDateLine(parts)
-    if not parts or #parts == 0 then return nil end
-    if #parts == 1 then return parts[1] end
-    local weekday, dateStr = parts[1], parts[2]
-    if weekday:find('%d%d%d%d', 1, true) or weekday:find(' - ', 1, true) then
-        return weekday
-    end
-    return weekday .. '  \xB7  ' .. dateStr
-end
-
-local function etBuildDisplayList(text, dialogRows, cleanStr, playStr, afkStr)
-    local serverTime, serverDate, weekday = etParseServerClock(text, dialogRows)
-    local display = {}
-    local function add(labelCp1251, value, kind)
-        if value and value ~= '' then
-            display[#display + 1] = { label = labelCp1251, value = value, kind = kind }
-        end
-    end
-    add('Текущее время', etFindRowValue(dialogRows, 'Текущее время') or serverTime, 'time')
-    add('День недели', etFindRowValue(dialogRows, 'День недели') or weekday, 'date')
-    add('Сегодняшняя дата', etFindRowValue(dialogRows, 'Сегодняшняя дата', 'Дата', 'Текущая дата') or serverDate, 'date')
-    add(L_ET_ONLINE_TODAY, playStr, 'today')
-    add(L_ET_AFK_TODAY, afkStr, 'today')
-    add(L_ET_PER_HOUR, etFindRowValue(dialogRows, 'Время в игре за час') or etExtractTextAfterLabel(text, 'Время в игре за час'), 'today')
-    add(L_ET_CLEAN, cleanStr, 'accent')
-    local playYdayRaw = etFindRowValue(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
-        or etExtractTextAfterLabel(text, 'Время в игре вчера')
-        or etExtractTextAfterLabel(text, 'Онлайн вчера')
-    local afkYdayRaw = etFindRowValue(dialogRows, 'AFK за вчера', 'AFK вчера')
-        or etExtractTextAfterLabel(text, 'AFK за вчера')
-        or etExtractTextAfterLabel(text, 'AFK вчера')
-    add(L_ET_ONLINE_YDAY, playYdayRaw, 'yesterday')
-    add(L_ET_AFK_YDAY, afkYdayRaw, 'yesterday')
-    return display
-end
-
-local function etIsExactTimeDialog(title, text)
-    local tit = stripTags(title or '')
-    local txt = stripTags(text or '')
-    if tit:find(normalizeStoredText('Точное время', isUtf8Text('Точное время')), 1, true) then return true end
-    if tit:find(normalizeStoredText('точного времени', isUtf8Text('точного времени')), 1, true) then return true end
-    if tit:find(normalizeStoredText('Служба точного', isUtf8Text('Служба точного')), 1, true) then return true end
-    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) <= EXACT_TIME_TIMEOUT then
-        if txt:find(normalizeStoredText('Время в игре сегодня', isUtf8Text('Время в игре сегодня')), 1, true)
-            and (txt:find(normalizeStoredText('AFK за сегодня', isUtf8Text('AFK за сегодня')), 1, true) or txt:find('AFK', 1, true)) then
-            return true
-        end
-    end
-    return false
-end
-
-local function etParseServerDateKey(serverDate)
-    local d, m, y = tostring(serverDate or ''):match('(%d%d)%.(%d%d)%.(%d%d%d%d)')
-    if d then return string.format('%s-%s-%s', y, m, d) end
-    return os.date('%Y-%m-%d')
-end
-
-local function etCurrentWeekMondayKey(ts)
-    ts = ts or os.time()
-    local w = tonumber(os.date('%w', ts)) or 0
-    local daysSinceMonday = (w == 0) and 6 or (w - 1)
-    return os.date('%Y-%m-%d', ts - daysSinceMonday * 86400)
-end
-
-local function etMondayTsFromKey(weekKey)
-    local y, m, d = tostring(weekKey or ''):match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
-    if not y then return nil end
-    return os.time({
-        year = tonumber(y), month = tonumber(m), day = tonumber(d),
-        hour = 12, min = 0, sec = 0,
-    })
-end
-
-local function etHelpViewWeekMondayKey()
-    local offset = math.max(0, math.min(ET_HELP_WEEK_MAX_BACK,
-        math.floor(tonumber(etState.helpWeekOffset) or 0)))
-    etState.helpWeekOffset = offset
-    if offset == 0 then return etCurrentWeekMondayKey() end
-    local curTs = etMondayTsFromKey(etCurrentWeekMondayKey())
-    if not curTs then return etCurrentWeekMondayKey() end
-    return os.date('%Y-%m-%d', curTs - offset * 7 * 86400)
-end
-
-local function etWeekRangeLabel(weekMondayKey)
-    local baseTs = etMondayTsFromKey(weekMondayKey)
-    if not baseTs then return '' end
-    return string.format('%s \xB7 %s', os.date('%d.%m', baseTs), os.date('%d.%m', baseTs + 6 * 86400))
-end
-
-local function etPruneOldOnlineDays()
-    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
-    local store = etState.online
-    local changed = false
-    for dateKey in pairs(store.days) do
-        if dateKey < cutoffKey then
-            store.days[dateKey] = nil
-            changed = true
-        end
-    end
-    if changed then pcall(etSaveOnlineStore) end
-end
-
-local function etCurrentMonthKey(ts)
-    ts = ts or os.time()
-    return os.date('%Y-%m', ts)
-end
-
-local function etEnsureOnlinePeriods()
-    local weekKey = etCurrentWeekMondayKey()
-    local monthKey = etCurrentMonthKey()
-    local store = etState.online
-    if store.weekKey ~= weekKey then
-        store.weekKey = weekKey
-    end
-    if store.monthKey ~= monthKey then
-        store.monthKey = monthKey
-    end
-    etPruneOldOnlineDays()
-    return weekKey, monthKey
-end
-
-local function etOpenIni(primary, legacy)
-    local f = io.open(primary, 'r')
-    if f then return f end
-    if legacy then return io.open(legacy, 'r') end
-end
-
-function etLoadOnlineStore()
-    etState.online.weekKey = nil
-    etState.online.monthKey = nil
-    etState.online.days = {}
-    local f = etOpenIni(ET_ONLINE_PATH, ET_LEGACY_ONLINE)
-    if f then
-        for line in f:lines() do
-            local week = line:match('^%s*week%s*=%s*(%S+)%s*$')
-            if week then
-                etState.online.weekKey = week
-            else
-                local month = line:match('^%s*month%s*=%s*(%S+)%s*$')
-                if month then
-                    etState.online.monthKey = month
-                else
-                    local dateKey, mins = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
-                    if dateKey and mins then
-                        etState.online.days[dateKey] = tonumber(mins)
-                    end
-                end
-            end
-        end
-        f:close()
-    end
-    etEnsureOnlinePeriods()
-end
-
-function etSaveOnlineStore()
-    local f = io.open(ET_ONLINE_PATH, 'w')
-    if not f then return end
-    local store = etState.online
-    if store.weekKey then f:write('week=' .. store.weekKey .. '\n') end
-    if store.monthKey then f:write('month=' .. store.monthKey .. '\n') end
-    for dateKey, mins in pairs(store.days) do
-        f:write(string.format('%s=%d\n', dateKey, mins))
-    end
-    f:close()
-end
-
-local function etLoadAnsStore()
-    etState.ans.days = {}
-    local f = io.open(ET_ANS_PATH, 'r')
-    if not f then return end
-    for line in f:lines() do
-        local dateKey, cnt = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
-        if dateKey and cnt then
-            etState.ans.days[dateKey] = tonumber(cnt)
-        end
-    end
-    f:close()
-end
-
-local function etSaveAnsStore()
-    local f = io.open(ET_ANS_PATH, 'w')
-    if not f then return end
-    for dateKey, cnt in pairs(etState.ans.days) do
-        f:write(string.format('%s=%d\n', dateKey, tonumber(cnt) or 0))
-    end
-    f:close()
-end
-
-local function etBackfillAnsFromThreads()
-    if etState.ans.backfilled then return end
-    etState.ans.backfilled = true
-    for _ in pairs(etState.ans.days) do return end
-    if type(threads) ~= 'table' then return end
-    local changed = false
-    for _, t in pairs(threads) do
-        if type(t.messages) == 'table' then
-            for _, m in ipairs(t.messages) do
-                if m and m.dir == 'out' and m.self ~= false and m.ts then
-                    local body = trim(m.text or m.rawText or '')
-                    if body:match('^/ans%s') or body:match('^ans%s') then
-                        local dateKey = os.date('%Y-%m-%d', m.ts)
-                        etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
-                        changed = true
-                    end
-                end
-            end
-        end
-    end
-    if changed then pcall(etSaveAnsStore) end
-end
-
-function helpStatsRecordAns(ts)
-    ts = tonumber(ts) or os.time()
-    local dateKey = os.date('%Y-%m-%d', ts)
-    etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
-    pcall(etSaveAnsStore)
-end
-
-function exactTimeNoteOutgoingAns(msg)
-    if type(msg) ~= 'string' then return end
-    local s = trim(msg)
-    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
-    local id, body = s:match('^ans%s+(%d+)%s+(.+)$')
-    if not id or not body or trim(body) == '' then return end
-    helpStatsRecordAns()
-end
-
-local ET_PUNISH_HEAD_TO_KIND = {
-    jail = 'jail', unjail = 'jail', offjail = 'jail',
-    mute = 'mute', unmute = 'mute', offmute = 'mute',
-    kick = 'kick', skick = 'kick',
-    ban = 'ban', unban = 'ban', offban = 'ban',
-    warn = 'warn', unwarn = 'warn', offwarn = 'warn',
-}
-
-local ET_PUNISH_FILTERS = {
-    { id = 'all',  label = '\xC2\xF1\xE5' },
-    { id = 'jail', label = 'Jail' },
-    { id = 'mute', label = 'Mute' },
-    { id = 'kick', label = 'Kick' },
-    { id = 'ban',  label = 'Ban' },
-    { id = 'warn', label = 'Warn' },
-}
-
-local function etPunishCmdHead(cmd)
-    cmd = trim(tostring(cmd or ''))
-    if cmd == '' then return '' end
-    local inner = cmd:match('^/?a%s+(/.*)$')
-    if inner then cmd = trim(inner) end
-    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
-    local head = cmd:match('^/(%S+)')
-    return head and head:lower() or ''
-end
-
-local function etPunishKindFromCmd(cmd)
-    return ET_PUNISH_HEAD_TO_KIND[etPunishCmdHead(cmd)] or 'other'
-end
-
-local function etPunishIsTrackedEntry(e)
-    if type(e) ~= 'table' then return false end
-    local kind = trim(tostring(e.kind or ''))
-    if kind == 'tr' then return false end
-    local head = etPunishCmdHead(e.cmd)
-    if head == 'tr' then return false end
-    return true
-end
-
-local function etInvalidatePunishWeekCache()
-    etState.punish.weekCache = nil
-end
-
-local function etPunishNormalizeEntry(raw)
-    if type(raw) ~= 'table' then return nil end
-    local ts = tonumber(raw.ts)
-    if ts and ts > 0 then
-        ts = math.floor(ts)
-    else
-        ts = 0
-    end
-    local cmd = trim(tostring(raw.cmd or ''))
-    local kind = trim(tostring(raw.kind or ''))
-    if kind == '' then kind = etPunishKindFromCmd(cmd) end
-    return {
-        ts = ts,
-        dateKey = os.date('%Y-%m-%d', ts),
-        kind = kind,
-        action = trim(tostring(raw.action or '-')),
-        player = trim(tostring(raw.player or '?')),
-        pid = tonumber(raw.pid) or -1,
-        term = trim(tostring(raw.term or '-')),
-        reason = trim(tostring(raw.reason or '-')),
-        cmd = cmd,
-        reqAdmin = trim(tostring(raw.reqAdmin or '')),
-        reqAdminId = tonumber(raw.reqAdminId),
-        src = trim(tostring(raw.src or 'manual')),
-    }
-end
-
-local function etPunishEntrySort(a, b)
-    if a.ts ~= b.ts then return a.ts < b.ts end
-    return (a.cmd or '') < (b.cmd or '')
-end
-
-local function etRewritePunishStore()
-    if not encodeJson then return end
-    local f = io.open(ET_PUNISH_PATH, 'w')
-    if not f then return end
-    for _, e in ipairs(etState.punish.entries) do
-        local ok, line = pcall(encodeJson, e)
-        if ok and line then f:write(line .. '\n') end
-    end
-    f:close()
-end
-
-local function etPunishPruneStore(rewrite)
-    if #etState.punish.entries == 0 then return false end
-    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_PUNISH_RETAIN_DAYS * 86400)
-    local kept = {}
-    for _, e in ipairs(etState.punish.entries) do
-        local dk = e.dateKey or os.date('%Y-%m-%d', tonumber(e.ts) or 0)
-        if dk >= cutoffKey then
-            kept[#kept + 1] = e
-        end
-    end
-    if #kept > ET_PUNISH_MAX_STORE then
-        local trimmed = {}
-        local start = #kept - ET_PUNISH_MAX_STORE + 1
-        for i = start, #kept do
-            trimmed[#trimmed + 1] = kept[i]
-        end
-        kept = trimmed
-    end
-    local changed = #kept ~= #etState.punish.entries
-    if changed then
-        etState.punish.entries = kept
-        etInvalidatePunishWeekCache()
-        if rewrite then pcall(etRewritePunishStore) end
-    end
-    return changed
-end
-
-local function etAppendPunishStoreLine(e)
-    if not encodeJson then
-        if not etState.punish.encodeWarned then
-            etState.punish.encodeWarned = true
-            print('[Report Desk] punish log: encodeJson missing (dkjson?)')
-        end
-        pcall(etRewritePunishStore)
-        return
-    end
-    local ok, line = pcall(encodeJson, e)
-    if not ok or not line then return end
-    local f = io.open(ET_PUNISH_PATH, 'a')
-    if f then
-        f:write(line .. '\n')
-        f:close()
-    end
-end
-
-local function etLoadPunishStore()
-    etState.punish.entries = {}
-    if not decodeJson then
-        print('[Report Desk] punish log: decodeJson missing on load')
-        return
-    end
-    local f = io.open(ET_PUNISH_PATH, 'r')
-    if not f then return end
-    for line in f:lines() do
-        line = trim(line)
-        if line ~= '' and decodeJson then
-            local ok, row = pcall(decodeJson, line)
-            if ok then
-                local e = etPunishNormalizeEntry(row)
-                if e then etState.punish.entries[#etState.punish.entries + 1] = e end
-            end
-        end
-    end
-    f:close()
-    table.sort(etState.punish.entries, etPunishEntrySort)
-    etPunishPruneStore(true)
-end
-
-function helpStatsRecordPunish(raw)
-    local ok, err = pcall(function()
-        local e = etPunishNormalizeEntry(raw)
-        if not e or not etPunishIsTrackedEntry(e) then return end
-        if not e.ts or e.ts <= 0 then
-            e.ts = os.time()
-            e.dateKey = os.date('%Y-%m-%d', e.ts)
-        end
-        etState.punish.entries[#etState.punish.entries + 1] = e
-        etInvalidatePunishWeekCache()
-        if etPunishPruneStore(true) then
-            return
-        end
-        etAppendPunishStoreLine(e)
-    end)
-    if not ok then
-        print('[Report Desk] punish log: ' .. tostring(err))
-    end
-end
-
-local ET_PUNISH_KIND_LABEL = {
-    jail = 'Jail', mute = 'Mute', kick = 'Kick', ban = 'Ban', warn = 'Warn',
-}
-
-local ET_PUNISH_HEAD_LABEL = {
-    unjail = 'Unjail', unmute = 'Unmute', unwarn = 'Unwarn', unban = 'Unban',
-    offjail = 'OffJail', offmute = 'OffMute', offban = 'OffBan', offwarn = 'OffWarn',
-    skick = 'SKick',
-}
-
-local function etFormatPunishDateLine(ts)
-    ts = tonumber(ts) or 0
-    if ts <= 0 then return '?' end
-    local wd = os.date('%a', ts)
-    local day = ET_WD_SHORT[wd] or wd
-    return string.format('%s \xB7 %s', day, os.date('%d.%m', ts))
-end
-
-local function etFormatPunishClockLine(ts)
-    ts = tonumber(ts) or 0
-    if ts <= 0 then return '?' end
-    return os.date('%H:%M:%S', ts)
-end
-
-local function etFormatPunishKindLabel(e)
-    if type(e) ~= 'table' then return '?' end
-    local head = etPunishCmdHead(e.cmd or '')
-    if head ~= '' and ET_PUNISH_HEAD_LABEL[head] then
-        return ET_PUNISH_HEAD_LABEL[head]
-    end
-    local kind = e.kind or etPunishKindFromCmd(e.cmd)
-    if kind and ET_PUNISH_KIND_LABEL[kind] then
-        return ET_PUNISH_KIND_LABEL[kind]
-    end
-    if kind and kind ~= '' then
-        return kind:sub(1, 1):upper() .. kind:sub(2)
-    end
-    return '?'
-end
-
-local function etFormatPunishPlayer(e)
-    local nick = trim(e.player or '?')
-    local pid = tonumber(e.pid)
-    if pid and pid >= 0 then
-        return string.format('%s[%d]', nick, pid)
-    end
-    return nick
-end
-
-local ET_PUNISH_TERM_EMPTY = '-'
-
-local ET_PUNISH_NO_TERM_KIND = {
-    kick = true, skick = true, warn = true, unwarn = true,
-    unjail = true, unmute = true, unban = true, tr = true,
-}
-
-local ET_PUNISH_NO_TERM_HEAD = {
-    kick = true, skick = true, warn = true, unwarn = true,
-    unjail = true, unmute = true, unban = true, tr = true,
-}
-
-local function etPunishHasTerm(e)
-    if type(e) ~= 'table' then return false end
-    local kind = e.kind or etPunishKindFromCmd(e.cmd or '')
-    if ET_PUNISH_NO_TERM_KIND[kind] then return false end
-    return not ET_PUNISH_NO_TERM_HEAD[etPunishCmdHead(e.cmd or '')]
-end
-
-local function etPunishTermIsDays(e)
-    if type(e) ~= 'table' then return false end
-    local head = etPunishCmdHead(e.cmd or '')
-    return head == 'ban' or head == 'offban'
-end
-
-local function etFormatDaysRu(days)
-    days = math.floor(tonumber(days) or 0)
-    if days <= 0 then return ET_PUNISH_TERM_EMPTY end
-    local mod10 = days % 10
-    local mod100 = days % 100
-    local unit
-    if mod10 == 1 and mod100 ~= 11 then
-        unit = '\xE4\xE5\xED\xFC'
-    elseif mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20) then
-        unit = '\xE4\xED\xFF'
-    else
-        unit = '\xE4\xED\xE5\xE9'
-    end
-    return string.format('%d %s', days, unit)
-end
-
-local function etFormatPunishTerm(e)
-    if type(e) == 'table' and not etPunishHasTerm(e) then
-        return ET_PUNISH_TERM_EMPTY
-    end
-    local term = type(e) == 'table' and e.term or e
-    term = trim(tostring(term or ''))
-    if term == '' or term == '-' then return ET_PUNISH_TERM_EMPTY end
-    local n = tonumber(term)
-    if n then
-        n = math.floor(n)
-        if n <= 0 then return ET_PUNISH_TERM_EMPTY end
-        if type(e) == 'table' and etPunishTermIsDays(e) then
-            return etFormatDaysRu(n)
-        end
-        if n >= 60 and n % 60 == 0 then
-            return string.format('%d \xF7', math.floor(n / 60))
-        end
-        return string.format('%d \xEC\xE8\xED', n)
-    end
-    return term
-end
-
-local function etFormatPunishAction(e)
-    return etFormatPunishKindLabel(e)
-end
-
-local function etPunishKindIsRemoval(e)
-    local head = etPunishCmdHead(e.cmd or '')
-    return head == 'unjail' or head == 'unmute' or head == 'unwarn' or head == 'unban'
-end
-
-local function etPunishKindColor(e)
-    if etPunishKindIsRemoval(e) then
-        return ET_COL_OK
-    end
-    return col_punish_label or ET_COL_FAIL
-end
-
-local function etPunishEntriesForViewWeek()
-    local weekKey = etHelpViewWeekMondayKey()
-    local baseTs = etMondayTsFromKey(weekKey)
-    if not baseTs then return {}, weekKey end
-    local weekEnd = os.date('%Y-%m-%d', baseTs + 6 * 86400)
-    local cache = etState.punish.weekCache
-    if cache and cache.weekKey == weekKey then
-        return cache.rows, weekKey, cache.counts
-    end
-
-    local rows = {}
-    local counts = { all = 0, jail = 0, mute = 0, kick = 0, ban = 0, warn = 0, other = 0 }
-    local entries = etState.punish.entries
-    for i = #entries, 1, -1 do
-        local e = entries[i]
-        if not etPunishIsTrackedEntry(e) then goto continue_entry end
-        local dk = e.dateKey or os.date('%Y-%m-%d', e.ts or 0)
-        if dk < weekKey then break end
-        if dk <= weekEnd then
-            rows[#rows + 1] = e
-            counts.all = counts.all + 1
-            local kind = e.kind or etPunishKindFromCmd(e.cmd)
-            if counts[kind] ~= nil then
-                counts[kind] = counts[kind] + 1
-            else
-                counts.other = counts.other + 1
-            end
-        end
-        ::continue_entry::
-    end
-
-    etState.punish.weekCache = { weekKey = weekKey, rows = rows, counts = counts }
-    return rows, weekKey, counts
-end
-
-local function etPunishFilterRows(rows, filterId)
-    filterId = filterId or 'all'
-    if filterId == 'all' or filterId == '' then return rows end
-    local out = {}
-    for _, e in ipairs(rows) do
-        local kind = e.kind or etPunishKindFromCmd(e.cmd)
-        if kind == filterId then out[#out + 1] = e end
-    end
-    return out
-end
-
-local ET_PUNISH_DATE_HDR = '\xC4\xE0\xF2\xE0'
-local ET_PUNISH_CLOCK_HDR = '\xC2\xF0\xE5\xEC\xFF'
-local ET_PUNISH_PLAYER_HDR = '\xC8\xE3\xF0\xEE\xEA'
-local ET_PUNISH_ACTION_HDR = '\xD2\xE8\xEF'
-local ET_PUNISH_TERM_HDR = '\xD1\xF0\xEE\xEA'
-local ET_PUNISH_REASON_HDR = '\xCF\xF0\xE8\xF7\xE8\xED\xE0'
-
-local ET_PUNISH_COL_PAD = 12
-local ET_PUNISH_ROW_GAP = 8
-local ET_PUNISH_SCROLL_MIN_H = 320
-local ET_PUNISH_SCROLL_MAX_H = 480
-
-local function etPunishClipCol(text, colW)
-    text = text or ''
-    if text == ET_PUNISH_TERM_EMPTY or text == '-' then
-        return uiText(ET_PUNISH_TERM_EMPTY)
-    end
-    colW = tonumber(colW) or 0
-    if colW < 8 then return uiText(ET_PUNISH_TERM_EMPTY) end
-    if type(ellipsizeToWidth) == 'function' then
-        return ellipsizeToWidth(text, colW - 4)
-    end
-    return uiText(text)
-end
-
-local function etPunishLineH()
-    local sp = imgui.GetStyle().ItemSpacing
-    return imgui.GetTextLineHeight() + sp.y
-end
-
-local function etPunishTableLayout(availW, rows)
-    availW = math.floor(math.max(320, tonumber(availW) or 320))
-    local pad = ET_PUNISH_COL_PAD
-
-    local minDate = etHelpColTextW(ET_PUNISH_DATE_HDR, pad)
-    for _, wd in pairs(ET_WD_SHORT) do
-        minDate = math.max(minDate, etHelpColTextW(wd .. ' \xB7 31.12', 8))
-    end
-    local minClock = math.max(
-        etHelpColTextW(ET_PUNISH_CLOCK_HDR, pad),
-        etHelpColTextW('23:59:59', 8))
-    local minPlayer = etHelpColTextW(ET_PUNISH_PLAYER_HDR, pad)
-    local minAction = etHelpColTextW(ET_PUNISH_ACTION_HDR, pad)
-    local minTerm = math.max(
-        etHelpColTextW(ET_PUNISH_TERM_HDR, pad),
-        etHelpColTextW(ET_PUNISH_TERM_EMPTY, 8),
-        etHelpColTextW('999 \xEC\xE8\xED', 8),
-        etHelpColTextW('99 \xF7', 8),
-        etHelpColTextW('21 \xE4\xE5\xED\xFC', 8),
-        etHelpColTextW('5 \xE4\xED\xE5\xE9', 8))
-
-    for _, lbl in pairs(ET_PUNISH_KIND_LABEL) do
-        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
-    end
-    for _, lbl in pairs(ET_PUNISH_HEAD_LABEL) do
-        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
-    end
-
-    local shown = 0
-    for _, e in ipairs(rows or {}) do
-        if shown >= ET_PUNISH_UI_MAX then break end
-        shown = shown + 1
-        minPlayer = math.max(minPlayer, etHelpColTextW(etFormatPunishPlayer(e), 8))
-        minAction = math.max(minAction, etHelpColTextW(etFormatPunishKindLabel(e), 8))
-        minTerm = math.max(minTerm, etHelpColTextW(etFormatPunishTerm(e), 8))
-    end
-
-    local wDate = math.max(minDate, math.floor(availW * 0.11))
-    local wClock = math.max(minClock, math.floor(availW * 0.10))
-    local wPlayer = math.max(minPlayer, math.floor(availW * 0.26))
-    local wAction = math.max(minAction, math.floor(availW * 0.08))
-    local wTerm = math.max(minTerm, math.floor(availW * 0.09))
-    local wReason = availW - wDate - wClock - wPlayer - wAction - wTerm
-
-    if wReason < math.floor(availW * 0.28) then
-        wPlayer = math.max(minPlayer, wPlayer - (math.floor(availW * 0.28) - wReason))
-        wReason = availW - wDate - wClock - wPlayer - wAction - wTerm
-    end
-    if wReason < 80 then
-        wReason = 80
-        wPlayer = math.max(minPlayer, availW - wDate - wClock - wAction - wTerm - wReason)
-    end
-
-    local widths = { wDate, wClock, wPlayer, wAction, wTerm, wReason }
-    local xs = { 0, wDate, wDate + wClock, wDate + wClock + wPlayer,
-        wDate + wClock + wPlayer + wAction,
-        wDate + wClock + wPlayer + wAction + wTerm }
-    return widths, xs, availW
-end
-
-local function etPunishTextCell(x, y, w, text, color)
-    imgui.SetCursorPos(imgui.ImVec2(x, y))
-    imgui.PushTextWrapPos(x + math.max(16, w) - 4)
-    imgui.TextColored(color, text)
-    imgui.PopTextWrapPos()
-end
-
-local function etPunishDrawSep(x, y, w)
-    local dl = imgui.GetWindowDrawList()
-    if not dl then return y + ET_PUNISH_ROW_GAP end
-    imgui.SetCursorPos(imgui.ImVec2(x, y))
-    local sp = imgui.GetCursorScreenPos()
-    dl:AddLine(sp, imgui.ImVec2(sp.x + w, sp.y), toU32(imgui.ImVec4(1.0, 1.0, 1.0, 0.12)), 1.0)
-    return y + ET_PUNISH_ROW_GAP
-end
-
-local function etPunishScrollHeight()
-    local remainY = imgui.GetContentRegionAvail().y
-    local scrollH = remainY - 52
-    if scrollH < ET_PUNISH_SCROLL_MIN_H then scrollH = ET_PUNISH_SCROLL_MIN_H end
-    if scrollH > ET_PUNISH_SCROLL_MAX_H then scrollH = ET_PUNISH_SCROLL_MAX_H end
-    return scrollH
-end
-
-local function etDrawPunishFilterBar(counts)
-    if not etState.punish.filter or etState.punish.filter == '' then
-        etState.punish.filter = 'all'
-    end
-    if etState.punish.filter == 'tr' then
-        etState.punish.filter = 'all'
-    end
-    local sel = etState.punish.filter
-    local gap = 6
-    local btnH = 26
-    local n = #ET_PUNISH_FILTERS
-    local rowW = imgui.GetContentRegionAvail().x
-    local baseW = math.floor((rowW - gap * (n - 1)) / n)
-    local x0 = imgui.GetCursorPosX()
-    local y0 = imgui.GetCursorPosY()
-    local accentDim = col_accent_dim or imgui.ImVec4(0.28, 0.22, 0.42, 0.95)
-    local accent = col_accent or imgui.ImVec4(0.34, 0.26, 0.50, 1.0)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 4)
-    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 5))
-
-    local posX = x0
-    for i, f in ipairs(ET_PUNISH_FILTERS) do
-        local btnW = (i == n) and (rowW - (posX - x0)) or baseW
-        imgui.SetCursorPos(imgui.ImVec2(posX, y0))
-        local cnt = tonumber(counts and counts[f.id]) or 0
-        local label = uiText(f.label) .. ' (' .. tostring(cnt) .. ')'
-        local active = sel == f.id
-        if active then
-            imgui.PushStyleColor(imgui.Col.Button, accentDim)
-            imgui.PushStyleColor(imgui.Col.ButtonHovered, accent)
-        end
-        if imgui.Button(label .. '##pf_' .. f.id, imgui.ImVec2(btnW, btnH)) then
-            etState.punish.filter = f.id
-        end
-        if active then imgui.PopStyleColor(2) end
-        posX = posX + btnW + gap
-    end
-    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + btnH + 10))
-    imgui.PopStyleVar(2)
-end
-
-local function etDrawHelpPunishLog()
-    local weekRows, _, counts = etPunishEntriesForViewWeek()
-    etDrawPunishFilterBar(counts)
-
-    local filterId = etState.punish.filter or 'all'
-    local rows = etPunishFilterRows(weekRows, filterId)
-    local weekTotal = counts and counts.all or #weekRows
-
-    if weekTotal == 0 then
-        drawSettingsHint('\xCD\xE5\xF2 \xE2\xFB\xE4\xE0\xED\xED\xFB\xF5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9 \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE')
-        return
-    end
-    if #rows == 0 then
-        local filterLabel = filterId
-        for _, f in ipairs(ET_PUNISH_FILTERS) do
-            if f.id == filterId then filterLabel = f.label break end
-        end
-        drawSettingsHint(string.format(
-            '\xCD\xE5\xF2 \xE7\xE0\xEF\xE8\xF1\xE5\xE9 \xAB%s\xBB \xE7\xE0 \xE2\xFB\xE1\xF0\xE0\xED\xED\xF3\xFE \xED\xE5\xE4\xE5\xEB\xFE \xB7 \xE2\xF1\xE5\xE3\xEE %d',
-            filterLabel, weekTotal))
-        return
-    end
-
-    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
-    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
-    local childFlags = 0
-    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
-        childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
-    end
-
-    imgui.BeginChild('##help_punish_scroll', imgui.ImVec2(-1, etPunishScrollHeight()), true, childFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
-
-    local widths, xs, tableW = etPunishTableLayout(imgui.GetContentRegionAvail().x, rows)
-    local x0 = imgui.GetCursorPosX()
-    local y = imgui.GetCursorPosY()
-    local lineH = etPunishLineH()
-
-    etPunishTextCell(x0 + xs[1], y, widths[1], uiText(ET_PUNISH_DATE_HDR), hdrCol)
-    etPunishTextCell(x0 + xs[2], y, widths[2], uiText(ET_PUNISH_CLOCK_HDR), hdrCol)
-    etPunishTextCell(x0 + xs[3], y, widths[3], uiText(ET_PUNISH_PLAYER_HDR), hdrCol)
-    etPunishTextCell(x0 + xs[4], y, widths[4], uiText(ET_PUNISH_ACTION_HDR), hdrCol)
-    etPunishTextCell(x0 + xs[5], y, widths[5], uiText(ET_PUNISH_TERM_HDR), hdrCol)
-    etPunishTextCell(x0 + xs[6], y, widths[6], uiText(ET_PUNISH_REASON_HDR), hdrCol)
-
-    y = y + lineH + 2
-    y = etPunishDrawSep(x0, y, tableW)
-
-    local shown = 0
-    for _, e in ipairs(rows) do
-        if shown >= ET_PUNISH_UI_MAX then break end
-        shown = shown + 1
-        local reason = e.reason or '-'
-        if e.src == 'auto' and trim(e.reqAdmin or '') ~= '' then
-            reason = reason .. string.format(
-                ' \xB7 \xE7\xE0\xEF\xF0\xEE\xF1 %s[%s]',
-                e.reqAdmin, tostring(e.reqAdminId or '?'))
-        elseif e.src == 'a_request' then
-            reason = reason .. ' \xB7 \xE2 \xE0\xE4\xEC\xE8\xED-\xF7\xE0\xF2'
-        end
-        etPunishTextCell(x0 + xs[1], y, widths[1], uiText(etFormatPunishDateLine(e.ts)), valCol)
-        etPunishTextCell(x0 + xs[2], y, widths[2], uiText(etFormatPunishClockLine(e.ts)), col_muted2)
-        etPunishTextCell(x0 + xs[3], y, widths[3], etPunishClipCol(etFormatPunishPlayer(e), widths[3]), valCol)
-        etPunishTextCell(x0 + xs[4], y, widths[4], etPunishClipCol(etFormatPunishKindLabel(e), widths[4]), etPunishKindColor(e))
-        etPunishTextCell(x0 + xs[5], y, widths[5], etPunishClipCol(etFormatPunishTerm(e), widths[5]), col_muted2)
-        etPunishTextCell(x0 + xs[6], y, widths[6], etPunishClipCol(reason, widths[6]), col_muted2)
-        y = y + lineH
-    end
-
-    imgui.SetCursorPos(imgui.ImVec2(x0, y))
-    imgui.Dummy(imgui.ImVec2(tableW, 1))
-    imgui.PopStyleVar()
-    imgui.EndChild()
-
-    imgui.Dummy(imgui.ImVec2(0, 4))
-
-    drawSettingsHint(string.format(
-        '\xCF\xEE\xEA\xE0\xE7\xE0\xED\xEE %d \xE8\xE7 %d',
-        shown, #rows))
-end
-
-local function etAnsCount(dateKey)
-    return tonumber(etState.ans.days[dateKey]) or 0
-end
-
-local function etSumAns(filterFn)
-    local total = 0
-    for dateKey, cnt in pairs(etState.ans.days) do
-        if filterFn(dateKey) then
-            total = total + (tonumber(cnt) or 0)
-        end
-    end
-    return total
-end
-
-local function etWeekAnsTotal(weekMondayKey)
-    local baseTs = etMondayTsFromKey(weekMondayKey)
-    if not baseTs then return 0 end
-    local weekEnd = os.date('%Y-%m-%d', baseTs + 6 * 86400)
-    return etSumAns(function(k) return k >= weekMondayKey and k <= weekEnd end)
-end
-
-local function etBuildWeekDayRows(weekMondayKey)
-    weekMondayKey = weekMondayKey or etCurrentWeekMondayKey()
-    local y, m, d = weekMondayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
-    if not y then return {} end
-    local baseTs = os.time({
-        year = tonumber(y), month = tonumber(m), day = tonumber(d),
-        hour = 12, min = 0, sec = 0,
-    })
-    local todayKey = os.date('%Y-%m-%d')
-    local viewingCurrent = weekMondayKey == etCurrentWeekMondayKey()
-    local dailyNorm = etDailyNormMin()
-    local rows = {}
-    for i = 0, 6 do
-        local ts = baseTs + i * 86400
-        local dateKey = os.date('%Y-%m-%d', ts)
-        local enWd = os.date('%a', ts)
-        local onlineMin = tonumber(etState.online.days[dateKey])
-        local ansCnt = etAnsCount(dateKey)
-        local normOk = nil
-        if onlineMin ~= nil then
-            normOk = onlineMin >= dailyNorm
-        end
-        rows[#rows + 1] = {
-            dateKey = dateKey,
-            weekday = ET_WD_SHORT[enWd] or enWd,
-            dateLabel = os.date('%d.%m', ts),
-            onlineMin = onlineMin,
-            ansCnt = ansCnt,
-            normOk = normOk,
-            isToday = viewingCurrent and dateKey == todayKey,
-        }
-    end
-    return rows
-end
-
-local function etDrawActivityBar(valueMin, normMin, fillColor)
-    valueMin = math.max(0, tonumber(valueMin) or 0)
-    normMin = math.max(1, tonumber(normMin) or 1)
-    local frac = math.max(0, math.min(1, valueMin / normMin))
-    local barW = imgui.GetContentRegionAvail().x
-    local barH = 3
-    local p = imgui.GetCursorScreenPos()
-    local dl = imgui.GetWindowDrawList()
-    dl:AddRectFilled(p, imgui.ImVec2(p.x + barW, p.y + barH), toU32(imgui.ImVec4(0.18, 0.18, 0.22, 1.0)), 2.0)
-    if frac > 0.001 then
-        dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), toU32(fillColor or ET_COL.accent), 2.0)
-    end
-    imgui.Dummy(imgui.ImVec2(0, barH + 8))
-end
-
-local function etDrawHelpWeekNav(viewWeekKey)
-    local offset = tonumber(etState.helpWeekOffset) or 0
-    local rowW = imgui.GetContentRegionAvail().x
-    local btnSz = imgui.GetFrameHeight()
-    local dirLeft = (imgui.Dir and imgui.Dir.Left) or 0
-    local dirRight = (imgui.Dir and imgui.Dir.Right) or 1
-    local rangeText = uiText(etWeekRangeLabel(viewWeekKey))
-    local textW = imgui.CalcTextSize(rangeText).x
-    local y0 = imgui.GetCursorPosY()
-    local x0 = imgui.GetCursorPosX()
-    local textX = x0 + math.max(btnSz + 6, (rowW - textW) * 0.5)
-    local textY = y0 + math.max(0, (btnSz - imgui.GetTextLineHeight()) * 0.5)
-    local labelCol = col_accent or ET_COL.accent
-
-    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
-    if offset < ET_HELP_WEEK_MAX_BACK then
-        if imgui.ArrowButton('##et_wk_prev', dirLeft) then
-            etState.helpWeekOffset = offset + 1
-        end
-    else
-        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
-    end
-    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
-
-    if offset > 0 then
-        imgui.SetCursorPos(imgui.ImVec2(textX, y0))
-        if imgui.InvisibleButton('##et_wk_now', imgui.ImVec2(textW, btnSz)) then
-            etState.helpWeekOffset = 0
-        end
-    end
-    imgui.SetCursorPos(imgui.ImVec2(textX, textY))
-    imgui.TextColored(labelCol, rangeText)
-
-    imgui.SetCursorPos(imgui.ImVec2(x0 + rowW - btnSz, y0))
-    if offset > 0 then
-        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
-        if imgui.ArrowButton('##et_wk_next', dirRight) then
-            etState.helpWeekOffset = offset - 1
-        end
-        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
-    end
-
-    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + btnSz + 6))
-end
-
-local function etDrawHelpWeekTable()
-    local viewWeekKey = etHelpViewWeekMondayKey()
-    local rows = etBuildWeekDayRows(viewWeekKey)
-    if #rows == 0 then
-        drawSettingsHint('\xCD\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE')
-        return
-    end
-    local weekAns = etWeekAnsTotal(viewWeekKey)
-
-    etDrawHelpWeekNav(viewWeekKey)
-
-    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
-    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
-
-    local availW = imgui.GetContentRegionAvail().x
-    local wDay, wDate, wGap, wOnline, wAns = etHelpTableWidths(availW)
-
-    imgui.Columns(5, '##help_week_cols', false)
-    if imgui.SetColumnWidth then
-        imgui.SetColumnWidth(0, wDay)
-        imgui.SetColumnWidth(1, wDate)
-        imgui.SetColumnWidth(2, wGap)
-        imgui.SetColumnWidth(3, wOnline)
-        imgui.SetColumnWidth(4, wAns)
-    end
-
-    imgui.TextColored(hdrCol, uiText(ET_HELP_DAY_HDR))
-    imgui.NextColumn()
-    imgui.TextColored(hdrCol, uiText(ET_HELP_DATE_HDR))
-    imgui.NextColumn()
-    imgui.NextColumn()
-    imgui.TextColored(hdrCol, uiText(ET_HELP_ONLINE_HDR))
-    imgui.NextColumn()
-    imgui.TextColored(hdrCol, uiText(ET_HELP_ANS_HDR))
-    imgui.NextColumn()
-
-    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
-    imgui.Separator()
-    imgui.PopStyleColor()
-
-    for _, row in ipairs(rows) do
-        local dayCol = row.isToday and valCol or col_muted2
-        local dateCol = row.isToday and valCol or col_muted2
-        imgui.TextColored(dayCol, uiText(row.weekday))
-        imgui.NextColumn()
-        imgui.TextColored(dateCol, uiText(row.dateLabel))
-        imgui.NextColumn()
-        imgui.NextColumn()
-        if row.onlineMin ~= nil then
-            local onlineCol = row.normOk and ET_COL_OK or ET_COL_FAIL
-            imgui.TextColored(onlineCol, uiText(etFormatMinutesAsRussianDuration(row.onlineMin)))
-        else
-            imgui.TextColored(col_muted2, uiText('\xB7'))
-        end
-        imgui.NextColumn()
-        local ansCol = (row.ansCnt or 0) > 0 and valCol or col_muted2
-        imgui.TextColored(ansCol, uiText(tostring(row.ansCnt or 0)))
-        imgui.NextColumn()
-    end
-
-    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
-    imgui.Separator()
-    imgui.PopStyleColor()
-
-    imgui.TextColored(hdrCol, uiText(ET_HELP_TOTAL_LABEL))
-    imgui.NextColumn()
-    imgui.NextColumn()
-    imgui.NextColumn()
-    imgui.NextColumn()
-    local ansTotalCol = weekAns > 0 and valCol or col_muted2
-    imgui.TextColored(ansTotalCol, uiText(tostring(weekAns)))
-    imgui.NextColumn()
-
-    imgui.Columns(1)
-
-    local offset = tonumber(etState.helpWeekOffset) or 0
-    if offset > 0 then
-        drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xE4\xE0\xF2\xF3 \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE9 \xED\xE5\xE4\xE5\xEB\xE8')
-    end
-end
-
-local function etUpdateStoredDay(dateKey, minutes)
-    if not dateKey or minutes == nil then return end
-    minutes = math.max(0, math.floor(tonumber(minutes) or 0))
-    etEnsureOnlinePeriods()
-    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
-    if dateKey < cutoffKey then return end
-    local prev = etState.online.days[dateKey]
-    if prev == nil or minutes > prev then
-        etState.online.days[dateKey] = minutes
-        pcall(etSaveOnlineStore)
-    end
-end
-
-local function etSumCleanMinutes(filterFn)
-    etEnsureOnlinePeriods()
-    local total = 0
-    for dateKey, mins in pairs(etState.online.days) do
-        if filterFn(dateKey) then
-            total = total + (tonumber(mins) or 0)
-        end
-    end
-    return total
-end
-
-local function etGetTodayCleanMin()
-    etEnsureOnlinePeriods()
-    local todayKey = os.date('%Y-%m-%d')
-    return tonumber(etState.online.days[todayKey]) or 0
-end
-
-local function etGetMonthlyCleanMin()
-    local monthKey = etCurrentMonthKey()
-    return etSumCleanMinutes(function(dateKey) return dateKey:sub(1, 7) == monthKey end)
-end
-
-local function etSyncOnlineHistory(serverDate, cleanToday, cleanYesterday)
-    local todayKey = etParseServerDateKey(serverDate)
-    etUpdateStoredDay(todayKey, cleanToday)
-    if cleanYesterday ~= nil then
-        local y, m, d = todayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
-        if y then
-            local yesterdayKey = os.date('%Y-%m-%d', os.time({
-                year = tonumber(y), month = tonumber(m), day = tonumber(d),
-                hour = 12, min = 0, sec = 0,
-            }) - 86400)
-            etUpdateStoredDay(yesterdayKey, cleanYesterday)
-        end
-    end
-end
-
-local function etMigrateLegacyNorms()
-    ensureExactTimeSettings()
-    local f = io.open(ET_LEGACY_CONFIG, 'r')
-    if not f then return end
-    local changed = false
-    for line in f:lines() do
-        local weekH = line:match('^%s*week_norm_h%s*=%s*(%d+)')
-        if weekH and tonumber(weekH) > 0 and (tonumber(settings.exact_time_daily_norm_h) or 4) == 4 then
-            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(tonumber(weekH) / 7)))
-            changed = true
-        end
-        local monthH = line:match('^%s*month_norm_h%s*=%s*(%d+)')
-        if monthH and tonumber(monthH) > 0 and (tonumber(settings.exact_time_monthly_norm_h) or 112) == 112 then
-            settings.exact_time_monthly_norm_h = tonumber(monthH)
-            changed = true
-        end
-    end
-    f:close()
-    if changed then markDirtySettings() end
-end
-
-local function etInstallWmHandler()
-    if not deskWmDispatch or not deskWmDispatch.register then return end
-    deskWmDispatch.unregister('exact_time')
-    deskWmDispatch.register('exact_time', 88, function(msg, wparam, lparam)
-        if not etState.showOpen then return false end
-        local wm = deskCache and deskCache.wm
-        if not wm then return false end
-        msg = tonumber(msg) or 0
-        wparam = tonumber(wparam) or 0
-        if msg ~= wm.KEYDOWN and msg ~= wm.SYSKEYDOWN and msg ~= wm.KEYUP and msg ~= wm.SYSKEYUP then
-            return false
-        end
-        local vkEsc = vkeys and vkeys.VK_ESCAPE
-        local vkRet = (vkeys and vkeys.VK_RETURN) or 0x0D
-        if wparam ~= vkEsc and wparam ~= vkRet then return false end
-        if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN then
-            consumeWindowMessage(true, false, true)
-            return true
-        end
-        if etCloseWindow then etCloseWindow() end
-        consumeWindowMessage(true, false, true)
-        return true
-    end)
-end
-
-function exactTimeInit()
-    ensureExactTimeSettings()
-    pcall(etMigrateLegacyNorms)
-    pcall(etLoadOnlineStore)
-    pcall(etLoadAnsStore)
-    pcall(etLoadPunishStore)
-    pcall(etBackfillAnsFromThreads)
-    pcall(etInstallWmHandler)
-end
-
-function exactTimeWantsImguiInput()
-    return etState.showOpen == true
-end
-
-function exactTimeShouldDraw()
-    return etState.showOpen and etState.data.playToday ~= nil
-end
-
-function exactTimeNoteOutgoing(msg)
-    if not etEnabled() then return end
-    if type(msg) ~= 'string' then return end
-    local s = trim(msg)
-    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
-    local num = s:match('^[cC]%s*(%d+)$') or s:match('^[cC](%d+)$')
-    if not num and s:match('^[cC]$') then num = '60' end
-    if num and tonumber(num) == 60 then
-        etState.pendingCmdAt = os.clock()
-    end
-end
-
-function exactTimeOnShowDialog(dialogId, style, title, button1, button2, text)
-    if not etEnabled() then return false end
-    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) > EXACT_TIME_TIMEOUT then
-        etState.pendingCmdAt = nil
-    end
-    if not etIsExactTimeDialog(title, text) then return false end
-    etState.pendingCmdAt = nil
-
-    local dialogRows = etParseDialogLines(text)
-    local playToday = etExtractDurationAfterLabel(text, 'Время в игре сегодня')
-        or etMinutesFromDialogRows(dialogRows, 'Время в игре сегодня', 'Онлайн сегодня')
-    local afkToday = etExtractDurationAfterLabel(text, 'AFK за сегодня')
-        or etExtractDurationAfterLabel(text, 'AFK сегодня')
-        or etMinutesFromDialogRows(dialogRows, 'AFK за сегодня', 'AFK сегодня')
-    if playToday == nil or afkToday == nil then
-        if type(say) == 'function' then
-            say('{FF6666}[Exact Time] {FFFFFF}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xF0\xEE\xF7\xE8\xF2\xE0\xF2\xFC \xE2\xF0\xE5\xEC\xFF.')
-        end
-        etSendDialogClose(dialogId, button1, button2)
-        return true
-    end
-
-    local cleanMin = math.max(0, playToday - afkToday)
-    local serverTime, serverDate = etParseServerClock(text, dialogRows)
-    local playYday = etExtractDurationAfterLabel(text, 'Время в игре вчера')
-        or etMinutesFromDialogRows(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
-    local afkYday = etExtractDurationAfterLabel(text, 'AFK за вчера')
-        or etExtractDurationAfterLabel(text, 'AFK вчера')
-        or etMinutesFromDialogRows(dialogRows, 'AFK за вчера', 'AFK вчера')
-    local cleanYday = (playYday ~= nil and afkYday ~= nil) and math.max(0, playYday - afkYday) or nil
-
-    pcall(function() etSyncOnlineHistory(serverDate, cleanMin, cleanYday) end)
-
-    local d = etState.data
-    d.playToday = playToday
-    d.afkToday = afkToday
-    d.cleanMin = cleanMin
-    d.cleanMonthMin = etGetMonthlyCleanMin()
-    d.dialogId = dialogId
-    d.button1 = button1
-    d.button2 = button2
-    d.displayRows = etBuildDisplayList(text, dialogRows,
-        etFormatMinutesAsRussianDuration(cleanMin),
-        etFormatMinutesAsRussianDuration(playToday),
-        etFormatMinutesAsRussianDuration(afkToday))
-    local ch, cm, cs = etParseClockHms(serverTime)
-    d._clockTick = nil
-    d._clockStr = nil
-    if ch then
-        d.clockBase = { h = ch, m = cm, s = cs, at = os.clock() }
-    else
-        d.clockBase = nil
-    end
-    etState.showOpen = true
-    if etShowWindowBuf then etShowWindowBuf[0] = true end
-    etSetNativeDialogVisible(false)
-    return true
-end
-
-local function etDrawAccentStrip()
-    local dl = imgui.GetWindowDrawList()
-    local pos = imgui.GetWindowPos()
-    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + imgui.GetWindowWidth(), pos.y + 2), toU32(ET_COL.accent))
-    imgui.Dummy(imgui.ImVec2(0, 6))
-end
-
-local function etCenterText(text, color, scale)
-    scale = scale or 1.0
-    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
-    local tw = imgui.CalcTextSize(text).x
-    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
-    imgui.TextColored(color, text)
-    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
-end
-
-local function etCenterLabelValue(labelCp1251, value, valueColor)
-    valueColor = valueColor or ET_COL.accent
-    local label = uiText(labelCp1251 .. ': ')
-    local val = uiText(value)
-    local tw = imgui.CalcTextSize(label).x + imgui.CalcTextSize(val).x
-    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
-    imgui.TextColored(ET_COL.muted, label)
-    imgui.SameLine(0, 0)
-    imgui.TextColored(valueColor, val)
-end
-
-local function etDrawStatRows(rows, colId)
-    if #rows == 0 then return end
-    imgui.Columns(2, colId, false)
-    imgui.SetColumnWidth(0, ET_LABEL_W)
-    for i, row in ipairs(rows) do
-        if row.value and row.value ~= '' then
-            imgui.TextColored(ET_COL.muted, uiText(row.label))
-            imgui.NextColumn()
-            imgui.TextColored(ET_COL.value, uiText(row.value))
-            imgui.NextColumn()
-            if i < #rows then
-                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
-                imgui.NextColumn()
-                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
-                imgui.NextColumn()
-            end
-        end
-    end
-    imgui.Columns(1)
-end
-
-function drawExactTimeWindow()
-    if not exactTimeShouldDraw() then return end
-    etSetNativeDialogVisible(false)
-
-    local io = imgui.GetIO()
-    local sw, sh = io.DisplaySize.x, io.DisplaySize.y
-    if sw < 100 then sw = 1920 end
-    if sh < 100 then sh = 1080 end
-    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
-    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(ET_WIN_W, 0), imgui.ImVec2(ET_WIN_W, 9999))
-
-    local winFlags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoScrollbar
-    etPushWindowStyle()
-    if not etShowWindowBuf then
-        etShowWindowBuf = imgui.new.bool(etState.showOpen)
-    end
-    if not imgui.Begin(uiText(L_TITLE) .. '###desk_exact_time', etShowWindowBuf, winFlags) then
-        etPopWindowStyle()
-        imgui.End()
-        if etState.showOpen then etCloseWindow() end
-        return
-    end
-
-    etDrawAccentStrip()
-    local d = etState.data
-    local timeRow, cleanRow = nil, nil
-    local dateParts, todayRows, yesterdayRows = {}, {}, {}
-    if d.displayRows then
-        for _, row in ipairs(d.displayRows) do
-            if row.kind == 'time' then timeRow = row
-            elseif row.kind == 'accent' then cleanRow = row
-            elseif row.kind == 'date' then dateParts[#dateParts + 1] = row.value
-            elseif row.kind == 'today' then todayRows[#todayRows + 1] = row
-            elseif row.kind == 'yesterday' then yesterdayRows[#yesterdayRows + 1] = row
-            end
-        end
-    end
-
-    if #dateParts > 0 then
-        local dateLine = etFormatDateLine(dateParts)
-        if dateLine then
-            etCenterText(uiText(dateLine), ET_COL.muted, 0.92)
-            imgui.Dummy(imgui.ImVec2(0, 6))
-        end
-    end
-
-    if timeRow and timeRow.value ~= '' then
-        etCenterText(uiText(etLiveClockValue(timeRow.value)), ET_COL.time, 1.42)
-        imgui.Dummy(imgui.ImVec2(0, 4))
-    end
-
-    if cleanRow and cleanRow.value ~= '' then
-        etCenterLabelValue(L_ET_CLEAN, cleanRow.value)
-        imgui.Dummy(imgui.ImVec2(0, 6))
-        etDrawActivityBar(d.cleanMin, etDailyNormMin(), ET_COL.accent)
-    end
-
-    if d.cleanMonthMin ~= nil then
-        etCenterLabelValue(L_ET_CLEAN_MONTH, etFormatMinutesAsRussianDuration(d.cleanMonthMin), ET_MONTHLY_COLOR)
-        imgui.Dummy(imgui.ImVec2(0, 6))
-        etDrawActivityBar(d.cleanMonthMin, etMonthlyNormMin(), ET_MONTHLY_COLOR)
-    end
-
-    if #todayRows > 0 or #yesterdayRows > 0 then
-        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
-        imgui.Separator()
-        imgui.PopStyleColor()
-        imgui.Dummy(imgui.ImVec2(0, 6))
-    end
-
-    if #todayRows > 0 then etDrawStatRows(todayRows, '##et_today') end
-    if #todayRows > 0 and #yesterdayRows > 0 then
-        imgui.Dummy(imgui.ImVec2(0, 10))
-        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
-        imgui.Separator()
-        imgui.PopStyleColor()
-        imgui.Dummy(imgui.ImVec2(0, 8))
-    end
-    if #yesterdayRows > 0 then etDrawStatRows(yesterdayRows, '##et_yday') end
-
-    imgui.Dummy(imgui.ImVec2(0, 4))
-    if imgui.Button(uiText(L_CLOSE) .. '##et_close', imgui.ImVec2(-1, 32)) then
-        etCloseWindow()
-    end
-
-    imgui.End()
-    etPopWindowStyle()
-
-    if etShowWindowBuf and not etShowWindowBuf[0] and etState.showOpen then
-        etCloseWindow()
-    end
-end
-
-function syncExactTimeUiFromSettings()
-    ensureExactTimeSettings()
-    if uiExactTimeEnabled then uiExactTimeEnabled[0] = settings.exact_time_enabled ~= false end
-    if uiExactTimeDailyH then uiExactTimeDailyH[0] = math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) end
-    if uiExactTimeMonthlyH then uiExactTimeMonthlyH[0] = math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) end
-end
-
-function drawExactTimeTab()
-    if not exactTimeUiSynced then
-        syncExactTimeUiFromSettings()
-        exactTimeUiSynced = true
-    end
-    etEnsureOnlinePeriods()
-
-    pushPanelStyle(col_chat_bg)
-    local panelFlags = 0
-    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
-        panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
-    end
-    imgui.BeginChild('##help_panel', imgui.ImVec2(-1, -1), false, panelFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
-
-    deskFormPanelBegin('##help_c60')
-    drawSettingsCardHeader('\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF',
-        '\xCA\xEE\xEC\xE0\xED\xE4\xE0 /c 60 \xE2 \xF7\xE0\xF2\xE5 \xEE\xF2\xEA\xF0\xFB\xE2\xE0\xE5\xF2 \xEE\xEA\xED\xEE \xF1 \xF7\xE0\xF1\xE0\xEC\xE8 \xE8 \xEF\xF0\xEE\xE3\xF0\xE5\xF1\xF1\xEE\xEC')
-    if uiExactTimeEnabled and deskFormCheckboxRow('\xC7\xE0\xEC\xE5\xED\xE0 \xE4\xE8\xE0\xEB\xEE\xE3 /c 60', uiExactTimeEnabled, function(v)
-        settings.exact_time_enabled = v
-        if not v then etCloseWindow() end
-        markDirtySettings()
-    end, 'et_en') then end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##help_norms')
-    drawSettingsCardHeader('\xCD\xEE\xF0\xEC\xFB \xEE\xED\xEB\xE0\xE9\xED\xE0', '')
-    if uiExactTimeDailyH and drawSettingsInputInt then
-        drawSettingsInputInt('\xC4\xE5\xED\xFC', uiExactTimeDailyH, 'et_day', 1, 24, function(v)
-            settings.exact_time_daily_norm_h = v
-            markDirtySettings()
-        end, '\xF7')
-    end
-    if uiExactTimeMonthlyH and drawSettingsInputInt then
-        drawSettingsInputInt('\xCC\xE5\xF1\xFF\xF6', uiExactTimeMonthlyH, 'et_month', 1, 744, function(v)
-            settings.exact_time_monthly_norm_h = v
-            markDirtySettings()
-        end, '\xF7')
-    end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##help_stats')
-    drawSettingsCardHeader('\xD1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE0',
-        '\xD1\xE2\xEE\xE4\xED\xE0\xFF \xF2\xE0\xE1\xEB\xE8\xF6\xE0 \xEF\xEE \xE2\xE0\xF8\xE5\xEC\xF3 \xEE\xED\xEB\xE0\xE9\xED\xF3 \xE8 \xE0\xEA\xF2\xE8\xE2\xED\xEE\xF1\xF2\xE8 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2')
-    etDrawHelpWeekTable()
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##help_punish')
-    drawSettingsCardHeader('\xC2\xFB\xE4\xE0\xED\xED\xFB\xE5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF',
-        '\xCB\xEE\xE3\x20\xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9\x2C\x20\xEA\xEE\xF2\xEE\xF0\xFB\xE5\x20\xE2\xFB\x20\xE2\xFB\xE4\xE0\xE2\xE0\xEB\xE8\x2E')
-    etDrawHelpPunishLog()
-    deskFormPanelEnd()
-
-    imgui.PopStyleVar(2)
-    imgui.Dummy(imgui.ImVec2(0, 12))
-    imgui.EndChild()
-    popPanelStyle()
-end
 
 --[[ Временное лидерство (/templeader) и работы (/tempwork) для админов. ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
@@ -33407,7 +32011,6 @@ local function tlTabBarFlags()
 end
 
 local function tlDrawTopBar()
-    deskFormPanelBegin('##tl_top')
     local saved = tlTrim(settings.temp_leadership_org or '0 0')
     local savedLabel = tempLeadershipOrgLabel(saved)
     imgui.TextColored(col_muted2, uiText('\xD1\xEE\xF5\xF0\xE0\xED\xE5\xED\xEE:'))
@@ -33428,7 +32031,7 @@ local function tlDrawTopBar()
                 markDirtySettings()
             end, 'tl_auto') then end
     local actW = math.max(150, (imgui.GetContentRegionAvail().x - 8) * 0.5)
-    if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
     if imgui.Button(uiText('\xD1\xED\xFF\xF2\xFC \xEB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE') .. '##tl_clear_leader', imgui.ImVec2(actW, 30)) then
         setTempLeadership('0 0', true)
     end
@@ -33436,8 +32039,7 @@ local function tlDrawTopBar()
     if imgui.Button(uiText('\xD3\xE2\xEE\xEB\xE8\xF2\xFC\xF1\xFF \xF1 \xF0\xE0\xE1\xEE\xF2\xFB') .. '##tl_clear_work', imgui.ImVec2(actW, 30)) then
         setTempWork(0)
     end
-    if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
-    deskFormPanelEnd()
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
 end
 
 local function tlDrawPositionList(org)
@@ -33446,7 +32048,7 @@ local function tlDrawPositionList(org)
     for idx, item in ipairs(org.items or {}) do
         local orgId = item.orgId or org.orgId or tlOrgIdFromArgs(item.args)
         local tint = org.kind == 'leader' and tlOrgTint(orgId) or nil
-        if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
+        if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
         local label = uiText(item.label or '?')
         if imgui.Button(label .. '##tl_row_' .. org.key .. '_' .. tostring(idx), imgui.ImVec2(rowW, TL_ROW_H)) then
             if org.kind == 'work' then
@@ -33458,7 +32060,7 @@ local function tlDrawPositionList(org)
         if tint then
             tlDrawButtonAccent(tint, imgui.IsItemHovered(), imgui.IsItemActive())
         end
-        if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
+        if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
     end
     imgui.PopStyleVar()
 end
@@ -33480,12 +32082,21 @@ function drawTempLeadershipTab()
     if tlSelectedOrg > #TL_ORGS then tlSelectedOrg = #TL_ORGS end
 
     pushPanelStyle(col_chat_bg)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    local panelFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        panelFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.BeginChild('##tl_panel', imgui.ImVec2(-1, -1), false, panelFlags)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
 
+    deskFormPanelBegin('##tl_main')
+    if type(deskEdgeGroupTitle) == 'function' then
+        deskEdgeGroupTitle('\xC2\xF0\xE5\xEC\xE5\xED\xED\xEE\xE5 \xEB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE')
+    end
     tlDrawTopBar()
-    imgui.Dummy(imgui.ImVec2(0, 4))
+    deskFormPanelEnd()
 
+    imgui.Dummy(imgui.ImVec2(0, 4))
     local bodyH = math.max(160, imgui.GetContentRegionAvail().y)
 
     if imgui.BeginTabBar('##tl_orgs', tlTabBarFlags()) then
@@ -33494,19 +32105,2525 @@ function drawTempLeadershipTab()
             local tabOpen = imgui.BeginTabItem(tabLabel .. '##tl_tab_' .. org.key)
             if tabOpen then
                 tlSelectedOrg = i
+                imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(12, 8))
                 imgui.BeginChild('##tl_body_' .. org.key, imgui.ImVec2(-1, bodyH), false, tlBodyFlags())
+                if type(deskEdgeGroupTitle) == 'function' and org.label and org.label ~= org.short then
+                    deskEdgeGroupTitle(org.label, { insetX = 0 })
+                end
                 tlDrawPositionList(org)
                 imgui.EndChild()
-                imgui.EndTabItem()
+                imgui.PopStyleVar()
             elseif org.label ~= org.short and imgui.IsItemHovered() and imgui.SetTooltip then
                 imgui.SetTooltip(uiText(org.label))
             end
+            imgui.EndTabItem()
         end
         imgui.EndTabBar()
     end
 
-    imgui.PopStyleVar(2)
+    imgui.PopStyleVar()
+    imgui.Dummy(imgui.ImVec2(0, 8))
+    imgui.EndChild()
     popPanelStyle()
+end
+
+
+
+]=], '@report_desk_app_core_b')
+
+    if not chunkFn then error('[Report Desk] bundle group report_desk_app_core_b: ' .. tostring(chunkErr)) end
+
+    setfenv(chunkFn, __desk_bundle_env)
+
+    chunkFn()
+
+end
+
+
+
+do
+
+    local chunkFn, chunkErr = loadstring([=[
+
+--[[ /c 60 — кастомное окно «Точное время» (интеграция ARP Exact Time). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local ET_WIN_W = 408
+local ET_LINE = imgui.ImVec4(1.0, 1.0, 1.0, 0.10)
+local ET_ROW_GAP = 5
+local ET_LABEL_W = 228
+local ET_WEEKLY_COLOR = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
+local ET_MONTHLY_COLOR = imgui.ImVec4(0.52, 0.62, 0.92, 1.0)
+local ET_HELP_WEEK_MAX_BACK = 52
+local ET_HELP_MONTH_MAX_BACK = 24
+local ET_HELP_STATS_WEEKS_PER_PAGE = 4
+local ET_HELP_WEEK_BLOCK_GAP = 18
+local ET_ONLINE_RETAIN_DAYS = 400
+local EXACT_TIME_TIMEOUT = 10.0
+local SAMP_DIALOG_ACTIVE_OFF = 40
+
+local ET_ONLINE_PATH = getWorkingDirectory() .. '\\config\\arp_exact_time_online.ini'
+local ET_ANS_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_ans.ini'
+local ET_PUNISH_PATH = getWorkingDirectory() .. '\\config\\report_desk_help_punish.jsonl'
+local ET_PUNISH_RETAIN_DAYS = 6
+local ET_PUNISH_MAX_STORE = 2000
+local ET_PUNISH_PERSIST_QUEUE_MAX = 256
+local ET_PUNISH_PERSIST_APPEND_BATCH = 16
+local ET_LEGACY_ONLINE = getWorkingDirectory() .. '\\config\\arp_helper_online.ini'
+local ET_LEGACY_CONFIG = getWorkingDirectory() .. '\\config\\arp_exact_time.ini'
+
+local ET_WD_SHORT = {
+    ['Mon'] = '\xCF\xED', ['Tue'] = '\xC2\xF2', ['Wed'] = '\xD1\xF0',
+    ['Thu'] = '\xD7\xF2', ['Fri'] = '\xCF\xF2', ['Sat'] = '\xD1\xE1', ['Sun'] = '\xC2\xF1',
+}
+local ET_COL_OK = imgui.ImVec4(0.38, 0.78, 0.58, 1.0)
+local ET_COL_FAIL = imgui.ImVec4(0.92, 0.42, 0.42, 1.0)
+
+local L_ET_ONLINE_TODAY = '\xCE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
+local L_ET_AFK_TODAY = 'AFK \xE7\xE0 \xF1\xE5\xE3\xEE\xE4\xED\xFF'
+local L_ET_PER_HOUR = '\xC2\xF0\xE5\xEC\xFF \xE2 \xE8\xE3\xF0\xE5 \xE7\xE0 \xF7\xE0\xF1'
+local L_ET_ONLINE_YDAY = '\xCE\xED\xEB\xE0\xE9\xED \xE2\xF7\xE5\xF0\xE0'
+local L_ET_AFK_YDAY = 'AFK \xE7\xE0 \xE2\xF7\xE5\xF0\xE0'
+local L_ET_CLEAN = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
+local L_ET_CLEAN_WEEK = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE'
+local L_ET_CLEAN_MONTH = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED \xE7\xE0 \xEC\xE5\xF1\xFF\xF6'
+local L_TITLE = '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF'
+local L_CLOSE = '\xC7\xE0\xEA\xF0\xFB\xF2\xFC'
+
+local ET_COL = {
+    accent   = imgui.ImVec4(0.62, 0.48, 0.92, 1.0),
+    muted    = imgui.ImVec4(0.55, 0.55, 0.60, 1.0),
+    label    = imgui.ImVec4(0.92, 0.92, 0.95, 1.0),
+    value    = imgui.ImVec4(0.90, 0.90, 0.93, 1.0),
+    time     = imgui.ImVec4(0.93, 0.93, 0.96, 1.0),
+}
+local LAW_BTN   = imgui.ImVec4(0.16, 0.16, 0.19, 1.0)
+local LAW_BTN_H = imgui.ImVec4(0.20, 0.20, 0.24, 1.0)
+local LAW_BTN_A = imgui.ImVec4(0.24, 0.24, 0.28, 1.0)
+
+local etState = {
+    pendingCmdAt = nil,
+    showOpen = false,
+    data = {},
+    online = { weekKey = nil, monthKey = nil, days = {} },
+    ans = { days = {}, backfilled = false },
+    punish = { entries = {}, filter = 'all', allCache = nil },
+    helpWeekOffset = 0,
+    helpMonthOffset = 0,
+    helpStatsPage = 0,
+}
+exactTimeUiSynced = false
+
+local uiExactTimeEnabled = imgui and imgui.new and imgui.new.bool(true) or nil
+local uiExactTimeDailyH = imgui and imgui.new and imgui.new.int(4) or nil
+local uiExactTimeMonthlyH = imgui and imgui.new and imgui.new.int(112) or nil
+local uiPunishSearch = imgui and imgui.new and imgui.new.char[48]() or nil
+local etShowWindowBuf = imgui and imgui.new and imgui.new.bool(false) or nil
+
+local function etPushWindowStyle()
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.10, 0.10, 0.12, 0.98))
+    imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.08, 0.08, 0.10, 1.0))
+    imgui.PushStyleColor(imgui.Col.TitleBgActive, imgui.ImVec4(0.11, 0.10, 0.14, 1.0))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.22, 0.26, 0.40))
+    imgui.PushStyleColor(imgui.Col.Button, LAW_BTN)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, LAW_BTN_H)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, LAW_BTN_A)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 5)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+end
+
+local function etPopWindowStyle()
+    imgui.PopStyleVar(4)
+    imgui.PopStyleColor(7)
+end
+
+function ensureExactTimeSettings()
+    if type(settings) ~= 'table' then return end
+    if settings.exact_time_enabled == nil then settings.exact_time_enabled = true end
+    if settings.exact_time_daily_norm_h == nil then
+        local wh = tonumber(settings.exact_time_weekly_norm_h)
+        if wh and wh >= 7 then
+            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(wh / 7)))
+        else
+            settings.exact_time_daily_norm_h = 4
+        end
+    end
+    local dh = tonumber(settings.exact_time_daily_norm_h)
+    if not dh or dh < 1 or dh > 24 then settings.exact_time_daily_norm_h = 4 end
+    local mh = tonumber(settings.exact_time_monthly_norm_h)
+    if not mh or mh < 1 or mh > 744 then settings.exact_time_monthly_norm_h = 112 end
+end
+
+local function etEnabled()
+    return type(settings) == 'table' and settings.exact_time_enabled ~= false
+end
+
+local function etDailyNormMin()
+    ensureExactTimeSettings()
+    return math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) * 60
+end
+
+local function etMonthlyNormMin()
+    ensureExactTimeSettings()
+    return math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) * 60
+end
+
+local function etSetNativeDialogVisible(visible)
+    if not sampGetDialogInfoPtr or not memory or not memory.setint32 then return end
+    local ptr = sampGetDialogInfoPtr()
+    if not ptr or ptr == 0 then return end
+    pcall(function()
+        memory.setint32(ptr + SAMP_DIALOG_ACTIVE_OFF, visible and 1 or 0, true)
+    end)
+end
+
+local function etResolveCloseButton(button1, button2)
+    local function isClose(label)
+        label = trim(stripTags(label or ''))
+        return label ~= '' and (label:find(L_CLOSE, 1, true) or label:lower():find('close', 1, true))
+    end
+    if isClose(button1) then return 1 end
+    if isClose(button2) then return 0 end
+    if trim(stripTags(button2 or '')) == '' then return 1 end
+    return 0
+end
+
+-- Скрытый диалог: только RPC-ответ серверу + сброс active (без UI-close и без chat enable).
+local function etSendDialogResponseOnce(dialogId, button1, button2)
+    etSetNativeDialogVisible(false)
+    if not dialogId or not sampSendDialogResponse then return end
+    local btn = etResolveCloseButton(button1, button2)
+    pcall(function() sampSendDialogResponse(dialogId, btn, 0, '') end)
+    etSetNativeDialogVisible(false)
+end
+
+local function etSendDialogClose(dialogId, button1, button2)
+    etSendDialogResponseOnce(dialogId, button1, button2)
+    if not dialogId or not lua_thread or not lua_thread.create then return end
+    local id, b1, b2 = dialogId, button1, button2
+    lua_thread.create(function()
+        wait(150)
+        if type(sampIsDialogActive) == 'function' and sampIsDialogActive() then
+            etSendDialogResponseOnce(id, b1, b2)
+        end
+    end)
+end
+
+local function etClearData()
+    etState.data = {}
+end
+
+local etCloseWindow
+
+etCloseWindow = function()
+    if not etState.showOpen then return end
+    local d = etState.data
+    local id, b1, b2 = d.dialogId, d.button1, d.button2
+    etState.showOpen = false
+    if etShowWindowBuf then etShowWindowBuf[0] = false end
+    etClearData()
+    if id then
+        etSendDialogClose(id, b1, b2)
+    else
+        etSetNativeDialogVisible(false)
+    end
+    if type(updateMimguiGameInputPassthrough) == 'function' then
+        pcall(updateMimguiGameInputPassthrough)
+    end
+end
+
+local function etParseDialogLines(text)
+    text = stripTags(text or '')
+    local rows, seen = {}, {}
+    for raw in (text .. '\n'):gmatch('([^\r\n]+)') do
+        local line = trim(raw)
+        if line ~= '' then
+            local label, value = line:match('^(.-)[:\t]+(.+)$')
+            if label and value then
+                label, value = trim(label), trim(value)
+                if label ~= '' and value ~= '' then
+                    local key = label:lower()
+                    if not seen[key] then
+                        seen[key] = true
+                        rows[#rows + 1] = { label = label, value = value }
+                    end
+                end
+            end
+        end
+    end
+    return rows
+end
+
+local function etParseRussianPlayTimeToMinutes(s)
+    if not s or s == '' then return nil end
+    s = trim(stripTags(s))
+    local h, m = s:match('(%d+)%s*[\xF7ч]%s*(%d+)%s*[\xEC\xE8\xEDmin]+')
+    if h then return tonumber(h) * 60 + tonumber(m) end
+    h = tonumber(s:match('(%d+)%s*[\xF7ч]')) or 0
+    m = tonumber(s:match('(%d+)%s*[\xEC\xE8\xEDmin]+')) or 0
+    if h == 0 and m == 0 then return nil end
+    return h * 60 + m
+end
+
+local function etFormatMinutesAsRussianDuration(totalMin)
+    totalMin = math.max(0, math.floor(tonumber(totalMin) or 0))
+    local h = math.floor(totalMin / 60)
+    local m = totalMin % 60
+    if h > 0 and m > 0 then return string.format('%d \xF7 %d \xEC\xE8\xED', h, m) end
+    if h > 0 then return string.format('%d \xF7', h) end
+    return string.format('%d \xEC\xE8\xED', m)
+end
+
+local ET_HELP_DAY_HDR = '\xC4\xE5\xED\xFC'
+local ET_HELP_DATE_HDR = '\xC4\xE0\xF2\xE0'
+local ET_HELP_TOTAL_LABEL = '\xC8\xF2\xEE\xE3\xEE'
+local ET_HELP_TOTAL_ANS_LABEL = '\xC8\xF2\xEE\xE3\xEE \xEE\xF2\xE2\xE5\xF2\xEE\xE2'
+local ET_HELP_ANS_HDR = '\xCE\xF2\xE2\xE5\xF2\xEE\xE2 \xE2 \xF0\xE5\xEF\xEE\xF0\xF2'
+local ET_HELP_ONLINE_HDR = '\xD7\xE8\xF1\xF2\xFB\xE9 \xEE\xED\xEB\xE0\xE9\xED'
+
+local function etHelpColTextW(text, pad)
+    pad = pad or 8
+    return imgui.CalcTextSize(uiText(text or '')).x + pad
+end
+
+local ET_HELP_COL_GAP = 16
+local ET_HELP_BLOCK_PAD = 8
+
+local function etHelpTableWidths(availW)
+    availW = math.max(260, tonumber(availW) or 260)
+    local wDay = etHelpColTextW(ET_HELP_DAY_HDR, 10)
+    wDay = math.max(wDay, etHelpColTextW(ET_HELP_TOTAL_LABEL, 12))
+    for _, wd in pairs(ET_WD_SHORT) do
+        wDay = math.max(wDay, etHelpColTextW(wd, 6))
+    end
+    local wDate = math.max(etHelpColTextW(ET_HELP_DATE_HDR, 10), etHelpColTextW('31.12', 8))
+    local wAns = math.max(etHelpColTextW(ET_HELP_ANS_HDR, 10), etHelpColTextW('1727', 8))
+    local wOnline = availW - wDay - wDate - wAns - 16
+    if wOnline < 96 then
+        wOnline = 96
+        wAns = math.max(wAns, availW - wDay - wDate - wOnline - 16)
+    end
+    return wDay, wDate, wOnline, wAns
+end
+
+local function etFindRowValue(rows, ...)
+    local needles = { ... }
+    for _, row in ipairs(rows) do
+        for _, n in ipairs(needles) do
+            local enc = normalizeStoredText(n, isUtf8Text(n))
+            if row.label:find(enc, 1, true) or row.label:find(n, 1, true) then
+                return row.value
+            end
+        end
+    end
+    return nil
+end
+
+local function etExtractTextAfterLabel(text, labelUtf8)
+    text = stripTags(text or '')
+    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
+    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
+    if not chunk then return nil end
+    chunk = trim(chunk)
+    if chunk == '' then return nil end
+    for segment in chunk:gmatch('[^\t]+') do
+        segment = trim(segment)
+        if segment ~= '' then return segment end
+    end
+    return chunk
+end
+
+local function etExtractDurationAfterLabel(text, labelUtf8)
+    text = stripTags(text or '')
+    local label = normalizeStoredText(labelUtf8, isUtf8Text(labelUtf8))
+    local chunk = text:match(label .. '[%s:]*([^\r\n]+)')
+    if chunk then
+        for segment in chunk:gmatch('[^\t]+') do
+            local mins = etParseRussianPlayTimeToMinutes(segment)
+            if mins ~= nil then return mins end
+        end
+    end
+    chunk = text:match(label .. '[%s:\r\n]+([^\r\n]+)')
+    if chunk then return etParseRussianPlayTimeToMinutes(chunk) end
+    local idx = text:find(label, 1, true)
+    if idx then
+        local slice = text:sub(idx, idx + 160)
+        local dur = slice:match('(%d+%s*[\xF7ч]%s*%d+%s*[\xEC\xE8\xEDmin]+)')
+            or slice:match('(%d+%s*[\xEC\xE8\xEDmin]+)')
+            or slice:match('(%d+%s*[\xF7ч])')
+        if dur then return etParseRussianPlayTimeToMinutes(dur) end
+    end
+    return nil
+end
+
+local function etMinutesFromDialogRows(rows, ...)
+    local val = etFindRowValue(rows, ...)
+    if val then return etParseRussianPlayTimeToMinutes(val) end
+    return nil
+end
+
+local function etParseServerClock(text, rows)
+    local plain = stripTags(text or '')
+    local serverTime = etFindRowValue(rows, 'Текущее время', 'Точное время', 'Серверное время', 'Время на сервере')
+        or etExtractTextAfterLabel(text, 'Текущее время')
+        or etExtractTextAfterLabel(text, 'Точное время')
+        or plain:match('(%d%d:%d%d:%d%d)') or plain:match('(%d%d:%d%d)')
+    local serverDate = etFindRowValue(rows, 'Дата', 'Текущая дата', 'Сегодняшняя дата')
+        or etExtractTextAfterLabel(text, 'Дата')
+        or plain:match('(%d%d%.%d%d%.%d%d%d%d)')
+        or os.date('%d.%m.%Y')
+    local weekday = etFindRowValue(rows, 'День недели', 'День')
+        or etExtractTextAfterLabel(text, 'День недели')
+    return serverTime, serverDate, weekday
+end
+
+local function etParseClockHms(timeStr)
+    local plain = trim(stripTags(timeStr or ''))
+    if plain == '' then return nil end
+    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
+    if h then return tonumber(h), tonumber(m), tonumber(s) end
+    h, m = plain:match('(%d%d):(%d%d)')
+    if h then return tonumber(h), tonumber(m), 0 end
+    return nil
+end
+
+local function etLiveClockValue(timeStr)
+    local d = etState.data
+    local base = d.clockBase
+    if base then
+        local elapsed = math.floor(os.clock() - base.at)
+        if d._clockTick == elapsed and d._clockStr then
+            return d._clockStr
+        end
+        local total = (base.h * 3600 + base.m * 60 + base.s + elapsed) % 86400
+        d._clockStr = string.format('%02d:%02d:%02d',
+            math.floor(total / 3600), math.floor((total % 3600) / 60), total % 60)
+        d._clockTick = elapsed
+        return d._clockStr
+    end
+    d._clockTick = nil
+    d._clockStr = nil
+    local plain = trim(stripTags(timeStr or ''))
+    if plain == '' then return os.date('%H:%M:%S') end
+    local h, m, s = plain:match('(%d%d):(%d%d):(%d%d)')
+    if h then return string.format('%s:%s:%s', h, m, s) end
+    h, m = plain:match('(%d%d):(%d%d)')
+    if h then return string.format('%s:%s:%02d', h, m, tonumber(os.date('%S'))) end
+    return os.date('%H:%M:%S')
+end
+
+local function etFormatDateLine(parts)
+    if not parts or #parts == 0 then return nil end
+    if #parts == 1 then return parts[1] end
+    local weekday, dateStr = parts[1], parts[2]
+    if weekday:find('%d%d%d%d', 1, true) or weekday:find(' - ', 1, true) then
+        return weekday
+    end
+    return weekday .. '  \xB7  ' .. dateStr
+end
+
+local function etBuildDisplayList(text, dialogRows, cleanStr, playStr, afkStr)
+    local serverTime, serverDate, weekday = etParseServerClock(text, dialogRows)
+    local display = {}
+    local function add(labelCp1251, value, kind)
+        if value and value ~= '' then
+            display[#display + 1] = { label = labelCp1251, value = value, kind = kind }
+        end
+    end
+    add('Текущее время', etFindRowValue(dialogRows, 'Текущее время') or serverTime, 'time')
+    add('День недели', etFindRowValue(dialogRows, 'День недели') or weekday, 'date')
+    add('Сегодняшняя дата', etFindRowValue(dialogRows, 'Сегодняшняя дата', 'Дата', 'Текущая дата') or serverDate, 'date')
+    add(L_ET_ONLINE_TODAY, playStr, 'today')
+    add(L_ET_AFK_TODAY, afkStr, 'today')
+    add(L_ET_PER_HOUR, etFindRowValue(dialogRows, 'Время в игре за час') or etExtractTextAfterLabel(text, 'Время в игре за час'), 'today')
+    add(L_ET_CLEAN, cleanStr, 'accent')
+    local playYdayRaw = etFindRowValue(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
+        or etExtractTextAfterLabel(text, 'Время в игре вчера')
+        or etExtractTextAfterLabel(text, 'Онлайн вчера')
+    local afkYdayRaw = etFindRowValue(dialogRows, 'AFK за вчера', 'AFK вчера')
+        or etExtractTextAfterLabel(text, 'AFK за вчера')
+        or etExtractTextAfterLabel(text, 'AFK вчера')
+    add(L_ET_ONLINE_YDAY, playYdayRaw, 'yesterday')
+    add(L_ET_AFK_YDAY, afkYdayRaw, 'yesterday')
+    return display
+end
+
+local function etIsExactTimeDialog(title, text)
+    local tit = stripTags(title or '')
+    local txt = stripTags(text or '')
+    if tit:find(normalizeStoredText('Точное время', isUtf8Text('Точное время')), 1, true) then return true end
+    if tit:find(normalizeStoredText('точного времени', isUtf8Text('точного времени')), 1, true) then return true end
+    if tit:find(normalizeStoredText('Служба точного', isUtf8Text('Служба точного')), 1, true) then return true end
+    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) <= EXACT_TIME_TIMEOUT then
+        if txt:find(normalizeStoredText('Время в игре сегодня', isUtf8Text('Время в игре сегодня')), 1, true)
+            and (txt:find(normalizeStoredText('AFK за сегодня', isUtf8Text('AFK за сегодня')), 1, true) or txt:find('AFK', 1, true)) then
+            return true
+        end
+    end
+    return false
+end
+
+local function etParseServerDateKey(serverDate)
+    local d, m, y = tostring(serverDate or ''):match('(%d%d)%.(%d%d)%.(%d%d%d%d)')
+    if d then return string.format('%s-%s-%s', y, m, d) end
+    return os.date('%Y-%m-%d')
+end
+
+local function etCurrentWeekMondayKey(ts)
+    ts = ts or os.time()
+    local w = tonumber(os.date('%w', ts)) or 0
+    local daysSinceMonday = (w == 0) and 6 or (w - 1)
+    return os.date('%Y-%m-%d', ts - daysSinceMonday * 86400)
+end
+
+local function etMondayTsFromKey(weekKey)
+    local y, m, d = tostring(weekKey or ''):match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+    if not y then return nil end
+    return os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = 12, min = 0, sec = 0,
+    })
+end
+
+local function etHelpViewWeekMondayKey()
+    local offset = math.max(0, math.min(ET_HELP_WEEK_MAX_BACK,
+        math.floor(tonumber(etState.helpWeekOffset) or 0)))
+    etState.helpWeekOffset = offset
+    if offset == 0 then return etCurrentWeekMondayKey() end
+    local curTs = etMondayTsFromKey(etCurrentWeekMondayKey())
+    if not curTs then return etCurrentWeekMondayKey() end
+    return os.date('%Y-%m-%d', curTs - offset * 7 * 86400)
+end
+
+local function etWeekMondayKeyForIndex(weekIndex)
+    weekIndex = math.max(0, math.floor(tonumber(weekIndex) or 0))
+    local curTs = etMondayTsFromKey(etCurrentWeekMondayKey())
+    if not curTs then return etCurrentWeekMondayKey() end
+    return os.date('%Y-%m-%d', curTs - weekIndex * 7 * 86400)
+end
+
+local function etWeekRangeLabel(weekMondayKey)
+    local baseTs = etMondayTsFromKey(weekMondayKey)
+    if not baseTs then return '' end
+    return string.format('%s \xB7 %s', os.date('%d.%m', baseTs), os.date('%d.%m', baseTs + 6 * 86400))
+end
+
+local function etPruneOldOnlineDays()
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
+    local store = etState.online
+    local changed = false
+    for dateKey in pairs(store.days) do
+        if dateKey < cutoffKey then
+            store.days[dateKey] = nil
+            changed = true
+        end
+    end
+    if changed then pcall(etSaveOnlineStore) end
+end
+
+local function etCurrentMonthKey(ts)
+    ts = ts or os.time()
+    return os.date('%Y-%m', ts)
+end
+
+local function etEnsureOnlinePeriods()
+    local weekKey = etCurrentWeekMondayKey()
+    local monthKey = etCurrentMonthKey()
+    local store = etState.online
+    if store.weekKey ~= weekKey then
+        store.weekKey = weekKey
+    end
+    if store.monthKey ~= monthKey then
+        store.monthKey = monthKey
+    end
+    etPruneOldOnlineDays()
+    return weekKey, monthKey
+end
+
+local function etOpenIni(primary, legacy)
+    local f = io.open(primary, 'r')
+    if f then return f end
+    if legacy then return io.open(legacy, 'r') end
+end
+
+function etLoadOnlineStore()
+    etState.online.weekKey = nil
+    etState.online.monthKey = nil
+    etState.online.days = {}
+    local f = etOpenIni(ET_ONLINE_PATH, ET_LEGACY_ONLINE)
+    if f then
+        for line in f:lines() do
+            local week = line:match('^%s*week%s*=%s*(%S+)%s*$')
+            if week then
+                etState.online.weekKey = week
+            else
+                local month = line:match('^%s*month%s*=%s*(%S+)%s*$')
+                if month then
+                    etState.online.monthKey = month
+                else
+                    local dateKey, mins = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
+                    if dateKey and mins then
+                        etState.online.days[dateKey] = tonumber(mins)
+                    end
+                end
+            end
+        end
+        f:close()
+    end
+    etEnsureOnlinePeriods()
+end
+
+function etSaveOnlineStore()
+    local f = io.open(ET_ONLINE_PATH, 'w')
+    if not f then return end
+    local store = etState.online
+    if store.weekKey then f:write('week=' .. store.weekKey .. '\n') end
+    if store.monthKey then f:write('month=' .. store.monthKey .. '\n') end
+    for dateKey, mins in pairs(store.days) do
+        f:write(string.format('%s=%d\n', dateKey, mins))
+    end
+    f:close()
+end
+
+local function etLoadAnsStore()
+    etState.ans.days = {}
+    local f = io.open(ET_ANS_PATH, 'r')
+    if not f then return end
+    for line in f:lines() do
+        local dateKey, cnt = line:match('^(%d%d%d%d%-%d%d%-%d%d)%s*=%s*(%d+)%s*$')
+        if dateKey and cnt then
+            etState.ans.days[dateKey] = tonumber(cnt)
+        end
+    end
+    f:close()
+end
+
+local function etSaveAnsStore()
+    local f = io.open(ET_ANS_PATH, 'w')
+    if not f then return end
+    for dateKey, cnt in pairs(etState.ans.days) do
+        f:write(string.format('%s=%d\n', dateKey, tonumber(cnt) or 0))
+    end
+    f:close()
+end
+
+local function etBackfillAnsFromThreads()
+    if etState.ans.backfilled then return end
+    etState.ans.backfilled = true
+    for _ in pairs(etState.ans.days) do return end
+    if type(threads) ~= 'table' then return end
+    local changed = false
+    for _, t in pairs(threads) do
+        if type(t.messages) == 'table' then
+            for _, m in ipairs(t.messages) do
+                if m and m.dir == 'out' and m.self ~= false and m.ts then
+                    local body = trim(m.text or m.rawText or '')
+                    if body:match('^/ans%s') or body:match('^ans%s') then
+                        local dateKey = os.date('%Y-%m-%d', m.ts)
+                        etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
+                        changed = true
+                    end
+                end
+            end
+        end
+    end
+    if changed then pcall(etSaveAnsStore) end
+end
+
+function helpStatsRecordAns(ts)
+    ts = tonumber(ts) or os.time()
+    local dateKey = os.date('%Y-%m-%d', ts)
+    etState.ans.days[dateKey] = (tonumber(etState.ans.days[dateKey]) or 0) + 1
+    pcall(etSaveAnsStore)
+end
+
+function exactTimeNoteOutgoingAns(msg)
+    if type(msg) ~= 'string' then return end
+    local s = trim(msg)
+    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
+    local id, body = s:match('^ans%s+(%d+)%s+(.+)$')
+    if not id or not body or trim(body) == '' then return end
+    helpStatsRecordAns()
+end
+
+local ET_PUNISH_HEAD_TO_KIND = {
+    jail = 'jail', unjail = 'jail', offjail = 'jail',
+    mute = 'mute', unmute = 'mute', offmute = 'mute',
+    kick = 'kick', skick = 'kick',
+    ban = 'ban', unban = 'ban', offban = 'ban',
+    warn = 'warn', unwarn = 'warn', offwarn = 'warn',
+}
+
+local ET_PUNISH_FILTERS = {
+    { id = 'all',  label = '\xC2\xF1\xE5' },
+    { id = 'jail', label = 'Jail' },
+    { id = 'mute', label = 'Mute' },
+    { id = 'kick', label = 'Kick' },
+    { id = 'ban',  label = 'Ban' },
+    { id = 'warn', label = 'Warn' },
+}
+
+local function etPunishCmdHead(cmd)
+    cmd = trim(tostring(cmd or ''))
+    if cmd == '' then return '' end
+    local inner = cmd:match('^/?a%s+(/.*)$')
+    if inner then cmd = trim(inner) end
+    if cmd:sub(1, 1) ~= '/' then cmd = '/' .. cmd end
+    local head = cmd:match('^/(%S+)')
+    return head and head:lower() or ''
+end
+
+local function etPunishKindFromCmd(cmd)
+    return ET_PUNISH_HEAD_TO_KIND[etPunishCmdHead(cmd)] or 'other'
+end
+
+local function etPunishIsTrackedEntry(e)
+    if type(e) ~= 'table' then return false end
+    local kind = trim(tostring(e.kind or ''))
+    if kind == 'tr' then return false end
+    local head = etPunishCmdHead(e.cmd)
+    if head == 'tr' then return false end
+    return true
+end
+
+local function etInvalidatePunishCache()
+    etState.punish.allCache = nil
+end
+
+local function etPunishNormalizeEntry(raw)
+    if type(raw) ~= 'table' then return nil end
+    local ts = tonumber(raw.ts)
+    if ts and ts > 0 then
+        ts = math.floor(ts)
+    else
+        ts = 0
+    end
+    local cmd = trim(tostring(raw.cmd or ''))
+    local kind = trim(tostring(raw.kind or ''))
+    if kind == '' then kind = etPunishKindFromCmd(cmd) end
+    return {
+        ts = ts,
+        dateKey = os.date('%Y-%m-%d', ts),
+        kind = kind,
+        action = trim(tostring(raw.action or '-')),
+        player = trim(tostring(raw.player or '?')),
+        pid = tonumber(raw.pid) or -1,
+        term = trim(tostring(raw.term or '-')),
+        reason = trim(tostring(raw.reason or '-')),
+        cmd = cmd,
+        reqAdmin = trim(tostring(raw.reqAdmin or '')),
+        reqAdminId = tonumber(raw.reqAdminId),
+        src = trim(tostring(raw.src or 'manual')),
+    }
+end
+
+local function etPunishEntrySort(a, b)
+    if a.ts ~= b.ts then return a.ts < b.ts end
+    return (a.cmd or '') < (b.cmd or '')
+end
+
+local etPunishPersistQueue = { appends = {}, rewrite = false }
+local etPunishPersistFlushing = false
+
+local function etQueuePunishAppend(e)
+    if etPunishPersistQueue.rewrite then return end
+    local q = etPunishPersistQueue.appends
+    q[#q + 1] = e
+    if #q > ET_PUNISH_PERSIST_QUEUE_MAX then
+        etPunishPersistQueue.rewrite = true
+        etPunishPersistQueue.appends = {}
+    end
+end
+
+local function etQueuePunishRewrite()
+    etPunishPersistQueue.rewrite = true
+    etPunishPersistQueue.appends = {}
+end
+
+function etFlushPunishPersistence()
+    if etPunishPersistFlushing then return end
+    local pq = etPunishPersistQueue
+    if pq.rewrite then
+        etPunishPersistFlushing = true
+        local ok = pcall(etRewritePunishStore)
+        etPunishPersistFlushing = false
+        if ok then
+            pq.rewrite = false
+            pq.appends = {}
+        end
+        return
+    end
+    if #pq.appends == 0 then return end
+    etPunishPersistFlushing = true
+    local batch = pq.appends
+    local take = math.min(#batch, ET_PUNISH_PERSIST_APPEND_BATCH)
+    local chunk = {}
+    for i = 1, take do
+        chunk[i] = batch[i]
+    end
+    for i = take, 1, -1 do
+        table.remove(batch, 1)
+    end
+    for _, e in ipairs(chunk) do
+        pcall(etAppendPunishStoreLine, e)
+    end
+    etPunishPersistFlushing = false
+end
+
+local function etRewritePunishStore()
+    if not encodeJson then return end
+    local f = io.open(ET_PUNISH_PATH, 'w')
+    if not f then return end
+    for _, e in ipairs(etState.punish.entries) do
+        local ok, line = pcall(encodeJson, e)
+        if ok and line then f:write(line .. '\n') end
+    end
+    f:close()
+end
+
+local function etPunishPruneStore(rewrite, syncDisk)
+    if #etState.punish.entries == 0 then return false end
+    syncDisk = syncDisk ~= false
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_PUNISH_RETAIN_DAYS * 86400)
+    local kept = {}
+    for _, e in ipairs(etState.punish.entries) do
+        local dk = e.dateKey or os.date('%Y-%m-%d', tonumber(e.ts) or 0)
+        if dk >= cutoffKey then
+            kept[#kept + 1] = e
+        end
+    end
+    if #kept > ET_PUNISH_MAX_STORE then
+        local trimmed = {}
+        local start = #kept - ET_PUNISH_MAX_STORE + 1
+        for i = start, #kept do
+            trimmed[#trimmed + 1] = kept[i]
+        end
+        kept = trimmed
+    end
+    local changed = #kept ~= #etState.punish.entries
+    if changed then
+        etState.punish.entries = kept
+        etInvalidatePunishCache()
+        if rewrite then
+            if syncDisk then
+                pcall(etRewritePunishStore)
+            else
+                etQueuePunishRewrite()
+            end
+        end
+    end
+    return changed
+end
+
+local function etAppendPunishStoreLine(e)
+    if not encodeJson then
+        if not etState.punish.encodeWarned then
+            etState.punish.encodeWarned = true
+            print('[Report Desk] punish log: encodeJson missing (dkjson?)')
+        end
+        etQueuePunishRewrite()
+        return
+    end
+    local ok, line = pcall(encodeJson, e)
+    if not ok or not line then return end
+    local f = io.open(ET_PUNISH_PATH, 'a')
+    if f then
+        f:write(line .. '\n')
+        f:close()
+    end
+end
+
+local function etLoadPunishStore()
+    etState.punish.entries = {}
+    if not decodeJson then
+        print('[Report Desk] punish log: decodeJson missing on load')
+        return
+    end
+    local f = io.open(ET_PUNISH_PATH, 'r')
+    if not f then return end
+    for line in f:lines() do
+        line = trim(line)
+        if line ~= '' and decodeJson then
+            local ok, row = pcall(decodeJson, line)
+            if ok then
+                local e = etPunishNormalizeEntry(row)
+                if e then etState.punish.entries[#etState.punish.entries + 1] = e end
+            end
+        end
+    end
+    f:close()
+    table.sort(etState.punish.entries, etPunishEntrySort)
+    etPunishPruneStore(true, true)
+end
+
+function helpStatsRecordPunish(raw)
+    local ok, err = pcall(function()
+        local e = etPunishNormalizeEntry(raw)
+        if not e or not etPunishIsTrackedEntry(e) then return end
+        if not e.ts or e.ts <= 0 then
+            e.ts = os.time()
+            e.dateKey = os.date('%Y-%m-%d', e.ts)
+        end
+        etState.punish.entries[#etState.punish.entries + 1] = e
+        etInvalidatePunishCache()
+        if etPunishPruneStore(true, false) then
+            return
+        end
+        etQueuePunishAppend(e)
+    end)
+    if not ok then
+        print('[Report Desk] punish log: ' .. tostring(err))
+    end
+end
+
+local ET_PUNISH_KIND_LABEL = {
+    jail = 'Jail', mute = 'Mute', kick = 'Kick', ban = 'Ban', warn = 'Warn',
+}
+
+local ET_PUNISH_HEAD_LABEL = {
+    unjail = 'Unjail', unmute = 'Unmute', unwarn = 'Unwarn', unban = 'Unban',
+    offjail = 'OffJail', offmute = 'OffMute', offban = 'OffBan', offwarn = 'OffWarn',
+    skick = 'SKick',
+}
+
+local function etFormatPunishDateLine(ts)
+    ts = tonumber(ts) or 0
+    if ts <= 0 then return '?' end
+    local wd = os.date('%a', ts)
+    local day = ET_WD_SHORT[wd] or wd
+    return string.format('%s \xB7 %s', day, os.date('%d.%m', ts))
+end
+
+local function etFormatPunishClockLine(ts)
+    ts = tonumber(ts) or 0
+    if ts <= 0 then return '?' end
+    return os.date('%H:%M:%S', ts)
+end
+
+local function etFormatPunishKindLabel(e)
+    if type(e) ~= 'table' then return '?' end
+    local head = etPunishCmdHead(e.cmd or '')
+    if head ~= '' and ET_PUNISH_HEAD_LABEL[head] then
+        return ET_PUNISH_HEAD_LABEL[head]
+    end
+    local kind = e.kind or etPunishKindFromCmd(e.cmd)
+    if kind and ET_PUNISH_KIND_LABEL[kind] then
+        return ET_PUNISH_KIND_LABEL[kind]
+    end
+    if kind and kind ~= '' then
+        return kind:sub(1, 1):upper() .. kind:sub(2)
+    end
+    return '?'
+end
+
+local function etFormatPunishPlayer(e)
+    local nick = trim(e.player or '?')
+    local pid = tonumber(e.pid)
+    if pid and pid >= 0 then
+        return string.format('%s[%d]', nick, pid)
+    end
+    return nick
+end
+
+local ET_PUNISH_TERM_EMPTY = '-'
+
+local ET_PUNISH_NO_TERM_KIND = {
+    kick = true, skick = true, warn = true, unwarn = true,
+    unjail = true, unmute = true, unban = true, tr = true,
+}
+
+local ET_PUNISH_NO_TERM_HEAD = {
+    kick = true, skick = true, warn = true, unwarn = true,
+    unjail = true, unmute = true, unban = true, tr = true,
+}
+
+local function etPunishHasTerm(e)
+    if type(e) ~= 'table' then return false end
+    local kind = e.kind or etPunishKindFromCmd(e.cmd or '')
+    if ET_PUNISH_NO_TERM_KIND[kind] then return false end
+    return not ET_PUNISH_NO_TERM_HEAD[etPunishCmdHead(e.cmd or '')]
+end
+
+local function etPunishTermIsDays(e)
+    if type(e) ~= 'table' then return false end
+    local head = etPunishCmdHead(e.cmd or '')
+    return head == 'ban' or head == 'offban'
+end
+
+local function etFormatDaysRu(days)
+    days = math.floor(tonumber(days) or 0)
+    if days <= 0 then return ET_PUNISH_TERM_EMPTY end
+    local mod10 = days % 10
+    local mod100 = days % 100
+    local unit
+    if mod10 == 1 and mod100 ~= 11 then
+        unit = '\xE4\xE5\xED\xFC'
+    elseif mod10 >= 2 and mod10 <= 4 and (mod100 < 10 or mod100 >= 20) then
+        unit = '\xE4\xED\xFF'
+    else
+        unit = '\xE4\xED\xE5\xE9'
+    end
+    return string.format('%d %s', days, unit)
+end
+
+local function etFormatPunishTerm(e)
+    if type(e) == 'table' and not etPunishHasTerm(e) then
+        return ET_PUNISH_TERM_EMPTY
+    end
+    local term = type(e) == 'table' and e.term or e
+    term = trim(tostring(term or ''))
+    if term == '' or term == '-' then return ET_PUNISH_TERM_EMPTY end
+    local n = tonumber(term)
+    if n then
+        n = math.floor(n)
+        if n <= 0 then return ET_PUNISH_TERM_EMPTY end
+        if type(e) == 'table' and etPunishTermIsDays(e) then
+            return etFormatDaysRu(n)
+        end
+        if n >= 60 and n % 60 == 0 then
+            return string.format('%d \xF7', math.floor(n / 60))
+        end
+        return string.format('%d \xEC\xE8\xED', n)
+    end
+    return term
+end
+
+local function etFormatPunishAction(e)
+    return etFormatPunishKindLabel(e)
+end
+
+local function etPunishKindIsRemoval(e)
+    local head = etPunishCmdHead(e.cmd or '')
+    return head == 'unjail' or head == 'unmute' or head == 'unwarn' or head == 'unban'
+end
+
+local function etPunishKindColor(e)
+    if etPunishKindIsRemoval(e) then
+        return ET_COL_OK
+    end
+    return col_punish_label or ET_COL_FAIL
+end
+
+local function etPunishEntriesAll()
+    local cache = etState.punish.allCache
+    if cache then return cache.rows, cache.counts end
+
+    local rows = {}
+    local counts = { all = 0, jail = 0, mute = 0, kick = 0, ban = 0, warn = 0, other = 0 }
+    local entries = etState.punish.entries
+    for i = #entries, 1, -1 do
+        local e = entries[i]
+        if not etPunishIsTrackedEntry(e) then goto continue_entry end
+        rows[#rows + 1] = e
+        counts.all = counts.all + 1
+        local kind = e.kind or etPunishKindFromCmd(e.cmd)
+        if counts[kind] ~= nil then
+            counts[kind] = counts[kind] + 1
+        else
+            counts.other = counts.other + 1
+        end
+        ::continue_entry::
+    end
+
+    etState.punish.allCache = { rows = rows, counts = counts }
+    return rows, counts
+end
+
+local function etPunishDateHeaderLabel(dateKey, ts)
+    ts = tonumber(ts) or 0
+    if ts <= 0 and type(dateKey) == 'string' then
+        local y, m, d = dateKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+        if y then
+            ts = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12, min = 0, sec = 0 })
+        end
+    end
+    if ts <= 0 then return '?' end
+    return os.date('%d.%m.%Y', ts)
+end
+
+local function etPunishGroupByDate(rows)
+    local groups = {}
+    local groupIndex = {}
+    for _, e in ipairs(rows or {}) do
+        local dk = e.dateKey or os.date('%Y-%m-%d', tonumber(e.ts) or 0)
+        local idx = groupIndex[dk]
+        if not idx then
+            idx = #groups + 1
+            groupIndex[dk] = idx
+            groups[idx] = {
+                dateKey = dk,
+                dateLabel = etPunishDateHeaderLabel(dk, e.ts),
+                entries = {},
+            }
+        end
+        local bucket = groups[idx].entries
+        bucket[#bucket + 1] = e
+    end
+    return groups
+end
+
+local function etPunishFilterRows(rows, filterId)
+    filterId = filterId or 'all'
+    if filterId == 'all' or filterId == '' then return rows end
+    local out = {}
+    for _, e in ipairs(rows) do
+        local kind = e.kind or etPunishKindFromCmd(e.cmd)
+        if kind == filterId then out[#out + 1] = e end
+    end
+    return out
+end
+
+local ET_PUNISH_CLOCK_HDR = '\xC2\xF0\xE5\xEC\xFF'
+local ET_PUNISH_PLAYER_HDR = '\xC8\xE3\xF0\xEE\xEA'
+local ET_PUNISH_ACTION_HDR = '\xD2\xE8\xEF'
+local ET_PUNISH_TERM_HDR = '\xD1\xF0\xEE\xEA'
+local ET_PUNISH_REASON_HDR = '\xCF\xF0\xE8\xF7\xE8\xED\xE0'
+
+local ET_PUNISH_COL_PAD = 12
+local ET_PUNISH_ROW_GAP = 8
+local ET_PUNISH_DATE_HDR_GAP = 12
+local ET_PUNISH_LAYOUT_SAMPLE = 120
+
+local function etPunishClipCol(text, colW)
+    text = text or ''
+    if text == ET_PUNISH_TERM_EMPTY or text == '-' then
+        return uiText(ET_PUNISH_TERM_EMPTY)
+    end
+    colW = tonumber(colW) or 0
+    if colW < 8 then return uiText(ET_PUNISH_TERM_EMPTY) end
+    if type(ellipsizeToWidth) == 'function' then
+        return ellipsizeToWidth(text, colW - 4)
+    end
+    return uiText(text)
+end
+
+local function etPunishLineH()
+    local sp = imgui.GetStyle().ItemSpacing
+    return imgui.GetTextLineHeight() + sp.y
+end
+
+local function etPunishTableLayout(availW, rows)
+    availW = math.floor(math.max(320, tonumber(availW) or 320))
+    local pad = ET_PUNISH_COL_PAD
+
+    local minClock = math.max(
+        etHelpColTextW(ET_PUNISH_CLOCK_HDR, pad),
+        etHelpColTextW('23:59:59', 8))
+    local minPlayer = etHelpColTextW(ET_PUNISH_PLAYER_HDR, pad)
+    local minAction = etHelpColTextW(ET_PUNISH_ACTION_HDR, pad)
+    local minTerm = math.max(
+        etHelpColTextW(ET_PUNISH_TERM_HDR, pad),
+        etHelpColTextW(ET_PUNISH_TERM_EMPTY, 8),
+        etHelpColTextW('999 \xEC\xE8\xED', 8),
+        etHelpColTextW('99 \xF7', 8),
+        etHelpColTextW('21 \xE4\xE5\xED\xFC', 8),
+        etHelpColTextW('5 \xE4\xED\xE5\xE9', 8))
+
+    for _, lbl in pairs(ET_PUNISH_KIND_LABEL) do
+        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
+    end
+    for _, lbl in pairs(ET_PUNISH_HEAD_LABEL) do
+        minAction = math.max(minAction, etHelpColTextW(lbl, 8))
+    end
+
+    local shown = 0
+    for _, e in ipairs(rows or {}) do
+        if shown >= ET_PUNISH_LAYOUT_SAMPLE then break end
+        shown = shown + 1
+        minPlayer = math.max(minPlayer, etHelpColTextW(etFormatPunishPlayer(e), 8))
+        minAction = math.max(minAction, etHelpColTextW(etFormatPunishKindLabel(e), 8))
+        minTerm = math.max(minTerm, etHelpColTextW(etFormatPunishTerm(e), 8))
+    end
+
+    local wClock = math.max(minClock, math.floor(availW * 0.11))
+    local wPlayer = math.max(minPlayer, math.floor(availW * 0.28))
+    local wAction = math.max(minAction, math.floor(availW * 0.09))
+    local wTerm = math.max(minTerm, math.floor(availW * 0.10))
+    local wReason = availW - wClock - wPlayer - wAction - wTerm
+
+    if wReason < math.floor(availW * 0.30) then
+        wPlayer = math.max(minPlayer, wPlayer - (math.floor(availW * 0.30) - wReason))
+        wReason = availW - wClock - wPlayer - wAction - wTerm
+    end
+    if wReason < 80 then
+        wReason = 80
+        wPlayer = math.max(minPlayer, availW - wClock - wAction - wTerm - wReason)
+    end
+
+    local widths = { wClock, wPlayer, wAction, wTerm, wReason }
+    local xs = { 0, wClock, wClock + wPlayer, wClock + wPlayer + wAction,
+        wClock + wPlayer + wAction + wTerm }
+    return widths, xs, availW
+end
+
+local function etPunishTextCell(x, y, w, text, color)
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    imgui.PushTextWrapPos(x + math.max(16, w) - 4)
+    imgui.TextColored(color, text)
+    imgui.PopTextWrapPos()
+end
+
+local function etPunishDrawSep(x, y, w)
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return y + ET_PUNISH_ROW_GAP end
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    local sp = imgui.GetCursorScreenPos()
+    dl:AddLine(sp, imgui.ImVec2(sp.x + w, sp.y), toU32(imgui.ImVec4(1.0, 1.0, 1.0, 0.12)), 1.0)
+    return y + ET_PUNISH_ROW_GAP
+end
+
+local function etPunishSearchRows(rows, query)
+    query = trim(tostring(query or '')):lower()
+    if query == '' then return rows end
+    local out = {}
+    for _, e in ipairs(rows or {}) do
+        local nick = trim(tostring(e.player or '')):lower()
+        if nick ~= '' and nick:find(query, 1, true) then
+            out[#out + 1] = e
+        end
+    end
+    return out
+end
+
+local function etDrawPunishSearchBar()
+    if not uiPunishSearch then return end
+    if type(drawDeskSearchClearRow) == 'function' then
+        drawDeskSearchClearRow(
+            '\xCF\xEE\xE8\xF1\xEA \xEF\xEE \xED\xE8\xEA\xF3...',
+            uiPunishSearch,
+            sizeof(uiPunishSearch),
+            nil,
+            'pun')
+    else
+        imgui.PushItemWidth(-1)
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        if imgui.InputTextWithHint then
+            imgui.InputTextWithHint('##pun_srch', uiText('\xCF\xEE\xE8\xF1\xEA \xEF\xEE \xED\xE8\xEA\xF3...'), uiPunishSearch, sizeof(uiPunishSearch))
+        else
+            imgui.InputText('##pun_srch', uiPunishSearch, sizeof(uiPunishSearch))
+        end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+        imgui.PopItemWidth()
+    end
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+local function etDrawPunishFilterBar(counts)
+    if not etState.punish.filter or etState.punish.filter == '' then
+        etState.punish.filter = 'all'
+    end
+    if etState.punish.filter == 'tr' then
+        etState.punish.filter = 'all'
+    end
+    local sel = etState.punish.filter
+    local gap = 6
+    local btnH = 26
+    local n = #ET_PUNISH_FILTERS
+    local rowW = imgui.GetContentRegionAvail().x
+    local baseW = math.floor((rowW - gap * (n - 1)) / n)
+    local x0 = imgui.GetCursorPosX()
+    local y0 = imgui.GetCursorPosY()
+    local accentDim = col_accent_dim or imgui.ImVec4(0.28, 0.22, 0.42, 0.95)
+    local accent = col_accent or imgui.ImVec4(0.34, 0.26, 0.50, 1.0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 4)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(8, 5))
+
+    local posX = x0
+    for i, f in ipairs(ET_PUNISH_FILTERS) do
+        local btnW = (i == n) and (rowW - (posX - x0)) or baseW
+        imgui.SetCursorPos(imgui.ImVec2(posX, y0))
+        local cnt = tonumber(counts and counts[f.id]) or 0
+        local label = uiText(f.label) .. ' (' .. tostring(cnt) .. ')'
+        local active = sel == f.id
+        if active then
+            imgui.PushStyleColor(imgui.Col.Button, accentDim)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, accent)
+        end
+        if imgui.Button(label .. '##pf_' .. f.id, imgui.ImVec2(btnW, btnH)) then
+            etState.punish.filter = f.id
+        end
+        if active then imgui.PopStyleColor(2) end
+        posX = posX + btnW + gap
+    end
+    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + btnH + 10))
+    imgui.PopStyleVar(2)
+end
+
+local function etDrawHelpPunishLog()
+    etDrawPunishSearchBar()
+    local allRows, counts = etPunishEntriesAll()
+    etDrawPunishFilterBar(counts)
+
+    local filterId = etState.punish.filter or 'all'
+    local rows = etPunishFilterRows(allRows, filterId)
+    local searchQ = ''
+    if uiPunishSearch and type(readInputBuf) == 'function' then
+        searchQ = readInputBuf(uiPunishSearch)
+    end
+    rows = etPunishSearchRows(rows, searchQ)
+    local total = counts and counts.all or #allRows
+
+    if total == 0 then
+        drawSettingsHint('\xCD\xE5\xF2 \xE2\xFB\xE4\xE0\xED\xED\xFB\xF5 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9')
+        return
+    end
+    if #rows == 0 then
+        local filterLabel = filterId
+        for _, f in ipairs(ET_PUNISH_FILTERS) do
+            if f.id == filterId then filterLabel = f.label break end
+        end
+        if trim(searchQ) ~= '' then
+            drawSettingsHint(string.format(
+                '\xCD\xE5\xF2 \xE7\xE0\xEF\xE8\xF1\xE5\xE9 \xEF\xEE \xED\xE8\xEA\xF3 \xAB%s\xBB',
+                trim(searchQ)))
+        else
+            drawSettingsHint(string.format(
+                '\xCD\xE5\xF2 \xE7\xE0\xEF\xE8\xF1\xE5\xE9 \xAB%s\xBB \xB7 \xE2\xF1\xE5\xE3\xEE %d',
+                filterLabel, total))
+        end
+        return
+    end
+
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    local dateHdrCol = col_accent or imgui.ImVec4(0.34, 0.26, 0.50, 1.0)
+    local childFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+
+    imgui.BeginChild('##help_punish_scroll', imgui.ImVec2(-1, -1), true, childFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    local groups = etPunishGroupByDate(rows)
+    local widths, xs, tableW = etPunishTableLayout(imgui.GetContentRegionAvail().x, rows)
+    local x0 = imgui.GetCursorPosX()
+    local y = imgui.GetCursorPosY()
+    local lineH = etPunishLineH()
+
+    etPunishTextCell(x0 + xs[1], y, widths[1], uiText(ET_PUNISH_CLOCK_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[2], y, widths[2], uiText(ET_PUNISH_PLAYER_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[3], y, widths[3], uiText(ET_PUNISH_ACTION_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[4], y, widths[4], uiText(ET_PUNISH_TERM_HDR), hdrCol)
+    etPunishTextCell(x0 + xs[5], y, widths[5], uiText(ET_PUNISH_REASON_HDR), hdrCol)
+
+    y = y + lineH + 2
+    y = etPunishDrawSep(x0, y, tableW)
+
+    for gi, g in ipairs(groups) do
+        if gi > 1 then
+            y = y + ET_PUNISH_DATE_HDR_GAP
+        end
+        etPunishTextCell(x0, y, tableW, uiText(g.dateLabel), dateHdrCol)
+        y = y + lineH
+        y = etPunishDrawSep(x0, y, tableW)
+
+        for _, e in ipairs(g.entries) do
+            local reason = e.reason or '-'
+            if e.src == 'auto' and trim(e.reqAdmin or '') ~= '' then
+                reason = reason .. string.format(
+                    ' \xB7 \xE7\xE0\xEF\xF0\xEE\xF1 %s[%s]',
+                    e.reqAdmin, tostring(e.reqAdminId or '?'))
+            elseif e.src == 'a_request' then
+                reason = reason .. ' \xB7 \xE2 \xE0\xE4\xEC\xE8\xED-\xF7\xE0\xF2'
+            end
+            etPunishTextCell(x0 + xs[1], y, widths[1], uiText(etFormatPunishClockLine(e.ts)), col_muted2)
+            etPunishTextCell(x0 + xs[2], y, widths[2], etPunishClipCol(etFormatPunishPlayer(e), widths[2]), valCol)
+            etPunishTextCell(x0 + xs[3], y, widths[3], etPunishClipCol(etFormatPunishKindLabel(e), widths[3]), etPunishKindColor(e))
+            etPunishTextCell(x0 + xs[4], y, widths[4], etPunishClipCol(etFormatPunishTerm(e), widths[4]), col_muted2)
+            etPunishTextCell(x0 + xs[5], y, widths[5], etPunishClipCol(reason, widths[5]), col_muted2)
+            y = y + lineH
+        end
+    end
+
+    imgui.SetCursorPos(imgui.ImVec2(x0, y))
+    imgui.Dummy(imgui.ImVec2(tableW, 1))
+    imgui.PopStyleVar()
+    imgui.EndChild()
+end
+
+local function etAnsCount(dateKey)
+    return tonumber(etState.ans.days[dateKey]) or 0
+end
+
+local function etSumAns(filterFn)
+    local total = 0
+    for dateKey, cnt in pairs(etState.ans.days) do
+        if filterFn(dateKey) then
+            total = total + (tonumber(cnt) or 0)
+        end
+    end
+    return total
+end
+
+local function etWeekAnsTotal(weekMondayKey)
+    local baseTs = etMondayTsFromKey(weekMondayKey)
+    if not baseTs then return 0 end
+    local weekEnd = os.date('%Y-%m-%d', baseTs + 6 * 86400)
+    return etSumAns(function(k) return k >= weekMondayKey and k <= weekEnd end)
+end
+
+local function etBuildWeekDayRows(weekMondayKey)
+    weekMondayKey = weekMondayKey or etCurrentWeekMondayKey()
+    local y, m, d = weekMondayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+    if not y then return {} end
+    local baseTs = os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = 12, min = 0, sec = 0,
+    })
+    local todayKey = os.date('%Y-%m-%d')
+    local viewingCurrent = weekMondayKey == etCurrentWeekMondayKey()
+    local dailyNorm = etDailyNormMin()
+    local rows = {}
+    for i = 0, 6 do
+        local ts = baseTs + i * 86400
+        local dateKey = os.date('%Y-%m-%d', ts)
+        local enWd = os.date('%a', ts)
+        local onlineMin = tonumber(etState.online.days[dateKey])
+        local ansCnt = etAnsCount(dateKey)
+        local normOk = nil
+        if onlineMin ~= nil then
+            normOk = onlineMin >= dailyNorm
+        end
+        rows[#rows + 1] = {
+            dateKey = dateKey,
+            weekday = ET_WD_SHORT[enWd] or enWd,
+            dateLabel = os.date('%d.%m', ts),
+            onlineMin = onlineMin,
+            ansCnt = ansCnt,
+            normOk = normOk,
+            isToday = viewingCurrent and dateKey == todayKey,
+        }
+    end
+    return rows
+end
+
+local function etSubtractMonths(y, m, offset)
+    y = tonumber(y) or 0
+    m = tonumber(m) or 1
+    offset = math.floor(tonumber(offset) or 0)
+    m = m - offset
+    while m < 1 do
+        m = m + 12
+        y = y - 1
+    end
+    while m > 12 do
+        m = m - 12
+        y = y + 1
+    end
+    return y, m
+end
+
+local function etHelpViewMonthKey()
+    local offset = math.max(0, math.min(ET_HELP_MONTH_MAX_BACK,
+        math.floor(tonumber(etState.helpMonthOffset) or 0)))
+    etState.helpMonthOffset = offset
+    local y, m = etSubtractMonths(tonumber(os.date('%Y')), tonumber(os.date('%m')), offset)
+    return string.format('%04d-%02d', y, m)
+end
+
+local function etMonthRangeLabel(monthKey)
+    local y, m = tostring(monthKey or ''):match('(%d%d%d%d)%-(%d%d)')
+    if not y then return '' end
+    return string.format('%s.%s', m, y)
+end
+
+local function etDaysInMonth(y, m)
+    y = tonumber(y) or 0
+    m = tonumber(m) or 1
+    return tonumber(os.date('%d', os.time({
+        year = y, month = m + 1, day = 0, hour = 12, min = 0, sec = 0,
+    }))) or 30
+end
+
+local function etMonthAnsTotal(monthKey)
+    return etSumAns(function(k) return k:sub(1, 7) == monthKey end)
+end
+
+local function etBuildMonthDayRows(monthKey)
+    monthKey = monthKey or etHelpViewMonthKey()
+    local y, m = monthKey:match('(%d%d%d%d)%-(%d%d)')
+    if not y then return {} end
+    y = tonumber(y)
+    m = tonumber(m)
+    local todayKey = os.date('%Y-%m-%d')
+    local curMonthKey = etCurrentMonthKey()
+    local viewingCurrent = monthKey == curMonthKey
+    local dailyNorm = etDailyNormMin()
+    local dim = etDaysInMonth(y, m)
+    local rows = {}
+    for day = 1, dim do
+        local dateKey = string.format('%04d-%02d-%02d', y, m, day)
+        local ts = os.time({ year = y, month = m, day = day, hour = 12, min = 0, sec = 0 })
+        local enWd = os.date('%a', ts)
+        local onlineMin = tonumber(etState.online.days[dateKey])
+        local ansCnt = etAnsCount(dateKey)
+        local normOk = nil
+        if onlineMin ~= nil then
+            normOk = onlineMin >= dailyNorm
+        end
+        rows[#rows + 1] = {
+            dateKey = dateKey,
+            weekday = ET_WD_SHORT[enWd] or enWd,
+            dateLabel = os.date('%d.%m', ts),
+            onlineMin = onlineMin,
+            ansCnt = ansCnt,
+            normOk = normOk,
+            isToday = viewingCurrent and dateKey == todayKey,
+        }
+    end
+    return rows
+end
+
+local function etDrawHelpMonthNav(viewMonthKey)
+    local offset = tonumber(etState.helpMonthOffset) or 0
+    local btnSz = imgui.GetFrameHeight()
+    local dirLeft = (imgui.Dir and imgui.Dir.Left) or 0
+    local dirRight = (imgui.Dir and imgui.Dir.Right) or 1
+    local rangeText = uiText(etMonthRangeLabel(viewMonthKey))
+    local labelCol = col_accent or ET_COL.accent
+    local rowW = imgui.GetContentRegionAvail().x
+    local sideW = btnSz + 8
+
+    imgui.Columns(3, '##et_mo_nav', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, sideW)
+        imgui.SetColumnWidth(1, math.max(120, rowW - sideW * 2))
+        imgui.SetColumnWidth(2, sideW)
+    end
+
+    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+    if offset < ET_HELP_MONTH_MAX_BACK then
+        if imgui.ArrowButton('##et_mo_prev', dirLeft) then
+            etState.helpMonthOffset = offset + 1
+        end
+    else
+        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
+    end
+    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    imgui.NextColumn()
+
+    local textW = imgui.CalcTextSize(rangeText).x
+    local padX = math.max(0, (imgui.GetColumnWidth() - textW) * 0.5)
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + padX)
+    if offset > 0 and imgui.InvisibleButton('##et_mo_now', imgui.ImVec2(textW, btnSz)) then
+        etState.helpMonthOffset = 0
+    end
+    imgui.SameLine(0, 0)
+    imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max(0, (btnSz - imgui.GetTextLineHeight()) * 0.5))
+    imgui.TextColored(labelCol, rangeText)
+    imgui.NextColumn()
+
+    if offset > 0 then
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        if imgui.ArrowButton('##et_mo_next', dirRight) then
+            etState.helpMonthOffset = offset - 1
+        end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    end
+    imgui.NextColumn()
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+local function etDrawHelpStatsHeader(availW)
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    availW = availW or imgui.GetContentRegionAvail().x
+    local wDay, wDate, wOnline, wAns = etHelpTableWidths(availW)
+    imgui.Columns(4, '##help_stats_hdr', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, wDay)
+        imgui.SetColumnWidth(1, wDate)
+        imgui.SetColumnWidth(2, wOnline)
+        imgui.SetColumnWidth(3, wAns)
+    end
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DAY_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DATE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ONLINE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ANS_HDR))
+    imgui.NextColumn()
+    imgui.Columns(1)
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
+    imgui.Separator()
+    imgui.PopStyleColor()
+    return wDay, wDate, wOnline, wAns
+end
+
+local function etDrawHelpStatsDayRows(rows, availW)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    availW = availW or imgui.GetContentRegionAvail().x
+    local wDay, wDate, wOnline, wAns = etHelpTableWidths(availW)
+    imgui.Columns(4, '##help_stats_rows', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, wDay)
+        imgui.SetColumnWidth(1, wDate)
+        imgui.SetColumnWidth(2, wOnline)
+        imgui.SetColumnWidth(3, wAns)
+    end
+    for _, row in ipairs(rows or {}) do
+        local dayCol = row.isToday and valCol or col_muted2
+        local dateCol = row.isToday and valCol or col_muted2
+        imgui.TextColored(dayCol, uiText(row.weekday))
+        imgui.NextColumn()
+        imgui.TextColored(dateCol, uiText(row.dateLabel))
+        imgui.NextColumn()
+        if row.onlineMin ~= nil then
+            local onlineCol = row.normOk and ET_COL_OK or ET_COL_FAIL
+            imgui.TextColored(onlineCol, uiText(etFormatMinutesAsRussianDuration(row.onlineMin)))
+        else
+            imgui.TextColored(col_muted2, uiText('\xB7'))
+        end
+        imgui.NextColumn()
+        local ansCol = (row.ansCnt or 0) > 0 and valCol or col_muted2
+        imgui.TextColored(ansCol, uiText(tostring(row.ansCnt or 0)))
+        imgui.NextColumn()
+    end
+    imgui.Columns(1)
+end
+
+local function etDrawHelpStatsAnsTotalFooter(totalAns, availW)
+    availW = availW or imgui.GetContentRegionAvail().x
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.06))
+    imgui.Separator()
+    imgui.PopStyleColor()
+    imgui.Dummy(imgui.ImVec2(0, 4))
+
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    local total = math.floor(tonumber(totalAns) or 0)
+    local labelTxt = uiText(ET_HELP_TOTAL_ANS_LABEL)
+    local valTxt = uiText(tostring(total))
+    local labelW = imgui.CalcTextSize(labelTxt).x
+    local valW = imgui.CalcTextSize(valTxt).x
+    local gap = 10
+    local padR = ET_HELP_BLOCK_PAD
+    local x0 = imgui.GetCursorPosX()
+    local y0 = imgui.GetCursorPosY()
+    local lineH = imgui.GetTextLineHeight() or 14
+    local rowH = lineH + 8
+
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local sp = imgui.GetCursorScreenPos()
+        pcall(function()
+            dl:AddRectFilled(
+                imgui.ImVec2(sp.x, sp.y),
+                imgui.ImVec2(sp.x + availW, sp.y + rowH),
+                toU32(imgui.ImVec4(1, 1, 1, 0.03)),
+                6)
+        end)
+    end
+
+    local blockW = labelW + gap + valW
+    local textY = y0 + math.max(0, (rowH - lineH) * 0.5)
+    imgui.SetCursorPos(imgui.ImVec2(x0 + math.max(0, availW - blockW - padR), textY))
+    imgui.TextColored(hdrCol, labelTxt)
+    imgui.SameLine(0, gap)
+    imgui.TextColored(total > 0 and valCol or hdrCol, valTxt)
+    imgui.SetCursorPos(imgui.ImVec2(x0, y0 + rowH + 2))
+    imgui.Dummy(imgui.ImVec2(availW, 0))
+end
+
+local function etDrawHelpStatsWeekTotal(totalAns, availW)
+    etDrawHelpStatsAnsTotalFooter(totalAns, availW)
+end
+
+local function etDrawHelpWeekBlockHeader(weekMondayKey)
+    local labelCol = col_accent or ET_COL.accent
+    local rangeText = uiText(etWeekRangeLabel(weekMondayKey))
+    imgui.TextColored(labelCol, rangeText)
+    imgui.Dummy(imgui.ImVec2(0, 4))
+end
+
+local function etDrawHelpWeekBlockGap()
+    imgui.Dummy(imgui.ImVec2(0, 6))
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local p = imgui.GetCursorScreenPos()
+        local w = imgui.GetContentRegionAvail().x
+        pcall(function()
+            dl:AddLine(
+                imgui.ImVec2(p.x, p.y),
+                imgui.ImVec2(p.x + w, p.y),
+                toU32((deskEdgeTheme and deskEdgeTheme.BORDER) or imgui.ImVec4(1, 1, 1, 0.08)),
+                1.0)
+        end)
+    end
+    imgui.Dummy(imgui.ImVec2(0, ET_HELP_WEEK_BLOCK_GAP))
+end
+
+local function etDrawHelpStatsPageNav(page, totalPages, startWeekIdx, endWeekIdx)
+    page = math.max(0, math.floor(tonumber(page) or 0))
+    totalPages = math.max(1, math.floor(tonumber(totalPages) or 1))
+    local btnSz = imgui.GetFrameHeight()
+    local dirLeft = (imgui.Dir and imgui.Dir.Left) or 0
+    local dirRight = (imgui.Dir and imgui.Dir.Right) or 1
+    local firstKey = etWeekMondayKeyForIndex(startWeekIdx)
+    local lastKey = etWeekMondayKeyForIndex(endWeekIdx)
+    local firstTs = etMondayTsFromKey(firstKey)
+    local lastTs = etMondayTsFromKey(lastKey)
+    local rangeText = uiText('...')
+    if firstTs and lastTs then
+        rangeText = uiText(string.format('%s \xB7 %s',
+            os.date('%d.%m', firstTs),
+            os.date('%d.%m', lastTs + 6 * 86400)))
+    end
+    local labelCol = col_accent or ET_COL.accent
+    local rowW = imgui.GetContentRegionAvail().x
+    local pageText = uiText(string.format('%d / %d', page + 1, totalPages))
+    local textW = imgui.CalcTextSize(rangeText).x
+    local pageW = imgui.CalcTextSize(pageText).x
+    local blockW = math.max(textW, pageW)
+    local sideW = btnSz + 8
+    local midW = math.max(blockW + 16, rowW - sideW * 2)
+
+    imgui.Columns(3, '##et_stats_pg_nav', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, sideW)
+        imgui.SetColumnWidth(1, midW)
+        imgui.SetColumnWidth(2, sideW)
+    end
+
+    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+    if page + 1 < totalPages then
+        if imgui.ArrowButton('##et_st_prev', dirLeft) then
+            etState.helpStatsPage = page + 1
+        end
+    else
+        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
+    end
+    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    imgui.NextColumn()
+
+    local colStart = imgui.GetCursorPosX()
+    local colW = imgui.GetColumnWidth()
+    local padX = math.max(0, (colW - blockW) * 0.5)
+    local cx = colStart + padX
+    local y0 = imgui.GetCursorPosY()
+    local lineH = imgui.GetTextLineHeight() or 14
+    local blockH = math.max(btnSz, lineH * 2 + 4)
+    imgui.SetCursorPos(imgui.ImVec2(cx, y0))
+    if page > 0 and imgui.InvisibleButton('##et_st_now', imgui.ImVec2(blockW, blockH)) then
+        etState.helpStatsPage = 0
+    end
+    imgui.SetCursorPos(imgui.ImVec2(cx, y0))
+    imgui.TextColored(labelCol, rangeText)
+    imgui.SetCursorPos(imgui.ImVec2(cx, y0 + lineH + 2))
+    imgui.TextColored(col_muted2, pageText)
+    imgui.SetCursorPosY(y0 + blockH)
+    imgui.NextColumn()
+
+    if page > 0 then
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        if imgui.ArrowButton('##et_st_next', dirRight) then
+            etState.helpStatsPage = page - 1
+        end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    else
+        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
+    end
+    imgui.NextColumn()
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 10))
+end
+
+local function etDrawHelpStatsPaged()
+    local perPage = ET_HELP_STATS_WEEKS_PER_PAGE
+    local maxWeeks = ET_HELP_WEEK_MAX_BACK + 1
+    local totalPages = math.max(1, math.ceil(maxWeeks / perPage))
+    local page = math.max(0, math.min(totalPages - 1, math.floor(tonumber(etState.helpStatsPage) or 0)))
+    etState.helpStatsPage = page
+
+    local startWeek = page * perPage
+    local endWeek = math.min(startWeek + perPage - 1, maxWeeks - 1)
+
+    etDrawHelpStatsPageNav(page, totalPages, startWeek, endWeek)
+
+    local scrollFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        scrollFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(ET_HELP_BLOCK_PAD, ET_HELP_BLOCK_PAD))
+    imgui.BeginChild('##help_stats_scroll', imgui.ImVec2(-1, -1), false, scrollFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+
+    local availW = imgui.GetContentRegionAvail().x
+    etDrawHelpStatsHeader(availW)
+
+    for wi = startWeek, endWeek do
+        if wi > startWeek then
+            etDrawHelpWeekBlockGap()
+        end
+        local weekKey = etWeekMondayKeyForIndex(wi)
+        local rows = etBuildWeekDayRows(weekKey)
+        if #rows > 0 then
+            etDrawHelpWeekBlockHeader(weekKey)
+            etDrawHelpStatsDayRows(rows, availW)
+            etDrawHelpStatsWeekTotal(etWeekAnsTotal(weekKey), availW)
+        end
+    end
+
+    if page > 0 then
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xE4\xE8\xE0\xEF\xE0\xE7\xEE\xED \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE9 \xED\xE5\xE4\xE5\xEB\xE8')
+    end
+
+    imgui.PopStyleVar()
+    imgui.EndChild()
+    imgui.PopStyleVar()
+end
+
+local function etDrawHelpStatsRows(rows, monthAns)
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    local availW = imgui.GetContentRegionAvail().x
+    local wDay, wDate, wOnline, wAns = etHelpTableWidths(availW)
+    local colCount = 4
+
+    imgui.Columns(colCount, '##help_month_cols', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, wDay)
+        imgui.SetColumnWidth(1, wDate)
+        imgui.SetColumnWidth(2, wOnline)
+        imgui.SetColumnWidth(3, wAns)
+    end
+
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DAY_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DATE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ONLINE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ANS_HDR))
+    imgui.NextColumn()
+
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
+    imgui.Separator()
+    imgui.PopStyleColor()
+
+    local dl = imgui.GetWindowDrawList()
+    for ri, row in ipairs(rows) do
+        if dl and dl.AddRectFilled and ri % 2 == 0 and type(toU32) == 'function' then
+            local y = imgui.GetCursorScreenPos().y
+            local x0 = imgui.GetCursorScreenPos().x
+            local rowH = (imgui.GetTextLineHeightWithSpacing and imgui.GetTextLineHeightWithSpacing())
+                or (imgui.GetTextLineHeight() + 6)
+            pcall(function()
+                dl:AddRectFilled(
+                    imgui.ImVec2(x0, y - 2),
+                    imgui.ImVec2(x0 + availW, y + rowH),
+                    toU32(imgui.ImVec4(1, 1, 1, 0.03)))
+            end)
+        end
+        local dayCol = row.isToday and valCol or col_muted2
+        local dateCol = row.isToday and valCol or col_muted2
+        imgui.TextColored(dayCol, uiText(row.weekday))
+        imgui.NextColumn()
+        imgui.TextColored(dateCol, uiText(row.dateLabel))
+        imgui.NextColumn()
+        if row.onlineMin ~= nil then
+            local onlineCol = row.normOk and ET_COL_OK or ET_COL_FAIL
+            imgui.TextColored(onlineCol, uiText(etFormatMinutesAsRussianDuration(row.onlineMin)))
+        else
+            imgui.TextColored(col_muted2, uiText('\xB7'))
+        end
+        imgui.NextColumn()
+        local ansCol = (row.ansCnt or 0) > 0 and valCol or col_muted2
+        imgui.TextColored(ansCol, uiText(tostring(row.ansCnt or 0)))
+        imgui.NextColumn()
+    end
+
+    imgui.Columns(1)
+    etDrawHelpStatsAnsTotalFooter(monthAns, availW)
+end
+
+local function etDrawHelpMonthTable()
+    local viewMonthKey = etHelpViewMonthKey()
+    local rows = etBuildMonthDayRows(viewMonthKey)
+    if #rows == 0 then
+        drawSettingsHint('\xCD\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 \xE7\xE0 \xEC\xE5\xF1\xFF\xF6')
+        return
+    end
+    local monthAns = etMonthAnsTotal(viewMonthKey)
+
+    if type(pushEdgeSurface) == 'function' then pushEdgeSurface() end
+    imgui.BeginChild('##help_stats_card', imgui.ImVec2(-1, -1), false)
+
+    etDrawHelpMonthNav(viewMonthKey)
+
+    local scrollFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        scrollFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    local offset = tonumber(etState.helpMonthOffset) or 0
+    local hintReserve = offset > 0 and 30 or 0
+    imgui.BeginChild('##help_month_rows', imgui.ImVec2(-1, -(hintReserve + 4)), false, scrollFlags)
+    etDrawHelpStatsRows(rows, monthAns)
+    imgui.EndChild()
+
+    if offset > 0 then
+        drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xEC\xE5\xF1\xFF\xF6 \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE3\xEE \xEC\xE5\xF1\xFF\xF6\xE0')
+    end
+
+    imgui.EndChild()
+    if type(popEdgeSurface) == 'function' then popEdgeSurface() end
+end
+
+local function etDrawActivityBar(valueMin, normMin, fillColor)
+    valueMin = math.max(0, tonumber(valueMin) or 0)
+    normMin = math.max(1, tonumber(normMin) or 1)
+    local frac = math.max(0, math.min(1, valueMin / normMin))
+    local barW = imgui.GetContentRegionAvail().x
+    local barH = 3
+    local p = imgui.GetCursorScreenPos()
+    local dl = imgui.GetWindowDrawList()
+    dl:AddRectFilled(p, imgui.ImVec2(p.x + barW, p.y + barH), toU32(imgui.ImVec4(0.18, 0.18, 0.22, 1.0)), 2.0)
+    if frac > 0.001 then
+        dl:AddRectFilled(p, imgui.ImVec2(p.x + barW * frac, p.y + barH), toU32(fillColor or ET_COL.accent), 2.0)
+    end
+    imgui.Dummy(imgui.ImVec2(0, barH + 8))
+end
+
+local function etDrawHelpWeekNav(viewWeekKey)
+    local offset = tonumber(etState.helpWeekOffset) or 0
+    local btnSz = imgui.GetFrameHeight()
+    local dirLeft = (imgui.Dir and imgui.Dir.Left) or 0
+    local dirRight = (imgui.Dir and imgui.Dir.Right) or 1
+    local rangeText = uiText(etWeekRangeLabel(viewWeekKey))
+    local labelCol = col_accent or ET_COL.accent
+    local rowW = imgui.GetContentRegionAvail().x
+    local sideW = btnSz + 8
+
+    imgui.Columns(3, '##et_wk_nav', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, sideW)
+        imgui.SetColumnWidth(1, math.max(120, rowW - sideW * 2))
+        imgui.SetColumnWidth(2, sideW)
+    end
+
+    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+    if offset < ET_HELP_WEEK_MAX_BACK then
+        if imgui.ArrowButton('##et_wk_prev', dirLeft) then
+            etState.helpWeekOffset = offset + 1
+        end
+    else
+        imgui.Dummy(imgui.ImVec2(btnSz, btnSz))
+    end
+    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    imgui.NextColumn()
+
+    local textW = imgui.CalcTextSize(rangeText).x
+    local padX = math.max(0, (imgui.GetColumnWidth() - textW) * 0.5)
+    imgui.SetCursorPosX(imgui.GetCursorPosX() + padX)
+    if offset > 0 and imgui.InvisibleButton('##et_wk_now', imgui.ImVec2(textW, btnSz)) then
+        etState.helpWeekOffset = 0
+    end
+    imgui.SameLine(0, 0)
+    imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max(0, (btnSz - imgui.GetTextLineHeight()) * 0.5))
+    imgui.TextColored(labelCol, rangeText)
+    imgui.NextColumn()
+
+    if offset > 0 then
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        if imgui.ArrowButton('##et_wk_next', dirRight) then
+            etState.helpWeekOffset = offset - 1
+        end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    end
+    imgui.NextColumn()
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+local function etDrawHelpWeekTable()
+    local viewWeekKey = etHelpViewWeekMondayKey()
+    local rows = etBuildWeekDayRows(viewWeekKey)
+    if #rows == 0 then
+        drawSettingsHint('\xCD\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 \xE7\xE0 \xED\xE5\xE4\xE5\xEB\xFE')
+        return
+    end
+    local weekAns = etWeekAnsTotal(viewWeekKey)
+
+    if type(pushEdgeSurface) == 'function' then pushEdgeSurface() end
+    imgui.BeginChild('##help_stats_card', imgui.ImVec2(-1, -1), false)
+
+    etDrawHelpWeekNav(viewWeekKey)
+
+    local hdrCol = col_muted2 or imgui.ImVec4(0.62, 0.60, 0.68, 1.0)
+    local valCol = col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0)
+    local availW = imgui.GetContentRegionAvail().x
+    local wDay, wDate, wOnline, wAns = etHelpTableWidths(availW)
+    local colCount = 4
+
+    imgui.Columns(colCount, '##help_week_cols', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, wDay)
+        imgui.SetColumnWidth(1, wDate)
+        imgui.SetColumnWidth(2, wOnline)
+        imgui.SetColumnWidth(3, wAns)
+    end
+
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DAY_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_DATE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ONLINE_HDR))
+    imgui.NextColumn()
+    imgui.TextColored(hdrCol, uiText(ET_HELP_ANS_HDR))
+    imgui.NextColumn()
+
+    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1.0, 1.0, 1.0, 0.08))
+    imgui.Separator()
+    imgui.PopStyleColor()
+
+    local dl = imgui.GetWindowDrawList()
+    for ri, row in ipairs(rows) do
+        if dl and dl.AddRectFilled and ri % 2 == 0 and type(toU32) == 'function' then
+            local y = imgui.GetCursorScreenPos().y
+            local x0 = imgui.GetCursorScreenPos().x
+            local rowH = (imgui.GetTextLineHeightWithSpacing and imgui.GetTextLineHeightWithSpacing())
+                or (imgui.GetTextLineHeight() + 6)
+            pcall(function()
+                dl:AddRectFilled(
+                    imgui.ImVec2(x0, y - 2),
+                    imgui.ImVec2(x0 + availW, y + rowH),
+                    toU32(imgui.ImVec4(1, 1, 1, 0.03)))
+            end)
+        end
+        local dayCol = row.isToday and valCol or col_muted2
+        local dateCol = row.isToday and valCol or col_muted2
+        imgui.TextColored(dayCol, uiText(row.weekday))
+        imgui.NextColumn()
+        imgui.TextColored(dateCol, uiText(row.dateLabel))
+        imgui.NextColumn()
+        if row.onlineMin ~= nil then
+            local onlineCol = row.normOk and ET_COL_OK or ET_COL_FAIL
+            imgui.TextColored(onlineCol, uiText(etFormatMinutesAsRussianDuration(row.onlineMin)))
+        else
+            imgui.TextColored(col_muted2, uiText('\xB7'))
+        end
+        imgui.NextColumn()
+        local ansCol = (row.ansCnt or 0) > 0 and valCol or col_muted2
+        imgui.TextColored(ansCol, uiText(tostring(row.ansCnt or 0)))
+        imgui.NextColumn()
+    end
+
+    imgui.Columns(1)
+    etDrawHelpStatsAnsTotalFooter(weekAns, availW)
+
+    local offset = tonumber(etState.helpWeekOffset) or 0
+    if offset > 0 then
+        drawSettingsHint('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 \xED\xE0 \xE4\xE0\xF2\xF3 \xE8\xEB\xE8 \xF1\xF2\xF0\xE5\xEB\xEA\xF3 \xE2\xEF\xF0\xE0\xE2\xEE \xE4\xEB\xFF \xF2\xE5\xEA\xF3\xF9\xE5\xE9 \xED\xE5\xE4\xE5\xEB\xE8')
+    end
+
+    imgui.EndChild()
+    if type(popEdgeSurface) == 'function' then popEdgeSurface() end
+end
+
+local function etUpdateStoredDay(dateKey, minutes)
+    if not dateKey or minutes == nil then return end
+    minutes = math.max(0, math.floor(tonumber(minutes) or 0))
+    etEnsureOnlinePeriods()
+    local cutoffKey = os.date('%Y-%m-%d', os.time() - ET_ONLINE_RETAIN_DAYS * 86400)
+    if dateKey < cutoffKey then return end
+    local prev = etState.online.days[dateKey]
+    if prev == nil or minutes > prev then
+        etState.online.days[dateKey] = minutes
+        pcall(etSaveOnlineStore)
+    end
+end
+
+local function etSumCleanMinutes(filterFn)
+    etEnsureOnlinePeriods()
+    local total = 0
+    for dateKey, mins in pairs(etState.online.days) do
+        if filterFn(dateKey) then
+            total = total + (tonumber(mins) or 0)
+        end
+    end
+    return total
+end
+
+local function etGetTodayCleanMin()
+    etEnsureOnlinePeriods()
+    local todayKey = os.date('%Y-%m-%d')
+    return tonumber(etState.online.days[todayKey]) or 0
+end
+
+local function etGetMonthlyCleanMin()
+    local monthKey = etCurrentMonthKey()
+    return etSumCleanMinutes(function(dateKey) return dateKey:sub(1, 7) == monthKey end)
+end
+
+local function etSyncOnlineHistory(serverDate, cleanToday, cleanYesterday)
+    local todayKey = etParseServerDateKey(serverDate)
+    etUpdateStoredDay(todayKey, cleanToday)
+    if cleanYesterday ~= nil then
+        local y, m, d = todayKey:match('(%d%d%d%d)%-(%d%d)%-(%d%d)')
+        if y then
+            local yesterdayKey = os.date('%Y-%m-%d', os.time({
+                year = tonumber(y), month = tonumber(m), day = tonumber(d),
+                hour = 12, min = 0, sec = 0,
+            }) - 86400)
+            etUpdateStoredDay(yesterdayKey, cleanYesterday)
+        end
+    end
+end
+
+local function etMigrateLegacyNorms()
+    ensureExactTimeSettings()
+    local f = io.open(ET_LEGACY_CONFIG, 'r')
+    if not f then return end
+    local changed = false
+    for line in f:lines() do
+        local weekH = line:match('^%s*week_norm_h%s*=%s*(%d+)')
+        if weekH and tonumber(weekH) > 0 and (tonumber(settings.exact_time_daily_norm_h) or 4) == 4 then
+            settings.exact_time_daily_norm_h = math.max(1, math.min(24, math.floor(tonumber(weekH) / 7)))
+            changed = true
+        end
+        local monthH = line:match('^%s*month_norm_h%s*=%s*(%d+)')
+        if monthH and tonumber(monthH) > 0 and (tonumber(settings.exact_time_monthly_norm_h) or 112) == 112 then
+            settings.exact_time_monthly_norm_h = tonumber(monthH)
+            changed = true
+        end
+    end
+    f:close()
+    if changed then markDirtySettings() end
+end
+
+local function etInstallWmHandler()
+    if not deskWmDispatch or not deskWmDispatch.register then return end
+    deskWmDispatch.unregister('exact_time')
+    deskWmDispatch.register('exact_time', 88, function(msg, wparam, lparam)
+        if not etState.showOpen then return false end
+        local wm = deskCache and deskCache.wm
+        if not wm then return false end
+        msg = tonumber(msg) or 0
+        wparam = tonumber(wparam) or 0
+        if msg ~= wm.KEYDOWN and msg ~= wm.SYSKEYDOWN and msg ~= wm.KEYUP and msg ~= wm.SYSKEYUP then
+            return false
+        end
+        local vkEsc = vkeys and vkeys.VK_ESCAPE
+        local vkRet = (vkeys and vkeys.VK_RETURN) or 0x0D
+        if wparam ~= vkEsc and wparam ~= vkRet then return false end
+        if msg == wm.KEYDOWN or msg == wm.SYSKEYDOWN then
+            consumeWindowMessage(true, false, true)
+            return true
+        end
+        if etCloseWindow then etCloseWindow() end
+        consumeWindowMessage(true, false, true)
+        return true
+    end)
+end
+
+function exactTimeInit()
+    ensureExactTimeSettings()
+    pcall(etMigrateLegacyNorms)
+    pcall(etLoadOnlineStore)
+    pcall(etLoadAnsStore)
+    pcall(etLoadPunishStore)
+    pcall(etBackfillAnsFromThreads)
+    pcall(etInstallWmHandler)
+end
+
+function exactTimeWantsImguiInput()
+    return etState.showOpen == true
+end
+
+function exactTimeShouldDraw()
+    return etState.showOpen and etState.data.playToday ~= nil
+end
+
+function exactTimeNoteOutgoing(msg)
+    if not etEnabled() then return end
+    if type(msg) ~= 'string' then return end
+    local s = trim(msg)
+    if s:sub(1, 1) == '/' then s = trim(s:sub(2)) end
+    local num = s:match('^[cC]%s*(%d+)$') or s:match('^[cC](%d+)$')
+    if not num and s:match('^[cC]$') then num = '60' end
+    if num and tonumber(num) == 60 then
+        etState.pendingCmdAt = os.clock()
+    end
+end
+
+function exactTimeOnShowDialog(dialogId, style, title, button1, button2, text)
+    if not etEnabled() then return false end
+    if etState.pendingCmdAt and (os.clock() - etState.pendingCmdAt) > EXACT_TIME_TIMEOUT then
+        etState.pendingCmdAt = nil
+    end
+    if not etIsExactTimeDialog(title, text) then return false end
+    etState.pendingCmdAt = nil
+
+    local dialogRows = etParseDialogLines(text)
+    local playToday = etExtractDurationAfterLabel(text, 'Время в игре сегодня')
+        or etMinutesFromDialogRows(dialogRows, 'Время в игре сегодня', 'Онлайн сегодня')
+    local afkToday = etExtractDurationAfterLabel(text, 'AFK за сегодня')
+        or etExtractDurationAfterLabel(text, 'AFK сегодня')
+        or etMinutesFromDialogRows(dialogRows, 'AFK за сегодня', 'AFK сегодня')
+    if playToday == nil or afkToday == nil then
+        if type(say) == 'function' then
+            say('{FF6666}[Exact Time] {FFFFFF}\xCD\xE5 \xF3\xE4\xE0\xEB\xEE\xF1\xFC \xEF\xF0\xEE\xF7\xE8\xF2\xE0\xF2\xFC \xE2\xF0\xE5\xEC\xFF.')
+        end
+        etSendDialogClose(dialogId, button1, button2)
+        return true
+    end
+
+    local cleanMin = math.max(0, playToday - afkToday)
+    local serverTime, serverDate = etParseServerClock(text, dialogRows)
+    local playYday = etExtractDurationAfterLabel(text, 'Время в игре вчера')
+        or etMinutesFromDialogRows(dialogRows, 'Время в игре вчера', 'Онлайн вчера')
+    local afkYday = etExtractDurationAfterLabel(text, 'AFK за вчера')
+        or etExtractDurationAfterLabel(text, 'AFK вчера')
+        or etMinutesFromDialogRows(dialogRows, 'AFK за вчера', 'AFK вчера')
+    local cleanYday = (playYday ~= nil and afkYday ~= nil) and math.max(0, playYday - afkYday) or nil
+
+    pcall(function() etSyncOnlineHistory(serverDate, cleanMin, cleanYday) end)
+
+    local d = etState.data
+    d.playToday = playToday
+    d.afkToday = afkToday
+    d.cleanMin = cleanMin
+    d.cleanMonthMin = etGetMonthlyCleanMin()
+    d.dialogId = dialogId
+    d.button1 = button1
+    d.button2 = button2
+    d.displayRows = etBuildDisplayList(text, dialogRows,
+        etFormatMinutesAsRussianDuration(cleanMin),
+        etFormatMinutesAsRussianDuration(playToday),
+        etFormatMinutesAsRussianDuration(afkToday))
+    local ch, cm, cs = etParseClockHms(serverTime)
+    d._clockTick = nil
+    d._clockStr = nil
+    if ch then
+        d.clockBase = { h = ch, m = cm, s = cs, at = os.clock() }
+    else
+        d.clockBase = nil
+    end
+    etState.showOpen = true
+    if etShowWindowBuf then etShowWindowBuf[0] = true end
+    etSetNativeDialogVisible(false)
+    return true
+end
+
+local function etDrawAccentStrip()
+    local dl = imgui.GetWindowDrawList()
+    local pos = imgui.GetWindowPos()
+    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + imgui.GetWindowWidth(), pos.y + 2), toU32(ET_COL.accent))
+    imgui.Dummy(imgui.ImVec2(0, 6))
+end
+
+local function etCenterText(text, color, scale)
+    scale = scale or 1.0
+    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    local tw = imgui.CalcTextSize(text).x
+    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
+    imgui.TextColored(color, text)
+    if scale ~= 1.0 and imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+end
+
+local function etCenterLabelValue(labelCp1251, value, valueColor)
+    valueColor = valueColor or ET_COL.accent
+    local label = uiText(labelCp1251 .. ': ')
+    local val = uiText(value)
+    local tw = imgui.CalcTextSize(label).x + imgui.CalcTextSize(val).x
+    imgui.SetCursorPosX(math.max(imgui.GetStyle().WindowPadding.x, (imgui.GetWindowWidth() - tw) * 0.5))
+    imgui.TextColored(ET_COL.muted, label)
+    imgui.SameLine(0, 0)
+    imgui.TextColored(valueColor, val)
+end
+
+local function etDrawStatRows(rows, colId)
+    if #rows == 0 then return end
+    imgui.Columns(2, colId, false)
+    imgui.SetColumnWidth(0, ET_LABEL_W)
+    for i, row in ipairs(rows) do
+        if row.value and row.value ~= '' then
+            imgui.TextColored(ET_COL.muted, uiText(row.label))
+            imgui.NextColumn()
+            imgui.TextColored(ET_COL.value, uiText(row.value))
+            imgui.NextColumn()
+            if i < #rows then
+                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
+                imgui.NextColumn()
+                imgui.Dummy(imgui.ImVec2(0, ET_ROW_GAP))
+                imgui.NextColumn()
+            end
+        end
+    end
+    imgui.Columns(1)
+end
+
+function drawExactTimeWindow()
+    if not exactTimeShouldDraw() then return end
+    etSetNativeDialogVisible(false)
+
+    local io = imgui.GetIO()
+    local sw, sh = io.DisplaySize.x, io.DisplaySize.y
+    if sw < 100 then sw = 1920 end
+    if sh < 100 then sh = 1080 end
+    imgui.SetNextWindowPos(imgui.ImVec2(sw * 0.5, sh * 0.5), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
+    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(ET_WIN_W, 0), imgui.ImVec2(ET_WIN_W, 9999))
+
+    local winFlags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoScrollbar
+    etPushWindowStyle()
+    if not etShowWindowBuf then
+        etShowWindowBuf = imgui.new.bool(etState.showOpen)
+    end
+    if not imgui.Begin(uiText(L_TITLE) .. '###desk_exact_time', etShowWindowBuf, winFlags) then
+        etPopWindowStyle()
+        imgui.End()
+        if etState.showOpen then etCloseWindow() end
+        return
+    end
+
+    etDrawAccentStrip()
+    local d = etState.data
+    local timeRow, cleanRow = nil, nil
+    local dateParts, todayRows, yesterdayRows = {}, {}, {}
+    if d.displayRows then
+        for _, row in ipairs(d.displayRows) do
+            if row.kind == 'time' then timeRow = row
+            elseif row.kind == 'accent' then cleanRow = row
+            elseif row.kind == 'date' then dateParts[#dateParts + 1] = row.value
+            elseif row.kind == 'today' then todayRows[#todayRows + 1] = row
+            elseif row.kind == 'yesterday' then yesterdayRows[#yesterdayRows + 1] = row
+            end
+        end
+    end
+
+    if #dateParts > 0 then
+        local dateLine = etFormatDateLine(dateParts)
+        if dateLine then
+            etCenterText(uiText(dateLine), ET_COL.muted, 0.92)
+            imgui.Dummy(imgui.ImVec2(0, 6))
+        end
+    end
+
+    if timeRow and timeRow.value ~= '' then
+        etCenterText(uiText(etLiveClockValue(timeRow.value)), ET_COL.time, 1.42)
+        imgui.Dummy(imgui.ImVec2(0, 4))
+    end
+
+    if cleanRow and cleanRow.value ~= '' then
+        etCenterLabelValue(L_ET_CLEAN, cleanRow.value)
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        etDrawActivityBar(d.cleanMin, etDailyNormMin(), ET_COL.accent)
+    end
+
+    if d.cleanMonthMin ~= nil then
+        etCenterLabelValue(L_ET_CLEAN_MONTH, etFormatMinutesAsRussianDuration(d.cleanMonthMin), ET_MONTHLY_COLOR)
+        imgui.Dummy(imgui.ImVec2(0, 6))
+        etDrawActivityBar(d.cleanMonthMin, etMonthlyNormMin(), ET_MONTHLY_COLOR)
+    end
+
+    if #todayRows > 0 or #yesterdayRows > 0 then
+        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
+        imgui.Separator()
+        imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 6))
+    end
+
+    if #todayRows > 0 then etDrawStatRows(todayRows, '##et_today') end
+    if #todayRows > 0 and #yesterdayRows > 0 then
+        imgui.Dummy(imgui.ImVec2(0, 10))
+        imgui.PushStyleColor(imgui.Col.Separator, ET_LINE)
+        imgui.Separator()
+        imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 8))
+    end
+    if #yesterdayRows > 0 then etDrawStatRows(yesterdayRows, '##et_yday') end
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+    if imgui.Button(uiText(L_CLOSE) .. '##et_close', imgui.ImVec2(-1, 32)) then
+        etCloseWindow()
+    end
+
+    imgui.End()
+    etPopWindowStyle()
+
+    if etShowWindowBuf and not etShowWindowBuf[0] and etState.showOpen then
+        etCloseWindow()
+    end
+end
+
+function syncExactTimeUiFromSettings()
+    ensureExactTimeSettings()
+    if uiExactTimeEnabled then uiExactTimeEnabled[0] = settings.exact_time_enabled ~= false end
+    if uiExactTimeDailyH then uiExactTimeDailyH[0] = math.floor(tonumber(settings.exact_time_daily_norm_h) or 4) end
+    if uiExactTimeMonthlyH then uiExactTimeMonthlyH[0] = math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112) end
+end
+
+local function etDrawHelpNormsRow(label, valueText, ok)
+    local avail = imgui.GetContentRegionAvail().x
+    local labelW = math.min(200, math.max(130, avail * 0.45))
+    imgui.TextColored(col_muted2, uiText(label))
+    imgui.SameLine(labelW)
+    local col = col_label
+    if ok == true then col = ET_COL_OK
+    elseif ok == false then col = ET_COL_FAIL end
+    imgui.TextColored(col, uiText(valueText))
+end
+
+local function etDrawHelpNormCard(id, title, valueText, ok, frac)
+    frac = tonumber(frac)
+    if type(deskEdgeGroupBegin) == 'function' then
+        deskEdgeGroupBegin(id, title)
+    else
+        if type(deskEdgeGroupTitle) == 'function' then
+            deskEdgeGroupTitle(title)
+        end
+    end
+    local valCol = col_label
+    if ok == true then valCol = ET_COL_OK
+    elseif ok == false then valCol = ET_COL_FAIL end
+    if imgui.SetWindowFontScale then
+        local base = imgui.GetFontSize() or 13
+        imgui.SetWindowFontScale(1.15)
+    end
+    imgui.TextColored(valCol, uiText(valueText))
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+    if frac and frac >= 0 and imgui.GetWindowDrawList then
+        local barCol = ok and ET_COL_OK or ET_COL_FAIL
+        if ok == nil then barCol = col_accent or ET_COL.accent end
+        etDrawActivityBar(frac * 100, 100, barCol)
+    end
+    if type(deskEdgeGroupEnd) == 'function' then
+        deskEdgeGroupEnd()
+    end
+end
+
+local function etDrawHelpNormsSummary()
+    local dailyH = math.floor(tonumber(settings.exact_time_daily_norm_h) or 4)
+    local monthlyH = math.floor(tonumber(settings.exact_time_monthly_norm_h) or 112)
+    local todayKey = os.date('%Y-%m-%d')
+    local todayMin = etState.online and etState.online.days and etState.online.days[todayKey]
+    local dayTarget = dailyH * 60
+    local monthMin = 0
+    local curMonth = etCurrentMonthKey()
+    for dateKey, mins in pairs(etState.online.days or {}) do
+        if dateKey:sub(1, 7) == curMonth then
+            monthMin = monthMin + (tonumber(mins) or 0)
+        end
+    end
+    local monthTarget = monthlyH * 60
+    local monthOk = monthMin >= monthTarget
+
+    local avail = imgui.GetContentRegionAvail().x
+    local halfW = math.max(140, math.floor((avail - 10) * 0.5))
+    imgui.Columns(2, '##et_norms_sum', false)
+    if imgui.SetColumnWidth then
+        imgui.SetColumnWidth(0, halfW)
+        imgui.SetColumnWidth(1, halfW)
+    end
+
+    if todayMin ~= nil then
+        local ok = todayMin >= dayTarget
+        etDrawHelpNormCard(
+            '##et_norm_day',
+            '\xC4\xE5\xED\xFC \xEE\xED\xEB\xE0\xE9\xED\xE0',
+            etFormatMinutesAsRussianDuration(todayMin) .. ' / ' .. tostring(dailyH) .. ' \xF7',
+            ok,
+            dayTarget > 0 and (todayMin / dayTarget) or 0)
+    else
+        etDrawHelpNormCard(
+            '##et_norm_day',
+            '\xC4\xE5\xED\xFC \xEE\xED\xEB\xE0\xE9\xED\xE0',
+            '\xED\xE5\xF2 \xE4\xE0\xED\xED\xFB\xF5 / ' .. tostring(dailyH) .. ' \xF7',
+            nil,
+            nil)
+    end
+    imgui.NextColumn()
+    etDrawHelpNormCard(
+        '##et_norm_month',
+        '\xCD\xEE\xF0\xEC\xE0 \xEC\xE5\xF1\xFF\xF6\xE0',
+        etFormatMinutesAsRussianDuration(monthMin) .. ' / ' .. tostring(monthlyH) .. ' \xF7',
+        monthOk,
+        monthTarget > 0 and (monthMin / monthTarget) or 0)
+    imgui.Columns(1)
+    imgui.Dummy(imgui.ImVec2(0, 4))
+end
+
+function drawExactTimeTab()
+    if not exactTimeUiSynced then
+        syncExactTimeUiFromSettings()
+        exactTimeUiSynced = true
+    end
+    etEnsureOnlinePeriods()
+
+    if not etState.helpView then etState.helpView = 'norms' end
+
+    if type(deskEdgeDrawSegmentBar) == 'function' then
+        deskEdgeDrawSegmentBar('help', {
+            { key = 'norms', label = uiText('\xCD\xEE\xF0\xEC\xFB') },
+            { key = 'punish', label = uiText('\xCB\xEE\xE3 \xED\xE0\xEA\xE0\xE7\xE0\xED\xE8\xE9') },
+            { key = 'stats', label = uiText('\xD1\xF2\xE0\xF2\xE8\xF1\xF2\xE8\xEA\xE0') },
+        }, etState.helpView, function(k)
+            etState.helpView = k
+            if k == 'stats' then etState.helpStatsPage = 0 end
+        end)
+    end
+
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    local bodyFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        bodyFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    imgui.BeginChild('##help_body', imgui.ImVec2(-1, -1), false, bodyFlags)
+
+    local view = etState.helpView or 'norms'
+    if view == 'punish' then
+        etDrawHelpPunishLog()
+    elseif view == 'stats' then
+        etDrawHelpStatsPaged()
+    else
+        etDrawHelpNormsSummary()
+        if type(deskEdgeGroupBegin) == 'function' then
+            deskEdgeGroupBegin('##help_norms_opts', '\xD2\xEE\xF7\xED\xEE\xE5 \xE2\xF0\xE5\xEC\xFF')
+        end
+        if uiExactTimeEnabled and deskFormCheckboxRow(
+                '\xC7\xE0\xEC\xE5\xED\xE0 \xE4\xE8\xE0\xEB\xEE\xE3 /c 60', uiExactTimeEnabled, function(v)
+            settings.exact_time_enabled = v
+            if not v then etCloseWindow() end
+            markDirtySettings()
+        end, 'et_en') then end
+        if imgui.Button(uiText('\xCE\xF2\xEA\xF0\xFB\xF2\xFC /c 60') .. '##et_open_c60', imgui.ImVec2(-1, 32)) then
+            if type(sendGameCmd) == 'function' then
+                sendGameCmd('c 60')
+            elseif type(sendChat) == 'function' then
+                sendChat('/c 60')
+            end
+        end
+        imgui.Dummy(imgui.ImVec2(0, 8))
+        if uiExactTimeDailyH and uiExactTimeMonthlyH and drawSettingsInputInt then
+            local halfW = math.max(120, math.floor(imgui.GetContentRegionAvail().x * 0.5 - 6))
+            imgui.Columns(2, '##et_norm_inputs', false)
+            if imgui.SetColumnWidth then
+                imgui.SetColumnWidth(0, halfW)
+                imgui.SetColumnWidth(1, halfW)
+            end
+            drawSettingsInputInt('\xC4\xE5\xED\xFC', uiExactTimeDailyH, 'et_day', 1, 24, function(v)
+                settings.exact_time_daily_norm_h = v
+                markDirtySettings()
+            end, '\xF7')
+            imgui.NextColumn()
+            drawSettingsInputInt('\xCC\xE5\xF1\xFF\xF6', uiExactTimeMonthlyH, 'et_month', 1, 744, function(v)
+                settings.exact_time_monthly_norm_h = v
+                markDirtySettings()
+            end, '\xF7')
+            imgui.Columns(1)
+        end
+        if type(deskEdgeGroupEnd) == 'function' then
+            deskEdgeGroupEnd()
+        end
+    end
+
+    imgui.EndChild()
+    imgui.PopStyleVar()
 end
 
 
@@ -33527,6 +34644,1755 @@ do
 
     local chunkFn, chunkErr = loadstring([=[
 
+--[[ Edge design tokens + card/group helpers (порт concepts/edge.css). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local M = {}
+
+M.SHELL_BG_ALPHA = 0.42
+M.SHELL_BG_ALPHA_DEFAULT = 0.42
+M.NAV_BG = imgui.ImVec4(0.031, 0.031, 0.047, 0.65)
+M.GLASS_MAIN = imgui.ImVec4(0, 0, 0, 0)
+M.MAIN_BG = imgui.ImVec4(0, 0, 0, 0)
+M.SURFACE = imgui.ImVec4(1, 1, 1, 0.04)
+M.SURFACE_HOVER = imgui.ImVec4(1, 1, 1, 0.07)
+M.SURFACE_ACTIVE = imgui.ImVec4(0.67, 0.33, 1.0, 0.14)
+M.BORDER = imgui.ImVec4(1, 1, 1, 0.06)
+M.BORDER_SUBTLE = imgui.ImVec4(1, 1, 1, 0.04)
+M.CHAT_BG = imgui.ImVec4(0.024, 0.024, 0.039, 0.22)
+M.INBOX_BG = imgui.ImVec4(0, 0, 0, 0)
+M.INBOX_LIST_BG = imgui.ImVec4(0, 0, 0, 0.12)
+M.HEADER_BG = imgui.ImVec4(0, 0, 0, 0.08)
+M.HUD_BG = imgui.ImVec4(0.016, 0.016, 0.031, 0.48)
+M.HUD_BORDER = imgui.ImVec4(1, 1, 1, 0.08)
+
+M.RADIUS_SM = 10
+M.RADIUS = 16
+M.GROUP_PAD = 16
+M.GROUP_GAP = 12
+M.HEADER_PAD_X = 20
+M.HEADER_H = 54
+M.HEADER_TITLE_PX = 20
+M.HEADER_FONT_SCALE = 1.35
+M.SPLIT_SIDE_W = 220
+M.SPLIT_PAD = 18
+M.SPLIT_GAP = 14
+M.GROUP_TITLE_PX = 13
+M.GROUP_TITLE_SCALE = 1.10
+M.GROUP_TITLE_GAP = 5
+M.PANEL_INSET = 0
+M.CARD_PAD = 0
+M.CARD_INNER_PAD = 14
+M.CARD_INNER_PAD_TOP = 10
+
+function M.edgeUiActive()
+    return type(deskEdgeTheme) == 'table'
+end
+
+function M.transparentChildPush()
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.MAIN_BG)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+end
+
+function M.transparentChildPop()
+    imgui.PopStyleVar(2)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+local surfaceStack = 0
+local panelStack = {}
+local glassStack = 0
+
+local function u32(col)
+    if type(toU32) == 'function' then return toU32(col) end
+    return 0xFFFFFFFF
+end
+
+function M.shellAlpha()
+    if type(settings) == 'table' then
+        local v = tonumber(settings.ui_shell_alpha)
+        if v ~= nil then
+            v = math.max(0.30, math.min(1.0, v))
+            -- mimgui: BgAlpha 1.0 = «без override» → окно прозрачное
+            if v >= 0.995 then v = 0.99 end
+            return v
+        end
+    end
+    return M.SHELL_BG_ALPHA_DEFAULT or 0.55
+end
+
+function M.panelAutoFlags()
+    local flags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysAutoResize then
+        flags = flags + imgui.WindowFlags.AlwaysAutoResize
+    end
+    return flags
+end
+
+function M.panelChildSize()
+    local w = imgui.GetContentRegionAvail().x
+    if not w or w < 4 then
+        return imgui.ImVec2(-1, 0)
+    end
+    return imgui.ImVec2(w, 0)
+end
+
+function M.panelScrollFlags()
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        return imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    return 0
+end
+
+function M.pushGlassMain()
+    glassStack = (glassStack or 0) + 1
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.GLASS_MAIN)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+end
+
+function M.popGlassMain()
+    if not glassStack or glassStack <= 0 then return end
+    glassStack = glassStack - 1
+    imgui.PopStyleVar(2)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+function M.pushEdgeSurface()
+    surfaceStack = surfaceStack + 1
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.SURFACE)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, M.RADIUS_SM)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(M.GROUP_PAD, M.GROUP_PAD))
+end
+
+function M.popEdgeSurface()
+    if surfaceStack <= 0 then return end
+    surfaceStack = surfaceStack - 1
+    imgui.PopStyleVar(3)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+function M.drawGroupTitleRule(colAccent)
+    colAccent = colAccent or col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 0.55)
+    local ok = pcall(function()
+        local dl = imgui.GetWindowDrawList()
+        if not dl then return end
+        local p = imgui.GetCursorScreenPos()
+        local w = math.max(48, imgui.GetContentRegionAvail().x)
+        local y = p.y + 1
+        local fade = imgui.ImVec4(colAccent.x, colAccent.y, colAccent.z, 0.05)
+        if dl.AddRectFilledMultiColor then
+            dl:AddRectFilledMultiColor(
+                imgui.ImVec2(p.x, y),
+                imgui.ImVec2(p.x + w, y + 1),
+                u32(colAccent),
+                u32(fade),
+                u32(fade),
+                u32(colAccent))
+        elseif dl.AddLine then
+            dl:AddLine(imgui.ImVec2(p.x, y), imgui.ImVec2(p.x + w, y), u32(colAccent), 1.0)
+        end
+    end)
+    if not ok then
+        imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(0.67, 0.33, 1.0, 0.22))
+        imgui.Separator()
+        imgui.PopStyleColor()
+    end
+    imgui.Dummy(imgui.ImVec2(0, 3))
+end
+
+function M.deskEdgeGroupTitle(text, opts)
+    if not text or text == '' then return end
+    opts = type(opts) == 'table' and opts or {}
+    local inset = tonumber(opts.insetX) or 0
+    if inset > 0 then
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + inset)
+    end
+    local titleCol = col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)
+    local raw = type(uiText) == 'function' and uiText(text) or text
+    local scale = M.GROUP_TITLE_SCALE or 1.10
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    imgui.TextColored(titleCol, raw)
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+    if opts.rule ~= false then
+        M.drawGroupTitleRule(opts.accentCol)
+    end
+    imgui.Dummy(imgui.ImVec2(0, M.GROUP_TITLE_GAP or 5))
+end
+
+local function drawCardChrome(mn, mx)
+    if not mn or not mx or mx.x <= mn.x or mx.y <= mn.y then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+    local rad = M.RADIUS_SM or 10
+    pcall(function()
+        if dl.AddRectFilled then
+            dl:AddRectFilled(mn, mx, u32(M.SURFACE), rad)
+        end
+        if dl.AddRect and M.BORDER then
+            dl:AddRect(mn, mx, u32(M.BORDER), rad)
+        end
+    end)
+end
+
+function M.panelBegin(id)
+    id = tostring(id or 'panel')
+    local inner = M.CARD_INNER_PAD or 14
+    local innerTop = tonumber(M.CARD_INNER_PAD_TOP)
+    if innerTop == nil then innerTop = math.max(8, inner - 4) end
+    local outerW = math.max(1, imgui.GetContentRegionAvail().x)
+    imgui.PushID(id)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    imgui.BeginGroup()
+    imgui.Dummy(imgui.ImVec2(outerW, innerTop))
+    imgui.Indent(inner)
+    panelStack[#panelStack + 1] = {
+        id = id,
+        inner = inner,
+        innerTop = innerTop,
+        outerW = outerW,
+        contentW = math.max(40, outerW - inner * 2),
+    }
+end
+
+function M.panelEnd()
+    if #panelStack == 0 then return end
+    local entry = panelStack[#panelStack]
+    table.remove(panelStack)
+    local inner = entry.inner or M.CARD_INNER_PAD or 16
+    local outerW = entry.outerW or math.max(1, imgui.GetContentRegionAvail().x + inner * 2)
+    imgui.Unindent(inner)
+    imgui.Dummy(imgui.ImVec2(outerW, inner))
+    imgui.EndGroup()
+    local mn = imgui.GetItemRectMin()
+    local mx = imgui.GetItemRectMax()
+    drawCardChrome(mn, mx)
+    imgui.PopStyleVar()
+    imgui.PopID()
+    imgui.Dummy(imgui.ImVec2(0, M.GROUP_GAP))
+end
+
+function M.panelReset()
+    panelStack = {}
+end
+
+function M.panelContentW()
+    if #panelStack == 0 then
+        return math.max(40, imgui.GetContentRegionAvail().x)
+    end
+    local entry = panelStack[#panelStack]
+    if entry.contentW then
+        return entry.contentW
+    end
+    local inner = entry.inner or M.CARD_INNER_PAD or 16
+    return math.max(40, imgui.GetContentRegionAvail().x - inner)
+end
+
+function M.deskEdgeSectionTitle(text)
+    if not text or text == '' then return end
+    if type(uiText) == 'function' then
+        imgui.TextColored(col_muted2 or imgui.ImVec4(0.55, 0.55, 0.60, 1.0), uiText(text))
+    end
+    imgui.Dummy(imgui.ImVec2(0, 3))
+end
+
+function M.deskEdgeGroupBegin(id, title)
+    M.panelBegin(id)
+    if title and title ~= '' then
+        M.deskEdgeGroupTitle(title)
+    end
+end
+
+function M.deskEdgeGroupEnd()
+    M.panelEnd()
+end
+
+function M.deskEdgeCardBegin(id, title, subtitle)
+    M.panelBegin(id)
+    if title and title ~= '' then
+        M.deskEdgeGroupTitle(title)
+    end
+    if subtitle and subtitle ~= '' then
+        imgui.TextColored(col_muted2 or imgui.ImVec4(0.42, 0.42, 0.48, 1.0), uiText(subtitle))
+        imgui.Dummy(imgui.ImVec2(0, 6))
+    end
+end
+
+function M.deskEdgeCardEnd()
+    M.panelEnd()
+end
+
+function M.deskEdgeHeaderTitle(text)
+    if not text or text == '' then return end
+    if type(uiText) == 'function' then
+        imgui.TextColored(col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0), uiText(text))
+    end
+end
+
+M.SIDEBAR_BG = imgui.ImVec4(0, 0, 0, 0.12)
+M.SPLIT_SIDE_BG = imgui.ImVec4(0, 0, 0, 0)
+M.CATALOG_MAIN_PAD = imgui.ImVec2(18, 18)
+M.CATALOG_SIDEBAR_PAD = imgui.ImVec2(18, 14)
+M.CONTENT_INSET_X = 8
+M.BTN_SURFACE = imgui.ImVec4(1, 1, 1, 0.06)
+M.BTN_SURFACE_HOVER = imgui.ImVec4(1, 1, 1, 0.10)
+M.BTN_SURFACE_ACTIVE = imgui.ImVec4(0.67, 0.33, 1.0, 0.22)
+M.BTN_PRIMARY = imgui.ImVec4(0.67, 0.33, 1.0, 0.52)
+M.BTN_PRIMARY_HOVER = imgui.ImVec4(0.72, 0.38, 1.0, 0.68)
+M.BTN_PRIMARY_ACTIVE = imgui.ImVec4(0.58, 0.28, 0.92, 0.82)
+
+local btnStyleDepth = 0
+
+function M.pushEdgeButtons(primary)
+    btnStyleDepth = btnStyleDepth + 1
+    if primary then
+        imgui.PushStyleColor(imgui.Col.Button, M.BTN_PRIMARY)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, M.BTN_PRIMARY_HOVER)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, M.BTN_PRIMARY_ACTIVE)
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+        return
+    end
+    imgui.PushStyleColor(imgui.Col.Button, M.BTN_SURFACE)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, M.BTN_SURFACE_HOVER)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, M.BTN_SURFACE_ACTIVE)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 6))
+end
+
+function M.popEdgeButtons(primary)
+    if btnStyleDepth <= 0 then return end
+    btnStyleDepth = btnStyleDepth - 1
+    if primary then
+        imgui.PopStyleVar(1)
+    else
+        imgui.PopStyleVar(2)
+    end
+    imgui.PopStyleColor(3)
+end
+
+function M.beginSplitSidebar(id, width)
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.SPLIT_SIDE_BG)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 4))
+    imgui.BeginChild(tostring(id), imgui.ImVec2(width, -1), false)
+end
+
+function M.endSplitSidebar()
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local mn = imgui.GetItemRectMin()
+        local mx = imgui.GetItemRectMax()
+        if mn and mx then
+            pcall(function()
+                dl:AddLine(
+                    imgui.ImVec2(mx.x, mn.y),
+                    imgui.ImVec2(mx.x, mx.y),
+                    u32(M.BORDER),
+                    1.0)
+            end)
+        end
+    end
+    imgui.EndChild()
+    imgui.PopStyleVar(4)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+function M.beginCatalogSidebar(id, width)
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.SIDEBAR_BG)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, M.CATALOG_SIDEBAR_PAD or imgui.ImVec2(M.GROUP_PAD, M.GROUP_PAD))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 8))
+    imgui.BeginChild(tostring(id), imgui.ImVec2(width, -1), false)
+end
+
+function M.endCatalogSidebar()
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local mn = imgui.GetItemRectMin()
+        local mx = imgui.GetItemRectMax()
+        if mn and mx then
+            pcall(function()
+                dl:AddLine(
+                    imgui.ImVec2(mx.x, mn.y),
+                    imgui.ImVec2(mx.x, mx.y),
+                    u32(M.BORDER),
+                    1.0)
+            end)
+        end
+    end
+    imgui.EndChild()
+    imgui.PopStyleVar(4)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+function M.beginCatalogMain(id)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, M.CATALOG_MAIN_PAD)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    imgui.BeginChild(tostring(id), imgui.ImVec2(-1, -1), false)
+end
+
+function M.endCatalogMain()
+    imgui.EndChild()
+    imgui.PopStyleVar(2)
+end
+
+function M.deskEdgeCapsTitle(text)
+    if not text or text == '' then return end
+    local capCol = imgui.ImVec4(0.65, 0.65, 0.74, 1.0)
+    local raw = type(uiText) == 'function' and uiText(text) or text
+    if type(raw) == 'string' then raw = string.upper(raw) end
+    imgui.TextColored(capCol, raw)
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+function M.drawSplitNavItem(label, id, active)
+    if not label or label == '' then return false end
+    local w = imgui.GetContentRegionAvail().x
+    local h = 36
+    local dl = imgui.GetWindowDrawList()
+    local pos = imgui.GetCursorScreenPos()
+    local p1 = imgui.ImVec2(pos.x + w, pos.y + h)
+    if dl and type(toU32) == 'function' then
+        if active then
+            dl:AddRectFilled(pos, p1, u32(M.SURFACE_ACTIVE), 10)
+            dl:AddRectFilled(
+                imgui.ImVec2(pos.x, pos.y + h * 0.2),
+                imgui.ImVec2(pos.x + 3, pos.y + h * 0.8),
+                u32(col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 1.0)),
+                2)
+        end
+    end
+    imgui.InvisibleButton(tostring(id or 'nav'), imgui.ImVec2(w, h))
+    local clicked = imgui.IsItemClicked(0)
+    local hovered = imgui.IsItemHovered()
+    if dl and hovered and not active and type(toU32) == 'function' then
+        dl:AddRectFilled(pos, p1, u32(M.SURFACE_HOVER), 10)
+    end
+    if dl and type(toU32) == 'function' and type(uiText) == 'function' then
+        local textX = pos.x + 12
+        local lh = imgui.GetTextLineHeight()
+        local textY = pos.y + math.max(0, (h - lh) * 0.5)
+        local tcol = active and (col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0))
+            or imgui.ImVec4(0.66, 0.66, 0.72, 1.0)
+        local labelTxt = uiText(label)
+        dl:AddText(imgui.ImVec2(textX, textY), u32(tcol), labelTxt)
+    end
+    imgui.Dummy(imgui.ImVec2(0, 2))
+    return clicked
+end
+
+function M.beginSplitPage(id)
+    id = tostring(id or 'split_page')
+    M.transparentChildPush()
+    imgui.BeginChild(id, imgui.ImVec2(-1, -1), false)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 4))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(M.SPLIT_PAD, M.SPLIT_PAD))
+end
+
+function M.endSplitPage()
+    imgui.PopStyleVar(2)
+    imgui.EndChild()
+    M.transparentChildPop()
+end
+
+function M.beginSplitMain(id)
+    id = tostring(id or 'split_main')
+    imgui.PushStyleColor(imgui.Col.ChildBg, M.SURFACE)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, M.BORDER)
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, M.RADIUS_SM)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 1)
+    imgui.PushStyleColor(imgui.Col.FrameBg, M.SURFACE)
+    imgui.PushStyleColor(imgui.Col.FrameBgHovered, M.SURFACE_HOVER)
+    imgui.PushStyleColor(imgui.Col.FrameBgActive, imgui.ImVec4(1, 1, 1, 0.08))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, M.RADIUS_SM)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1)
+    imgui.BeginChild(id, imgui.ImVec2(-1, -1), true)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(M.GROUP_PAD, M.GROUP_PAD))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+end
+
+function M.endSplitMain()
+    imgui.PopStyleVar(2)
+    imgui.EndChild()
+    imgui.PopStyleVar(2)
+    imgui.PopStyleColor(3)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+function M.collapsingHeader(label, defaultOpen)
+    if not label or label == '' then return false end
+    local flags = 0
+    if imgui.TreeNodeFlags then
+        if defaultOpen and imgui.TreeNodeFlags.DefaultOpen then
+            flags = flags + imgui.TreeNodeFlags.DefaultOpen
+        end
+        if imgui.TreeNodeFlags.Framed then
+            flags = flags + imgui.TreeNodeFlags.Framed
+        end
+    end
+    if imgui.CollapsingHeader then
+        return imgui.CollapsingHeader(label, flags)
+    end
+    if imgui.TreeNode then
+        return imgui.TreeNode(label)
+    end
+    if type(uiText) == 'function' then
+        imgui.TextColored(col_label or imgui.ImVec4(0.92, 0.92, 0.95, 1.0), uiText(label))
+    end
+    return true
+end
+
+function M.drawSegmentBar(prefix, items, activeKey, onPick)
+    prefix = tostring(prefix or 'seg')
+    local gap = 6
+    local h = 28
+    local n = #(items or {})
+    if n <= 0 then return end
+    local avail = imgui.GetContentRegionAvail().x
+    local chipW = math.floor((avail - gap * (n - 1)) / n)
+    if chipW < 72 then chipW = 72 end
+    for i, item in ipairs(items or {}) do
+        local active = activeKey == item.key
+        if active then
+            imgui.PushStyleColor(imgui.Col.Button, M.BTN_PRIMARY)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, M.BTN_PRIMARY_HOVER)
+            imgui.PushStyleColor(imgui.Col.ButtonActive, M.BTN_PRIMARY_ACTIVE)
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+        else
+            imgui.PushStyleColor(imgui.Col.Button, M.BTN_SURFACE)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, M.BTN_SURFACE_HOVER)
+            imgui.PushStyleColor(imgui.Col.ButtonActive, M.BTN_SURFACE_ACTIVE)
+        end
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 16)
+        local lbl = item.label or ''
+        if imgui.Button(lbl .. '##' .. prefix .. '_' .. tostring(item.key), imgui.ImVec2(chipW, h)) then
+            if onPick then onPick(item.key) end
+        end
+        imgui.PopStyleVar()
+        imgui.PopStyleColor(active and 4 or 3)
+        if i < n then imgui.SameLine(0, gap) end
+    end
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+function M.pushHudEdgeChrome()
+    local bg = M.HUD_BG
+    imgui.PushStyleColor(imgui.Col.WindowBg, bg)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, M.HUD_BORDER)
+    end
+    if imgui.Col.ChildBg then
+        imgui.PushStyleColor(imgui.Col.ChildBg, M.SURFACE)
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, M.RADIUS)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(12, 10))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(6, 4))
+end
+
+function M.popHudEdgeChrome()
+    imgui.PopStyleVar(4)
+    if imgui.Col.ChildBg then
+        imgui.PopStyleColor(3)
+    elseif imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+-- Глобальные алиасы для bundle-чанка.
+deskEdgeTheme = M
+pushGlassMain = function() M.pushGlassMain() end
+popGlassMain = function() M.popGlassMain() end
+pushEdgeSurface = function() M.pushEdgeSurface() end
+popEdgeSurface = function() M.popEdgeSurface() end
+deskEdgeGroupBegin = function(id, title) M.deskEdgeGroupBegin(id, title) end
+deskEdgeGroupEnd = function() M.deskEdgeGroupEnd() end
+deskEdgeCardBegin = function(id, title, subtitle) M.deskEdgeCardBegin(id, title, subtitle) end
+deskEdgeCardEnd = function() M.deskEdgeCardEnd() end
+deskEdgeSectionTitle = function(text) M.deskEdgeSectionTitle(text) end
+deskEdgeGroupTitle = function(text, opts) M.deskEdgeGroupTitle(text, opts) end
+deskEdgePanelBegin = function(id) M.panelBegin(id) end
+deskEdgePanelEnd = function() M.panelEnd() end
+deskEdgePanelReset = function() M.panelReset() end
+deskEdgePanelContentW = function() return M.panelContentW() end
+deskShellAlpha = function() return M.shellAlpha() end
+deskPanelAutoFlags = function() return M.panelAutoFlags() end
+deskPanelChildSize = function() return M.panelChildSize() end
+deskPanelScrollFlags = function() return M.panelScrollFlags() end
+deskPushEdgeButtons = function(primary) M.pushEdgeButtons(primary) end
+deskPopEdgeButtons = function(primary) M.popEdgeButtons(primary) end
+deskEdgeBeginCatalogSidebar = function(id, w) M.beginCatalogSidebar(id, w) end
+deskEdgeEndCatalogSidebar = function() M.endCatalogSidebar() end
+deskEdgeBeginSplitSidebar = function(id, w) M.beginSplitSidebar(id, w) end
+deskEdgeEndSplitSidebar = function() M.endSplitSidebar() end
+deskEdgeBeginCatalogMain = function(id) M.beginCatalogMain(id) end
+deskEdgeEndCatalogMain = function() M.endCatalogMain() end
+deskEdgeCollapsingHeader = function(label, open) return M.collapsingHeader(label, open) end
+deskEdgeDrawSegmentBar = function(prefix, items, activeKey, onPick) M.drawSegmentBar(prefix, items, activeKey, onPick) end
+deskEdgeCapsTitle = function(text) M.deskEdgeCapsTitle(text) end
+deskEdgeDrawSplitNavItem = function(label, id, active) return M.drawSplitNavItem(label, id, active) end
+deskEdgeBeginSplitPage = function(id) M.beginSplitPage(id) end
+deskEdgeEndSplitPage = function() M.endSplitPage() end
+deskEdgeBeginSplitMain = function(id) M.beginSplitMain(id) end
+deskEdgeEndSplitMain = function() M.endSplitMain() end
+pushHudEdgeChrome = function() M.pushHudEdgeChrome() end
+popHudEdgeChrome = function() M.popHudEdgeChrome() end
+
+--[[ Edge shell: icon-rail + header (PNG atlas из tools/report_desk_design). ]]
+if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
+
+local M = {}
+
+M.RAIL_W_COLLAPSED = 52
+M.RAIL_W_EXPANDED = 200
+M.RAIL_W = M.RAIL_W_COLLAPSED
+M.BTN = 36
+M.BTN_GAP = 4
+M.PAD_TOP = 8
+M.NAV_PAD_X = 10
+M.NAV_PAD_Y = 16
+M.NAV_ITEM_H = 38
+M.NAV_ITEM_GAP = 2
+M.NAV_FONT_PX = 13
+M.NAV_SECTION_PX = 11
+M.NAV_LOGO_TITLE_PX = 14
+M.NAV_SECTION_GAP = 16
+M.NAV_LABEL_GAP = 6
+M.NAV_LABEL_PAD_X = 10
+M.LOGO_BOTTOM = 0
+M.LOGO_TOP = 0
+M.LOGO_BLOCK_H = 42
+M.MAIN_PAD_X = 20
+M.HEADER_PAD_X = 20
+M.HEADER_H = 54
+M.HEADER_TITLE_PX = 20
+M.HEADER_FONT_SCALE = 1.35
+M.ICON_DRAW = 19
+M.ICON_DRAW_EXPANDED = 20
+M.ICON_PAD_L = 10
+M.ICON_GAP = 10
+M.RAIL_FOOT_H = 52
+M.RAIL_FOOT_H_EXPANDED = 60
+M.RAIL_FOOT_BTN = 32
+M.RAIL_FOOT_AVATAR = 28
+
+M.TAB = {
+    reports = 0,
+    quick = 1,
+    cmds = 2,
+    cheats = 3,
+    anticheat = 4,
+    checker = 5,
+    skins = 6,
+    vehicles = 7,
+    punish = 8,
+    leadership = 9,
+    help = 10,
+    settings = 11,
+}
+
+local TAB_ORDER = {
+    M.TAB.reports,
+    M.TAB.quick,
+    M.TAB.cmds,
+    M.TAB.cheats,
+    M.TAB.anticheat,
+    M.TAB.checker,
+    M.TAB.skins,
+    M.TAB.vehicles,
+    M.TAB.punish,
+    M.TAB.leadership,
+    M.TAB.help,
+    M.TAB.settings,
+}
+
+local TAB_META = {
+    [M.TAB.reports] = {
+        title = '\xD0\xE5\xEF\xEE\xF0\xF2\xFB',
+        tip = '\xD0\xE5\xEF\xEE\xF0\xF2\xFB',
+    },
+    [M.TAB.quick] = {
+        title = '\xC1\xFB\xF1\xF2\xF0\xFB\xE5 \xEE\xF2\xE2\xE5\xF2\xFB',
+        tip = '\xC1\xFB\xF1\xF2\xF0\xFB\xE5 \xEE\xF2\xE2\xE5\xF2\xFB',
+    },
+    [M.TAB.cmds] = {
+        title = '\xCA\xEE\xEC\xE0\xED\xE4\xFB',
+        tip = '\xCA\xEE\xEC\xE0\xED\xE4\xFB',
+    },
+    [M.TAB.cheats] = {
+        title = '\xD7\xE8\xF2\xFB',
+        tip = '\xD7\xE8\xF2\xFB',
+    },
+    [M.TAB.anticheat] = {
+        title = '\xC0\xED\xF2\xE8\xF7\xE8\xF2',
+        tip = '\xC0\xED\xF2\xE8\xF7\xE8\xF2',
+    },
+    [M.TAB.checker] = {
+        title = '\xD7\xE5\xEA\xE5\xF0',
+        tip = '\xD7\xE5\xEA\xE5\xF0',
+    },
+    [M.TAB.skins] = {
+        title = '\xD1\xEA\xE8\xED\xFB',
+        tip = '\xD1\xEA\xE8\xED\xFB',
+    },
+    [M.TAB.vehicles] = {
+        title = '\xD2\xD1',
+        tip = '\xD2\xF0\xE0\xED\xF1\xEF\xEE\xF0\xF2',
+    },
+    [M.TAB.punish] = {
+        title = '\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF',
+        tip = '\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF',
+    },
+    [M.TAB.leadership] = {
+        title = '\xCB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE',
+        tip = '\xCB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE',
+    },
+    [M.TAB.help] = {
+        title = '\xD1\xEF\xF0\xE0\xE2\xEA\xE0',
+        tip = '\xD1\xEF\xF0\xE0\xE2\xEA\xE0',
+    },
+    [M.TAB.settings] = {
+        title = '\xCD\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE8',
+        tip = '\xCD\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE8',
+    },
+}
+
+local ICON_FILES = {
+    [M.TAB.reports] = 'reports.png',
+    [M.TAB.quick] = 'quick.png',
+    [M.TAB.cmds] = 'cmds.png',
+    [M.TAB.cheats] = 'cheats.png',
+    [M.TAB.anticheat] = 'anticheat.png',
+    [M.TAB.checker] = 'checker.png',
+    [M.TAB.skins] = 'skins.png',
+    [M.TAB.vehicles] = 'vehicles.png',
+    [M.TAB.punish] = 'punish.png',
+    [M.TAB.leadership] = 'leadership.png',
+    [M.TAB.help] = 'help.png',
+    [M.TAB.settings] = 'settings.png',
+}
+
+local NAV_SECTIONS = {
+    {
+        label = '\xC8\xCD\xD1\xD2\xD0\xD3\xCC\xC5\xCD\xD2\xDB',
+        tabs = {
+            M.TAB.quick, M.TAB.cmds, M.TAB.cheats, M.TAB.anticheat,
+            M.TAB.checker, M.TAB.skins, M.TAB.vehicles, M.TAB.punish, M.TAB.leadership,
+        },
+    },
+    {
+        label = '\xD1\xC8\xD1\xD2\xC5\xCC\xC0',
+        tabs = { M.TAB.help, M.TAB.settings },
+    },
+}
+
+local railBg = imgui.ImVec4(0.031, 0.031, 0.047, 0.65)
+local railBtnHover = imgui.ImVec4(1, 1, 1, 0.07)
+local railBtnActive = imgui.ImVec4(0.67, 0.33, 1.0, 0.14)
+local railMark = imgui.ImVec4(0.66, 0.66, 0.72, 0.70)
+local railText = imgui.ImVec4(0.66, 0.66, 0.72, 1.0)
+local railMarkActive = imgui.ImVec4(0.96, 0.96, 0.98, 1.0)
+local railSectionCol = imgui.ImVec4(0.72, 0.72, 0.82, 1.0)
+
+local iconTexByTab = {}
+local iconStampByTab = {}
+local iconAtlasTex = nil
+local iconAtlasStamp = nil
+local logoTex = nil
+local logoStamp = nil
+
+local function iconDir()
+    if type(getWorkingDirectory) ~= 'function' then return nil end
+    return getWorkingDirectory() .. '\\res\\report_desk_ui\\rail_icons'
+end
+
+local function iconAtlasPath()
+    if type(getWorkingDirectory) ~= 'function' then return nil end
+    return getWorkingDirectory() .. '\\res\\report_desk_ui\\edge_rail_icons.png'
+end
+
+local function iconFileStamp(path)
+    if not path then return nil end
+    local f = io.open(path, 'rb')
+    if not f then return nil end
+    local data = f:read('*a')
+    f:close()
+    if not data or #data < 24 then return nil end
+    local w = data:byte(17) * 16777216 + data:byte(18) * 65536 + data:byte(19) * 256 + data:byte(20)
+    local h = data:byte(21) * 16777216 + data:byte(22) * 65536 + data:byte(23) * 256 + data:byte(24)
+    return string.format('%d:%d:%d', #data, w, h)
+end
+
+local function loadTextureFromPath(path)
+    if not path then return nil end
+    if type(doesFileExist) == 'function' and not doesFileExist(path) then return nil end
+    if type(deskTexLoad) == 'table' and deskTexLoad.readFileBytes and deskTexLoad.createFromMemory then
+        local data = deskTexLoad.readFileBytes(path)
+        if data then
+            local tex = deskTexLoad.createFromMemory(imgui, data)
+            if tex then return tex end
+        end
+    end
+    if imgui.CreateTextureFromFile then
+        local ok, tex = pcall(imgui.CreateTextureFromFile, path)
+        if ok and tex then return tex end
+    end
+    if imgui.CreateTextureFromFileInMemory then
+        local f = io.open(path, 'rb')
+        if f then
+            local data = f:read('*a')
+            f:close()
+            if data and #data > 0 then
+                local ok, tex = pcall(function()
+                    local ffi = require 'ffi'
+                    return imgui.CreateTextureFromFileInMemory(ffi.cast('const char*', data), #data)
+                end)
+                if ok and tex then return tex end
+            end
+        end
+    end
+    return nil
+end
+
+local function logoPath()
+    if type(getWorkingDirectory) ~= 'function' then return nil end
+    return getWorkingDirectory() .. '\\res\\report_desk_ui\\report_desk_logo.png'
+end
+
+local function loadLogoTexture()
+    local path = logoPath()
+    if not path then return nil end
+    local stamp = iconFileStamp(path)
+    if logoTex and logoStamp == stamp then return logoTex end
+    logoStamp = stamp
+    logoTex = loadTextureFromPath(path)
+    return logoTex
+end
+
+local function loadTabIcons()
+    local dir = iconDir()
+    if not dir then return false end
+    local loaded = false
+    for tabId, fname in pairs(ICON_FILES) do
+        local path = dir .. '\\' .. fname
+        local stamp = iconFileStamp(path)
+        if stamp and iconTexByTab[tabId] and iconStampByTab[tabId] == stamp then
+            loaded = true
+        elseif stamp then
+            local tex = loadTextureFromPath(path)
+            if tex then
+                iconTexByTab[tabId] = tex
+                iconStampByTab[tabId] = stamp
+                loaded = true
+            end
+        end
+    end
+    return loaded
+end
+
+local function loadAtlasFallback()
+    local path = iconAtlasPath()
+    local stamp = iconFileStamp(path)
+    if iconAtlasTex and iconAtlasStamp == stamp then return iconAtlasTex ~= nil end
+    iconAtlasTex = nil
+    iconAtlasStamp = stamp
+    iconAtlasTex = loadTextureFromPath(path)
+    return iconAtlasTex ~= nil
+end
+
+function M.isRailExpanded()
+    if type(settings) ~= 'table' then return true end
+    if settings.ui_rail_expanded == nil then return true end
+    return settings.ui_rail_expanded == true
+end
+
+function M.railWidth()
+    return M.isRailExpanded() and M.RAIL_W_EXPANDED or M.RAIL_W_COLLAPSED
+end
+
+function M.setRailExpanded(on)
+    if type(settings) ~= 'table' then return end
+    settings.ui_rail_expanded = on and true or false
+    if type(markDirtySettings) == 'function' then markDirtySettings() end
+end
+
+function M.railFooterHeight()
+    if M.isRailExpanded() then
+        return M.RAIL_FOOT_H_EXPANDED or 60
+    end
+    return M.RAIL_FOOT_H or 52
+end
+
+function M.usesRailUserFooter()
+    return true
+end
+
+function M.initIcons()
+    if loadTabIcons() then return true end
+    return loadAtlasFallback()
+end
+
+function M.tabTitle(tabId)
+    local m = TAB_META[tabId]
+    return m and m.title or ''
+end
+
+function M.shouldDrawHeader(tabId)
+    return tabId ~= nil
+end
+
+function M.drawCloseBar(showWindow)
+    if not showWindow then return end
+    local hdrBg = (deskEdgeTheme and deskEdgeTheme.MAIN_BG) or imgui.ImVec4(0, 0, 0, 0)
+    imgui.PushStyleColor(imgui.Col.ChildBg, hdrBg)
+    imgui.BeginChild('##desk_close_bar', imgui.ImVec2(-1, 36), false)
+    local btnSz = 28
+    local winW = (imgui.GetWindowWidth and imgui.GetWindowWidth()) or imgui.GetContentRegionAvail().x
+    imgui.SetCursorPos(imgui.ImVec2(math.max(8, winW - btnSz - 8), 4))
+    M.drawCloseButton(showWindow)
+    imgui.EndChild()
+    imgui.PopStyleColor(1)
+end
+
+function M.railLayout(availH)
+    local n = #TAB_ORDER
+    local padTop = M.PAD_TOP
+    local gap = M.BTN_GAP
+    local btn = M.BTN
+    availH = tonumber(availH) or 0
+    if availH > 24 then
+        local need = padTop + n * btn + (n - 1) * gap
+        if need > availH then
+            gap = 1
+            btn = math.floor((availH - padTop - (n - 1) * gap) / n)
+            if btn < 22 then btn = 22 end
+        end
+    end
+    local icon = math.min(M.ICON_DRAW, math.max(12, math.floor(btn * 0.55)))
+    return btn, icon, gap, padTop
+end
+
+function M.pushRailPanelStyle()
+    local bg = (deskEdgeTheme and deskEdgeTheme.NAV_BG) or railBg
+    imgui.PushStyleColor(imgui.Col.ChildBg, bg)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    if imgui.StyleVar and imgui.StyleVar.ChildRounding then
+        imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    end
+    if imgui.StyleVar and imgui.StyleVar.ChildBorderSize then
+        imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    end
+    if imgui.StyleVar and imgui.StyleVar.WindowPadding then
+        imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    end
+end
+
+function M.popRailPanelStyle()
+    if imgui.StyleVar and imgui.StyleVar.WindowPadding then
+        imgui.PopStyleVar(3)
+    else
+        imgui.PopStyleVar(2)
+    end
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+end
+
+local function tabIconRow(tabId)
+    for i, id in ipairs(TAB_ORDER) do
+        if id == tabId then return i - 1 end
+    end
+    return 0
+end
+
+local function drawUnreadBadge(dl, cx, cy, n)
+    if not dl or not n or n <= 0 then return end
+    local txt = n > 9 and '9+' or tostring(n)
+    local tw = imgui.CalcTextSize(txt).x
+    local padX = 5
+    local r = 9
+    local w = math.max(18, tw + padX * 2)
+    if type(toU32) == 'function' then
+        local bx0 = cx - w * 0.5
+        local by0 = cy - r
+        local bx1 = cx + w * 0.5
+        local by1 = cy + r
+        dl:AddRectFilled(
+            imgui.ImVec2(bx0, by0),
+            imgui.ImVec2(bx1, by1),
+            toU32(imgui.ImVec4(0.67, 0.33, 1.0, 1.0)),
+            r)
+        local ts = imgui.CalcTextSize(txt)
+        dl:AddText(imgui.ImVec2(cx - ts.x * 0.5, cy - ts.y * 0.5), toU32(imgui.ImVec4(1, 1, 1, 1)), txt)
+    end
+end
+
+local ICON_CELL = 64
+local ICON_ATLAS_H = 1024
+
+local function drawRailIcon(dl, tabId, cx, cy, col, iconDraw)
+    if not dl or type(toU32) ~= 'function' then return false end
+    iconDraw = iconDraw or M.ICON_DRAW
+    local half = iconDraw * 0.5
+    local tintA = 1.0
+    if col and col.w then tintA = col.w end
+    local tint = toU32(imgui.ImVec4(col.x or 1, col.y or 1, col.z or 1, tintA))
+    local tex = iconTexByTab[tabId]
+    if not tex then
+        if not M.initIcons() then return false end
+        tex = iconTexByTab[tabId]
+    end
+    if tex then
+        local ok = pcall(function()
+            dl:AddImage(
+                tex,
+                imgui.ImVec2(cx - half, cy - half),
+                imgui.ImVec2(cx + half, cy + half),
+                imgui.ImVec2(0, 0),
+                imgui.ImVec2(1, 1),
+                tint)
+        end)
+        if ok then return true end
+        iconTexByTab[tabId] = nil
+    end
+    if not iconAtlasTex and not loadAtlasFallback() then return false end
+    local row = tabIconRow(tabId)
+    local cell = ICON_CELL
+    local atlasH = ICON_ATLAS_H
+    local inset = 1.0 / atlasH
+    local v0 = (row * cell) / atlasH + inset
+    local v1 = ((row + 1) * cell) / atlasH - inset
+    local ok = pcall(function()
+        dl:AddImage(
+            iconAtlasTex,
+            imgui.ImVec2(cx - half, cy - half),
+            imgui.ImVec2(cx + half, cy + half),
+            imgui.ImVec2(0, v0),
+            imgui.ImVec2(1, v1),
+            tint)
+    end)
+    if not ok then
+        iconAtlasTex = nil
+        return false
+    end
+    return true
+end
+
+local function drawChevronLeft(dl, cx, cy, col, sz)
+    if not dl or type(toU32) ~= 'function' then return end
+    local u = toU32(col)
+    local h = (sz or 10) * 0.5
+    dl:AddLine(imgui.ImVec2(cx + h * 0.35, cy - h), imgui.ImVec2(cx - h * 0.55, cy), u, 1.8)
+    dl:AddLine(imgui.ImVec2(cx - h * 0.55, cy), imgui.ImVec2(cx + h * 0.35, cy + h), u, 1.8)
+end
+
+local function drawChevronRight(dl, cx, cy, col, sz)
+    if not dl or type(toU32) ~= 'function' then return end
+    local u = toU32(col)
+    local h = (sz or 10) * 0.5
+    dl:AddLine(imgui.ImVec2(cx - h * 0.35, cy - h), imgui.ImVec2(cx + h * 0.55, cy), u, 1.8)
+    dl:AddLine(imgui.ImVec2(cx + h * 0.55, cy), imgui.ImVec2(cx - h * 0.35, cy + h), u, 1.8)
+end
+
+local function navLineHeight()
+    return (imgui.GetTextLineHeight and imgui.GetTextLineHeight()) or 15
+end
+
+-- Advance logo PNG (res/report_desk_ui/report_desk_logo.png).
+local function drawLogoMark(dl, x, y, sz)
+    if not dl or type(toU32) ~= 'function' then return end
+    sz = tonumber(sz) or 38
+    local p0 = imgui.ImVec2(x, y)
+    local p1 = imgui.ImVec2(x + sz, y + sz)
+    local rounding = math.max(6, sz * 0.22)
+    local corners = 15
+    if imgui.DrawCornerFlags and imgui.DrawCornerFlags.All then
+        corners = imgui.DrawCornerFlags.All
+    end
+    local white = toU32(imgui.ImVec4(1, 1, 1, 1))
+    local tex = loadLogoTexture()
+    if tex then
+        local ok = pcall(function()
+            if dl.AddImageRounded then
+                dl:AddImageRounded(
+                    tex, p0, p1,
+                    imgui.ImVec2(0, 0), imgui.ImVec2(1, 1),
+                    white, rounding, corners)
+            else
+                dl:AddImage(tex, p0, p1, imgui.ImVec2(0, 0), imgui.ImVec2(1, 1), white)
+            end
+        end)
+        if ok then return end
+        logoTex = nil
+    end
+    if dl.AddRectFilled then
+        dl:AddRectFilled(p0, p1, toU32(imgui.ImVec4(0.14, 0.12, 0.18, 1.0)), rounding, corners)
+    end
+end
+
+local function drawRailAvatar(dl, cx, cy, letter, tint, radius)
+    if not dl or type(toU32) ~= 'function' then return end
+    local r = radius or 16
+    local t = tint or imgui.ImVec4(0.29, 0.44, 0.65, 1.0)
+    dl:AddCircleFilled(
+        imgui.ImVec2(cx, cy), r,
+        toU32(imgui.ImVec4(t.x * 0.72, t.y * 0.72, t.z * 0.72, 1.0)))
+    dl:AddCircleFilled(imgui.ImVec2(cx, cy), math.max(1, r - 2), toU32(t))
+    local ts = imgui.CalcTextSize(letter)
+    dl:AddText(
+        imgui.ImVec2(cx - ts.x * 0.5, cy - ts.y * 0.5),
+        toU32(imgui.ImVec4(1, 1, 1, 0.95)),
+        letter)
+end
+
+local function railFootProfileName(parts)
+    local name = (parts and parts.name and parts.name ~= '') and parts.name or 'Admin'
+    if type(uiText) == 'function' then return uiText(name) end
+    return name
+end
+
+local function railFootProfileRole(parts)
+    local role = (parts and parts.role and parts.role ~= '') and parts.role or ''
+    if role == '' then return '' end
+    if type(uiText) == 'function' then return uiText(role) end
+    return role
+end
+
+local function railFootProfileParts()
+    if type(deskRefreshLocalAdminLevel) == 'function' then
+        pcall(deskRefreshLocalAdminLevel)
+    end
+    if type(deskLocalAdminRoleParts) ~= 'function' then return nil end
+    return deskLocalAdminRoleParts()
+end
+
+local function railFootProfileLine(parts)
+    local name = railFootProfileName(parts)
+    local role = railFootProfileRole(parts)
+    if role ~= '' then
+        return name .. '\n' .. role
+    end
+    return name
+end
+
+local function railFootTooltip(parts, expand)
+    local line = railFootProfileLine(parts)
+    local action = expand
+        and '\xD0\xE0\xE7\xE2\xE5\xF0\xED\xF3\xF2\xFC \xEC\xE5\xED\xFE'
+        or '\xD1\xE2\xE5\xF0\xED\xF3\xF2\xFC \xEC\xE5\xED\xFE'
+    if type(uiText) == 'function' then action = uiText(action) end
+    if line and line ~= '' then
+        return line .. '\n' .. action
+    end
+    return action
+end
+
+local function drawRailFootIconBtn(x, y, sz, id, collapse, parts)
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    imgui.PushID(id)
+    imgui.InvisibleButton('##btn', imgui.ImVec2(sz, sz))
+    local hovered = imgui.IsItemHovered()
+    local clicked = imgui.IsItemClicked(0)
+    local mn = imgui.GetItemRectMin()
+    local mx = imgui.GetItemRectMax()
+    local dl = imgui.GetWindowDrawList()
+    local cy = (mn.y + mx.y) * 0.5
+    local cx = (mn.x + mx.x) * 0.5
+    local chevSz = math.min(14, math.floor(sz * 0.45))
+
+    if dl and type(toU32) == 'function' then
+        if hovered then
+            dl:AddRectFilled(mn, mx, toU32(railBtnHover), 8)
+        end
+        local col = hovered and (col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)) or railText
+        if collapse then
+            drawChevronLeft(dl, cx, cy, col, chevSz)
+        else
+            drawChevronRight(dl, cx, cy, col, chevSz)
+        end
+    end
+    if hovered and imgui.SetTooltip then
+        imgui.SetTooltip(railFootTooltip(parts, not collapse))
+    end
+    if clicked then
+        M.setRailExpanded(not collapse)
+    end
+    imgui.PopID()
+    return clicked
+end
+
+local function drawRailFooter(expanded)
+    expanded = expanded ~= false and M.isRailExpanded() or false
+    local footH = M.railFooterHeight()
+    local w = imgui.GetContentRegionAvail().x
+    if w < 20 then w = M.railWidth() end
+    local pad = M.NAV_LABEL_PAD_X or 10
+    local btnSz = M.RAIL_FOOT_BTN or 32
+    local avD = M.RAIL_FOOT_AVATAR or 28
+    local avR = avD * 0.5
+    local parts = railFootProfileParts()
+
+    local footFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.NoScrollbar then
+        footFlags = imgui.WindowFlags.NoScrollbar
+    end
+    imgui.BeginChild('##edge_rail_foot', imgui.ImVec2(-1, footH), false, footFlags)
+
+    local dl = imgui.GetWindowDrawList()
+    local pos = imgui.GetCursorScreenPos()
+    if dl and type(toU32) == 'function' then
+        dl:AddLine(
+            imgui.ImVec2(pos.x, pos.y),
+            imgui.ImVec2(pos.x + w, pos.y),
+            toU32(imgui.ImVec4(1, 1, 1, 0.06)),
+            1.0)
+    end
+
+    local innerY = 8
+    local innerH = footH - innerY - 8
+    local btnY = innerY + math.max(0, (innerH - btnSz) * 0.5)
+
+    if expanded then
+        local btnX = w - pad - btnSz
+        drawRailFootIconBtn(btnX, btnY, btnSz, 'collapse', true, parts)
+
+        local avCx = pad + avR
+        local avCy = innerY + innerH * 0.5
+        if dl then
+            local letter = 'A'
+            local tint = imgui.ImVec4(0.29, 0.44, 0.65, 1.0)
+            if parts and parts.name and parts.name ~= '' then
+                letter = parts.name:sub(1, 1):upper()
+            end
+            if parts and parts.tint then tint = parts.tint end
+            drawRailAvatar(dl, pos.x + avCx, pos.y + avCy, letter, tint, avR)
+        end
+
+        local textX = pad + avD + 8
+        local textW = math.max(20, btnX - textX - 6)
+        local lh = navLineHeight()
+        local role = railFootProfileRole(parts)
+        local textBlockH = lh + (role ~= '' and (lh + 2) or 0)
+        imgui.SetCursorPos(imgui.ImVec2(textX, innerY + (innerH - textBlockH) * 0.5))
+        imgui.BeginGroup()
+        imgui.PushTextWrapPos(textX + textW)
+        imgui.TextColored(col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0), railFootProfileName(parts))
+        if role ~= '' then
+            imgui.TextColored(col_muted2 or imgui.ImVec4(0.65, 0.65, 0.72, 1.0), role)
+        end
+        imgui.PopTextWrapPos()
+        imgui.EndGroup()
+    else
+        local btnX = math.max(0, (w - btnSz) * 0.5)
+        drawRailFootIconBtn(btnX, btnY, btnSz, 'expand', false, parts)
+    end
+
+    imgui.EndChild()
+end
+
+local function navItemMetrics()
+    local iconSz = M.ICON_DRAW_EXPANDED or 18
+    local padY = 9
+    local textH = navLineHeight()
+    local rowH = padY * 2 + math.max(iconSz, textH)
+    if rowH < (M.NAV_ITEM_H or 38) then rowH = M.NAV_ITEM_H or 38 end
+    return rowH, iconSz, padY
+end
+
+local function drawRailLogo(expanded, railW)
+    local markSz = 38
+    local padX = M.NAV_LABEL_PAD_X or 10
+    local gap = 8
+    if expanded then
+        local blockH = M.LOGO_BLOCK_H or 42
+        local lh = navLineHeight()
+        local textBlockH = lh
+        local childFlags = 0
+        if imgui.WindowFlags then
+            if imgui.WindowFlags.NoScrollbar then
+                childFlags = childFlags + imgui.WindowFlags.NoScrollbar
+            end
+            if imgui.WindowFlags.NoScrollWithMouse then
+                childFlags = childFlags + imgui.WindowFlags.NoScrollWithMouse
+            end
+        end
+        imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+        imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 0))
+        imgui.BeginChild('##rail_logo_hdr', imgui.ImVec2(-1, blockH), false, childFlags)
+
+        local yLogo = math.max(0, (blockH - markSz) * 0.5)
+        imgui.SetCursorPos(imgui.ImVec2(padX, yLogo))
+        local logoPos = imgui.GetCursorScreenPos()
+        local dl = imgui.GetWindowDrawList()
+        drawLogoMark(dl, logoPos.x, logoPos.y, markSz)
+        imgui.Dummy(imgui.ImVec2(markSz, markSz))
+        imgui.SameLine(0, gap)
+        imgui.SetCursorPosY(math.max(0, (blockH - textBlockH) * 0.5))
+        imgui.BeginGroup()
+        local titleCol = col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)
+        local subCol = col_muted2 or imgui.ImVec4(0.72, 0.70, 0.78, 1.0)
+        if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.04) end
+        imgui.TextColored(subCol, 'REPORT')
+        imgui.SameLine(0, 5)
+        imgui.TextColored(titleCol, 'DESK')
+        if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+        imgui.EndGroup()
+
+        imgui.EndChild()
+        imgui.PopStyleVar(2)
+    else
+        local dl = imgui.GetWindowDrawList()
+        local pos = imgui.GetCursorScreenPos()
+        local cx = pos.x + M.RAIL_W_COLLAPSED * 0.5
+        drawLogoMark(dl, cx - markSz * 0.5, pos.y, markSz)
+        imgui.Dummy(imgui.ImVec2(M.RAIL_W_COLLAPSED, markSz + 6))
+    end
+end
+
+local function drawNavSectionLabel(label, isFirst)
+    if not label or label == '' then return end
+    if not isFirst then
+        imgui.Dummy(imgui.ImVec2(0, M.NAV_SECTION_GAP or 16))
+    end
+    local capCol = railSectionCol
+    imgui.SetCursorPosX(imgui.GetCursorStartPos().x + (M.NAV_LABEL_PAD_X or 10))
+    local txt = label
+    if type(uiText) == 'function' then txt = uiText(label) end
+    imgui.TextColored(capCol, txt)
+    if not isFirst then
+        imgui.Dummy(imgui.ImVec2(0, M.NAV_LABEL_GAP or 6))
+    else
+        imgui.Dummy(imgui.ImVec2(0, 4))
+    end
+end
+
+local function drawRailReportsHero(activeTab, unread)
+    local tabId = M.TAB.reports
+    local meta = TAB_META[tabId]
+    if not meta then return false end
+    local active = activeTab[0] == tabId
+    local nUnread = tonumber(unread) or 0
+    local rowH = 48
+    local iconSz = 22
+    local padL = M.ICON_PAD_L or 10
+    local iconGap = M.ICON_GAP or 10
+    local w = imgui.GetContentRegionAvail().x
+    local radius = (deskEdgeTheme and deskEdgeTheme.RADIUS_SM) or 10
+    local title = type(uiText) == 'function' and uiText(meta.title) or meta.title
+    local titleScale = (deskEdgeTheme and deskEdgeTheme.HEADER_FONT_SCALE)
+        or M.HEADER_FONT_SCALE or 1.28
+
+    imgui.PushID('reports_hero')
+    imgui.InvisibleButton('##nav', imgui.ImVec2(w, rowH))
+    local clicked = imgui.IsItemClicked(0)
+    local hovered = imgui.IsItemHovered()
+    local mn = imgui.GetItemRectMin()
+    local mx = imgui.GetItemRectMax()
+    local dl = imgui.GetWindowDrawList()
+
+    if dl and type(toU32) == 'function' then
+        local surf = (deskEdgeTheme and deskEdgeTheme.SURFACE) or imgui.ImVec4(1, 1, 1, 0.04)
+        local surfHover = (deskEdgeTheme and deskEdgeTheme.SURFACE_HOVER) or imgui.ImVec4(1, 1, 1, 0.07)
+        if active then
+            dl:AddRectFilled(mn, mx, toU32(railBtnActive), radius)
+            dl:AddRectFilled(
+                imgui.ImVec2(mn.x, mn.y + (mx.y - mn.y) * 0.18),
+                imgui.ImVec2(mn.x + 3, mn.y + (mx.y - mn.y) * 0.82),
+                toU32(col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 1.0)),
+                2)
+        elseif hovered then
+            dl:AddRectFilled(mn, mx, toU32(surfHover), radius)
+        else
+            dl:AddRectFilled(mn, mx, toU32(surf), radius)
+        end
+        if dl.AddRect then
+            local border = (deskEdgeTheme and deskEdgeTheme.BORDER) or imgui.ImVec4(1, 1, 1, 0.08)
+            dl:AddRect(mn, mx, toU32(border), radius, 0, 1.0)
+        end
+
+        local cy = (mn.y + mx.y) * 0.5
+        local iconX = mn.x + padL + iconSz * 0.5
+        local markCol = active and railMarkActive or railMark
+        if not drawRailIcon(dl, tabId, iconX, cy, markCol, iconSz) then
+            local qts = imgui.CalcTextSize('?')
+            dl:AddText(
+                imgui.ImVec2(iconX - qts.x * 0.5, cy - qts.y * 0.5),
+                toU32(markCol), '?')
+        end
+
+        local textX = mn.x + padL + iconSz + iconGap
+        local tcol = active and (col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)) or railText
+        local font = imgui.GetFont and imgui.GetFont() or nil
+        local baseSize = (imgui.GetFontSize and imgui.GetFontSize()) or 13
+        local fontSize = baseSize * titleScale
+        local textY = cy - fontSize * 0.45
+        if font and dl.AddTextFontPtr then
+            dl:AddTextFontPtr(font, fontSize, imgui.ImVec2(textX, textY), toU32(tcol), title)
+        elseif font and dl.AddText then
+            pcall(function()
+                dl:AddText(font, fontSize, imgui.ImVec2(textX, textY), toU32(tcol), title)
+            end)
+        else
+            local titleTs = imgui.CalcTextSize(title)
+            dl:AddText(
+                imgui.ImVec2(textX, cy - titleTs.y * 0.5),
+                toU32(tcol), title)
+        end
+
+        if nUnread > 0 then
+            drawUnreadBadge(dl, mx.x - 18, cy, nUnread)
+        end
+    end
+
+    if hovered and imgui.SetTooltip and type(uiText) == 'function' then
+        imgui.SetTooltip(uiText(meta.tip))
+    end
+    if clicked then
+        activeTab[0] = tabId
+    end
+    imgui.PopID()
+    imgui.Dummy(imgui.ImVec2(0, 10))
+    return clicked
+end
+
+local function drawRailNavItem(tabId, activeTab, unread, fullWidth)
+    local meta = TAB_META[tabId]
+    if not meta then return false end
+    local active = activeTab[0] == tabId
+    local rowH, iconSz = navItemMetrics()
+    local padL = M.ICON_PAD_L or 10
+    local iconGap = M.ICON_GAP or 10
+    local w = fullWidth and imgui.GetContentRegionAvail().x or (M.BTN or 36)
+    local title = type(uiText) == 'function' and uiText(meta.title) or meta.title
+    local radius = (deskEdgeTheme and deskEdgeTheme.RADIUS_SM) or 10
+
+    imgui.PushID(tabId)
+    imgui.InvisibleButton('##nav', imgui.ImVec2(w, rowH))
+    local clicked = imgui.IsItemClicked(0)
+    local hovered = imgui.IsItemHovered()
+    local mn = imgui.GetItemRectMin()
+    local mx = imgui.GetItemRectMax()
+    local dl = imgui.GetWindowDrawList()
+
+    if dl and type(toU32) == 'function' then
+        if active then
+            dl:AddRectFilled(mn, mx, toU32(railBtnActive), radius)
+            dl:AddRectFilled(
+                imgui.ImVec2(mn.x, mn.y + (mx.y - mn.y) * 0.2),
+                imgui.ImVec2(mn.x + 3, mn.y + (mx.y - mn.y) * 0.8),
+                toU32(col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 1.0)),
+                2)
+        elseif hovered then
+            dl:AddRectFilled(mn, mx, toU32(railBtnHover), radius)
+        end
+
+        local cy = (mn.y + mx.y) * 0.5
+        local iconX = fullWidth and (mn.x + padL + iconSz * 0.5) or ((mn.x + mx.x) * 0.5)
+        local markCol = active and railMarkActive or railMark
+        if not drawRailIcon(dl, tabId, iconX, cy, markCol, iconSz) then
+            dl:AddText(imgui.ImVec2(iconX - 4, cy - 7), toU32(markCol), '?')
+        end
+
+        if fullWidth then
+            local tcol = active and (col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)) or railText
+            local textX = mn.x + padL + iconSz + iconGap
+            local titleTs = imgui.CalcTextSize(title)
+            dl:AddText(
+                imgui.ImVec2(textX, cy - titleTs.y * 0.5),
+                toU32(tcol), title)
+            if tabId == M.TAB.reports and (tonumber(unread) or 0) > 0 then
+                drawUnreadBadge(dl, mx.x - 16, cy, unread)
+            end
+        elseif tabId == M.TAB.reports and (tonumber(unread) or 0) > 0 then
+            drawUnreadBadge(dl, mx.x - 4, mn.y + 4, unread)
+        end
+    end
+
+    if hovered and imgui.SetTooltip and type(uiText) == 'function' then
+        imgui.SetTooltip(uiText(meta.tip))
+    end
+    if clicked then
+        activeTab[0] = tabId
+    end
+    imgui.PopID()
+    if fullWidth and M.NAV_ITEM_GAP and M.NAV_ITEM_GAP > 0 then
+        imgui.Dummy(imgui.ImVec2(0, M.NAV_ITEM_GAP))
+    end
+    return clicked
+end
+
+local function drawRailButton(tabId, activeTab, unread, btnSz, iconSz, fullWidth)
+    return drawRailNavItem(tabId, activeTab, unread, fullWidth)
+end
+
+function M.drawRail(activeTab, unread)
+    M.initIcons()
+    local changed = false
+    local expanded = M.isRailExpanded()
+    local railW = M.railWidth()
+    M.RAIL_W = railW
+    M.pushRailPanelStyle()
+    local outerFlags = 0
+    if imgui.WindowFlags then
+        if imgui.WindowFlags.NoScrollbar then
+            outerFlags = outerFlags + imgui.WindowFlags.NoScrollbar
+        end
+        if imgui.WindowFlags.NoScrollWithMouse then
+            outerFlags = outerFlags + imgui.WindowFlags.NoScrollWithMouse
+        end
+    end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding,
+        imgui.ImVec2(expanded and (M.NAV_PAD_X or 10) or 0, expanded and 6 or 8))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 6))
+    imgui.BeginChild('##edge_rail', imgui.ImVec2(railW, -1), false, outerFlags)
+
+    local footH = M.railFooterHeight()
+    local navH = imgui.GetContentRegionAvail().y - footH
+    if navH < 60 then navH = imgui.GetContentRegionAvail().y end
+
+    local navFlags = 0
+    if not expanded and imgui.WindowFlags and imgui.WindowFlags.NoScrollbar then
+        navFlags = imgui.WindowFlags.NoScrollbar
+    end
+    if expanded then
+        imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, M.NAV_ITEM_GAP or 0))
+        imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    end
+    imgui.BeginChild('##edge_rail_nav', imgui.ImVec2(-1, navH), false, navFlags)
+
+    if expanded then
+        imgui.Dummy(imgui.ImVec2(0, 4))
+        if drawRailReportsHero(activeTab, unread) then
+            changed = true
+        end
+        for si, section in ipairs(NAV_SECTIONS) do
+            drawNavSectionLabel(section.label, false)
+            for _, tabId in ipairs(section.tabs) do
+                if drawRailNavItem(tabId, activeTab, unread, true) then
+                    changed = true
+                end
+            end
+        end
+    else
+        local btnSz, iconSz, gap, padTop = M.railLayout(navH - 8)
+        imgui.Dummy(imgui.ImVec2(0, padTop))
+        local xOff = math.floor((railW - btnSz) * 0.5 + 0.5)
+        for i, tabId in ipairs(TAB_ORDER) do
+            imgui.SetCursorPosX(xOff)
+            if drawRailButton(tabId, activeTab, unread, btnSz, iconSz, false) then
+                changed = true
+            end
+            if i < #TAB_ORDER then
+                imgui.Dummy(imgui.ImVec2(0, gap))
+            end
+        end
+    end
+
+    imgui.EndChild()
+    if expanded then
+        imgui.PopStyleVar(2)
+    end
+
+    if footH > 0 then
+        drawRailFooter(expanded)
+    end
+
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local crMin = imgui.GetWindowContentRegionMin()
+        local crMax = imgui.GetWindowContentRegionMax()
+        local wp = imgui.GetWindowPos()
+        if crMin and crMax and wp then
+            pcall(function()
+                dl:AddLine(
+                    imgui.ImVec2(wp.x + crMax.x, wp.y + crMin.y),
+                    imgui.ImVec2(wp.x + crMax.x, wp.y + crMax.y),
+                    toU32((deskEdgeTheme and deskEdgeTheme.BORDER) or imgui.ImVec4(1, 1, 1, 0.08)),
+                    1.0)
+            end)
+        end
+    end
+
+    imgui.EndChild()
+    imgui.PopStyleVar(2)
+    M.popRailPanelStyle()
+    return changed
+end
+
+function M.drawHeader(tabId, showWindow)
+    if not M.shouldDrawHeader(tabId) then
+        return
+    end
+    local title = M.tabTitle(tabId)
+    if title == '' then return end
+
+    local hdrH = M.HEADER_H or 54
+    local padX = M.HEADER_PAD_X or (deskEdgeTheme and deskEdgeTheme.HEADER_PAD_X) or 20
+    local hdrBg = (deskEdgeTheme and deskEdgeTheme.HEADER_BG) or imgui.ImVec4(0, 0, 0, 0.08)
+    local borderCol = (deskEdgeTheme and deskEdgeTheme.BORDER) or imgui.ImVec4(1, 1, 1, 0.06)
+    imgui.PushStyleColor(imgui.Col.ChildBg, hdrBg)
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+
+    imgui.BeginChild('##desk_shell_hdr', imgui.ImVec2(-1, hdrH), false)
+
+    local titleTxt = type(uiText) == 'function' and uiText(title) or title
+    local titleCol = col_label or imgui.ImVec4(0.96, 0.96, 0.98, 1.0)
+    local scale = (deskEdgeTheme and deskEdgeTheme.HEADER_FONT_SCALE) or M.HEADER_FONT_SCALE or 1.28
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(scale) end
+    local titleTs = imgui.CalcTextSize(titleTxt)
+    local textY = math.max(0, math.floor((hdrH - titleTs.y) * 0.5 + 0.5))
+    imgui.SetCursorPos(imgui.ImVec2(padX, textY))
+    imgui.TextColored(titleCol, titleTxt)
+    if imgui.SetWindowFontScale then imgui.SetWindowFontScale(1.0) end
+
+    if showWindow then
+        local btnSz = 28
+        local winW = (imgui.GetWindowWidth and imgui.GetWindowWidth()) or imgui.GetContentRegionAvail().x
+        local btnY = math.max(0, math.floor((hdrH - btnSz) * 0.5 + 0.5))
+        imgui.SetCursorPos(imgui.ImVec2(math.max(padX, winW - btnSz - 14), btnY))
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(1, 1, 1, 0.04))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.67, 0.33, 1.0, 0.18))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.67, 0.33, 1.0, 0.28))
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+        if imgui.Button('##desk_close', imgui.ImVec2(btnSz, btnSz)) then
+            showWindow[0] = false
+        end
+        if imgui.IsItemHovered() and imgui.SetTooltip then
+            imgui.SetTooltip(uiText and uiText('\xC7\xE0\xEA\xF0\xFB\xF2\xFC') or 'Close')
+        end
+        local dl = imgui.GetWindowDrawList()
+        if dl and type(toU32) == 'function' then
+            local mn = imgui.GetItemRectMin()
+            local mx = imgui.GetItemRectMax()
+            local cx = (mn.x + mx.x) * 0.5
+            local cy = (mn.y + mx.y) * 0.5
+            local u = toU32(imgui.ImVec4(0.88, 0.88, 0.92, 0.9))
+            pcall(function()
+                dl:AddLine(imgui.ImVec2(cx - 5, cy - 5), imgui.ImVec2(cx + 5, cy + 5), u, 1.5)
+                dl:AddLine(imgui.ImVec2(cx + 5, cy - 5), imgui.ImVec2(cx - 5, cy + 5), u, 1.5)
+            end)
+        end
+        imgui.PopStyleVar()
+        imgui.PopStyleColor(3)
+    end
+
+    imgui.EndChild()
+
+    imgui.PopStyleVar(3)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(2)
+    else
+        imgui.PopStyleColor(1)
+    end
+
+    local dl = imgui.GetWindowDrawList()
+    if dl and dl.AddLine and type(toU32) == 'function' then
+        local crMin = imgui.GetWindowContentRegionMin()
+        local crMax = imgui.GetWindowContentRegionMax()
+        local wp = imgui.GetWindowPos()
+        local x0 = wp.x + crMin.x
+        local x1 = wp.x + crMax.x
+        local y1 = wp.y + crMin.y + hdrH
+        pcall(function()
+            dl:AddLine(imgui.ImVec2(x0, y1), imgui.ImVec2(x1, y1), toU32(borderCol), 1.0)
+        end)
+    end
+end
+
+function M.drawCloseButton(showWindow, screenX, screenY)
+    if not showWindow then return end
+    local btnSz = 28
+    if screenX and screenY then
+        imgui.SetCursorScreenPos(imgui.ImVec2(screenX, screenY))
+    else
+        local crMin = imgui.GetWindowContentRegionMin()
+        local crMax = imgui.GetWindowContentRegionMax()
+        local wp = imgui.GetWindowPos()
+        imgui.SetCursorScreenPos(imgui.ImVec2(wp.x + crMax.x - btnSz - 6, wp.y + crMin.y + 6))
+    end
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(1, 1, 1, 0.04))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.67, 0.33, 1.0, 0.18))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.67, 0.33, 1.0, 0.28))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    if imgui.Button('##desk_close', imgui.ImVec2(btnSz, btnSz)) then
+        showWindow[0] = false
+    end
+    if imgui.IsItemHovered() and imgui.SetTooltip then
+        imgui.SetTooltip(uiText and uiText('\xC7\xE0\xEA\xF0\xFB\xF2\xFC') or 'Close')
+    end
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' then
+        local mn = imgui.GetItemRectMin()
+        local mx = imgui.GetItemRectMax()
+        local cx = (mn.x + mx.x) * 0.5
+        local cy = (mn.y + mx.y) * 0.5
+        local u = toU32(imgui.ImVec4(0.88, 0.88, 0.92, 0.9))
+        dl:AddLine(imgui.ImVec2(cx - 5, cy - 5), imgui.ImVec2(cx + 5, cy + 5), u, 1.5)
+        dl:AddLine(imgui.ImVec2(cx + 5, cy - 5), imgui.ImVec2(cx - 5, cy + 5), u, 1.5)
+    end
+    imgui.PopStyleVar()
+    imgui.PopStyleColor(3)
+end
+
+deskEdgeNav = M
+
 --[[ Модуль: ImGui окно Report Desk (список, чат, настройки). ]]
 if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 
@@ -33537,7 +36403,11 @@ end
 
 -- Draw Settings Card Header
 function drawSettingsCardHeader(title, desc)
-    deskFormSection(title)
+    if type(deskEdgeGroupTitle) == 'function' then
+        deskEdgeGroupTitle(title)
+    else
+        deskFormSection(title)
+    end
     if desc and desc ~= '' then
         drawSettingsHint(desc)
     end
@@ -33546,10 +36416,14 @@ end
 -- Draw Settings Hint
 function drawSettingsHint(text)
     if not text or text == '' then return end
-    imgui.PushTextWrapPos(imgui.GetCursorPosX() + math.max(120, imgui.GetContentRegionAvail().x))
+    local wrapW = imgui.GetContentRegionAvail().x
+    if type(deskEdgePanelContentW) == 'function' then
+        wrapW = deskEdgePanelContentW()
+    end
+    imgui.PushTextWrapPos(imgui.GetCursorPosX() + math.max(120, wrapW))
     imgui.TextColored(col_muted2, uiText(text))
     imgui.PopTextWrapPos()
-    imgui.Dummy(imgui.ImVec2(0, 2))
+    imgui.Dummy(imgui.ImVec2(0, 6))
 end
 
 -- Draw Settings Subsection
@@ -33604,13 +36478,14 @@ function drawDeskAdminRoleBadgeLine(parts, alignRight)
     end
     imgui.BeginGroup()
     if parts.name and parts.name ~= '' then
-        imgui.TextColored(tint, uiText(parts.name))
-        imgui.SameLine(0, 0)
-        imgui.TextColored(sepCol, uiText(' | '))
-        imgui.SameLine(0, 0)
+        imgui.TextColored(col_label or textCol, uiText(parts.name))
     end
     if parts.role and parts.role ~= '' then
-        imgui.TextColored(textCol, uiText(parts.role))
+        if parts.name and parts.name ~= '' then
+            imgui.TextColored(col_muted2 or textCol, uiText(parts.role))
+        else
+            imgui.TextColored(col_label or textCol, uiText(parts.role))
+        end
     end
     imgui.EndGroup()
 end
@@ -33633,29 +36508,35 @@ function drawDeskAdminRoleBadgeFooter(h)
     local x0 = wp.x + crMin.x
     local x1 = wp.x + crMax.x
     local y0 = wp.y + y
-    local y1 = wp.y + crMax.y
 
     local dl = imgui.GetWindowDrawList()
+    local hdrBg = (deskEdgeTheme and deskEdgeTheme.HEADER_BG) or imgui.ImVec4(0, 0, 0, 0.08)
     if dl and dl.AddRectFilled and type(toU32) == 'function' then
-        dl:AddRectFilled(
-            imgui.ImVec2(x0, y0),
-            imgui.ImVec2(x1, y1),
-            toU32(imgui.ImVec4(0.08, 0.07, 0.11, 0.55)))
-        if dl.AddLine then
-            dl:AddLine(
+        pcall(function()
+            dl:AddRectFilled(
                 imgui.ImVec2(x0, y0),
-                imgui.ImVec2(x1, y0),
-                toU32(imgui.ImVec4(1, 1, 1, 0.05)),
-                1.0)
-        end
+                imgui.ImVec2(x1, wp.y + crMax.y),
+                toU32(hdrBg))
+            if dl.AddLine then
+                dl:AddLine(
+                    imgui.ImVec2(x0, y0),
+                    imgui.ImVec2(x1, y0),
+                    toU32(imgui.ImVec4(1, 1, 1, 0.06)),
+                    1.0)
+            end
+        end)
     end
 
     local lh = imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 14
-    imgui.SetCursorPos(imgui.ImVec2(crMin.x + 14, y + math.max(0, (h - lh) * 0.5)))
+    local padX = (deskEdgeNav and deskEdgeNav.HEADER_PAD_X) or 20
+    imgui.SetCursorPos(imgui.ImVec2(crMin.x + padX, y + math.max(0, (h - lh) * 0.5)))
     drawDeskAdminRoleBadgeLine(parts, false)
 end
 
 function deskAdminFooterHeight()
+    if deskEdgeNav and deskEdgeNav.usesRailUserFooter and deskEdgeNav.usesRailUserFooter() then
+        return 0
+    end
     if type(deskLocalAdminLevelKnown) == 'function' and deskLocalAdminLevelKnown() then
         return 28
     end
@@ -33664,6 +36545,14 @@ end
 
 -- Desk hook/helper.
 function deskPushFlatInputStyle()
+    if type(deskEdgeTheme) == 'table' then
+        imgui.PushStyleColor(imgui.Col.FrameBg, deskEdgeTheme.SURFACE)
+        imgui.PushStyleColor(imgui.Col.FrameBgHovered, deskEdgeTheme.SURFACE_HOVER)
+        imgui.PushStyleColor(imgui.Col.Border, deskEdgeTheme.BORDER)
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, deskEdgeTheme.RADIUS_SM or 10)
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1)
+        return
+    end
     imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.12, 0.12, 0.15, 1))
     imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.20, 0.28, 0.35))
     if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
@@ -33673,10 +36562,32 @@ end
 
 -- Desk hook/helper.
 function deskPopFlatInputStyle()
+    if type(deskEdgeTheme) == 'table' then
+        imgui.PopStyleVar(2)
+        imgui.PopStyleColor(3)
+        return
+    end
     if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
         imgui.PopStyleVar()
     end
     imgui.PopStyleColor(2)
+end
+
+-- Draw Settings Slider Float
+function drawSettingsSliderFloat(label, var, id, vmin, vmax, fmt, onApply)
+    local rowW = deskFormRowAvail(label, DESK_FORM_LABEL_W)
+    imgui.PushItemWidth(rowW)
+    deskPushFlatInputStyle()
+    local changed
+    if fmt then
+        changed = imgui.SliderFloat('##' .. id, var, vmin, vmax, fmt)
+    else
+        changed = imgui.SliderFloat('##' .. id, var, vmin, vmax)
+    end
+    deskPopFlatInputStyle()
+    imgui.PopItemWidth()
+    if changed and onApply then onApply(var[0]) end
+    return changed
 end
 
 -- Draw Settings Slider Int
@@ -34154,13 +37065,21 @@ function drawReportChannelChip(channelTag, online)
     if not style then return end
     local sepCol = imgui.ImVec4(col_muted2.x, col_muted2.y, col_muted2.z, 0.50)
     imgui.TextColored(sepCol, uiText(' \xB7 '))
-    imgui.SameLine(0, 2)
+    imgui.SameLine(0, 4)
     local alpha = online == false and 0.52 or 1.0
     imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, alpha)
-    imgui.TextColored(style.accent, uiText(style.label))
+    imgui.PushStyleColor(imgui.Col.Text, style.accent)
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(style.accent.x, style.accent.y, style.accent.z, 0.18))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(style.accent.x, style.accent.y, style.accent.z, 0.24))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(style.accent.x, style.accent.y, style.accent.z, 0.30))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 4)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(5, 2))
+    imgui.SmallButton(uiText(style.label) .. '##ch_' .. channelTag)
     if imgui.IsItemHovered() and imgui.SetTooltip and style.tip then
         imgui.SetTooltip(uiText(style.tip))
     end
+    imgui.PopStyleVar(2)
+    imgui.PopStyleColor(4)
     imgui.PopStyleVar()
 end
 
@@ -34340,7 +37259,7 @@ function deskComposerHeight(availW, items)
     if rows > 0 then
         h = h + COMPOSER_ROW_GAP + rows * COMPOSER_QUICK_H + math.max(0, rows - 1) * COMPOSER_QUICK_GAP
     end
-    return h + 4
+    return h + 8
 end
 
 -- Composer Quick Btn Width
@@ -34349,6 +37268,33 @@ function composerQuickBtnWidth(label)
     if w < 52 then w = 52 end
     if w > 120 then w = 120 end
     return w
+end
+
+local function pushComposerQuickBtnStyle()
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1, 1, 1, 0.06))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1, 1, 1, 0.09))
+    imgui.PushStyleColor(imgui.Col.Text, col_muted2 or imgui.ImVec4(0.65, 0.65, 0.72, 1.0))
+    if imgui.Col.Border then
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+    end
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(10, 4))
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 0)
+    end
+end
+
+local function popComposerQuickBtnStyle()
+    if imgui.StyleVar and imgui.StyleVar.FrameBorderSize then
+        imgui.PopStyleVar()
+    end
+    imgui.PopStyleVar(2)
+    if imgui.Col.Border then
+        imgui.PopStyleColor(5)
+    else
+        imgui.PopStyleColor(4)
+    end
 end
 
 -- Draw Composer Quick Row
@@ -34360,19 +37306,23 @@ function drawComposerQuickRow(items, canSend, availW)
     if availW < 120 then availW = 400 end
 
     imgui.Dummy(imgui.ImVec2(0, COMPOSER_ROW_GAP))
+    local padL = COMPOSER_QUICK_PAD_L or 10
+    imgui.SetCursorPosX(imgui.GetCursorStartPos().x + padL)
     local rowStartX = imgui.GetCursorPosX()
+    local wrapW = math.max(80, availW - padL)
     for i, item in ipairs(items) do
         local bw = item.btnW or composerQuickBtnWidth(item.label)
         if i > 1 then
-            if imgui.GetCursorPosX() - rowStartX + COMPOSER_QUICK_GAP + bw > availW then
+            if imgui.GetCursorPosX() - rowStartX + COMPOSER_QUICK_GAP + bw > wrapW then
                 imgui.Dummy(imgui.ImVec2(0, COMPOSER_QUICK_GAP))
+                imgui.SetCursorPosX(imgui.GetCursorStartPos().x + padL)
                 rowStartX = imgui.GetCursorPosX()
             else
                 imgui.SameLine(0, COMPOSER_QUICK_GAP)
             end
         end
         local label = uiText(item.label or '?')
-        if type(pushPlayerActionBtnStyle) == 'function' then pushPlayerActionBtnStyle() end
+        pushComposerQuickBtnStyle()
         if not canSend and imgui.PushStyleVarFloat then
             imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, 0.42)
         end
@@ -34380,7 +37330,7 @@ function drawComposerQuickRow(items, canSend, availW)
         local clicked = imgui.Button(label .. '##' .. (item.id or i), imgui.ImVec2(bw, COMPOSER_QUICK_H))
         if imgui.PopAllowKeyboardFocus then imgui.PopAllowKeyboardFocus() end
         if not canSend and imgui.PopStyleVar then imgui.PopStyleVar() end
-        if type(popPlayerActionBtnStyle) == 'function' then popPlayerActionBtnStyle() end
+        popComposerQuickBtnStyle()
         if item.tip and imgui.IsItemHovered() then
             local tip = type(item.tip) == 'function' and item.tip() or item.tip
             if tip and tip ~= '' then imgui.SetTooltip(uiText(tip)) end
@@ -34401,7 +37351,7 @@ function drawComposer(composerH, quickItems)
     end
 
     imgui.PushStyleColor(imgui.Col.ChildBg, col_composer)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(12, 10))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(12, 12))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 0))
     imgui.BeginChild('##composer', imgui.ImVec2(-1, composerH), false, composerFlags)
 
@@ -34485,6 +37435,7 @@ function drawComposer(composerH, quickItems)
 
     drawComposerQuickRow(quickItems, canSend, availW)
 
+    imgui.Dummy(imgui.ImVec2(0, 2))
     imgui.PopStyleVar(2)
     imgui.EndChild()
     imgui.PopStyleColor()
@@ -34610,9 +37561,39 @@ end
 -- Draw Composer Quick Tab Inner
 function drawComposerQuickTabInner()
     ensureComposerQuickButtons()
-    pushPanelStyle()
-    imgui.BeginChild('##cq_list', imgui.ImVec2(200, -1), true)
-    if imgui.Button(uiText('+ \xCA\xED\xEE\xEF\xEA\xE0'), imgui.ImVec2(-1, 28)) then
+    local sideW = (deskEdgeTheme and deskEdgeTheme.SPLIT_SIDE_W) or 220
+    if type(deskEdgeBeginSplitPage) == 'function' then
+        deskEdgeBeginSplitPage('##cq_split')
+    else
+        pushPanelStyle()
+    end
+
+    if type(deskEdgeBeginSplitSidebar) == 'function' then
+        deskEdgeBeginSplitSidebar('##cq_list', sideW)
+    elseif type(deskEdgeBeginCatalogSidebar) == 'function' then
+        deskEdgeBeginCatalogSidebar('##cq_list', sideW)
+    else
+        imgui.BeginChild('##cq_list', imgui.ImVec2(sideW, -1), false)
+    end
+
+    for i, b in ipairs(settings.composer_quick_buttons) do
+        local name = trim(b.label or '')
+        if name == '' then name = '\xCA\xED\xEE\xEF\xEA\xE0 ' .. i end
+        local picked = false
+        if type(deskEdgeDrawSplitNavItem) == 'function' then
+            picked = deskEdgeDrawSplitNavItem(name, '##cq_' .. i, composerQuickSelected == i)
+        elseif imgui.Selectable(uiText(name) .. '##cq_' .. i, composerQuickSelected == i) then
+            picked = true
+        end
+        if picked then
+            if composerQuickEditorDirty then flushComposerQuickEditor() end
+            composerQuickSelected = i
+            fillComposerQuickEditor(i)
+        end
+    end
+    imgui.Dummy(imgui.ImVec2(0, 8))
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
+    if imgui.Button(uiText('+ \xC4\xEE\xE1\xE0\xE2\xE8\xF2\xFC'), imgui.ImVec2(-1, 32)) then
         flushComposerQuickEditor()
         local n = #settings.composer_quick_buttons + 1
         settings.composer_quick_buttons[n] = {
@@ -34626,108 +37607,81 @@ function drawComposerQuickTabInner()
         bumpComposerQuickGen()
         markDirtySettings()
     end
-    imgui.Dummy(imgui.ImVec2(0, 6))
-    for i, b in ipairs(settings.composer_quick_buttons) do
-        local name = trim(b.label or '')
-        if name == '' then name = '\xCA\xED\xEE\xEF\xEA\xE0 ' .. i end
-        if imgui.Selectable(uiText(name) .. '##cq_' .. i, composerQuickSelected == i) then
-            if composerQuickEditorDirty then flushComposerQuickEditor() end
-            composerQuickSelected = i
-            fillComposerQuickEditor(i)
-        end
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
+
+    if type(deskEdgeEndSplitSidebar) == 'function' then
+        deskEdgeEndSplitSidebar()
+    elseif type(deskEdgeEndCatalogSidebar) == 'function' then
+        deskEdgeEndCatalogSidebar()
+    else
+        imgui.EndChild()
     end
-    imgui.EndChild()
-    imgui.SameLine()
-    imgui.BeginChild('##cq_edit', imgui.ImVec2(-1, -1), true)
+
+    local splitGap = (deskEdgeTheme and deskEdgeTheme.SPLIT_GAP) or 12
+    imgui.SameLine(0, splitGap)
+
+    if type(deskEdgeBeginSplitMain) == 'function' then
+        deskEdgeBeginSplitMain('##cq_edit')
+    else
+        imgui.BeginChild('##cq_edit', imgui.ImVec2(-1, -1), false)
+    end
+
     if composerQuickSelected < 1 or composerQuickSelected > #settings.composer_quick_buttons then
+        imgui.Dummy(imgui.ImVec2(0, 40))
         imgui.TextColored(col_muted, uiText('\xC2\xFB\xE1\xE5\xF0\xE8\xF2\xE5 \xEA\xED\xEE\xEF\xEA\xF3 \xE8\xEB\xE8 \xE4\xEE\xE1\xE0\xE2\xFC\xF2\xE5 \xED\xEE\xE2\xF3\xFE'))
     else
-        imgui.TextColored(col_muted2, uiText('\xCF\xEE\xE4\xEF\xE8\xF1\xFC \xED\xE0 \xEA\xED\xEE\xEF\xEA\xE5 \xEF\xEE\xE4 \xEF\xEE\xEB\xE5\xEC \xE2\xE2\xEE\xE4\xE0. \xD2\xE5\xE3\xE8: {datetime} {time} {date} {id}'))
-        imgui.Dummy(imgui.ImVec2(0, 6))
-        imgui.TextColored(col_muted2, uiText('\xCF\xEE\xE4\xEF\xE8\xF1\xFC'))
+        if type(deskEdgeGroupTitle) == 'function' then
+            deskEdgeGroupTitle('\xD0\xE5\xE4\xE0\xEA\xF2\xEE\xF0 \xEA\xED\xEE\xEF\xEA\xE8')
+        else
+            drawSettingsCardHeader('\xD0\xE5\xE4\xE0\xEA\xF2\xEE\xF0 \xEA\xED\xEE\xEF\xEA\xE8')
+        end
+        if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+        imgui.TextColored(col_muted2, uiText('\xCD\xE0\xE7\xE2\xE0\xED\xE8\xE5'))
+        imgui.SameLine(108)
         imgui.PushItemWidth(-1)
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
         if imgui.InputText('##cq_lbl', editCqLabel, sizeof(editCqLabel)) then
             composerQuickEditorDirty = true
         end
         if imguiItemEdited() then composerQuickEditorDirty = true end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
         imgui.PopItemWidth()
-        imgui.TextColored(col_muted2, uiText('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0 (/ans)'))
+        imgui.Dummy(imgui.ImVec2(0, 8))
+        if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
+        imgui.TextColored(col_muted2, uiText('\xD2\xE5\xEA\xF1\xF2'))
         imgui.PushItemWidth(-1)
+        if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
+        local txtH = math.min(220, math.max(140, imgui.GetContentRegionAvail().y - 100))
         if imgui.InputTextMultiline then
-            if imgui.InputTextMultiline('##cq_txt', editCqText, sizeof(editCqText), imgui.ImVec2(-1, 120)) then
+            if imgui.InputTextMultiline('##cq_txt', editCqText, sizeof(editCqText), imgui.ImVec2(-1, txtH)) then
                 composerQuickEditorDirty = true
             end
         elseif imgui.InputText('##cq_txt', editCqText, sizeof(editCqText)) then
             composerQuickEditorDirty = true
         end
         if imguiItemEdited() then composerQuickEditorDirty = true end
+        if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
         imgui.PopItemWidth()
-        imgui.Dummy(imgui.ImVec2(0, 8))
-        if imgui.Button(uiText('\xD1\xEE\xF5\xF0\xE0\xED\xE8\xF2\xFC'), imgui.ImVec2(-1, 28)) then
+        imgui.Dummy(imgui.ImVec2(0, 10))
+        if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(true) end
+        if imgui.Button(uiText('\xD1\xEE\xF5\xF0\xE0\xED\xE8\xF2\xFC'), imgui.ImVec2(120, 32)) then
             flushComposerQuickEditor()
             flushDirtyConfigNow()
         end
-        local rowW = imgui.GetContentRegionAvail().x
-        local canUp = composerQuickSelected > 1
-        local canDn = composerQuickSelected < #settings.composer_quick_buttons
-        if canUp and canDn then
-            local halfW = math.max(80, (rowW - 8) * 0.5)
-            if imgui.Button(uiText('\xC2\xE2\xE5\xF0\xF5') .. '##cq_up', imgui.ImVec2(halfW, 28)) then
-                flushComposerQuickEditor()
-                local list = settings.composer_quick_buttons
-                list[composerQuickSelected], list[composerQuickSelected - 1] =
-                    list[composerQuickSelected - 1], list[composerQuickSelected]
-                composerQuickSelected = composerQuickSelected - 1
-                fillComposerQuickEditor(composerQuickSelected)
-                markDirtySettings()
-            end
-            imgui.SameLine(0, 8)
-            if imgui.Button(uiText('\xC2\xED\xE8\xE7') .. '##cq_dn', imgui.ImVec2(halfW, 28)) then
-                flushComposerQuickEditor()
-                local list = settings.composer_quick_buttons
-                list[composerQuickSelected], list[composerQuickSelected + 1] =
-                    list[composerQuickSelected + 1], list[composerQuickSelected]
-                composerQuickSelected = composerQuickSelected + 1
-                fillComposerQuickEditor(composerQuickSelected)
-                markDirtySettings()
-            end
-        elseif canUp then
-            if imgui.Button(uiText('\xC2\xE2\xE5\xF0\xF5') .. '##cq_up', imgui.ImVec2(-1, 28)) then
-                flushComposerQuickEditor()
-                local list = settings.composer_quick_buttons
-                list[composerQuickSelected], list[composerQuickSelected - 1] =
-                    list[composerQuickSelected - 1], list[composerQuickSelected]
-                composerQuickSelected = composerQuickSelected - 1
-                fillComposerQuickEditor(composerQuickSelected)
-                markDirtySettings()
-            end
-        elseif canDn then
-            if imgui.Button(uiText('\xC2\xED\xE8\xE7') .. '##cq_dn', imgui.ImVec2(-1, 28)) then
-                flushComposerQuickEditor()
-                local list = settings.composer_quick_buttons
-                list[composerQuickSelected], list[composerQuickSelected + 1] =
-                    list[composerQuickSelected + 1], list[composerQuickSelected]
-                composerQuickSelected = composerQuickSelected + 1
-                fillComposerQuickEditor(composerQuickSelected)
-                markDirtySettings()
-            end
-        end
-        if imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##cq_del', imgui.ImVec2(-1, 28)) then
-            flushComposerQuickEditor()
-            table.remove(settings.composer_quick_buttons, composerQuickSelected)
-            if composerQuickSelected > #settings.composer_quick_buttons then
-                composerQuickSelected = #settings.composer_quick_buttons
-            end
-            if composerQuickSelected < 1 then composerQuickSelected = 1 end
-            if #settings.composer_quick_buttons > 0 then
-                fillComposerQuickEditor(composerQuickSelected)
-            end
-            syncLegacyGgTechFromComposerButtons()
-            markDirtySettings()
-        end
+        if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(true) end
     end
-    imgui.EndChild()
-    popPanelStyle()
+
+    if type(deskEdgeEndSplitMain) == 'function' then
+        deskEdgeEndSplitMain()
+    else
+        imgui.EndChild()
+    end
+
+    if type(deskEdgeEndSplitPage) == 'function' then
+        deskEdgeEndSplitPage()
+    else
+        popPanelStyle()
+    end
 end
 
 -- Draw Composer Quick Tab
@@ -34847,9 +37801,10 @@ end
 -- Draw Chat Panel
 function drawChatPanel()
     local t = getSelectedThread()
+    local chatBg = (deskEdgeTheme and deskEdgeTheme.CHAT_BG) or col_chat_bg
     if not t then
         deskInputState.replyInputActive = false
-        pushPanelStyle(col_chat_bg)
+        pushPanelStyle(chatBg)
         imgui.BeginChild('##chat_empty', imgui.ImVec2(-1, -1), false)
         drawEmptyChatPlaceholder()
         imgui.EndChild()
@@ -34857,7 +37812,7 @@ function drawChatPanel()
         return
     end
 
-    pushPanelStyle(col_chat_bg)
+    pushPanelStyle(chatBg)
     imgui.BeginChild('##chat_col', imgui.ImVec2(-1, -1), false)
 
     local p = getPendingAutoForSelected()
@@ -34885,7 +37840,7 @@ function drawChatPanel()
     local logH = imgui.GetContentRegionAvail().y - composerH
     if logH < 100 then logH = 100 end
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(CHAT_LOG_PAD, CHAT_LOG_PAD))
-    imgui.BeginChild('##chat_log', imgui.ImVec2(-1, logH), true)
+    imgui.BeginChild('##chat_log', imgui.ImVec2(-1, logH), false)
     imgui.PopStyleVar()
     local msgs = t.messages or {}
     local fullW = imgui.GetContentRegionAvail().x - CHAT_LOG_PAD
@@ -34964,6 +37919,17 @@ function drawFilterChips()
         local n = totalUnread > 99 and '99+' or tostring(totalUnread)
         labels[1] = labels[1] .. ' (' .. n .. ')'
     end
+    if type(deskEdgeDrawSegmentBar) == 'function' then
+        local activeKey = filterMode[0] == 0 and 'unread' or 'all'
+        deskEdgeDrawSegmentBar('rep_flt', {
+            { key = 'unread', label = labels[1] },
+            { key = 'all', label = labels[2] },
+        }, activeKey, function(k)
+            filterMode[0] = (k == 'unread') and 0 or 1
+            markUiCacheDirty()
+        end)
+        return
+    end
     local chipW = math.floor((imgui.GetContentRegionAvail().x - 8) / 2)
     if chipW < 72 then chipW = 72 end
     for i, lbl in ipairs(labels) do
@@ -34983,22 +37949,32 @@ end
 
 -- Draw Thread List
 function drawThreadList()
-    pushPanelStyle(col_sidebar)
-    imgui.BeginChild('##sidebar', imgui.ImVec2(LIST_W, -1), false)
+    local edge = type(deskEdgeTheme) == 'table'
+    local inboxBg = edge and deskEdgeTheme.MAIN_BG or ((deskEdgeTheme and deskEdgeTheme.INBOX_BG) or imgui.ImVec4(0, 0, 0, 0.15))
+    local listW = edge and 280 or LIST_W
+    pushPanelStyle(inboxBg)
+    if edge then
+        imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    end
+    imgui.BeginChild('##sidebar', imgui.ImVec2(listW, -1), false)
 
-    imgui.Dummy(imgui.ImVec2(0, 4))
     imgui.PushItemWidth(-1)
     imgui.InputTextWithHint('##search', uiText('\xCF\xEE\xE8\xF1\xEA...'), searchBuf, sizeof(searchBuf))
     imgui.PopItemWidth()
     if (tonumber(totalUnread) or 0) > 0 then
-        imgui.Dummy(imgui.ImVec2(0, 6))
+        imgui.Dummy(imgui.ImVec2(0, 8))
         drawReadAllThreadsButton()
     end
     imgui.Dummy(imgui.ImVec2(0, 8))
     drawFilterChips()
-    imgui.Dummy(imgui.ImVec2(0, 6))
+    imgui.Dummy(imgui.ImVec2(0, 4))
 
-    imgui.BeginChild('##threads', imgui.ImVec2(-1, -1), true)
+    local listBg = edge and deskEdgeTheme.INBOX_LIST_BG or imgui.ImVec4(0, 0, 0, 0)
+    if edge and listBg.w and listBg.w > 0 then
+        imgui.PushStyleColor(imgui.Col.ChildBg, listBg)
+    end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(edge and 8 or 0, edge and 4 or 0))
+    imgui.BeginChild('##threads', imgui.ImVec2(-1, -1), false)
     local keys = getFilteredThreadKeys()
     if #keys == 0 then
         local q = trim(readInputBuf(searchBuf))
@@ -35035,8 +38011,29 @@ function drawThreadList()
         end
     end
     imgui.EndChild()
+    imgui.PopStyleVar()
+    if edge and listBg.w and listBg.w > 0 then
+        imgui.PopStyleColor()
+    end
 
     imgui.EndChild()
+    if edge then
+        imgui.PopStyleVar()
+    end
+    local dl = imgui.GetWindowDrawList()
+    if dl and type(toU32) == 'function' and type(deskEdgeTheme) == 'table' then
+        local mn = imgui.GetItemRectMin()
+        local mx = imgui.GetItemRectMax()
+        if mn and mx then
+            pcall(function()
+                dl:AddLine(
+                    imgui.ImVec2(mx.x, mn.y),
+                    imgui.ImVec2(mx.x, mx.y),
+                    toU32(deskEdgeTheme.BORDER or imgui.ImVec4(1, 1, 1, 0.06)),
+                    1.0)
+            end)
+        end
+    end
     popPanelStyle()
 end
 
@@ -35110,6 +38107,10 @@ function syncSettingsUiFromSettings()
     uiProfanityFilter[0] = settings.profanity_filter_enabled ~= false
     uiRemoteChatSamp[0] = settings.remote_chat_samp_mirror ~= false
     uiProfanitySound[0] = settings.profanity_filter_sound ~= false
+    if uiShellAlphaPct then
+        local pct = math.floor((tonumber(settings.ui_shell_alpha) or 0.55) * 100 + 0.5)
+        uiShellAlphaPct[0] = math.max(30, math.min(100, pct))
+    end
 end
 
 -- Draw Settings Tab
@@ -35122,31 +38123,36 @@ function drawSettingsTab()
         settingsUiSynced = true
     end
 
-    pushPanelStyle(col_chat_bg)
+    pushPanelStyle()
     local childFlags = 0
     if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
         childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##settings_panel', imgui.ImVec2(-1, -1), false, childFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     deskFormPanelBegin('##set_main')
     drawSettingsCardHeader('\xCE\xF1\xED\xEE\xE2\xED\xEE\xE5', '')
     drawSettingsHotkeyBind()
+    if uiShellAlphaPct and drawSettingsSliderInt then
+        drawSettingsSliderInt(
+            '\xCF\xF0\xEE\xE7\xF0\xE0\xF7\xED\xEE\xF1\xF2\xFC UI',
+            uiShellAlphaPct, 'ui_alpha', 30, 100,
+            function(v)
+                settings.ui_shell_alpha = v / 100.0
+                if deskEdgeTheme then
+                    local a = settings.ui_shell_alpha
+                    if a >= 0.995 then a = 0.99 end
+                    deskEdgeTheme.SHELL_BG_ALPHA = a
+                end
+                markDirtySettings()
+            end)
+        drawSettingsHint('\xCF\xF0\xEE\xE7\xF0\xE0\xF7\xED\xEE\xF1\xF2\xFC \xEE\xEA\xED\xE0 Report Desk (\xEA\xE0\xEA \xE2 \xEF\xF0\xEE\xF2\xEE\xF2\xE8\xEF\xE5 Edge)')
+    end
     deskFormPanelEnd()
 
     deskFormPanelBegin('##set_chat')
     drawSettingsCardHeader('\xD7\xE0\xF2', '')
-
-    if deskFormCheckboxRow('\xC4\xE0\xEB\xFC\xED\xE8\xE9 \xF7\xE0\xF2', uiRemoteChatSamp, function(v)
-        settings.remote_chat_samp_mirror = v
-        if type(remoteChatSetMirrorEnabled) == 'function' then
-            pcall(remoteChatSetMirrorEnabled, v)
-        elseif v == false and type(remoteChatClearQueue) == 'function' then
-            pcall(remoteChatClearQueue)
-        end
-        markDirtySettings()
-    end, 'remote_chat_samp') then end
 
     if deskFormCheckboxRow('\xCE\xF2\xF1\xEB\xE5\xE6\xE8\xE2\xE0\xF2\xFC \xEC\xE0\xF2', uiProfanityFilter, function(v)
         settings.profanity_filter_enabled = v
@@ -35309,11 +38315,266 @@ function toggleWindow()
 end
 
 -- Apply Main Window Layout (fullscreen only on explicit toggle via F11)
-local function deskMainTabBarFlags()
-    if imgui.TabBarFlags and imgui.TabBarFlags.NoTooltip then
-        return imgui.TabBarFlags.NoTooltip
+local function deskEdgeTab()
+    if not deskEdgeNav or not deskEdgeNav.TAB then return 0 end
+    return activeTab[0]
+end
+
+local function deskNormalizeActiveTab()
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    if not T then return end
+    if type(deskCache) ~= 'table' then return end
+    if activeTab[0] == T.vehicles then
+        deskCache.catalogMode = 'vehicles'
+    elseif activeTab[0] == T.skins then
+        deskCache.catalogMode = 'skins'
     end
-    return 32
+end
+
+local function deskCatalogMode()
+    if type(deskCache) ~= 'table' then return 'skins' end
+    local m = deskCache.catalogMode
+    if m == 'vehicles' or m == 1 or m == '1' then return 'vehicles' end
+    return 'skins'
+end
+
+local function deskSetCatalogMode(mode)
+    if type(deskCache) ~= 'table' then return end
+    deskCache.catalogMode = (mode == 'vehicles') and 'vehicles' or 'skins'
+end
+
+local function deskDrawCatalogModeBar()
+    local mode = deskCatalogMode()
+    local onPick = function(key)
+        local prev = deskCatalogMode()
+        deskSetCatalogMode(key)
+        if prev == key then return end
+        if key == 'vehicles' then
+            if skinTabEntered then
+                skinTabEntered = false
+                skinUiTabActive = false
+                pcall(skinsOnTabLeave)
+            end
+            if deskVeh and not deskVeh.tabActive then
+                deskVeh.tabActive = true
+                pcall(deskVeh.onTabEnter)
+            end
+        else
+            if deskVeh and deskVeh.tabActive then
+                deskVeh.tabActive = false
+                pcall(deskVeh.onTabLeave)
+            end
+            if not skinTabEntered then
+                skinTabEntered = true
+                skinUiTabActive = true
+                pcall(skinsOnTabEnter)
+            end
+        end
+    end
+    if type(deskEdgeDrawSegmentBar) == 'function' then
+        deskEdgeDrawSegmentBar('cat', {
+            { key = 'skins', label = uiText('\xD1\xEA\xE8\xED\xFB') },
+            { key = 'vehicles', label = uiText('\xD2\xD1') },
+        }, mode, onPick)
+        return
+    end
+    local chipH = 28
+    local gap = 8
+    local labels = {
+        skins = uiText('\xD1\xEA\xE8\xED\xFB'),
+        vehicles = uiText('\xD2\xD1'),
+    }
+    for _, key in ipairs({ 'skins', 'vehicles' }) do
+        local active = mode == key
+        if active then
+            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.67, 0.33, 1.0, 0.20))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.67, 0.33, 1.0, 0.30))
+        end
+        local tw = imgui.CalcTextSize(labels[key]).x
+        if imgui.Button(labels[key] .. '##cat_' .. key, imgui.ImVec2(math.max(72, tw + 20), chipH)) then
+            onPick(key)
+        end
+        if active then imgui.PopStyleColor(2) end
+        imgui.SameLine(0, gap)
+    end
+    imgui.NewLine()
+    imgui.Dummy(imgui.ImVec2(0, 6))
+end
+
+function drawCatalogTab()
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    local isVeh = T and activeTab[0] == T.vehicles
+    imgui.BeginChild('##catalog_page', imgui.ImVec2(-1, -1), false)
+    if isVeh then
+        if deskVeh and deskVeh.drawTab then
+            deskVeh.drawTab()
+        end
+    else
+        drawSkinsTab()
+    end
+    imgui.EndChild()
+end
+
+local function deskOnMainTabChanged(prevTab, curTab)
+    if prevTab == curTab then return end
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    if not T then return end
+    if prevTab == T.skins or prevTab == T.vehicles then
+        if skinTabEntered then
+            skinTabEntered = false
+            skinUiTabActive = false
+            pcall(skinsOnTabLeave)
+        end
+        if deskVeh and deskVeh.tabActive then
+            deskVeh.tabActive = false
+            pcall(deskVeh.onTabLeave)
+        end
+    end
+end
+
+local function deskEnsureMainTabEntered(tabId)
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    if not T then return end
+    if tabId == T.skins or tabId == T.vehicles then
+        if deskCatalogMode() == 'vehicles' then
+            if skinTabEntered then
+                skinTabEntered = false
+                skinUiTabActive = false
+                pcall(skinsOnTabLeave)
+            end
+            if deskVeh and not deskVeh.tabActive then
+                deskVeh.tabActive = true
+                pcall(deskVeh.onTabEnter)
+            end
+        else
+            if deskVeh and deskVeh.tabActive then
+                deskVeh.tabActive = false
+                pcall(deskVeh.onTabLeave)
+            end
+            if not skinTabEntered then
+                skinTabEntered = true
+                skinUiTabActive = true
+                pcall(skinsOnTabEnter)
+            end
+        end
+        return
+    end
+end
+
+local function deskDrawMainTabContent(tabId)
+    if type(deskFormPanelReset) == 'function' then
+        deskFormPanelReset()
+    end
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    if not T then return false end
+    deskEnsureMainTabEntered(tabId)
+    if tabId == T.reports then
+        drawThreadList()
+        imgui.SameLine(0, 0)
+        drawChatPanel()
+        return true
+    end
+    if tabId == T.quick then
+        local okCq, errCq = pcall(drawComposerQuickTab)
+        if not okCq then
+            imgui.TextColored(col_warn, 'Quick replies UI error:')
+            imgui.TextWrapped(tostring(errCq))
+        end
+        return false
+    end
+    if tabId == T.cmds then
+        if type(drawCmdBindsTab) ~= 'function' then
+            imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xEA\xEE\xEC\xE0\xED\xE4 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
+        else
+            local okCmd, errCmd = pcall(drawCmdBindsTab)
+            if not okCmd then
+                imgui.TextColored(col_warn, 'Cmd binds UI error:')
+                imgui.TextWrapped(tostring(errCmd))
+                print('[Report Desk] cmd binds UI: ' .. tostring(errCmd))
+            end
+        end
+        return false
+    end
+    if tabId == T.cheats then
+        local okCh, errCh = pcall(drawCheatsTab)
+        if not okCh then
+            imgui.TextColored(col_warn, 'Cheats UI error:')
+            imgui.TextWrapped(tostring(errCh))
+            print('[Report Desk] cheats UI: ' .. tostring(errCh))
+        end
+        return false
+    end
+    if tabId == T.anticheat then
+        local okAc, errAc = pcall(drawSpAnticheatTab)
+        if not okAc then
+            imgui.TextColored(col_warn, 'Anticheat UI error:')
+            imgui.TextWrapped(tostring(errAc))
+            print('[Report Desk] sp anticheat UI: ' .. tostring(errAc))
+        end
+        return false
+    end
+    if tabId == T.checker then
+        if type(drawCheckerTab) ~= 'function' then
+            imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xF7\xE5\xEA\xE5\xF0\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
+        else
+            local okCk, errCk = pcall(drawCheckerTab)
+            if not okCk then
+                imgui.TextColored(col_warn, 'Checker UI error:')
+                imgui.TextWrapped(tostring(errCk))
+                print('[Report Desk] checker UI: ' .. tostring(errCk))
+            end
+        end
+        return false
+    end
+    if tabId == T.skins or tabId == T.vehicles then
+        skinUiTabActive = tabId == T.skins
+        local okCat, errCat = pcall(drawCatalogTab)
+        if not okCat then
+            imgui.TextColored(col_warn, 'Catalog UI error:')
+            imgui.TextWrapped(tostring(errCat))
+            print('[Report Desk] catalog UI: ' .. tostring(errCat))
+        end
+        return false
+    end
+    if tabId == T.punish then
+        local okAp, errAp = pcall(drawAdminPunishTab)
+        if not okAp then
+            imgui.TextColored(col_warn, 'Admin punish UI error:')
+            imgui.TextWrapped(tostring(errAp))
+            print('[Report Desk] admin punish UI: ' .. tostring(errAp))
+        end
+        return false
+    end
+    if tabId == T.leadership then
+        local okTl, errTl = pcall(drawTempLeadershipTab)
+        if not okTl then
+            if type(deskFormPanelReset) == 'function' then deskFormPanelReset() end
+            imgui.TextColored(col_warn, 'Temp leadership UI error:')
+            imgui.TextWrapped(tostring(errTl))
+            print('[Report Desk] temp leadership UI: ' .. tostring(errTl))
+        end
+        return false
+    end
+    if tabId == T.help then
+        local okEt, errEt = pcall(drawExactTimeTab)
+        if not okEt then
+            if type(deskFormPanelReset) == 'function' then deskFormPanelReset() end
+            imgui.TextColored(col_warn, 'Help tab UI error:')
+            imgui.TextWrapped(tostring(errEt))
+            print('[Report Desk] help tab UI: ' .. tostring(errEt))
+        end
+        return false
+    end
+    if tabId == T.settings then
+        local okSet, errSet = pcall(drawSettingsTab)
+        if not okSet then
+            imgui.TextColored(col_warn, 'Settings UI error:')
+            imgui.TextWrapped(tostring(errSet))
+            print('[Report Desk] settings UI: ' .. tostring(errSet))
+        end
+        return false
+    end
+    return false
 end
 
 local function deskApplyMainWindowLayout(sw, sh)
@@ -35375,14 +38636,30 @@ function drawMainWindow()
     if sw < 100 then sw = 1920 end
     if sh < 100 then sh = 1080 end
     deskApplyMainWindowLayout(sw, sh)
-    imgui.SetNextWindowBgAlpha(0.97)
+    local shellAlpha
+    if type(deskShellAlpha) == 'function' then
+        shellAlpha = tonumber(deskShellAlpha())
+    end
+    if shellAlpha == nil and type(deskEdgeTheme) == 'table' and type(deskEdgeTheme.shellAlpha) == 'function' then
+        shellAlpha = tonumber(deskEdgeTheme.shellAlpha())
+    end
+    if shellAlpha == nil then
+        shellAlpha = tonumber(deskEdgeTheme and deskEdgeTheme.SHELL_BG_ALPHA_DEFAULT) or 0.55
+    end
+    shellAlpha = math.max(0.30, math.min(0.99, shellAlpha))
+    if imgui.SetNextWindowBgAlpha then
+        imgui.SetNextWindowBgAlpha(shellAlpha)
+    end
 
     local winFlags = imgui.WindowFlags.NoCollapse + (imgui.WindowFlags.NoNav or 0)
+    if imgui.WindowFlags.NoTitleBar then
+        winFlags = winFlags + imgui.WindowFlags.NoTitleBar
+    end
     if type(deskCache) == 'table' and deskCache.deskWinFullscreen and imgui.WindowFlags.NoResize then
         winFlags = winFlags + imgui.WindowFlags.NoResize
     end
 
-    if not imgui.Begin(uiText('Report Desk') .. '###ReportDesk', showWindow, winFlags) then
+    if not imgui.Begin('###ReportDesk', showWindow, winFlags) then
         if not showWindow[0] then
             closeDeskWindow()
         end
@@ -35404,153 +38681,84 @@ function drawMainWindow()
     if filterMode[0] > 1 then filterMode[0] = 0 end
 
     local footH = type(deskAdminFooterHeight) == 'function' and deskAdminFooterHeight() or 0
+    local shellBottomPad = (type(deskEdgeTheme) == 'table') and 8 or 0
     local bodyFlags = 0
     if imgui.WindowFlags and imgui.WindowFlags.NoScrollbar then
         bodyFlags = imgui.WindowFlags.NoScrollbar
     end
     if footH > 0 then
-        local bodyH = imgui.GetContentRegionAvail().y - footH
+        local bodyH = imgui.GetContentRegionAvail().y - footH - shellBottomPad
+        if bodyH < 80 then bodyH = imgui.GetContentRegionAvail().y end
+        imgui.BeginChild('##desk_body', imgui.ImVec2(-1, bodyH), false, bodyFlags)
+    elseif shellBottomPad > 0 then
+        local bodyH = imgui.GetContentRegionAvail().y - shellBottomPad
         if bodyH < 80 then bodyH = imgui.GetContentRegionAvail().y end
         imgui.BeginChild('##desk_body', imgui.ImVec2(-1, bodyH), false, bodyFlags)
     end
 
     local chatTabActive = false
-    if imgui.BeginTabBar('##tabs', deskMainTabBarFlags()) then
-        if imgui.BeginTabItem(uiText('\xD0\xE5\xEF\xEE\xF0\xF2\xFB') .. '##tab_chat') then
-            chatTabActive = true
-            drawThreadList()
-            imgui.SameLine(0, 0)
-            drawChatPanel()
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xC1\xFB\xF1\xF2\xF0\xFB\xE5 \xEE\xF2\xE2\xE5\xF2\xFB') .. '##tab_cq') then
-            local okCq, errCq = pcall(drawComposerQuickTab)
-            if not okCq then
-                imgui.TextColored(col_warn, 'Quick replies UI error:')
-                imgui.TextWrapped(tostring(errCq))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xCA\xEE\xEC\xE0\xED\xE4\xFB') .. '##tab_cmd') then
-            if type(drawCmdBindsTab) ~= 'function' then
-                imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xEA\xEE\xEC\xE0\xED\xE4 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
-            else
-                local okCmd, errCmd = pcall(drawCmdBindsTab)
-                if not okCmd then
-                    imgui.TextColored(col_warn, 'Cmd binds UI error:')
-                    imgui.TextWrapped(tostring(errCmd))
-                    print('[Report Desk] cmd binds UI: ' .. tostring(errCmd))
-                end
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xD7\xE8\xF2\xFB') .. '##tab_cheats') then
-            local okCh, errCh = pcall(drawCheatsTab)
-            if not okCh then
-                imgui.TextColored(col_warn, 'Cheats UI error:')
-                imgui.TextWrapped(tostring(errCh))
-                print('[Report Desk] cheats UI: ' .. tostring(errCh))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xC0\xED\xF2\xE8\xF7\xE8\xF2') .. '##tab_sp_ac') then
-            local okAc, errAc = pcall(drawSpAnticheatTab)
-            if not okAc then
-                imgui.TextColored(col_warn, 'Anticheat UI error:')
-                imgui.TextWrapped(tostring(errAc))
-                print('[Report Desk] sp anticheat UI: ' .. tostring(errAc))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xD7\xE5\xEA\xE5\xF0') .. '##tab_checker') then
-            if type(drawCheckerTab) ~= 'function' then
-                imgui.TextColored(col_warn, uiText('\xCC\xEE\xE4\xF3\xEB\xFC \xF7\xE5\xEA\xE5\xF0\xE0 \xED\xE5 \xE7\xE0\xE3\xF0\xF3\xE6\xE5\xED. /reload'))
-            else
-                local okCk, errCk = pcall(drawCheckerTab)
-                if not okCk then
-                    imgui.TextColored(col_warn, 'Checker UI error:')
-                    imgui.TextWrapped(tostring(errCk))
-                    print('[Report Desk] checker UI: ' .. tostring(errCk))
-                end
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xD1\xEA\xE8\xED\xFB') .. '##tab_skins') then
-            skinUiTabActive = true
-            if not skinTabEntered then
-                skinTabEntered = true
-                pcall(skinsOnTabEnter)
-            end
-            local okSk, errSk = pcall(drawSkinsTab)
-            if not okSk then
-                imgui.TextColored(col_warn, 'Skins UI error:')
-                imgui.TextWrapped(tostring(errSk))
-                print('[Report Desk] skins UI: ' .. tostring(errSk))
-            end
-            imgui.EndTabItem()
-        elseif skinTabEntered then
-            skinTabEntered = false
-            skinUiTabActive = false
-            pcall(skinsOnTabLeave)
-        end
-        if imgui.BeginTabItem(uiText('\xD2\xD1') .. '##tab_veh') then
-            if not deskVeh.tabActive then
-                deskVeh.tabActive = true
-                pcall(deskVeh.onTabEnter)
-            end
-            local okVh, errVh = pcall(deskVeh.drawTab)
-            if not okVh then
-                imgui.TextColored(col_warn, 'Vehicles UI error:')
-                imgui.TextWrapped(tostring(errVh))
-                print('[Report Desk] vehicles UI: ' .. tostring(errVh))
-            end
-            imgui.EndTabItem()
-        elseif deskVeh.tabActive then
-            deskVeh.tabActive = false
-            pcall(deskVeh.onTabLeave)
-        end
-        if imgui.BeginTabItem(uiText('\xCD\xE0\xEA\xE0\xE7\xE0\xED\xE8\xFF') .. '##tab_ap') then
-            local okAp, errAp = pcall(drawAdminPunishTab)
-            if not okAp then
-                imgui.TextColored(col_warn, 'Admin punish UI error:')
-                imgui.TextWrapped(tostring(errAp))
-                print('[Report Desk] admin punish UI: ' .. tostring(errAp))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xCB\xE8\xE4\xE5\xF0\xF1\xF2\xE2\xEE') .. '##tab_tl') then
-            local okTl, errTl = pcall(drawTempLeadershipTab)
-            if not okTl then
-                imgui.TextColored(col_warn, 'Temp leadership UI error:')
-                imgui.TextWrapped(tostring(errTl))
-                print('[Report Desk] temp leadership UI: ' .. tostring(errTl))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xD1\xEF\xF0\xE0\xE2\xEA\xE0') .. '##tab_help') then
-            local okEt, errEt = pcall(drawExactTimeTab)
-            if not okEt then
-                imgui.TextColored(col_warn, 'Help tab UI error:')
-                imgui.TextWrapped(tostring(errEt))
-                print('[Report Desk] help tab UI: ' .. tostring(errEt))
-            end
-            imgui.EndTabItem()
-        end
-        if imgui.BeginTabItem(uiText('\xCD\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE8') .. '##tab_set') then
-            local okSet, errSet = pcall(drawSettingsTab)
-            if not okSet then
-                imgui.TextColored(col_warn, 'Settings UI error:')
-                imgui.TextWrapped(tostring(errSet))
-                print('[Report Desk] settings UI: ' .. tostring(errSet))
-            end
-            imgui.EndTabItem()
-        end
-        imgui.EndTabBar()
+    local prevMainTab = deskCache.edgeMainTab
+    if prevMainTab == nil then
+        prevMainTab = deskEdgeNav and deskEdgeNav.TAB and deskEdgeNav.TAB.reports or 0
+        activeTab[0] = prevMainTab
+    end
+    deskNormalizeActiveTab()
+    local curMainTab = deskEdgeTab()
+    deskOnMainTabChanged(prevMainTab, curMainTab)
+    deskCache.edgeMainTab = curMainTab
+
+    if deskEdgeNav and deskEdgeNav.drawRail then
+        deskEdgeNav.drawRail(activeTab, totalUnread)
+        imgui.SameLine(0, 0)
     end
 
-    if footH > 0 then
+    if type(deskEdgeTheme) == 'table' and deskEdgeTheme.transparentChildPush then
+        deskEdgeTheme.transparentChildPush()
+    else
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+        imgui.PushStyleVarFloat(imgui.StyleVar.ChildBorderSize, 0)
+    end
+    imgui.BeginChild('##desk_main', imgui.ImVec2(-1, -1), false, bodyFlags)
+    if deskEdgeNav and deskEdgeNav.drawHeader and deskEdgeNav.shouldDrawHeader
+            and deskEdgeNav.shouldDrawHeader(curMainTab) then
+        deskEdgeNav.drawHeader(curMainTab, showWindow)
+    end
+    imgui.BeginChild('##desk_tab', imgui.ImVec2(-1, -1), false, bodyFlags)
+    local mainPad = (deskEdgeNav and deskEdgeNav.MAIN_PAD_X) or 16
+    local tabPadY = 16
+    local T = deskEdgeNav and deskEdgeNav.TAB
+    local shellHeader = deskEdgeNav and deskEdgeNav.shouldDrawHeader
+        and deskEdgeNav.shouldDrawHeader(curMainTab)
+    if type(deskEdgeTheme) == 'table' and T then
+        if curMainTab == T.reports or curMainTab == T.quick or curMainTab == T.cmds then
+            mainPad = 0
+            tabPadY = shellHeader and 8 or 0
+        else
+            tabPadY = shellHeader and 16 or 20
+        end
+    end
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(mainPad, tabPadY))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    chatTabActive = deskDrawMainTabContent(curMainTab) == true
+    imgui.PopStyleVar(2)
+    imgui.EndChild()
+    imgui.EndChild()
+    if type(deskEdgeTheme) == 'table' and deskEdgeTheme.transparentChildPop then
+        deskEdgeTheme.transparentChildPop()
+    else
+        imgui.PopStyleVar()
+        imgui.PopStyleColor(1)
+    end
+
+    if footH > 0 or shellBottomPad > 0 then
         imgui.EndChild()
+    end
+    if footH > 0 then
         drawDeskAdminRoleBadgeFooter(footH)
+    end
+
+    if shellBottomPad > 0 then
+        imgui.Dummy(imgui.ImVec2(0, shellBottomPad))
     end
 
     deskInputState.chatTabActive = chatTabActive and true or false
@@ -37799,6 +41007,9 @@ function main()
         if type(adminPunishFlushDeferredLogs) == 'function' then
             pcall(adminPunishFlushDeferredLogs)
         end
+        if type(etFlushPunishPersistence) == 'function' then
+            pcall(etFlushPunishPersistence)
+        end
 
         if type(tempLeadershipPumpPending) == 'function' then
             pcall(tempLeadershipPumpPending)
@@ -39443,6 +42654,64 @@ local function checkerLeaderHayFind(hay, pattern)
     return hay ~= '' and hay:find(pattern, 1, true) ~= nil
 end
 
+local function checkerLeaderHayLooksLikeSmi(hay)
+    if hay == '' then return false end
+    return checkerLeaderHayFind(hay, '\xF0\xE0\xE4\xE8\xEE')
+        or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xE2\xE8\xE7')
+        or checkerLeaderHayFind(hay, '\xF1\xEC\xE8')
+        or checkerLeaderHayFind(hay, '\xF1\xE2\xFF\xE7\xE8')
+        or checkerLeaderHayFind(hay, '\xEA\xEE\xEC\xEC\xF3\xED\xE8\xEA\xE0\xF6')
+        or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xF6\xE5\xED\xF2\xF0')
+        or checkerLeaderHayFind(hay, '\xEC\xE8\xED.\xF1\xE2\xFF\xE7\xE8')
+        or checkerLeaderHayFind(hay, '\xEC\xE8\xED \xF1\xE2\xFF\xE7\xE8')
+        or checkerLeaderHayFind(hay, '\xF0\xE5\xE4\xE0\xEA\xF6')
+        or checkerLeaderHayFind(hay, '\xE6\xF3\xF0\xED\xE0\xEB')
+        or checkerLeaderHayFind(hay, 'news')
+        or checkerLeaderHayFind(hay, 'press')
+end
+
+local function checkerLeaderHayLooksLikeMz(hay)
+    if hay == '' then return false end
+    if checkerLeaderHayLooksLikeSmi(hay) then return false end
+    if checkerLeaderHayFind(hay, '\xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED')
+            or checkerLeaderHayFind(hay, '\xEC\xE3\xEC\xF6')
+            or checkerLeaderHayFind(hay, '\xEA\xEB\xE8\xED\xE8\xF7')
+            or checkerLeaderHayFind(hay, '\xEA\xEF\xF5')
+            or checkerLeaderHayFind(hay, '\xE1\xEE\xEB\xFC\xED\xE8\xF6')
+            or checkerLeaderHayFind(hay, 'hospital')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2')
+            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED')
+            or checkerLeaderHayFind(hay, '\xEC\xE5\xE4.\xF6\xE5\xED\xF2\xF0')
+            or checkerLeaderHayFind(hay, '\xEC\xE5\xE4 \xF6\xE5\xED\xF2\xF0')
+            or checkerLeaderHayFind(hay, '\xE8\xF5\xE7')
+            or checkerLeaderHayFind(hay, '\xE3\xEB\xE0\xE2\xED\xFB\xE9 \xE2\xF0\xE0\xF7')
+            or checkerLeaderHayFind(hay, '\xE3\xEB\xE0\xE2 \xE2\xF0\xE0\xF7')
+            or checkerLeaderHayFind(hay, '\xE7\xE0\xE2 \xEE\xF2\xE4\xE5\xEB')
+            or checkerLeaderHayFind(hay, 'astrmed')
+            or checkerLeaderHayFind(hay, 'neolimbs')
+            or checkerLeaderHayFind(hay, '\xF4\xE5\xED\xE8\xEA\xF1')
+            or checkerLeaderHayFind(hay, 'feniks')
+            or checkerLeaderHayFind(hay, 'phoenix') then
+        return true
+    end
+    -- МЦ — только как аббревиатура, не подстрока в «телецентр» и т.п.
+    if hay:find('^%s*\xEC\xF6%s', 0)
+            or hay:find('^%s*\xEC\xF6"', 0)
+            or hay:find('%s\xEC\xF6%s', 1, true)
+            or hay:find('%s\xEC\xF6"', 1, true)
+            or hay:find('\xEC\xF6 "', 1, true) then
+        return true
+    end
+    -- «центр» только в явно мед. контексте (не телецентр / пресс-центр).
+    if checkerLeaderHayFind(hay, '\xEC\xE5\xE4.\xF6\xE5\xED\xF2\xF0')
+            or checkerLeaderHayFind(hay, '\xEC\xE5\xE4 \xF6\xE5\xED\xF2\xF0')
+            or checkerLeaderHayFind(hay, '\xF6\xE5\xED\xF2\xF0 \xE8\xF5\xE7')
+            or checkerLeaderHayFind(hay, '\xE8\xF5\xE7 \xF6\xE5\xED\xF2\xF0') then
+        return true
+    end
+    return false
+end
+
 -- Org id по org_name/role (не доверяем битому org из каталога).
 function checkerResolveLeaderOrgId(entry)
     if not entry then return 0 end
@@ -39512,28 +42781,14 @@ function checkerResolveLeaderOrgId(entry)
         return ORG_MO
     end
 
-    -- МЗ (+ больницы LS/SF/LV с разными названиями).
-    if checkerLeaderHayFind(hay, '\xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED')
-            or checkerLeaderHayFind(hay, '\xEC\xE3\xEC\xF6')
-            or checkerLeaderHayFind(hay, '\xEA\xEB\xE8\xED\xE8\xF7')
-            or checkerLeaderHayFind(hay, '\xEA\xEF\xF5')
-            or checkerLeaderHayFind(hay, '\xE1\xEE\xEB\xFC\xED\xE8\xF6')
-            or checkerLeaderHayFind(hay, 'hospital')
-            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2')
-            or checkerLeaderHayFind(hay, '\xEC\xE8\xED\xE8\xF1\xF2\xF0 \xE7\xE4\xF0\xE0\xE2\xEE\xEE\xF5\xF0\xE0\xED') then
-        return ORG_MZ
+    -- СМИ (до МЗ: «телецентр» и т.п. не должны попадать в здравоохранение).
+    if checkerLeaderHayLooksLikeSmi(hay) then
+        return ORG_SMI
     end
 
-    -- СМИ.
-    if checkerLeaderHayFind(hay, '\xF0\xE0\xE4\xE8\xEE')
-            or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xE2\xE8\xE7')
-            or checkerLeaderHayFind(hay, '\xF1\xEC\xE8')
-            or checkerLeaderHayFind(hay, '\xF1\xE2\xFF\xE7\xE8')
-            or checkerLeaderHayFind(hay, '\xEA\xEE\xEC\xEC\xF3\xED\xE8\xEA\xE0\xF6')
-            or checkerLeaderHayFind(hay, '\xF2\xE5\xEB\xE5\xF6\xE5\xED\xF2\xF0')
-            or checkerLeaderHayFind(hay, '\xEC\xE8\xED.\xF1\xE2\xFF\xE7\xE8')
-            or checkerLeaderHayFind(hay, '\xEC\xE8\xED \xF1\xE2\xFF\xE7\xE8') then
-        return ORG_SMI
+    -- МЗ (+ больницы/МЦ с кастомными названиями на Advance).
+    if checkerLeaderHayLooksLikeMz(hay) then
+        return ORG_MZ
     end
 
     -- Правительство.
@@ -39647,6 +42902,9 @@ function checkerLeaderFactionClistImColor(factionKey, visible)
     local meta = checkerLeaderFactionMeta(factionKey)
     if meta and meta.neutralHeader then
         return checkerDimNickColor(col_muted2, visible)
+    end
+    if meta and meta.headerColor then
+        return checkerDimNickColor(meta.headerColor, visible)
     end
     local samp = checkerLeaderOrgClistColor(meta and meta.clistOrg or 0)
     local c = checkerSampColorToImVec4(samp) or col_muted2
@@ -42422,7 +45680,7 @@ function drawCheckerLeadersBlock()
 end
 
 -- РћС‚СЂРёСЃРѕРІРєР° checker UI.
-function drawCheckerFriendsBlock()
+local function checkerHudFriendsOnline()
     ensureCheckerCatalog()
     local list = select(3, checkerHudLists())
     local filtered = {}
@@ -42431,129 +45689,352 @@ function drawCheckerFriendsBlock()
             filtered[#filtered + 1] = e
         end
     end
-    drawCheckerColorListBlock(filtered, '\xC4\xF0\xF3\xE7\xE5\xE9 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2', 'fr')
+    return filtered
 end
 
--- РћС‚СЂРёСЃРѕРІРєР° checker UI.
+function drawCheckerFriendsBlock()
+    drawCheckerColorListBlock(checkerHudFriendsOnline(), '\xC4\xF0\xF3\xE7\xE5\xE9 \xE2 \xF1\xE5\xF2\xE8 \xED\xE5\xF2', 'fr')
+end
+
+-- Отрисовка checker UI.
 function drawCheckerFriendsSettings()
     ensureCheckerCatalog()
     if not checkerUi.friendNick then return end
-    imgui.TextColored(col_muted2, uiText('\xCD\xE8\xEA \xE4\xF0\xF3\xE3\xE0 (\xED\xE5 \xE8\xE7 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE0 \xE0\xE4\xEC\xE8\xED\xEE\xE2):'))
-    imgui.Dummy(imgui.ImVec2(0, 4))
+
+    drawSettingsHint('\xC4\xF0\xF3\xE7\xFC\xFF \xEF\xEE\xE4\xF1\xE2\xE5\xF7\xE0\xFE\xF2\xF1\xFF \xE2 HUD \xB7 \xED\xE5 \xEF\xEE\xEA\xE0\xE7\xFB\xE2\xE0\xFE\xF2\xF1\xFF \xE5\xF1\xEB\xE8 \xE2 \xEA\xE0\xF2\xE0\xEB\xEE\xE3\xE5 \xE0\xE4\xEC\xE8\xED\xEE\xE2')
+
+    local rowW = imgui.GetContentRegionAvail().x
+    if type(deskEdgePanelContentW) == 'function' then
+        rowW = deskEdgePanelContentW()
+    end
+    local btnW = 92
+    local inpW = math.max(120, rowW - btnW - 8)
+    imgui.PushItemWidth(inpW)
+    if type(deskPushFlatInputStyle) == 'function' then deskPushFlatInputStyle() end
     if imgui.InputTextWithHint then
         imgui.InputTextWithHint('##chk_fr_nick', uiText('Nick_Name'), checkerUi.friendNick, sizeof(checkerUi.friendNick))
     else
         imgui.InputText('##chk_fr_nick', checkerUi.friendNick, sizeof(checkerUi.friendNick))
     end
-    imgui.SameLine()
-    if imgui.Button(uiText('\xC4\xEE\xE1\xE0\xE2\xE8\xF2\xFC') .. '##chk_fr_add') then
+    if type(deskPopFlatInputStyle) == 'function' then deskPopFlatInputStyle() end
+    imgui.PopItemWidth()
+    imgui.SameLine(0, 8)
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(true) end
+    if imgui.Button(uiText('\xC4\xEE\xE1\xE0\xE2\xE8\xF2\xFC') .. '##chk_fr_add', imgui.ImVec2(btnW, DESK_FORM_ROW_H or 28)) then
         local nick = readInputBuf(checkerUi.friendNick)
         if checkerAddFriend(nick) then
             checkerUi.friendNick[0] = 0
+            if type(flushCheckerCatalogNow) == 'function' then pcall(flushCheckerCatalogNow) end
+        elseif type(say) == 'function' and trim(nick) ~= '' then
+            say('\xCD\xE8\xEA \xF3\xE6\xE5 \xE2 \xF1\xEF\xE8\xF1\xEA\xE5 \xE8\xEB\xE8 \xED\xE5\xEA\xEE\xF0\xF0\xE5\xEA\xF2\xE5\xED')
         end
     end
-    imgui.Spacing()
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(true) end
+    imgui.Dummy(imgui.ImVec2(0, 8))
+
     local visible = {}
     for _, e in ipairs(checkerCatalog.friends) do
         if e and e.nick and not Catalog.getAdmin(e.nick) then
             visible[#visible + 1] = e
         end
     end
+
+    local scrollFlags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
+        scrollFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
+    end
+    local rowH = DESK_FORM_ROW_H or 28
+    local rowGap = 4
+    local maxListH = 220
+    local listH
+    if #visible == 0 then
+        listH = 36
+    else
+        listH = math.min(maxListH, #visible * (rowH + rowGap) + 10)
+    end
+    imgui.BeginChild('##chk_fr_list', imgui.ImVec2(-1, listH), false, scrollFlags)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(6, 4))
+
     if #visible == 0 then
         imgui.TextColored(col_muted2, uiText('\xD1\xEF\xE8\xF1\xEE\xEA \xE4\xF0\xF3\xE7\xE5\xE9 \xEF\xF3\xF1\xF2'))
-        return
-    end
-    for i, e in ipairs(visible) do
-        local nick = e.nick or ''
-        local uid = nickKey(nick)
-        local id = checkerLookupOnlineId(nick)
-        local online = id and checkerPlayerConnectedSafe(id)
-        local nickCol = online and checkerSafePlayerColor(id) or col_muted2
-        imgui.PushID('chk_fr_' .. uid)
-        if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
-        imgui.TextColored(nickCol, uiText(nick))
-        if online then
-            imgui.SameLine(0, 6)
-            imgui.TextColored(col_muted2, uiText('[' .. tostring(id) .. ']'))
-        end
-        imgui.SameLine(0, 12)
-        local removed = false
-        if imgui.SmallButton then
-            removed = imgui.SmallButton(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid)
-        elseif imgui.Button then
-            removed = imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid)
-        end
-        if removed then
-            checkerRemoveFriend(nick)
-        end
-        imgui.PopID()
-    end
-end
-
--- РћС‚СЂРёСЃРѕРІРєР° checker UI.
-local function drawCheckerLeaderSubsectionHeader(factionKey, count)
-    local meta = checkerLeaderFactionMeta(factionKey)
-    local col = meta.headerColor or col_muted2
-    if checkerSpTheme and checkerSpTheme.drawSectionLabel then
-        checkerSpTheme.drawSectionLabel(meta.title, col, uiText)
     else
-        imgui.TextColored(col, uiText(meta.title))
+        local listW = imgui.GetContentRegionAvail().x
+        if type(deskEdgePanelContentW) == 'function' then
+            listW = deskEdgePanelContentW()
+        end
+        local delW = 72
+        for _, e in ipairs(visible) do
+            local nick = e.nick or ''
+            local uid = nickKey(nick)
+            local pid = checkerLookupOnlineId(nick)
+            local online = pid and checkerPlayerConnectedSafe(pid)
+            local nickCol = online and checkerSafePlayerColor(pid) or col_muted2
+            imgui.PushID('chk_fr_' .. uid)
+            local y = imgui.GetCursorPosY()
+            local x = imgui.GetCursorPosX()
+            local dl = imgui.GetWindowDrawList()
+            if dl and type(toU32) == 'function' then
+                local dotCol = online and imgui.ImVec4(0.38, 0.78, 0.58, 1.0) or imgui.ImVec4(0.35, 0.35, 0.40, 0.8)
+                local midY = y + rowH * 0.5
+                dl:AddCircleFilled(imgui.ImVec2(x + 7, midY), 4, toU32(dotCol))
+            end
+            local textY = y + math.max(0, (rowH - (imgui.GetTextLineHeight() or 14)) * 0.5)
+            imgui.SetCursorPos(imgui.ImVec2(x + 18, textY))
+            imgui.TextColored(nickCol, uiText(nick))
+            if online then
+                imgui.SameLine(0, 6)
+                imgui.TextColored(col_muted2, uiText('[' .. tostring(pid) .. ']'))
+            end
+            imgui.SetCursorPos(imgui.ImVec2(x + listW - delW, y + math.max(0, (rowH - 22) * 0.5)))
+            local removed = false
+            if imgui.SmallButton then
+                removed = imgui.SmallButton(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid)
+            elseif imgui.Button then
+                removed = imgui.Button(uiText('\xD3\xE4\xE0\xEB\xE8\xF2\xFC') .. '##chk_fr_rm_' .. uid, imgui.ImVec2(delW, 22))
+            end
+            if removed then
+                checkerRemoveFriend(nick)
+                if type(flushCheckerCatalogNow) == 'function' then pcall(flushCheckerCatalogNow) end
+            end
+            imgui.SetCursorPos(imgui.ImVec2(x, y + rowH))
+            imgui.Dummy(imgui.ImVec2(listW, 0))
+            imgui.PopID()
+        end
     end
-    imgui.SameLine(0, 6)
-    imgui.TextColored(col_muted2, uiText('(' .. tostring(count or 0) .. ')'))
-    imgui.Dummy(imgui.ImVec2(0, 2))
+
+    imgui.PopStyleVar()
+    imgui.EndChild()
 end
 
--- РћС‚СЂРёСЃРѕРІРєР° checker UI.
-local function drawCheckerLeaderFactionHeader(factionKey, count, firstSection)
-    local meta = checkerLeaderFactionMeta(factionKey)
-    local headerCol = checkerLeaderFactionClistImColor(factionKey, true)
-    if not firstSection then
-        imgui.Dummy(imgui.ImVec2(0, 8))
-    end
-    if checkerSpTheme and checkerSpTheme.drawSectionLabel then
-        checkerSpTheme.drawSectionLabel(meta.title, headerCol, uiText)
-    else
-        imgui.TextColored(headerCol, uiText(meta.title))
-    end
-    imgui.SameLine(0, 6)
-    imgui.TextColored(col_muted2, uiText('(' .. tostring(count or 0) .. ')'))
-    imgui.Dummy(imgui.ImVec2(0, 2))
+local CHECKER_LEADER_CHIP_KEYS = { 'gov', 'mo', 'mz', 'mvd', 'smi', 'band', 'mafia', 'other' }
+local CHECKER_LEADER_TAB_SHORT = {
+    gov = '\xCF\xF0\xE0\xE2-\xE2\xEE',
+}
+
+local function checkerLeaderTabShortLabel(fk)
+    if CHECKER_LEADER_TAB_SHORT[fk] then return CHECKER_LEADER_TAB_SHORT[fk] end
+    local meta = checkerLeaderFactionMeta(fk)
+    return meta.title or fk
 end
 
--- РћС‚СЂРёСЃРѕРІРєР° checker UI.
-function drawCheckerLeaderSettingsRow(entry)
+local function checkerPanelContentW()
+    if type(deskEdgePanelContentW) == 'function' then
+        return deskEdgePanelContentW()
+    end
+    return imgui.GetContentRegionAvail().x
+end
+
+local function checkerLeaderTabBarFlags()
+    local flags = 0
+    if imgui.TabBarFlags then
+        if imgui.TabBarFlags.FittingPolicyScroll then
+            flags = flags + imgui.TabBarFlags.FittingPolicyScroll
+        end
+        if imgui.TabBarFlags.NoTooltip then
+            flags = flags + imgui.TabBarFlags.NoTooltip
+        end
+    end
+    return flags
+end
+
+local function checkerLeaderTabItems(groups)
+    local tabs = {}
+    for _, fk in ipairs(CHECKER_LEADER_CHIP_KEYS) do
+        local entries = groups[fk]
+        if entries and #entries > 0 then
+            local meta = checkerLeaderFactionMeta(fk)
+            tabs[#tabs + 1] = {
+                key = fk,
+                label = checkerLeaderTabShortLabel(fk),
+                tip = meta.title or fk,
+                count = #entries,
+                fk = fk,
+            }
+        end
+    end
+    return tabs
+end
+
+local function checkerLeaderFilterScrollFlags()
+    local flags = 0
+    if imgui.WindowFlags and imgui.WindowFlags.HorizontalScrollbar then
+        flags = flags + imgui.WindowFlags.HorizontalScrollbar
+    end
+    return flags
+end
+
+local function checkerLeaderResolveActiveTab(tabs, activeKey)
+    activeKey = tostring(activeKey or '')
+    if activeKey == 'all' then activeKey = '' end
+    for _, tab in ipairs(tabs or {}) do
+        if tab.key == activeKey then return activeKey end
+    end
+    return tabs[1] and tabs[1].key or ''
+end
+
+local function checkerLeaderDrawFilterAccent(fk)
+    if not fk or fk == 'all' then return end
+    local tint = checkerLeaderFactionClistImColor(fk, true)
+    if not tint or type(toU32) ~= 'function' then return end
+    local dl = imgui.GetWindowDrawList()
+    if not dl then return end
+    local mn = imgui.GetItemRectMin()
+    local mx = imgui.GetItemRectMax()
+    if not mn or not mx then return end
+    dl:AddRectFilled(
+        imgui.ImVec2(mn.x + 3, mn.y + 7),
+        imgui.ImVec2(mn.x + 6, mx.y - 7),
+        toU32(tint), 2)
+end
+
+local function drawCheckerLeaderFilterRow(tabs, activeKey, onPick)
+    imgui.BeginChild('##chk_ld_flt', imgui.ImVec2(-1, 36), false, checkerLeaderFilterScrollFlags())
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(10, 0))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 14)
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
+    for ti, tab in ipairs(tabs or {}) do
+        local active = activeKey == tab.key
+        local fk = tab.fk or tab.key
+        local label = uiText(tab.label or '') or tostring(tab.label or '')
+        local cnt = tonumber(tab.count) or 0
+        if cnt > 0 then
+            label = label .. ' (' .. tostring(cnt) .. ')'
+        end
+        local tw = (imgui.CalcTextSize(label).x or 0) + 24
+        tw = math.max(52, tw)
+        if active then
+            imgui.PushStyleColor(imgui.Col.Button, col_accent_dim or imgui.ImVec4(0.67, 0.33, 1.0, 0.35))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 0.55))
+            imgui.PushStyleColor(imgui.Col.ButtonActive, col_accent or imgui.ImVec4(0.67, 0.33, 1.0, 0.62))
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+        end
+        if imgui.Button(label .. '##chk_ld_f_' .. tostring(tab.key), imgui.ImVec2(tw, 28)) then
+            if onPick then onPick(tab.key) end
+        end
+        checkerLeaderDrawFilterAccent(fk)
+        if active then imgui.PopStyleColor(4) end
+        if ti < #tabs then imgui.SameLine(0, 10) end
+    end
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
+    imgui.PopStyleVar(2)
+    imgui.EndChild()
+    imgui.Dummy(imgui.ImVec2(0, 8))
+end
+
+local function drawCheckerLeaderTabSelector(tabs, activeKey, onPick)
+    if type(imgui.BeginTabBar) ~= 'function' or type(imgui.BeginTabItem) ~= 'function'
+            or type(imgui.EndTabItem) ~= 'function' or type(imgui.EndTabBar) ~= 'function' then
+        return false
+    end
+    if not imgui.BeginTabBar('##chk_ld_tabs', checkerLeaderTabBarFlags()) then
+        return false
+    end
+    for _, tab in ipairs(tabs or {}) do
+        local cnt = tonumber(tab.count) or 0
+        local tabLabel = uiText(tab.label or '') or tostring(tab.label or '')
+        if cnt > 0 then
+            tabLabel = tabLabel .. ' (' .. tostring(cnt) .. ')'
+        end
+        local tabOpen = imgui.BeginTabItem(tabLabel .. '##chk_ld_tab_' .. tostring(tab.key))
+        if tabOpen and onPick then
+            onPick(tab.key)
+        elseif tab.tip and tab.tip ~= tab.label and imgui.IsItemHovered() and imgui.SetTooltip then
+            imgui.SetTooltip(uiText(tab.tip))
+        end
+        imgui.EndTabItem()
+    end
+    imgui.EndTabBar()
+    imgui.Dummy(imgui.ImVec2(0, 6))
+    return true
+end
+
+function checkerLeaderDrawList(groups, tabKey)
+    for _, e in ipairs(groups[tabKey] or {}) do
+        drawCheckerLeaderToggle(e)
+    end
+end
+
+function drawCheckerLeaderToggle(entry)
     local nick = entry.nick or ''
     local ref = checkerLeaderShowRef(nick)
     if not ref then return end
     local uid = nickKey(nick)
     local visible = ref[0] and true or false
-    local nickCol = checkerLeaderFactionColor(entry, visible)
-    local sub = checkerLeaderSubline(entry)
-    local id = entry.id or checkerLookupOnlineId(nick)
-    if id and checkerPlayerConnectedSafe(id) then
-        sub = (sub ~= '' and (sub .. '  \xB7  ') or '') .. '\xE2 \xF1\xE5\xF2\xE8'
-    end
+    local fk = checkerLeaderFactionKey(entry)
+    local stripeCol = checkerLeaderFactionClistImColor(fk, true)
+    local nickCol = checkerLeaderNickColor(entry, visible)
+    local rowH = 36
+    local tw = DESK_FORM_TOGGLE_W or 42
+    local th = DESK_FORM_TOGGLE_H or 22
+    local listW = checkerPanelContentW()
+    local x = imgui.GetCursorPosX()
+    local y = imgui.GetCursorPosY()
+    local dl = imgui.GetWindowDrawList()
 
     imgui.PushID('chk_ld_' .. uid)
-    if imgui.AlignTextToFramePadding then imgui.AlignTextToFramePadding() end
-    local changed = false
-    if imgui.Checkbox('##vis', ref) then
-        changed = true
-    end
-    imgui.SameLine(0, 8)
-    imgui.TextColored(nickCol, uiText(nick))
-    if sub ~= '' then
-        imgui.SameLine(0, 6)
-        imgui.TextColored(col_muted2, checkerLeaderUiText(sub))
-    end
-    imgui.PopID()
-    if changed then
+    local hitW = math.max(80, listW - tw - 10)
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    if imgui.InvisibleButton('##row', imgui.ImVec2(hitW, rowH)) then
+        ref[0] = not ref[0]
+        visible = ref[0]
         checkerSetLeaderHidden(nick, not ref[0])
     end
+    local rowHovered = imgui.IsItemHovered()
+    if dl and type(toU32) == 'function' then
+        local sp = imgui.GetItemRectMin()
+        local ep = imgui.ImVec2(sp.x + hitW, sp.y + rowH)
+        if rowHovered or visible then
+            local bgA = rowHovered and 0.07 or 0.04
+            dl:AddRectFilled(sp, ep, toU32(imgui.ImVec4(1, 1, 1, bgA)), 8)
+        end
+        dl:AddRectFilled(
+            imgui.ImVec2(sp.x + 4, sp.y + 7),
+            imgui.ImVec2(sp.x + 7, sp.y + rowH - 7),
+            toU32(stripeCol), 2)
+    end
+
+    local lineH = imgui.GetTextLineHeight() or 14
+    imgui.SetCursorPos(imgui.ImVec2(x + 14, y + math.max(0, (rowH - lineH) * 0.5)))
+    imgui.TextColored(nickCol, uiText(nick))
+    local pid = entry.id or checkerLookupOnlineId(nick)
+    if pid and checkerPlayerConnectedSafe(pid) then
+        imgui.SameLine(0, 6)
+        imgui.TextColored(col_muted2, uiText('[' .. tostring(pid) .. ']'))
+    end
+
+    local toggleX = x + listW - tw
+    imgui.SetCursorPos(imgui.ImVec2(toggleX, y))
+    if imgui.InvisibleButton('##tg', imgui.ImVec2(tw, rowH)) then
+        ref[0] = not ref[0]
+        visible = ref[0]
+        checkerSetLeaderHidden(nick, not ref[0])
+    end
+    if dl and type(toU32) == 'function' then
+        local p0 = imgui.GetItemRectMin()
+        local p1 = imgui.GetItemRectMax()
+        local midY = (p0.y + p1.y) * 0.5
+        local t0 = imgui.ImVec2(p0.x, midY - th * 0.5)
+        local t1 = imgui.ImVec2(p0.x + tw, midY + th * 0.5)
+        local bgOff = imgui.ImVec4(0.16, 0.16, 0.20, 1.0)
+        local bgOn = imgui.ImVec4(0.38, 0.22, 0.58, 1.0)
+        local knob = imgui.ImVec4(0.95, 0.94, 0.98, visible and 1.0 or 0.82)
+        dl:AddRectFilled(t0, t1, toU32(visible and bgOn or bgOff), th * 0.5)
+        local kr = th * 0.38
+        local kx = visible and (t1.x - kr - 3) or (t0.x + kr + 3)
+        dl:AddCircleFilled(imgui.ImVec2(kx, midY), kr, toU32(knob))
+    end
+
+    imgui.SetCursorPos(imgui.ImVec2(x, y + rowH))
+    imgui.Dummy(imgui.ImVec2(listW, 0))
+    imgui.PopID()
 end
 
--- РћС‚СЂРёСЃРѕРІРєР° checker UI.
+-- Отрисовка checker UI.
+function drawCheckerLeaderSettingsRow(entry, compact)
+    drawCheckerLeaderToggle(entry)
+end
+
+-- Отрисовка checker UI.
 function drawCheckerLeadersSettings()
     ensureCheckerCatalog()
     local leaders = checkerCatalog.leaders
@@ -42562,40 +46043,31 @@ function drawCheckerLeadersSettings()
         return
     end
 
-    local order, groups = checkerBuildLeaderFactionGroups(leaders)
-    if #order == 0 then
-        return
+    local _, groups = checkerBuildLeaderFactionGroups(leaders)
+    local hasAny = false
+    for _, fk in ipairs(CHECKER_LEADER_CHIP_KEYS) do
+        if groups[fk] and #groups[fk] > 0 then hasAny = true break end
     end
-    for gi, fk in ipairs(order) do
-        if fk == 'illegal' then
-            local bands = groups.band or {}
-            local mafias = groups.mafia or {}
-            if gi > 1 then
-                imgui.Dummy(imgui.ImVec2(0, 8))
-            end
-            if #bands > 0 then
-                drawCheckerLeaderSubsectionHeader('band', #bands)
-                for _, e in ipairs(bands) do
-                    drawCheckerLeaderSettingsRow(e)
-                end
-            end
-            if #bands > 0 and #mafias > 0 then
-                imgui.Dummy(imgui.ImVec2(0, 4))
-            end
-            if #mafias > 0 then
-                drawCheckerLeaderSubsectionHeader('mafia', #mafias)
-                for _, e in ipairs(mafias) do
-                    drawCheckerLeaderSettingsRow(e)
-                end
-            end
-        else
-            local entries = groups[fk]
-            drawCheckerLeaderFactionHeader(fk, #entries, gi == 1)
-            for _, e in ipairs(entries) do
-                drawCheckerLeaderSettingsRow(e)
-            end
-        end
+    if not hasAny then return end
+
+    local tabs = checkerLeaderTabItems(groups)
+    if #tabs == 0 then return end
+    if type(checkerState) ~= 'table' then checkerState = {} end
+    checkerState.leaderHudFilter = checkerLeaderResolveActiveTab(tabs, checkerState.leaderHudFilter)
+
+    local function pickKey(k)
+        checkerState.leaderHudFilter = k
     end
+
+    local tabBarOk = drawCheckerLeaderTabSelector(tabs, checkerState.leaderHudFilter, pickKey)
+    if not tabBarOk then
+        drawCheckerLeaderFilterRow(tabs, checkerState.leaderHudFilter, pickKey)
+    end
+
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 2))
+    checkerLeaderDrawList(groups, checkerState.leaderHudFilter)
+    imgui.PopStyleVar()
+    imgui.Dummy(imgui.ImVec2(0, 8))
 end
 
 -- РћС‚СЂРёСЃРѕРІРєР° checker UI.
@@ -42646,32 +46118,51 @@ function drawCheckerHudOverlay()
     if imgui.Begin('###desk_checker_hud', nil, flags) then
         checkerState.hudHovered = false
         checkerSpTheme.drawPanelFrame()
-        local hudAdmins, hudLeaders, hudFriends = checkerHudLists()
+        local _, hudLeaders = checkerHudLists()
+        local hudFriends = checkerHudFriendsOnline()
         checkerSpTheme.drawPanelTitle(
             '\xD7\xE5\xEA\xE5\xF0',
-            string.format('(%i/%i/%i)', #hudAdmins, #hudLeaders, #hudFriends),
+            nil,
             col_accent, col_muted2, uiText)
 
+        local sectionStarted = false
+        local function hudSectionGap()
+            if sectionStarted then imgui.Spacing() end
+            sectionStarted = true
+        end
+
         if settings.checker_show_admins ~= false then
-            checkerSpTheme.drawSectionLabel(
-                '\xC0\xE4\xEC\xE8\xED\xFB:',
-                col_muted2, uiText)
+            hudSectionGap()
+            if type(deskEdgeSectionTitle) == 'function' then
+                deskEdgeSectionTitle('\xC0\xE4\xEC\xE8\xED\xFB')
+            else
+                checkerSpTheme.drawSectionLabel(
+                    '\xC0\xE4\xEC\xE8\xED\xFB:',
+                    col_label or col_muted2, uiText)
+            end
             drawCheckerAdminsBlock()
-            imgui.Spacing()
         end
-        if settings.checker_show_leaders ~= false then
-            checkerSpTheme.drawSectionLabel(
-                '\xCB\xE8\xE4\xE5\xF0\xFB:',
-                col_muted2, uiText)
+        if settings.checker_show_leaders ~= false and #hudLeaders > 0 then
+            hudSectionGap()
+            if type(deskEdgeSectionTitle) == 'function' then
+                deskEdgeSectionTitle('\xCB\xE8\xE4\xE5\xF0\xFB')
+            else
+                checkerSpTheme.drawSectionLabel(
+                    '\xCB\xE8\xE4\xE5\xF0\xFB:',
+                    col_label or col_muted2, uiText)
+            end
             drawCheckerLeadersBlock()
-            imgui.Spacing()
         end
-        if settings.checker_show_friends ~= false then
-            checkerSpTheme.drawSectionLabel(
-                '\xC4\xF0\xF3\xE7\xFC\xFF:',
-                col_muted2, uiText)
+        if settings.checker_show_friends ~= false and #hudFriends > 0 then
+            hudSectionGap()
+            if type(deskEdgeSectionTitle) == 'function' then
+                deskEdgeSectionTitle('\xC4\xF0\xF3\xE7\xFC\xFF')
+            else
+                checkerSpTheme.drawSectionLabel(
+                    '\xC4\xF0\xF3\xE7\xFC\xFF:',
+                    col_label or col_muted2, uiText)
+            end
             drawCheckerFriendsBlock()
-            imgui.Spacing()
         end
 
         local wp = imgui.GetWindowPos()
@@ -42711,28 +46202,16 @@ end
 -- РћС‚СЂРёСЃРѕРІРєР° checker UI.
 function drawCheckerTab()
     if not checkerState.uiSynced then syncCheckerUiFromSettings() end
-    if settings.checker_auto_sync ~= false and checkerIsSpawned()
-            and not checkerState.spawnLeadersHandled
-            and not checkerState.spawnCatalogSyncRunning
-            and type(checkerRequestLeadersSync) == 'function'
-            and type(checkerIsLeadersOnlySyncBlocked) == 'function'
-            and type(checkerSyncLeadersActive) == 'function'
-            and not checkerIsLeadersOnlySyncBlocked()
-            and not checkerSyncLeadersActive(os.clock()) then
-        local now = os.clock()
-        local last = tonumber(checkerState.leadersTabSyncAt) or 0
-        if now - last >= 12.0 then
-            checkerState.leadersTabSyncAt = now
-            SafeCall('checkerTabLeadersSync', checkerRequestLeadersSync, false, true)
-        end
-    end
     pushPanelStyle(col_chat_bg)
     local childFlags = 0
     if imgui.WindowFlags and imgui.WindowFlags.AlwaysVerticalScrollbar then
         childFlags = imgui.WindowFlags.AlwaysVerticalScrollbar
     end
     imgui.BeginChild('##checker_panel', imgui.ImVec2(-1, -1), false, childFlags)
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+
+    drawSettingsHint(
+        '\xCD\xE0\xF1\xF2\xF0\xEE\xE9\xEA\xE8 \xEE\xE2\xE5\xF0\xEB\xE5\xFF HUD \xE8 \xF3\xE2\xE5\xE4\xEE\xEC\xEB\xE5\xED\xE8\xE9. \xD1\xEF\xE8\xF1\xEE\xEA \xE0\xE4\xEC\xE8\xED\xEE\xE2 \xE8 \xEB\xE8\xE4\xE5\xF0\xEE\xE2 \xE2 \xE8\xE3\xF0\xE5 \xB7 \xF2\xEE\xEB\xFC\xEA\xEE \xE2 HUD \xED\xE0 \xFD\xEA\xF0\xE0\xED\xE5.')
 
     deskFormPanelBegin('##chk_hud')
     drawSettingsCardHeader('\xCE\xE2\xE5\xF0\xEB\xE5\xE9 \xED\xE0 \xFD\xEA\xF0\xE0\xED\xE5')
@@ -42741,32 +46220,6 @@ function drawCheckerTab()
         if not v then checkerState.hudPlaced = false end
         markDirtySettings()
     end) then end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##chk_show')
-    drawSettingsCardHeader('\xD1\xE5\xEA\xF6\xE8\xE8')
-    if deskFormCheckboxRow('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xFB', checkerUi.showAdmins, function(v)
-        settings.checker_show_admins = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xCB\xE8\xE4\xE5\xF0\xFB', checkerUi.showLeaders, function(v)
-        settings.checker_show_leaders = v
-        markDirtySettings()
-    end) then end
-    if deskFormCheckboxRow('\xC4\xF0\xF3\xE7\xFC\xFF', checkerUi.showFriends, function(v)
-        settings.checker_show_friends = v
-        markDirtySettings()
-    end) then end
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##chk_friends')
-    drawSettingsCardHeader('\xC4\xF0\xF3\xE7\xFC\xFF')
-    drawCheckerFriendsSettings()
-    deskFormPanelEnd()
-
-    deskFormPanelBegin('##chk_leaders_vis')
-    drawSettingsCardHeader('\xCB\xE8\xE4\xE5\xF0\xFB \xE2 HUD')
-    drawCheckerLeadersSettings()
     deskFormPanelEnd()
 
     deskFormPanelBegin('##chk_notify')
@@ -42789,6 +46242,33 @@ function drawCheckerTab()
     end) then end
     deskFormPanelEnd()
 
+    deskFormPanelBegin('##chk_show')
+    drawSettingsCardHeader('\xD1\xE5\xEA\xF6\xE8\xE8 \xE2 HUD')
+    if deskFormCheckboxRow('\xC0\xE4\xEC\xE8\xED\xE8\xF1\xF2\xF0\xE0\xF2\xEE\xF0\xFB', checkerUi.showAdmins, function(v)
+        settings.checker_show_admins = v
+        markDirtySettings()
+    end) then end
+    if deskFormCheckboxRow('\xCB\xE8\xE4\xE5\xF0\xFB', checkerUi.showLeaders, function(v)
+        settings.checker_show_leaders = v
+        markDirtySettings()
+    end) then end
+    if deskFormCheckboxRow('\xC4\xF0\xF3\xE7\xFC\xFF', checkerUi.showFriends, function(v)
+        settings.checker_show_friends = v
+        markDirtySettings()
+    end) then end
+    deskFormPanelEnd()
+
+    deskFormPanelBegin('##chk_leaders_vis')
+    drawSettingsCardHeader('\xCB\xE8\xE4\xE5\xF0\xFB \xE2 HUD')
+    deskFormPanelEnd()
+    drawCheckerLeadersSettings()
+    imgui.Dummy(imgui.ImVec2(0, 6))
+
+    deskFormPanelBegin('##chk_friends')
+    drawSettingsCardHeader('\xC4\xF0\xF3\xE7\xFC\xFF')
+    drawCheckerFriendsSettings()
+    deskFormPanelEnd()
+
     imgui.PopStyleVar()
     imgui.EndChild()
     popPanelStyle()
@@ -42800,7 +46280,7 @@ if rawget(_G, '__REPORT_DESK_BUNDLE_ACTIVE') ~= true then return end
 local CMD_BIND_RESERVED = {
     ans = true, adesk = true, reportdesk = true, hist = true, iget = true, ilog = true, iskill = true,
     warnlast = true, banlast = true, jaillast = true, mutelast = true,
-    acar = true, guns = true,
+    acar = true, guns = true, tr = true, toroad = true, mpjail = true,
     helper = true, sp = true, st = true, admins = true, adms = true, leaders = true,
     deskupdate = true, deskrepair = true, reload = true, r = true,
     c = true, cc = true, me = true, b = true, w = true, f = true, g = true,
@@ -43029,10 +46509,12 @@ function drawCmdBindEditPanel()
     imgui.TextColored(col_muted, '/')
     imgui.SameLine(0, 4)
     imgui.PushItemWidth(cmdRowW)
+    deskPushFlatInputStyle()
     if imgui.InputText('##cmd_bind_name', editCmdBindCmd, sizeof(editCmdBindCmd)) then
         cmdBindEditorDirty = true
     end
     if imguiItemEdited() then cmdBindEditorDirty = true end
+    deskPopFlatInputStyle()
     imgui.PopItemWidth()
 
     if deskFormToggleRow('\xC2\xEA\xEB\xFE\xF7\xE5\xED\xE0', editCmdBindEnabled, function()
@@ -43042,10 +46524,12 @@ function drawCmdBindEditPanel()
 
     drawSettingsSubsection('\xD2\xE5\xEA\xF1\xF2 \xEE\xF2\xE2\xE5\xF2\xE0')
     imgui.PushItemWidth(-1)
+    deskPushFlatInputStyle()
     if imgui.InputTextMultiline('##cmd_bind_text', editCmdBindText, sizeof(editCmdBindText), imgui.ImVec2(-1, 200)) then
         cmdBindEditorDirty = true
     end
     if imguiItemEdited() then cmdBindEditorDirty = true end
+    deskPopFlatInputStyle()
     imgui.PopItemWidth()
 
     if cmdBindStatusMsg ~= '' and os.clock() < cmdBindStatusUntil then
@@ -43077,9 +46561,40 @@ end
 -- Draw Cmd Binds Tab Inner
 function drawCmdBindsTabInner()
     ensureCmdBinds()
-    pushPanelStyle()
-    imgui.BeginChild('##cmd_bind_list', imgui.ImVec2(DESK_EDITOR_LIST_W, -1), true)
-    if imgui.Button(uiText('+ \xCA\xEE\xEC\xE0\xED\xE4\xE0'), imgui.ImVec2(-1, 28)) then
+    local sideW = (deskEdgeTheme and deskEdgeTheme.SPLIT_SIDE_W) or 220
+    if type(deskEdgeBeginSplitPage) == 'function' then
+        deskEdgeBeginSplitPage('##cmd_split')
+    else
+        pushPanelStyle()
+    end
+
+    if type(deskEdgeBeginSplitSidebar) == 'function' then
+        deskEdgeBeginSplitSidebar('##cmd_bind_list', sideW)
+    elseif type(deskEdgeBeginCatalogSidebar) == 'function' then
+        deskEdgeBeginCatalogSidebar('##cmd_bind_list', sideW)
+    else
+        imgui.BeginChild('##cmd_bind_list', imgui.ImVec2(sideW, -1), false)
+    end
+
+    for i, row in ipairs(settings.cmd_binds) do
+        local name = trim(row.cmd or '')
+        if name == '' then name = '?' end
+        local label = '/' .. name .. (row.enabled and '' or ' (off)')
+        local picked = false
+        if type(deskEdgeDrawSplitNavItem) == 'function' then
+            picked = deskEdgeDrawSplitNavItem(label, '##cmdb' .. i, cmdBindSelected == i)
+        elseif drawEditorListSelectable(label, '##cmdb' .. i, cmdBindSelected == i) then
+            picked = true
+        end
+        if picked and cmdBindSelected ~= i then
+            flushCmdBindEditor()
+            cmdBindSelected = i
+            fillCmdBindEditor(i)
+        end
+    end
+    imgui.Dummy(imgui.ImVec2(0, 8))
+    if type(deskPushEdgeButtons) == 'function' then deskPushEdgeButtons(false) end
+    if imgui.Button(uiText('+ \xCA\xEE\xEC\xE0\xED\xE4\xE0'), imgui.ImVec2(-1, 32)) then
         flushCmdBindEditor()
         local n = #settings.cmd_binds + 1
         settings.cmd_binds[n] = {
@@ -43091,36 +46606,50 @@ function drawCmdBindsTabInner()
         fillCmdBindEditor(n)
         markDirtySettings()
     end
-    imgui.Dummy(imgui.ImVec2(0, 6))
-    for i, row in ipairs(settings.cmd_binds) do
-        local name = trim(row.cmd or '')
-        if name == '' then name = '?' end
-        local label = '/' .. name .. (row.enabled and '' or ' (off)')
-        if drawEditorListSelectable(label, '##cmdb' .. i, cmdBindSelected == i) then
-            if cmdBindSelected ~= i then
-                flushCmdBindEditor()
-                cmdBindSelected = i
-                fillCmdBindEditor(i)
-            end
-        end
-    end
-    imgui.EndChild()
-    popPanelStyle()
+    if type(deskPopEdgeButtons) == 'function' then deskPopEdgeButtons(false) end
 
-    imgui.SameLine()
-    pushPanelStyle(col_chat_bg)
-    imgui.BeginChild('##cmd_bind_edit', imgui.ImVec2(0, -1), true)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    if type(deskEdgeEndSplitSidebar) == 'function' then
+        deskEdgeEndSplitSidebar()
+    elseif type(deskEdgeEndCatalogSidebar) == 'function' then
+        deskEdgeEndCatalogSidebar()
+    else
+        imgui.EndChild()
+    end
+
+    local splitGap = (deskEdgeTheme and deskEdgeTheme.SPLIT_GAP) or 12
+    imgui.SameLine(0, splitGap)
+
+    if type(deskEdgeBeginSplitMain) == 'function' then
+        deskEdgeBeginSplitMain('##cmd_bind_edit')
+    else
+        pushPanelStyle(col_chat_bg)
+        imgui.BeginChild('##cmd_bind_edit', imgui.ImVec2(-1, -1), true)
+    end
+
     if #settings.cmd_binds == 0 then
-        imgui.Dummy(imgui.ImVec2(0, 24))
+        imgui.Dummy(imgui.ImVec2(0, 40))
         imgui.TextColored(col_muted, uiText('\xCD\xE0\xE6\xEC\xE8\xF2\xE5 + \xCA\xEE\xEC\xE0\xED\xE4\xE0'))
     else
+        if type(deskEdgeGroupTitle) == 'function' then
+            deskEdgeGroupTitle('\xCA\xEE\xEC\xE0\xED\xE4\xE0')
+        elseif type(deskEdgeCapsTitle) == 'function' then
+            deskEdgeCapsTitle('\xCA\xEE\xEC\xE0\xED\xE4\xE0')
+        end
         drawCmdBindEditPanel()
     end
-    imgui.PopStyleVar(2)
-    imgui.EndChild()
-    popPanelStyle()
+
+    if type(deskEdgeEndSplitMain) == 'function' then
+        deskEdgeEndSplitMain()
+    else
+        imgui.EndChild()
+        popPanelStyle()
+    end
+
+    if type(deskEdgeEndSplitPage) == 'function' then
+        deskEdgeEndSplitPage()
+    else
+        popPanelStyle()
+    end
 end
 
 -- Draw Cmd Binds Tab
